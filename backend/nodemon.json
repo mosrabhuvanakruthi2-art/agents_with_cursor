@@ -1,0 +1,8 @@
+{
+  "watch": ["src"],
+  "ignore": ["src/logs/*", "data/*", "logs/*", "*.log", "node_modules/*"],
+  "ext": "js",
+  "delay": "5000",
+  "signal": "SIGTERM",
+  "restartable": "rs"
+}

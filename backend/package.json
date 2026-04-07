@@ -1,0 +1,29 @@
+{
+  "name": "migration-qa-backend",
+  "version": "1.0.0",
+  "description": "AI Agent System for Gmail to Outlook Migration QA",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "node test/googleAccountsPicker.test.js",
+    "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^2.16.2",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0",
+    "node-cron": "^3.0.3",
+    "pdfkit": "^0.18.0",
+    "uuid": "^11.0.5",
+    "winston": "^3.17.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

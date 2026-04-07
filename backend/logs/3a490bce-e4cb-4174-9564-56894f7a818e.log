@@ -1,0 +1,45 @@
+{"executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Starting full migration QA flow","service":"migration-qa","timestamp":"2026-04-04T07:45:49.353Z"}
+{"executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Step 1: Running GmailTestDataAgent","service":"migration-qa","timestamp":"2026-04-04T07:45:49.365Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Agent started","service":"migration-qa","timestamp":"2026-04-04T07:45:49.366Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Creating test data in Gmail for: p****@cloudfuze.us [E2E]","service":"migration-qa","timestamp":"2026-04-04T07:45:49.367Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:49.368Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Label already exists: QA-TestLabel","service":"migration-qa","timestamp":"2026-04-04T07:45:50.173Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:50.175Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Label already exists: QA-TestLabel/Nested-Child","service":"migration-qa","timestamp":"2026-04-04T07:45:50.900Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:50.901Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Label already exists: QA-Important","service":"migration-qa","timestamp":"2026-04-04T07:45:51.626Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:51.628Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Label already exists: QA-Archive","service":"migration-qa","timestamp":"2026-04-04T07:45:52.580Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:52.581Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Inserted email: QA E2E - Plain Text Email","service":"migration-qa","timestamp":"2026-04-04T07:45:53.373Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:53.375Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Inserted email: QA E2E - HTML Email","service":"migration-qa","timestamp":"2026-04-04T07:45:54.131Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:54.132Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Inserted email: QA E2E - Email with Attachment","service":"migration-qa","timestamp":"2026-04-04T07:45:55.151Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:55.152Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Inserted email: QA E2E - Email with Inline Image","service":"migration-qa","timestamp":"2026-04-04T07:45:56.197Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:56.198Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Inserted email: QA E2E - Sent Email","service":"migration-qa","timestamp":"2026-04-04T07:45:56.934Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:56.934Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created draft: QA E2E - Draft Email 1","service":"migration-qa","timestamp":"2026-04-04T07:45:57.708Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:57.709Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created draft: QA E2E - Draft Email 2","service":"migration-qa","timestamp":"2026-04-04T07:45:58.492Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:45:58.493Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created secondary calendar: c*****@group.calendar.google.com","service":"migration-qa","timestamp":"2026-04-04T07:46:05.183Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:46:05.184Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created event: QA E2E - Single Event on primary","service":"migration-qa","timestamp":"2026-04-04T07:46:06.107Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:46:06.109Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created event: QA E2E - Recurring Weekly Event on primary","service":"migration-qa","timestamp":"2026-04-04T07:46:06.960Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:46:06.961Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created event: QA E2E - All Day Event on primary","service":"migration-qa","timestamp":"2026-04-04T07:46:07.822Z"}
+{"level":"warn","message":"No Google token for \"p****@cloudfuze.us\", falling back to g*****@cloudfuze.us","service":"migration-qa","timestamp":"2026-04-04T07:46:07.825Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Created event: QA E2E - Secondary Calendar Event on c*****@group.calendar.google.com","service":"migration-qa","timestamp":"2026-04-04T07:46:08.705Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Test data generation complete [E2E]: {\"testType\":\"E2E\",\"emailsCreated\":5,\"labelsCreated\":0,\"draftsCreated\":2,\"eventsCreated\":4}","service":"migration-qa","timestamp":"2026-04-04T07:46:08.706Z"}
+{"agent":"GmailTestDataAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Agent completed successfully","service":"migration-qa","timestamp":"2026-04-04T07:46:08.707Z"}
+{"executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Step 2: Running MigrationAgent","service":"migration-qa","timestamp":"2026-04-04T07:46:08.715Z"}
+{"agent":"MigrationAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Agent started","service":"migration-qa","timestamp":"2026-04-04T07:46:08.716Z"}
+{"agent":"MigrationAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"info","message":"Logging into CloudFuze...","service":"migration-qa","timestamp":"2026-04-04T07:46:08.717Z"}
+{"level":"warn","message":"CloudFuze login failed (attempt 1/3), retrying in 1000ms: ","service":"migration-qa","timestamp":"2026-04-04T07:46:08.723Z"}
+{"level":"warn","message":"CloudFuze login failed (attempt 2/3), retrying in 2000ms: ","service":"migration-qa","timestamp":"2026-04-04T07:46:09.744Z"}
+{"agent":"MigrationAgent","executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"error","message":"Agent failed: ","service":"migration-qa","timestamp":"2026-04-04T07:46:11.754Z"}
+{"executionId":"3a490bce-e4cb-4174-9564-56894f7a818e","level":"error","message":"Full flow failed after 22403ms: ","service":"migration-qa","timestamp":"2026-04-04T07:46:11.756Z"}

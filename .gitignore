@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Secrets — use .env.example only in git
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Build / logs
+frontend/dist/
+backend/logs/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

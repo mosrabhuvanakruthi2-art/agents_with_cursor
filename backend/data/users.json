@@ -1,0 +1,54 @@
+{
+  "source": {
+    "cloudName": "GMAIL",
+    "admins": [
+      {
+        "email": "granger@cloudfuze.us",
+        "domain": "cloudfuze.us",
+        "users": [
+          { "email": "granger@cloudfuze.us", "firstName": "Granger", "lastName": "G" },
+          { "email": "alex@cloudfuze.us", "firstName": "Alex", "lastName": "" },
+          { "email": "austin@cloudfuze.us", "firstName": "Austin", "lastName": "" },
+          { "email": "ben@cloudfuze.us", "firstName": "Ben", "lastName": "" },
+          { "email": "dan@cloudfuze.us", "firstName": "Dan", "lastName": "" },
+          { "email": "frankie@cloudfuze.us", "firstName": "Frankie", "lastName": "" },
+          { "email": "harry@cloudfuze.us", "firstName": "Harry", "lastName": "" },
+          { "email": "peter@cloudfuze.us", "firstName": "Peter", "lastName": "" },
+          { "email": "sonia@cloudfuze.us", "firstName": "Sonia", "lastName": "" }
+        ]
+      }
+    ]
+  },
+  "destination": {
+    "cloudName": "OUTLOOK",
+    "admins": [
+      {
+        "email": "granger@gajha.com",
+        "domain": "gajha.com",
+        "users": [
+          { "email": "granger@gajha.com", "firstName": "Granger", "lastName": "" },
+          { "email": "alex@gajha.com", "firstName": "Alex", "lastName": "" },
+          { "email": "alexduplicate@gajha.com", "firstName": "Alexduplicate", "lastName": "" },
+          { "email": "avagadda.sravani@gajha.com", "firstName": "Avagadda", "lastName": "Sravani" },
+          { "email": "changes@gajha.com", "firstName": "Changes", "lastName": "" },
+          { "email": "cloudg@gajha.com", "firstName": "Cloudg", "lastName": "" },
+          { "email": "dan@gajha.com", "firstName": "Dan", "lastName": "" },
+          { "email": "finance@gajha.com", "firstName": "Finance", "lastName": "" },
+          { "email": "ganesh@gajha.com", "firstName": "Ganesh", "lastName": "" },
+          { "email": "mia@gajha.com", "firstName": "Mia", "lastName": "" },
+          { "email": "oliver@gajha.com", "firstName": "Oliver", "lastName": "" },
+          { "email": "pavan@gajha.com", "firstName": "Pavan", "lastName": "" },
+          { "email": "prasad@gajha.com", "firstName": "Prasad", "lastName": "" },
+          { "email": "priority@gajha.com", "firstName": "Priority", "lastName": "" },
+          { "email": "qateam@gajha.com", "firstName": "Qateam", "lastName": "" },
+          { "email": "qrt@gajha.com", "firstName": "Qrt", "lastName": "" },
+          { "email": "ravitest@gajha.com", "firstName": "Ravitest", "lastName": "" },
+          { "email": "santosh@gajha.com", "firstName": "Santosh", "lastName": "" },
+          { "email": "sophia@gajha.com", "firstName": "Sophia", "lastName": "" },
+          { "email": "supportcftest@gajha.com", "firstName": "Supportcftest", "lastName": "" },
+          { "email": "test_room@gajha.com", "firstName": "Test_room", "lastName": "" }
+        ]
+      }
+    ]
+  }
+}
