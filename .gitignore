@@ -9,7 +9,8 @@ node_modules/
 
 # Build / logs
 frontend/dist/
-backend/logs/
+backend/logs/*
+!backend/logs/.gitkeep
 *.log
 
 # OS / IDE

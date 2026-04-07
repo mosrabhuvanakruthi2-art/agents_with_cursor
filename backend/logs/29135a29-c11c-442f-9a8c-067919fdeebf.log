@@ -1,3 +1,0 @@
-{"executionId":"29135a29-c11c-442f-9a8c-067919fdeebf","level":"info","message":"Starting full migration QA flow","service":"migration-qa","timestamp":"2026-04-02T10:56:17.369Z"}
-{"executionId":"29135a29-c11c-442f-9a8c-067919fdeebf","level":"info","message":"Step 1: Running GmailTestDataAgent","service":"migration-qa","timestamp":"2026-04-02T10:56:17.372Z"}
-{"agent":"GmailTestDataAgent","executionId":"29135a29-c11c-442f-9a8c-067919fdeebf","level":"info","message":"Agent started","service":"migration-qa","timestamp":"2026-04-02T10:56:17.374Z"}
