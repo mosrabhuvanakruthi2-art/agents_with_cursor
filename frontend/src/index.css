@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+:root {
+  --blue: #0129ac;
+  --blue-dark: #011e8a;
+  --blue-light: #eef1fb;
+  --blue-muted: #c5cef5;
+}
+
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(100%); }
   to   { opacity: 1; transform: translateX(0);    }

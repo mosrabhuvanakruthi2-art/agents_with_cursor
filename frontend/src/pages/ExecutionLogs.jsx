@@ -60,35 +60,38 @@ export default function ExecutionLogs() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Execution Logs</h1>
-        <p className="text-sm text-gray-500 mt-1">View detailed logs for each agent execution</p>
+        <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Execution Logs</h1>
+        <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>View detailed logs for each agent execution</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1">
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100">
-              <h2 className="text-sm font-semibold text-gray-900">Executions</h2>
+          <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
+            <div className="px-4 py-3" style={{ borderBottom: '1px solid #eef1fb' }}>
+              <h2 className="text-sm font-semibold" style={{ color: '#0129ac' }}>Executions</h2>
             </div>
             {loading ? (
-              <div className="p-4 text-sm text-gray-400">Loading...</div>
+              <div className="p-4 text-sm" style={{ color: '#7a8fd4' }}>Loading...</div>
             ) : executions.length === 0 ? (
-              <div className="p-4 text-sm text-gray-500">No executions found</div>
+              <div className="p-4 text-sm" style={{ color: '#4a65c0' }}>No executions found</div>
             ) : (
-              <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
+              <div className="max-h-[600px] overflow-y-auto">
                 {executions.map((exec) => (
                   <button
                     key={exec.executionId}
                     onClick={() => setSelectedId(exec.executionId)}
-                    className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${
-                      selectedId === exec.executionId ? 'bg-indigo-50 border-l-2 border-indigo-500' : ''
-                    }`}
+                    className="w-full text-left px-4 py-3 transition-colors border-t"
+                    style={{
+                      borderColor: '#eef1fb',
+                      backgroundColor: selectedId === exec.executionId ? '#eef1fb' : 'transparent',
+                      borderLeft: selectedId === exec.executionId ? '3px solid #0129ac' : '3px solid transparent',
+                    }}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs text-gray-600">{exec.executionId.slice(0, 8)}...</span>
+                      <span className="font-mono text-xs" style={{ color: '#2a40a8' }}>{exec.executionId.slice(0, 8)}...</span>
                       <StatusBadge status={exec.status} />
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">{new Date(exec.createdAt).toLocaleString()}</p>
+                    <p className="text-xs mt-1" style={{ color: '#7a8fd4' }}>{new Date(exec.createdAt).toLocaleString()}</p>
                   </button>
                 ))}
               </div>
@@ -98,31 +101,31 @@ export default function ExecutionLogs() {
 
         <div className="lg:col-span-2 space-y-4">
           {selectedExec && (
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="bg-white rounded-xl p-4" style={{ border: '1px solid #c5cef5' }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-900">
+                  <p className="text-sm font-medium" style={{ color: '#0129ac' }}>
                     {selectedExec.context?.sourceEmail} → {selectedExec.context?.destinationEmail}
                   </p>
-                  <p className="text-xs text-gray-500 mt-0.5">
+                  <p className="text-xs mt-0.5" style={{ color: '#7a8fd4' }}>
                     {selectedExec.context?.migrationType} | {new Date(selectedExec.createdAt).toLocaleString()}
                   </p>
                 </div>
                 <StatusBadge status={selectedExec.status} />
               </div>
               {selectedExec.currentAgent && (
-                <p className="text-xs text-indigo-700 mt-2">
+                <p className="text-xs mt-2" style={{ color: '#0129ac' }}>
                   <span className="font-medium">Agent:</span> {selectedExec.currentAgent}
                 </p>
               )}
               {selectedExec.progress && (
-                <p className="text-xs text-gray-600 mt-1">{selectedExec.progress}</p>
+                <p className="text-xs mt-1" style={{ color: '#2a40a8' }}>{selectedExec.progress}</p>
               )}
             </div>
           )}
 
           {logsLoading ? (
-            <div className="bg-gray-900 rounded-xl p-6 text-gray-400 text-sm">Loading logs...</div>
+            <div className="rounded-xl p-6 text-sm" style={{ backgroundColor: '#0129ac', color: 'rgba(255,255,255,0.6)' }}>Loading logs...</div>
           ) : (
             <LogViewer logs={logs} />
           )}

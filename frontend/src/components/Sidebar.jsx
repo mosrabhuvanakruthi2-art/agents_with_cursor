@@ -15,21 +15,25 @@ const navItems = [
 export default function Sidebar({ collapsed, onToggle }) {
   return (
     <aside
-      className={`relative flex-shrink-0 bg-gray-900 text-white flex flex-col transition-all duration-200 ${
+      className={`relative flex-shrink-0 flex flex-col transition-all duration-200 ${
         collapsed ? 'w-14' : 'w-64'
       }`}
+      style={{ backgroundColor: '#0129ac', color: 'white' }}
     >
       {/* Header */}
-      <div className={`border-b border-gray-700 flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'px-6 py-5'}`}>
+      <div
+        className={`flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'px-6 py-5'}`}
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.2)' }}
+      >
         {!collapsed && (
           <div className="flex-1 min-w-0">
-            <h1 className="text-lg font-bold tracking-tight truncate">Migration QA</h1>
-            <p className="text-xs text-gray-400 mt-0.5">Agent System</p>
+            <h1 className="text-lg font-bold tracking-tight truncate text-white">Migration QA</h1>
+            <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.65)' }}>Agent System</p>
           </div>
         )}
         {collapsed && (
-          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+          <div className="w-7 h-7 rounded-lg bg-white flex items-center justify-center">
+            <svg className="w-4 h-4" style={{ color: '#0129ac' }} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
             </svg>
           </div>
@@ -51,8 +55,8 @@ export default function Sidebar({ collapsed, onToggle }) {
                   collapsed ? 'justify-center' : ''
                 } ${
                   isActive
-                    ? 'bg-indigo-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                    ? 'bg-white text-[#0129ac]'
+                    : 'text-white/80 hover:bg-white/10 hover:text-white'
                 }`
               }
             >
@@ -65,19 +69,21 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       {/* Footer */}
       {!collapsed && (
-        <div className="px-6 py-4 border-t border-gray-700 text-xs text-gray-500">
+        <div className="px-6 py-4 text-xs" style={{ borderTop: '1px solid rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.5)' }}>
           v1.0.0
         </div>
       )}
 
-      {/* Toggle button — sits on the right edge of the sidebar */}
+      {/* Toggle button */}
       <button
         onClick={onToggle}
         title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="absolute -right-3 top-[72px] z-10 w-6 h-6 rounded-full bg-indigo-600 hover:bg-indigo-500 border-2 border-gray-900 flex items-center justify-center transition-colors shadow-md"
+        className="absolute -right-3 top-[72px] z-10 w-6 h-6 rounded-full bg-white flex items-center justify-center transition-colors shadow-md hover:bg-[#eef1fb]"
+        style={{ border: '2px solid #0129ac' }}
       >
         <svg
-          className={`w-3 h-3 text-white transition-transform duration-200 ${collapsed ? 'rotate-0' : 'rotate-180'}`}
+          className={`w-3 h-3 transition-transform duration-200 ${collapsed ? 'rotate-0' : 'rotate-180'}`}
+          style={{ color: '#0129ac' }}
           fill="none"
           viewBox="0 0 24 24"
           strokeWidth={3}
@@ -146,14 +152,6 @@ function SparklesIcon(props) {
   return (
     <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
-    </svg>
-  );
-}
-
-function ConnectIcon(props) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
     </svg>
   );
 }

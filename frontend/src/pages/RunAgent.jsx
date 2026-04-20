@@ -3,7 +3,6 @@ import AgentForm from '../components/AgentForm';
 import StatusBadge from '../components/StatusBadge';
 import useAgentExecution from '../hooks/useAgentExecution';
 
-/** Merge stored execution row with nested `result` once the run finishes (GET /executions/:id shape). */
 function normalizeRunResult(exec) {
   if (!exec || exec.bulk) return exec;
   if (exec.result && (exec.status === 'COMPLETED' || exec.status === 'FAILED')) {
@@ -26,86 +25,87 @@ export default function RunAgent() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Run Agent</h1>
-        <p className="text-sm text-gray-500 mt-1">Configure and trigger a migration QA flow</p>
+        <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Run Agent</h1>
+        <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>Configure and trigger a migration QA flow</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
         <AgentForm onSubmit={run} loading={loading} />
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="text-sm text-red-700 font-medium">Error</p>
-          <p className="text-sm text-red-600 mt-1">{error}</p>
+        <div className="rounded-xl p-4" style={{ backgroundColor: '#eef1fb', border: '1px solid #0129ac' }}>
+          <p className="text-sm font-medium" style={{ color: '#0129ac' }}>Error</p>
+          <p className="text-sm mt-1" style={{ color: '#2a40a8' }}>{error}</p>
         </div>
       )}
 
       {isBulk && (
         <div className="space-y-6">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Bulk Migration Results</h2>
+          <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
+            <h2 className="text-lg font-semibold mb-4" style={{ color: '#0129ac' }}>Bulk Migration Results</h2>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-              <div className="bg-indigo-50 rounded-lg p-4">
-                <p className="text-xs text-indigo-600 font-medium uppercase">Total Pairs</p>
-                <p className="text-2xl font-bold text-indigo-700 mt-1">{execution.totalPairs}</p>
+              <div className="rounded-lg p-4" style={{ backgroundColor: '#eef1fb' }}>
+                <p className="text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Total Pairs</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: '#0129ac' }}>{execution.totalPairs}</p>
               </div>
-              <div className="bg-green-50 rounded-lg p-4">
-                <p className="text-xs text-green-600 font-medium uppercase">Completed</p>
-                <p className="text-2xl font-bold text-green-700 mt-1">{execution.completed}</p>
+              <div className="rounded-lg p-4" style={{ backgroundColor: '#0129ac' }}>
+                <p className="text-xs font-medium uppercase text-white/70">Completed</p>
+                <p className="text-2xl font-bold mt-1 text-white">{execution.completed}</p>
               </div>
-              <div className="bg-red-50 rounded-lg p-4">
-                <p className="text-xs text-red-600 font-medium uppercase">Failed</p>
-                <p className="text-2xl font-bold text-red-700 mt-1">{execution.failed}</p>
+              <div className="rounded-lg p-4" style={{ backgroundColor: '#011e8a' }}>
+                <p className="text-xs font-medium uppercase text-white/70">Failed</p>
+                <p className="text-2xl font-bold mt-1 text-white">{execution.failed}</p>
               </div>
             </div>
           </div>
 
           {execution.results?.map((result, idx) => (
-            <div key={idx} className="bg-white rounded-xl border border-gray-200 p-5">
+            <div key={idx} className="bg-white rounded-xl p-5" style={{ border: '1px solid #c5cef5' }}>
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm">
-                  <span className="font-medium text-gray-900">{result.sourceEmail || result.context?.sourceEmail}</span>
-                  <span className="text-gray-400 mx-2">→</span>
-                  <span className="font-medium text-gray-900">{result.destinationEmail || result.context?.destinationEmail}</span>
+                  <span className="font-medium" style={{ color: '#0129ac' }}>{result.sourceEmail || result.context?.sourceEmail}</span>
+                  <span className="mx-2" style={{ color: '#7a8fd4' }}>→</span>
+                  <span className="font-medium" style={{ color: '#0129ac' }}>{result.destinationEmail || result.context?.destinationEmail}</span>
                 </div>
                 <StatusBadge status={result.status} />
               </div>
-              {result.error && <p className="text-xs text-red-500">{result.error}</p>}
-              {result.duration && <p className="text-xs text-gray-500">Duration: {(result.duration / 1000).toFixed(1)}s</p>}
+              {result.error && <p className="text-xs" style={{ color: '#2a40a8' }}>{result.error}</p>}
+              {result.duration && <p className="text-xs" style={{ color: '#7a8fd4' }}>Duration: {(result.duration / 1000).toFixed(1)}s</p>}
             </div>
           ))}
         </div>
       )}
 
       {isRunning && execution?.executionId && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-6 space-y-3">
+        <div className="rounded-xl p-6 space-y-3" style={{ backgroundColor: '#eef1fb', border: '1px solid #0129ac' }}>
           <div className="flex items-center justify-between gap-4 flex-wrap">
-            <h2 className="text-lg font-semibold text-indigo-900">Execution in progress</h2>
+            <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Execution in progress</h2>
             <StatusBadge status="RUNNING" />
           </div>
-          <p className="text-sm text-indigo-800">
+          <p className="text-sm" style={{ color: '#2a40a8' }}>
             The server is running the full flow. Migration can take many minutes while Outlook is polled.
           </p>
           <div className="text-sm space-y-1">
             <p>
-              <span className="text-indigo-600 font-medium">Execution ID:</span>{' '}
-              <span className="font-mono text-indigo-900">{execution.executionId}</span>
+              <span className="font-medium" style={{ color: '#0129ac' }}>Execution ID:</span>{' '}
+              <span className="font-mono" style={{ color: '#0129ac' }}>{execution.executionId}</span>
             </p>
             <p>
-              <span className="text-indigo-600 font-medium">Current agent:</span>{' '}
-              <span className="text-indigo-900">{execution.currentAgent || 'Starting…'}</span>
+              <span className="font-medium" style={{ color: '#0129ac' }}>Current agent:</span>{' '}
+              <span style={{ color: '#2a40a8' }}>{execution.currentAgent || 'Starting…'}</span>
             </p>
             {execution.progress && (
               <p>
-                <span className="text-indigo-600 font-medium">Detail:</span>{' '}
-                <span className="text-indigo-900">{execution.progress}</span>
+                <span className="font-medium" style={{ color: '#0129ac' }}>Detail:</span>{' '}
+                <span style={{ color: '#2a40a8' }}>{execution.progress}</span>
               </p>
             )}
           </div>
           <Link
             to={`/logs?id=${execution.executionId}`}
-            className="inline-flex text-sm font-medium text-indigo-700 hover:text-indigo-900 underline"
+            className="inline-flex text-sm font-medium underline"
+            style={{ color: '#0129ac' }}
           >
             Open execution logs (live JSON lines)
           </Link>
@@ -115,50 +115,50 @@ export default function RunAgent() {
       {runView && !isBulk && !isRunning && (
         <div className="space-y-6">
           {runView.error && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-              <p className="text-sm font-medium text-red-800">Run failed</p>
-              <p className="text-sm text-red-700 mt-1">{runView.error}</p>
+            <div className="rounded-xl p-4" style={{ backgroundColor: '#eef1fb', border: '1px solid #0129ac' }}>
+              <p className="text-sm font-medium" style={{ color: '#0129ac' }}>Run failed</p>
+              <p className="text-sm mt-1" style={{ color: '#2a40a8' }}>{runView.error}</p>
             </div>
           )}
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Execution Result</h2>
+              <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Execution Result</h2>
               <StatusBadge status={runView.status} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
               <div>
-                <p className="text-gray-500">Execution ID</p>
-                <p className="font-mono text-gray-900 mt-0.5">{runView.executionId}</p>
+                <p style={{ color: '#7a8fd4' }}>Execution ID</p>
+                <p className="font-mono mt-0.5" style={{ color: '#0129ac' }}>{runView.executionId}</p>
               </div>
               <div>
-                <p className="text-gray-500">Duration</p>
-                <p className="text-gray-900 mt-0.5">
+                <p style={{ color: '#7a8fd4' }}>Duration</p>
+                <p className="mt-0.5" style={{ color: '#0129ac' }}>
                   {runView.duration ? `${(runView.duration / 1000).toFixed(1)}s` : 'N/A'}
                 </p>
               </div>
               <div>
-                <p className="text-gray-500">Status</p>
-                <p className="text-gray-900 mt-0.5">{runView.status}</p>
+                <p style={{ color: '#7a8fd4' }}>Status</p>
+                <p className="mt-0.5" style={{ color: '#0129ac' }}>{runView.status}</p>
               </div>
             </div>
           </div>
 
           {runView.migrationResult && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6 text-sm">
-              <h3 className="text-sm font-semibold text-gray-900 mb-2">Migration (CloudFuze)</h3>
-              <p className="text-gray-600">
+            <div className="bg-white rounded-xl p-6 text-sm" style={{ border: '1px solid #c5cef5' }}>
+              <h3 className="text-sm font-semibold mb-2" style={{ color: '#0129ac' }}>Migration (CloudFuze)</h3>
+              <p style={{ color: '#2a40a8' }}>
                 Job ID: <span className="font-mono">{String(runView.migrationResult.jobId)}</span>
               </p>
-              <p className="text-gray-600 mt-1">
+              <p className="mt-1" style={{ color: '#2a40a8' }}>
                 Final status: <span className="font-medium">{runView.migrationResult.finalStatus}</span>
               </p>
               {runView.migrationResult.ownerValidation?.skipped && (
-                <p className="text-amber-700 mt-1">
+                <p className="mt-1" style={{ color: '#4a65c0' }}>
                   validateUser skipped: {runView.migrationResult.ownerValidation.reason}
                 </p>
               )}
               {runView.migrationResult.ownerValidation && !runView.migrationResult.ownerValidation.skipped && (
-                <p className="text-gray-600 mt-1">
+                <p className="mt-1" style={{ color: '#2a40a8' }}>
                   CloudFuze user: {runView.migrationResult.ownerValidation.userName} (
                   {runView.migrationResult.ownerValidation.id})
                 </p>
@@ -167,16 +167,16 @@ export default function RunAgent() {
           )}
 
           {runView.agentResults && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-100">
-                <h3 className="text-sm font-semibold text-gray-900">Agent Results</h3>
+            <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
+              <div className="px-6 py-4" style={{ borderBottom: '1px solid #eef1fb' }}>
+                <h3 className="text-sm font-semibold" style={{ color: '#0129ac' }}>Agent Results</h3>
               </div>
-              <div className="divide-y divide-gray-100">
+              <div>
                 {runView.agentResults.map((agent, idx) => (
-                  <div key={idx} className="px-6 py-4 flex items-center justify-between">
+                  <div key={idx} className="px-6 py-4 flex items-center justify-between border-t" style={{ borderColor: '#eef1fb' }}>
                     <div>
-                      <p className="text-sm font-medium text-gray-900">{agent.name}</p>
-                      {agent.error && <p className="text-xs text-red-500 mt-0.5">{agent.error}</p>}
+                      <p className="text-sm font-medium" style={{ color: '#0129ac' }}>{agent.name}</p>
+                      {agent.error && <p className="text-xs mt-0.5" style={{ color: '#2a40a8' }}>{agent.error}</p>}
                     </div>
                     <StatusBadge status={agent.status} />
                   </div>
@@ -186,21 +186,21 @@ export default function RunAgent() {
           )}
 
           {runView.validationSummary && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h3 className="text-sm font-semibold text-gray-900 mb-4">Validation Summary</h3>
+            <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
+              <h3 className="text-sm font-semibold mb-4" style={{ color: '#0129ac' }}>Validation Summary</h3>
               <div className="flex items-center gap-3 mb-4">
-                <span className="text-sm text-gray-600">Overall:</span>
+                <span className="text-sm" style={{ color: '#4a65c0' }}>Overall:</span>
                 <StatusBadge status={runView.validationSummary.overallStatus} />
-                <span className="text-sm text-gray-500">
+                <span className="text-sm" style={{ color: '#7a8fd4' }}>
                   ({runView.validationSummary.mismatches?.length || 0} mismatches)
                 </span>
               </div>
               {runView.validationSummary.mismatches?.length > 0 && (
                 <div className="space-y-2">
                   {runView.validationSummary.mismatches.map((m, idx) => (
-                    <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
-                      <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>
-                      <span className="text-gray-700">{m.field}: expected <code className="bg-red-100 px-1 rounded">{String(m.expected)}</code>, got <code className="bg-red-100 px-1 rounded">{String(m.actual)}</code></span>
+                    <div key={idx} className="flex items-start gap-3 rounded-lg p-3 text-sm" style={{ backgroundColor: '#eef1fb' }}>
+                      <span className="font-medium flex-shrink-0" style={{ color: '#0129ac' }}>{m.category}</span>
+                      <span style={{ color: '#2a40a8' }}>{m.field}: expected <code className="px-1 rounded" style={{ backgroundColor: '#c5cef5' }}>{String(m.expected)}</code>, got <code className="px-1 rounded" style={{ backgroundColor: '#c5cef5' }}>{String(m.actual)}</code></span>
                     </div>
                   ))}
                 </div>

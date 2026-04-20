@@ -32,7 +32,6 @@ export default function ConnectAccounts() {
     }
   }, []);
 
-  // Handle OAuth callback params (?connected=google&email=... or ?error=google&message=...)
   useEffect(() => {
     const connected = searchParams.get('connected');
     const errorProvider = searchParams.get('error');
@@ -87,28 +86,25 @@ export default function ConnectAccounts() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      {/* Toast */}
       {toast && (
         <div
-          className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium text-white transition-all ${
-            toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'
-          }`}
+          className="fixed top-5 right-5 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium text-white transition-all"
+          style={{ backgroundColor: '#0129ac' }}
         >
           {toast.msg}
         </div>
       )}
 
-      {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Connect Accounts</h1>
-        <p className="mt-1 text-sm text-gray-500">
+        <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Connect Accounts</h1>
+        <p className="mt-1 text-sm" style={{ color: '#4a65c0' }}>
           Sign in to Google Workspace and Microsoft 365 to allow the agent to access mailboxes
           without hardcoding credentials.
         </p>
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-3 text-gray-500 text-sm">
+        <div className="flex items-center gap-3 text-sm" style={{ color: '#4a65c0' }}>
           <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -117,14 +113,14 @@ export default function ConnectAccounts() {
         </div>
       ) : (
         <div className="space-y-5">
-          {/* Google Workspace Card */}
           <div>
             <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-500">Google tenant:</span>
+              <span className="text-xs font-medium" style={{ color: '#4a65c0' }}>Google tenant:</span>
               <select
                 value={googleTenant}
                 onChange={(e) => setGoogleTenant(e.target.value)}
-                className="text-xs rounded-lg border border-gray-200 bg-white px-2 py-1 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="text-xs rounded-lg px-2 py-1 bg-white outline-none"
+                style={{ border: '1px solid #c5cef5', color: '#0129ac' }}
               >
                 <option value="1">cloudfuze.us</option>
                 <option value="2">storefuze.com</option>
@@ -143,14 +139,14 @@ export default function ConnectAccounts() {
             />
           </div>
 
-          {/* Microsoft 365 Card */}
           <div>
             <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-500">Microsoft tenant:</span>
+              <span className="text-xs font-medium" style={{ color: '#4a65c0' }}>Microsoft tenant:</span>
               <select
                 value={msTenant}
                 onChange={(e) => setMsTenant(e.target.value)}
-                className="text-xs rounded-lg border border-gray-200 bg-white px-2 py-1 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="text-xs rounded-lg px-2 py-1 bg-white outline-none"
+                style={{ border: '1px solid #c5cef5', color: '#0129ac' }}
               >
                 <option value="1">gajha.com</option>
                 <option value="2">filefuze.co</option>
@@ -171,8 +167,7 @@ export default function ConnectAccounts() {
         </div>
       )}
 
-      {/* Info box */}
-      <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+      <div className="mt-8 rounded-xl p-4 text-sm" style={{ border: '1px solid #c5cef5', backgroundColor: '#eef1fb', color: '#0129ac' }}>
         <div className="flex gap-2">
           <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
             <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
@@ -187,53 +182,38 @@ export default function ConnectAccounts() {
   );
 }
 
-// ─── ProviderCard ─────────────────────────────────────────────────────────────
-
-function ProviderCard({
-  logo,
-  name,
-  description,
-  connected,
-  connectedEmails,
-  onConnect,
-  onSignOut,
-  connectLabel,
-  multiAccount = false,
-}) {
+function ProviderCard({ logo, name, description, connected, connectedEmails, onConnect, onSignOut, connectLabel, multiAccount = false }) {
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+    <div className="rounded-2xl bg-white shadow-sm overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
       <div className="p-6">
         <div className="flex items-start gap-4">
-          {/* Logo */}
-          <div className="w-12 h-12 rounded-xl border border-gray-100 bg-gray-50 flex items-center justify-center flex-shrink-0">
+          <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0" style={{ border: '1px solid #eef1fb', backgroundColor: '#f5f7fd' }}>
             {logo}
           </div>
-
-          {/* Details */}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <h2 className="text-base font-semibold text-gray-900">{name}</h2>
-              <StatusBadge connected={connected} />
+              <h2 className="text-base font-semibold" style={{ color: '#0129ac' }}>{name}</h2>
+              <ConnectedBadge connected={connected} />
             </div>
-            <p className="text-sm text-gray-500 leading-relaxed">{description}</p>
+            <p className="text-sm leading-relaxed" style={{ color: '#4a65c0' }}>{description}</p>
           </div>
         </div>
       </div>
 
-      {/* Connected accounts list */}
       {connected && connectedEmails.length > 0 && (
-        <div className="border-t border-gray-100 bg-gray-50 px-6 py-4 space-y-2">
+        <div className="px-6 py-4 space-y-2" style={{ borderTop: '1px solid #eef1fb', backgroundColor: '#f5f7fd' }}>
           {connectedEmails.map((email) => (
             <div key={email} className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-gray-700">
-                <svg className="w-4 h-4 text-emerald-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <div className="flex items-center gap-2 text-sm" style={{ color: '#0129ac' }}>
+                <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#0129ac' }}>
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
                 </svg>
                 <span className="font-medium">{email}</span>
               </div>
               <button
                 onClick={() => onSignOut(email)}
-                className="text-xs text-gray-400 hover:text-red-600 transition-colors"
+                className="text-xs transition-colors"
+                style={{ color: '#7a8fd4' }}
               >
                 Disconnect
               </button>
@@ -242,9 +222,8 @@ function ProviderCard({
         </div>
       )}
 
-      {/* Footer actions */}
-      <div className="border-t border-gray-100 px-6 py-4 flex items-center justify-between">
-        <span className="text-xs text-gray-400">
+      <div className="px-6 py-4 flex items-center justify-between" style={{ borderTop: '1px solid #eef1fb' }}>
+        <span className="text-xs" style={{ color: '#7a8fd4' }}>
           {connected
             ? `${connectedEmails.length} account${connectedEmails.length !== 1 ? 's' : ''} connected`
             : 'Not connected'}
@@ -253,14 +232,18 @@ function ProviderCard({
           {connected && !multiAccount && (
             <button
               onClick={() => onSignOut(connectedEmails[0])}
-              className="text-sm px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-red-300 hover:text-red-600 transition-colors"
+              className="text-sm px-3 py-1.5 rounded-lg transition-colors"
+              style={{ border: '1px solid #c5cef5', color: '#0129ac' }}
             >
               Sign Out
             </button>
           )}
           <button
             onClick={onConnect}
-            className="text-sm px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium transition-colors"
+            className="text-sm px-4 py-1.5 rounded-lg text-white font-medium transition-colors"
+            style={{ backgroundColor: '#0129ac' }}
+            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#011e8a'}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0129ac'}
           >
             {multiAccount && connected ? '+ Add Account' : connectLabel}
           </button>
@@ -270,24 +253,22 @@ function ProviderCard({
   );
 }
 
-function StatusBadge({ connected }) {
+function ConnectedBadge({ connected }) {
   if (connected) {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium" style={{ backgroundColor: '#eef1fb', color: '#0129ac' }}>
+        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#0129ac' }}></span>
         Connected
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
-      <span className="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium" style={{ backgroundColor: '#f5f7fd', color: '#7a8fd4' }}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: '#c5cef5' }}></span>
       Not connected
     </span>
   );
 }
-
-// ─── Provider logos ───────────────────────────────────────────────────────────
 
 function GoogleLogo() {
   return (

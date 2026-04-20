@@ -28,27 +28,28 @@ const ICONS = {
 };
 
 const STYLES = {
-  success: { wrap: 'bg-white border-l-4 border-green-500', icon: 'text-green-500', title: 'text-green-800', msg: 'text-green-700' },
-  error:   { wrap: 'bg-white border-l-4 border-red-500',   icon: 'text-red-500',   title: 'text-red-800',   msg: 'text-red-700'   },
-  warning: { wrap: 'bg-white border-l-4 border-amber-500', icon: 'text-amber-500', title: 'text-amber-800', msg: 'text-amber-700' },
-  info:    { wrap: 'bg-white border-l-4 border-blue-500',  icon: 'text-blue-500',  title: 'text-blue-800',  msg: 'text-blue-700'  },
+  success: { wrap: { backgroundColor: '#fff', borderLeft: '4px solid #0129ac' }, icon: { color: '#0129ac' }, title: { color: '#011e8a' }, msg: { color: '#0129ac' } },
+  error:   { wrap: { backgroundColor: '#fff', borderLeft: '4px solid #011e8a' }, icon: { color: '#011e8a' }, title: { color: '#011e8a' }, msg: { color: '#0129ac' } },
+  warning: { wrap: { backgroundColor: '#eef1fb', borderLeft: '4px solid #0129ac' }, icon: { color: '#0129ac' }, title: { color: '#011e8a' }, msg: { color: '#0129ac' } },
+  info:    { wrap: { backgroundColor: '#fff', borderLeft: '4px solid #4a65c0' },  icon: { color: '#4a65c0' }, title: { color: '#0129ac' }, msg: { color: '#2a40a8' } },
 };
 
 function Toast({ toast, onDismiss }) {
   const s = STYLES[toast.type] || STYLES.info;
   return (
     <div
-      className={`flex items-start gap-3 px-4 py-3 rounded-lg shadow-lg min-w-[280px] max-w-sm pointer-events-auto
-        animate-[slideIn_0.2s_ease-out] ${s.wrap}`}
+      className="flex items-start gap-3 px-4 py-3 rounded-lg shadow-lg min-w-[280px] max-w-sm pointer-events-auto animate-[slideIn_0.2s_ease-out]"
+      style={s.wrap}
     >
-      <span className={s.icon}>{ICONS[toast.type]}</span>
+      <span style={s.icon}>{ICONS[toast.type]}</span>
       <div className="flex-1 min-w-0">
-        {toast.title && <p className={`text-sm font-semibold leading-tight ${s.title}`}>{toast.title}</p>}
-        {toast.message && <p className={`text-xs mt-0.5 leading-snug ${s.msg}`}>{toast.message}</p>}
+        {toast.title && <p className="text-sm font-semibold leading-tight" style={s.title}>{toast.title}</p>}
+        {toast.message && <p className="text-xs mt-0.5 leading-snug" style={s.msg}>{toast.message}</p>}
       </div>
       <button
         onClick={() => onDismiss(toast.id)}
-        className="flex-shrink-0 text-gray-400 hover:text-gray-600 transition-colors mt-0.5"
+        className="flex-shrink-0 transition-colors mt-0.5"
+        style={{ color: '#7a8fd4' }}
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
@@ -87,7 +88,6 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      {/* Toast container — top-right, above everything */}
       <div className="fixed top-5 right-5 z-[9999] flex flex-col gap-2.5 pointer-events-none">
         {toasts.map((t) => (
           <Toast key={t.id} toast={t} onDismiss={dismiss} />
