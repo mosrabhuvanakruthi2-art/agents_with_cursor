@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getDestinationUsers, getMailboxStats } from '../services/api';
+import { getDestinationUsers, getMailboxStats, getCalendarEventCount } from '../services/api';
 import { startClean, startCleanAll, subscribe, getActiveCleans, getAllResults, clearResults } from '../services/cleanManager';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -49,14 +49,22 @@ export default function CleanDestinationPage() {
       const updatedUsers = [...userList];
       for (let i = 0; i < updatedUsers.length; i += batchSize) {
         const batch = updatedUsers.slice(i, i + batchSize);
-        const results = await Promise.allSettled(
-          batch.map((u) => getMailboxStats(u.email, true))
-        );
-        results.forEach((r, idx) => {
+        const [mailResults, calResults] = await Promise.all([
+          Promise.allSettled(batch.map((u) => getMailboxStats(u.email, true))),
+          Promise.allSettled(batch.map((u) => getCalendarEventCount(u.email))),
+        ]);
+        mailResults.forEach((r, idx) => {
           const userIdx = i + idx;
+          const baseStats = r.status === 'fulfilled' ? r.value.data : { error: true };
+          const calData = calResults[idx];
+          const primaryEventCount = calData.status === 'fulfilled'
+            ? (calData.value.data?.eventCount ?? calData.value.data?.count ?? 0)
+            : null;
           updatedUsers[userIdx] = {
             ...updatedUsers[userIdx],
-            stats: r.status === 'fulfilled' ? r.value.data : { error: true },
+            stats: primaryEventCount !== null
+              ? { ...baseStats, eventCount: primaryEventCount }
+              : baseStats,
           };
         });
         setUsers([...updatedUsers]);
@@ -91,13 +99,24 @@ export default function CleanDestinationPage() {
     const updatedUsers = [...users];
     for (let i = 0; i < updatedUsers.length; i += batchSize) {
       const batch = updatedUsers.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map((u) => getMailboxStats(u.email, true))
-      );
-      results.forEach((r, idx) => {
+      const [mailResults, calResults] = await Promise.all([
+        Promise.allSettled(batch.map((u) => getMailboxStats(u.email, true))),
+        Promise.allSettled(batch.map((u) => getCalendarEventCount(u.email))),
+      ]);
+      mailResults.forEach((r, idx) => {
         const userIdx = i + idx;
         if (r.status === 'fulfilled') {
-          updatedUsers[userIdx] = { ...updatedUsers[userIdx], stats: r.value.data };
+          const baseStats = r.value.data;
+          const calData = calResults[idx];
+          const primaryEventCount = calData.status === 'fulfilled'
+            ? (calData.value.data?.eventCount ?? calData.value.data?.count ?? 0)
+            : null;
+          updatedUsers[userIdx] = {
+            ...updatedUsers[userIdx],
+            stats: primaryEventCount !== null
+              ? { ...baseStats, eventCount: primaryEventCount }
+              : baseStats,
+          };
         }
       });
       setUsers([...updatedUsers]);
@@ -208,7 +227,7 @@ export default function CleanDestinationPage() {
                 <tbody className="divide-y divide-gray-100">
                   {users.map((user) => {
                     const s = user.stats;
-                    const isClean = s && !s.error && s.mailCount === 0 && s.folderCount === 0 && s.eventCount === 0;
+                    const isClean = s && !s.error && (s.mailCount ?? 0) === 0 && (s.folderCount ?? 0) === 0 && (s.eventCount ?? 0) === 0 && (s.calendarCount ?? 0) === 0;
                     const result = cleanResults[user.email];
                     const isCleaning = activeCleans.has(user.email);
 
@@ -221,32 +240,49 @@ export default function CleanDestinationPage() {
                         <td className="px-5 py-3 text-right">
                           {!s ? (
                             <span className="text-gray-400 text-xs">loading...</span>
-                          ) : s.error ? (
-                            <span className="text-red-400 text-xs">error</span>
                           ) : (
-                            <span className={'font-semibold ' + (s.mailCount === 0 ? 'text-green-600' : 'text-gray-900')}>
-                              {s.mailCount.toLocaleString()}
+                            <span className={'font-semibold ' + (s.error ? 'text-red-400' : (s.mailCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-900')}>
+                              {(s.mailCount ?? 0).toLocaleString()}
                             </span>
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {s && !s.error ? (
-                            <span className={s.folderCount === 0 ? 'text-green-600' : 'text-gray-700'}>{s.folderCount}</span>
-                          ) : s?.error ? <span className="text-red-400 text-xs">-</span> : <span className="text-gray-400 text-xs">...</span>}
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={s.error ? 'text-red-400' : (s.folderCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
+                              {s.folderCount ?? 0}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {s && !s.error ? <span className="text-gray-700">{s.calendarCount}</span> : <span className="text-gray-400 text-xs">...</span>}
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={s.error ? 'text-red-400' : 'text-gray-700'}>
+                              {s.calendarCount ?? 0}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {s && !s.error ? (
-                            <span className={s.eventCount === 0 ? 'text-green-600' : 'text-gray-700'}>{s.eventCount}</span>
-                          ) : <span className="text-gray-400 text-xs">...</span>}
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={s.error ? 'text-red-400' : (s.eventCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
+                              {(s.eventCount ?? 0).toLocaleString()}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex flex-col items-end gap-1">
                             {result && !result.error && result.deleted && (
                               <span className="text-xs text-green-600 font-medium">
-                                Deleted {result.deleted.messagesDeleted} msgs, {result.deleted.foldersDeleted} folders, {result.deleted.eventsDeleted || 0} events
+                                Deleted {result.deleted.messagesDeleted} msgs, {result.deleted.foldersDeleted} folders
+                                {result.calendarDeleteResult
+                                  ? `, ${result.calendarDeleteResult.deletedCount ?? 0} calendar events`
+                                  : result.deleted.eventsDeleted
+                                  ? `, ${result.deleted.eventsDeleted} events`
+                                  : ''}
                               </span>
                             )}
                             {result?.error && (

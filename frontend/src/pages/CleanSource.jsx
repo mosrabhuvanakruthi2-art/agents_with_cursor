@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getSourceUsers, getSourceMailboxStats } from '../services/api';
+import { getSourceUsers, getSourceMailboxStats, getSourceCalendarStats } from '../services/api';
 import { startClean, startCleanAll, subscribe, getActiveCleans, getAllResults, clearResults } from '../services/cleanSourceManager';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -49,14 +49,22 @@ export default function CleanSourcePage() {
       const updatedUsers = [...userList];
       for (let i = 0; i < updatedUsers.length; i += batchSize) {
         const batch = updatedUsers.slice(i, i + batchSize);
-        const results = await Promise.allSettled(
-          batch.map((u) => getSourceMailboxStats(u.email, true))
-        );
-        results.forEach((r, idx) => {
+        const [mailResults, calResults] = await Promise.all([
+          Promise.allSettled(batch.map((u) => getSourceMailboxStats(u.email))),
+          Promise.allSettled(batch.map((u) => getSourceCalendarStats(u.email))),
+        ]);
+        mailResults.forEach((r, idx) => {
           const userIdx = i + idx;
+          const baseStats = r.status === 'fulfilled' ? r.value.data : { error: true };
+          const calData = calResults[idx];
+          const bulkEventCount = calData.status === 'fulfilled'
+            ? (calData.value.data?.eventCount ?? null)
+            : null;
           updatedUsers[userIdx] = {
             ...updatedUsers[userIdx],
-            stats: r.status === 'fulfilled' ? r.value.data : { error: true },
+            stats: bulkEventCount !== null
+              ? { ...baseStats, eventCount: bulkEventCount }
+              : baseStats,
           };
         });
         setUsers([...updatedUsers]);
@@ -76,7 +84,7 @@ export default function CleanSourcePage() {
   }, []);
 
   const handleCleanAll = useCallback(() => {
-    const toClean = users.filter((u) => u.stats && !u.stats.error && (u.stats.mailCount > 0 || u.stats.folderCount > 0 || u.stats.eventCount > 0));
+    const toClean = users.filter((u) => u.stats && !u.stats.tokenError && !u.stats.error && ((u.stats.mailCount ?? 0) > 0 || (u.stats.folderCount ?? 0) > 0 || (u.stats.eventCount ?? 0) > 0 || (u.stats.calendarCount ?? 0) > 0));
     if (toClean.length === 0) return;
     if (!window.confirm('Delete ALL data from ' + toClean.length + ' mailbox(es):\n\n' + toClean.map((u) => u.email).join('\n') + '\n\nThis cannot be undone. Continue?')) return;
     startCleanAll(toClean.map((u) => u.email));
@@ -91,13 +99,24 @@ export default function CleanSourcePage() {
     const updatedUsers = [...users];
     for (let i = 0; i < updatedUsers.length; i += batchSize) {
       const batch = updatedUsers.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map((u) => getSourceMailboxStats(u.email, true))
-      );
-      results.forEach((r, idx) => {
+      const [mailResults, calResults] = await Promise.all([
+        Promise.allSettled(batch.map((u) => getSourceMailboxStats(u.email))),
+        Promise.allSettled(batch.map((u) => getSourceCalendarStats(u.email))),
+      ]);
+      mailResults.forEach((r, idx) => {
         const userIdx = i + idx;
         if (r.status === 'fulfilled') {
-          updatedUsers[userIdx] = { ...updatedUsers[userIdx], stats: r.value.data };
+          const baseStats = r.value.data;
+          const calData = calResults[idx];
+          const bulkEventCount = calData.status === 'fulfilled'
+            ? (calData.value.data?.eventCount ?? null)
+            : null;
+          updatedUsers[userIdx] = {
+            ...updatedUsers[userIdx],
+            stats: bulkEventCount !== null
+              ? { ...baseStats, eventCount: bulkEventCount }
+              : baseStats,
+          };
         }
       });
       setUsers([...updatedUsers]);
@@ -108,7 +127,7 @@ export default function CleanSourcePage() {
   const totalMails = users.reduce((sum, u) => sum + (u.stats?.mailCount || 0), 0);
   const totalFolders = users.reduce((sum, u) => sum + (u.stats?.folderCount || 0), 0);
   const totalEvents = users.reduce((sum, u) => sum + (u.stats?.eventCount || 0), 0);
-  const usersWithData = users.filter((u) => u.stats && !u.stats.error && (u.stats.mailCount > 0 || u.stats.folderCount > 0 || u.stats.eventCount > 0));
+  const usersWithData = users.filter((u) => u.stats && !u.stats.tokenError && !u.stats.error && ((u.stats.mailCount ?? 0) > 0 || (u.stats.folderCount ?? 0) > 0 || (u.stats.eventCount ?? 0) > 0 || (u.stats.calendarCount ?? 0) > 0));
   const anyCleanRunning = activeCleans.size > 0;
 
   return (
@@ -209,7 +228,7 @@ export default function CleanSourcePage() {
                   {users.map((user) => {
                     const s = user.stats;
                     const hasTokenError = s?.tokenError || s?.error;
-                    const isClean = s && !hasTokenError && s.mailCount === 0 && s.folderCount === 0 && s.eventCount === 0;
+                    const isClean = s && !hasTokenError && (s.mailCount ?? 0) === 0 && (s.folderCount ?? 0) === 0 && (s.eventCount ?? 0) === 0 && (s.calendarCount ?? 0) === 0;
                     const result = cleanResults[user.email];
                     const isCleaning = activeCleans.has(user.email);
 
@@ -218,38 +237,55 @@ export default function CleanSourcePage() {
                         <td className="px-5 py-3">
                           <p className="font-medium text-gray-900">{user.email}</p>
                           <p className="text-xs text-gray-500">{user.displayName}</p>
-                          {s?.tokenError && <p className="text-xs text-orange-500 mt-0.5">Token expired — update in .env</p>}
+                          {s?.tokenError && <p className="text-xs text-orange-500 mt-0.5">⚠ Token expired — update in .env</p>}
                           {s?.noToken && <p className="text-xs text-gray-400 mt-0.5">No token configured</p>}
                         </td>
                         <td className="px-5 py-3 text-right">
                           {!s ? (
                             <span className="text-gray-400 text-xs">loading...</span>
-                          ) : hasTokenError ? (
-                            <span className="text-orange-400 text-xs">–</span>
                           ) : (
-                            <span className={'font-semibold ' + (s.mailCount === 0 ? 'text-green-600' : 'text-gray-900')}>
-                              {s.mailCount.toLocaleString()}
+                            <span className={'font-semibold ' + (hasTokenError ? 'text-orange-400' : (s.mailCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-900')}>
+                              {(s.mailCount ?? 0).toLocaleString()}
                             </span>
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {!s ? <span className="text-gray-400 text-xs">...</span> : hasTokenError ? <span className="text-orange-400 text-xs">–</span> : (
-                            <span className={s.folderCount === 0 ? 'text-green-600' : 'text-gray-700'}>{s.folderCount}</span>
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={hasTokenError ? 'text-orange-400' : (s.folderCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
+                              {s.folderCount ?? 0}
+                            </span>
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {!s ? <span className="text-gray-400 text-xs">...</span> : hasTokenError ? <span className="text-orange-400 text-xs">–</span> : <span className="text-gray-700">{s.calendarCount}</span>}
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={hasTokenError ? 'text-orange-400' : 'text-gray-700'}>
+                              {s.calendarCount ?? 0}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {!s ? <span className="text-gray-400 text-xs">...</span> : hasTokenError ? <span className="text-orange-400 text-xs">–</span> : (
-                            <span className={s.eventCount === 0 ? 'text-green-600' : 'text-gray-700'}>{s.eventCount}</span>
+                          {!s ? (
+                            <span className="text-gray-400 text-xs">...</span>
+                          ) : (
+                            <span className={hasTokenError ? 'text-orange-400' : (s.eventCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
+                              {(s.eventCount ?? 0).toLocaleString()}
+                            </span>
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex flex-col items-end gap-1">
                             {result && !result.error && result.deleted && (
                               <span className="text-xs text-green-600 font-medium">
-                                Deleted {result.deleted.messagesDeleted} msgs, {result.deleted.foldersDeleted} folders, {result.deleted.eventsDeleted || 0} events
+                                Deleted {result.deleted.messagesDeleted} msgs, {result.deleted.foldersDeleted} folders
+                                {result.calendarDeleteResult
+                                  ? `, ${result.calendarDeleteResult.deleted ?? 0} calendar events`
+                                  : result.deleted.eventsDeleted
+                                  ? `, ${result.deleted.eventsDeleted} events`
+                                  : ''}
                               </span>
                             )}
                             {result?.error && (

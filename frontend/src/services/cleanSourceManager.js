@@ -1,4 +1,4 @@
-import { cleanSource, getSourceMailboxStats } from './api';
+import { cleanSource, getSourceMailboxStats, deleteSourceCalendarEvents } from './api';
 
 const state = {
   processing: null,
@@ -38,12 +38,20 @@ async function processQueue() {
 
     try {
       const { data } = await cleanSource(email);
+      // Also delete primary + secondary Google Calendar events via bulk API (best-effort)
+      let calendarDeleteResult = null;
+      try {
+        const { data: cd } = await deleteSourceCalendarEvents(email);
+        calendarDeleteResult = cd;
+      } catch { /* ignore — bulk API may not be running */ }
+      // Wait for Google APIs to catch up before refreshing stats
+      await new Promise((resolve) => setTimeout(resolve, 6000));
       let stats = null;
       try {
-        const { data: s } = await getSourceMailboxStats(email, true);
+        const { data: s } = await getSourceMailboxStats(email);
         stats = s;
       } catch { /* ignore */ }
-      state.results[email] = { ...data, refreshedStats: stats };
+      state.results[email] = { ...data, calendarDeleteResult, refreshedStats: stats };
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'Connection lost â€” server may have restarted';
       state.results[email] = { error: msg };

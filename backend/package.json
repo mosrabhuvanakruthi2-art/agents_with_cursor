@@ -7,9 +7,16 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "test": "node test/googleAccountsPicker.test.js",
-    "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js"
+    "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js",
+    "import-test-repository": "node scripts/import-test-repository.js",
+    "push-test-repository-json-to-mongo": "node scripts/push-test-repository-json-to-mongo.js",
+    "backfill-test-expanded-details": "node scripts/backfill-test-expanded-details.js",
+    "audit-test-steps-mongo": "node scripts/audit-test-steps-mongo.js",
+    "mongo-connect-test": "node scripts/mongo-connect-test.js",
+    "debug-test-steps": "node scripts/debug-test-steps.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
     "@azure/msal-node": "^2.16.2",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "axios": "^1.7.9",
@@ -17,6 +24,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "googleapis": "^144.0.0",
+    "mongodb": "^7.1.1",
     "node-cron": "^3.0.3",
     "pdfkit": "^0.18.0",
     "uuid": "^11.0.5",

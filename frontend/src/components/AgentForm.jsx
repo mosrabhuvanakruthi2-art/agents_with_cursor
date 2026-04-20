@@ -3,9 +3,7 @@ import UserMapping from './UserMapping';
 
 export default function AgentForm({ onSubmit, loading }) {
   const [form, setForm] = useState({
-    sourceEmail: '',
-    destinationEmail: '',
-    testType: 'E2E',
+    testType: 'SANITY',
     migrationType: 'FULL',
     includeMail: true,
     includeCalendar: true,
@@ -22,26 +20,19 @@ export default function AgentForm({ onSubmit, loading }) {
 
   function handleMappingComplete(pairs) {
     setMappedPairs(pairs);
-    if (pairs.length === 1) {
-      setForm((prev) => ({
-        ...prev,
-        sourceEmail: pairs[0].sourceEmail,
-        destinationEmail: pairs[0].destinationEmail,
-      }));
-    }
   }
 
   function clearMapping() {
     setMappedPairs(null);
-    setForm((prev) => ({ ...prev, sourceEmail: '', destinationEmail: '' }));
   }
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (mappedPairs && mappedPairs.length > 1) {
-      onSubmit({ ...form, mappedPairs });
+    if (!mappedPairs || mappedPairs.length === 0) return;
+    if (mappedPairs.length === 1) {
+      onSubmit({ ...form, sourceEmail: mappedPairs[0].sourceEmail, destinationEmail: mappedPairs[0].destinationEmail });
     } else {
-      onSubmit(form);
+      onSubmit({ ...form, mappedPairs });
     }
   }
 
@@ -71,48 +62,12 @@ export default function AgentForm({ onSubmit, loading }) {
         )}
       </div>
 
-      {!hasBulkMapping && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label htmlFor="sourceEmail" className="block text-sm font-medium text-gray-700 mb-1">
-              Source Email (Gmail)
-            </label>
-            <input
-              id="sourceEmail"
-              name="sourceEmail"
-              type="email"
-              required={!hasBulkMapping}
-              value={form.sourceEmail}
-              onChange={handleChange}
-              placeholder="dan@cloudfuze.us"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-shadow"
-            />
-          </div>
-          <div>
-            <label htmlFor="destinationEmail" className="block text-sm font-medium text-gray-700 mb-1">
-              Destination Email (Outlook)
-            </label>
-            <input
-              id="destinationEmail"
-              name="destinationEmail"
-              type="email"
-              required={!hasBulkMapping}
-              value={form.destinationEmail}
-              onChange={handleChange}
-              placeholder="sophia@gajha.com"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-shadow"
-            />
-          </div>
-        </div>
-      )}
-
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Test Type</label>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           {[
-            { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check', color: 'amber' },
-            { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation', color: 'blue' },
-            { value: 'E2E', label: 'End-to-End', desc: 'Full coverage test', color: 'indigo' },
+            { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
+            { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -137,7 +92,6 @@ export default function AgentForm({ onSubmit, loading }) {
         <div className="mt-2 text-xs text-gray-500">
           {form.testType === 'SMOKE' && 'Creates 1 plain text email. Validates inbox accessibility and message count. Fastest.'}
           {form.testType === 'SANITY' && 'Creates plain text, HTML, attachment emails + labels + drafts. Validates folders, subjects, and attachments.'}
-          {form.testType === 'E2E' && 'Full coverage: all email types, inline images, sent mail, labels, drafts, calendar events. Deepest validation.'}
         </div>
       </div>
 
@@ -182,7 +136,7 @@ export default function AgentForm({ onSubmit, loading }) {
 
       <button
         type="submit"
-        disabled={loading}
+        disabled={loading || !mappedPairs || mappedPairs.length === 0}
         className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
       >
         {loading ? (

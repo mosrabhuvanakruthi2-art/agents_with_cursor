@@ -1,3 +1,5 @@
+const path = require('path');
+const fs = require('fs');
 const { BaseAgent } = require('../core/BaseAgent');
 const gmailClient = require('../../clients/gmailClient');
 const calendarClient = require('../../clients/calendarClient');
@@ -10,6 +12,28 @@ const {
 } = require('../../utils/gmailTestCasesExcel');
 
 const SAMPLE_ATTACHMENT_DATA = Buffer.from('Sample attachment content for QA testing').toString('base64');
+
+function loadCustomTestCases(testType, log) {
+  try {
+    const filePath = path.resolve(__dirname, '../../../data/custom-test-cases.json');
+    if (!fs.existsSync(filePath)) return [];
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const cases = (data[testType.toLowerCase()] || []);
+    if (cases.length > 0) log.info(`Loading ${cases.length} custom test case(s) for ${testType}`);
+    return cases.map((tc) => ({
+      subject: tc.subject,
+      textBody: tc.textBody,
+      htmlBody: tc.htmlBody,
+      labelIds: tc.labelIds || ['INBOX'],
+      attachments: tc.hasAttachment
+        ? [{ filename: 'test-document.txt', mimeType: 'text/plain', data: SAMPLE_ATTACHMENT_DATA }]
+        : undefined,
+    }));
+  } catch (e) {
+    log.warn(`Failed to load custom test cases: ${e.message}`);
+    return [];
+  }
+}
 const SAMPLE_INLINE_IMAGE = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
   'base64'
@@ -287,6 +311,11 @@ class GmailTestDataAgent extends BaseAgent {
           samples: excelSamples,
           log,
         }) ?? (testType === 'SMOKE' ? smokeEmails : sanityEmails);
+    }
+
+    // Append custom test cases saved via the Test Case Generator (smoke/sanity only)
+    if (testType !== 'E2E') {
+      emails = [...emails, ...loadCustomTestCases(testType, log)];
     }
 
     for (const emailDef of emails) {

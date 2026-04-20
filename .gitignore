@@ -18,3 +18,14 @@ backend/logs/*
 Thumbs.db
 .idea/
 .vscode/
+
+# Runtime / sensitive data
+backend/data/oauth-tokens.json
+backend/data/executions.json
+backend/data/custom-test-cases.json
+backend/data/test-repository.json
+
+# Claude IDE local config
+.claude/settings.local.json
+.claude/settings.json
+.claude/scheduled_tasks.lock

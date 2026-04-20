@@ -1,47 +1,71 @@
 const { google } = require('googleapis');
 const env = require('../config/env');
+const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
+/** Return '2' if the email belongs to the second Google tenant, else '1'. */
+function getGoogleTenant(email) {
+  const domain = (email || '').split('@')[1]?.toLowerCase() || '';
+  if (domain && env.GOOGLE_CLIENT_ID_2 && env.GOOGLE_TENANT_2_DOMAINS?.includes(domain)) return '2';
+  return '1';
+}
+
 /**
  * Get OAuth2 client for a specific refresh token.
+ * Picks the correct client credentials based on the email's tenant.
  */
-function getAuthForToken(refreshToken) {
-  const oauth2Client = new google.auth.OAuth2(
-    env.GOOGLE_CLIENT_ID,
-    env.GOOGLE_CLIENT_SECRET
-  );
+function getAuthForToken(refreshToken, email) {
+  const tenant = getGoogleTenant(email);
+  const clientId = tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
+  const clientSecret = tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
   oauth2Client.setCredentials({ refresh_token: refreshToken });
   return oauth2Client;
 }
 
 /**
  * Look up the refresh token for a given email address.
- * Falls back to the first available account if no match found.
+ * Checks the OAuth token store (UI-connected accounts) first, then falls back
+ * to the env-configured GOOGLE_ACCOUNTS map.
  */
 function getRefreshTokenForEmail(email) {
   const normalizedEmail = email.toLowerCase().trim();
-  const token = env.googleAccounts.get(normalizedEmail);
-  if (token) return token;
 
-  // Fallback: use the first account
-  const firstEntry = env.googleAccounts.entries().next().value;
-  if (firstEntry) {
-    logger.warn(`No Google token for "${email}", falling back to ${firstEntry[0]}`);
-    return firstEntry[1];
+  // 1. Check UI-connected OAuth accounts
+  const stored = tokenStore.getGoogleToken(normalizedEmail);
+  if (stored?.refreshToken) return stored.refreshToken;
+
+  // 2. Check env-configured accounts
+  const envToken = env.googleAccounts.get(normalizedEmail);
+  if (envToken) return envToken;
+
+  // 3. Fallback: any OAuth-connected account
+  const oauthMap = tokenStore.getGoogleAccountsMap();
+  if (oauthMap.size > 0) {
+    const [fallbackEmail, fallbackToken] = oauthMap.entries().next().value;
+    logger.warn(`No Google token for "${email}", falling back to OAuth account ${fallbackEmail}`);
+    return fallbackToken;
   }
 
-  throw new Error(`No Google refresh token configured for "${email}". Add it to GOOGLE_ACCOUNTS in .env`);
+  // 4. Fallback: first env account
+  const firstEnvEntry = env.googleAccounts.entries().next().value;
+  if (firstEnvEntry) {
+    logger.warn(`No Google token for "${email}", falling back to env account ${firstEnvEntry[0]}`);
+    return firstEnvEntry[1];
+  }
+
+  throw new Error(`No Google refresh token configured for "${email}". Connect via Settings → Connect Accounts, or add to GOOGLE_ACCOUNTS in .env`);
 }
 
 function getGmailForEmail(email) {
   const refreshToken = getRefreshTokenForEmail(email);
-  return google.gmail({ version: 'v1', auth: getAuthForToken(refreshToken) });
+  return google.gmail({ version: 'v1', auth: getAuthForToken(refreshToken, email) });
 }
 
 function getCalendarAuthForEmail(email) {
   const refreshToken = getRefreshTokenForEmail(email);
-  return getAuthForToken(refreshToken);
+  return getAuthForToken(refreshToken, email);
 }
 
 /** RFC 2047 encode subject when it contains non-ASCII (emoji, etc.). */
@@ -225,7 +249,7 @@ function getConfiguredAccounts() {
  */
 async function listDomainUsers(adminEmail) {
   const refreshToken = getRefreshTokenForEmail(adminEmail);
-  const auth = getAuthForToken(refreshToken);
+  const auth = getAuthForToken(refreshToken, adminEmail);
   const domain = adminEmail.split('@')[1];
 
   // Try People API directory listing first
@@ -291,12 +315,21 @@ const GMAIL_SYSTEM_LABEL_IDS = new Set([
 
 async function getGmailMailboxStats(sourceEmail) {
   const gmail = getGmailForEmail(sourceEmail);
-  // Use profile for fast total count
+
+  // Accurate total using getProfile (includes Inbox, Sent, Spam, Trash — everything).
+  // resultSizeEstimate from messages.list is a rough hint, not a real count.
   let totalMessages = 0;
   try {
-    const msgList = await gmail.users.messages.list({ userId: 'me', maxResults: 1 });
-    totalMessages = msgList.data.resultSizeEstimate || 0;
-  } catch {}
+    const profile = await gmail.users.getProfile({ userId: 'me' });
+    totalMessages = profile.data.messagesTotal || 0;
+  } catch {
+    // Fallback if profile scope is missing
+    try {
+      const msgList = await gmail.users.messages.list({ userId: 'me', maxResults: 1, includeSpamTrash: true });
+      totalMessages = msgList.data.resultSizeEstimate || 0;
+    } catch {}
+  }
+
   // Count custom labels only (no per-label message count to avoid slowness)
   let customLabelCount = 0;
   try {
@@ -306,23 +339,44 @@ async function getGmailMailboxStats(sourceEmail) {
       if (!GMAIL_SYSTEM_LABEL_IDS.has(label.id) && label.type === 'user') customLabelCount++;
     }
   } catch { /* token may lack labels scope */ }
+
   let calendarCount = 0, eventCount = 0;
-  try {
-    const calAuth = getCalendarAuthForEmail(sourceEmail);
-    const calApi = google.calendar({ version: 'v3', auth: calAuth });
-    const calList = await calApi.calendarList.list();
-    calendarCount = (calList.data.items || []).length;
-    for (const item of calList.data.items || []) {
+  // Hard 12-second timeout for all calendar stats — prevents hanging on slow/large calendars
+  const calResult = await Promise.race([
+    (async () => {
       try {
-        let pageToken = undefined;
-        do {
-          const ev = await calApi.events.list({ calendarId: item.id, maxResults: 2500, singleEvents: false, pageToken });
-          eventCount += (ev.data.items || []).length;
-          pageToken = ev.data.nextPageToken;
-        } while (pageToken);
-      } catch {}
-    }
-  } catch {}
+        const calAuth = getCalendarAuthForEmail(sourceEmail);
+        const calApi = google.calendar({ version: 'v3', auth: calAuth });
+        const calList = await calApi.calendarList.list({ maxResults: 250 });
+        const calendars = calList.data.items || [];
+
+        // Only count calendars the user can actually clean:
+        //   - owner/writer: can delete or unsubscribe
+        //   - reader (holidays, contact birthdays): events can't be deleted, skip
+        const ownedCals = calendars.filter((c) => !c.primary && c.accessRole !== 'reader');
+        let evtCount = 0;
+        for (const item of calendars) {
+          if (item.accessRole === 'reader') continue;
+          try {
+            // First page only (no pagination) — fast approximate count for stats display
+            const ev = await calApi.events.list({
+              calendarId: item.id,
+              maxResults: 250,
+              singleEvents: false,
+            });
+            evtCount += (ev.data.items || []).length;
+          } catch { /* skip this calendar */ }
+        }
+        return { calendarCount: ownedCals.length, eventCount: evtCount };
+      } catch { return null; }
+    })(),
+    new Promise((resolve) => setTimeout(() => resolve(null), 12000)),
+  ]);
+  if (calResult) {
+    calendarCount = calResult.calendarCount;
+    eventCount = calResult.eventCount;
+  }
+
   return { mailCount: totalMessages, folderCount: customLabelCount, calendarCount, eventCount };
 }
 
@@ -345,11 +399,12 @@ async function cleanGmailMailbox(sourceEmail) {
     }
   } catch (err) { summary.errors.push('Labels: ' + err.message); }
 
-  log.info('[clean-gmail ' + sourceEmail + '] Step 2: Deleting all emails...');
+  log.info('[clean-gmail ' + sourceEmail + '] Step 2: Deleting all emails (including Spam & Trash)...');
   try {
     let hasMore = true;
     while (hasMore) {
-      const res = await gmail.users.messages.list({ userId: 'me', maxResults: 100 });
+      // includeSpamTrash: true ensures Spam and Trash messages are also deleted
+      const res = await gmail.users.messages.list({ userId: 'me', maxResults: 100, includeSpamTrash: true });
       const messages = res.data.messages || [];
       if (messages.length === 0) { hasMore = false; break; }
       const ids = messages.map(function(m) { return m.id; });
@@ -378,21 +433,50 @@ async function cleanGmailMailbox(sourceEmail) {
     const calList = await cal.calendarList.list();
     for (const c of calList.data.items || []) {
       if (c.primary) {
-        log.info('[clean-gmail ' + sourceEmail + ']   Cleaning primary calendar...');
+        // Primary calendar cannot be deleted — clear all its events
+        log.info('[clean-gmail ' + sourceEmail + ']   Cleaning primary calendar events...');
         let pt = undefined, del = 0;
         do {
           const ev = await cal.events.list({ calendarId: c.id, maxResults: 250, pageToken: pt, singleEvents: false });
-          for (const e of ev.data.items || []) { try { await cal.events.delete({ calendarId: c.id, eventId: e.id }); del++; } catch {} }
+          for (const e of ev.data.items || []) {
+            try { await cal.events.delete({ calendarId: c.id, eventId: e.id }); del++; } catch {}
+          }
           pt = ev.data.nextPageToken;
         } while (pt);
         summary.eventsDeleted += del;
         log.info('[clean-gmail ' + sourceEmail + ']   Deleted ' + del + ' events from primary calendar');
       } else if (c.accessRole === 'owner') {
+        // Non-primary owned calendars: delete entirely (events go with it)
         try {
           await cal.calendars.delete({ calendarId: c.id });
           summary.calendarsDeleted++;
-          log.info('[clean-gmail ' + sourceEmail + ']   Deleted calendar "' + c.summary + '"');
-        } catch (err) { summary.errors.push('Calendar "' + c.summary + '": ' + err.message); }
+          log.info('[clean-gmail ' + sourceEmail + ']   Deleted owned calendar "' + c.summary + '"');
+        } catch (err) {
+          summary.errors.push('Calendar "' + c.summary + '": ' + err.message);
+        }
+      } else {
+        // Non-primary shared/non-owned calendars: clear events then remove from list
+        log.info('[clean-gmail ' + sourceEmail + ']   Removing shared calendar "' + c.summary + '" from list...');
+        let pt = undefined, del = 0;
+        try {
+          do {
+            const ev = await cal.events.list({ calendarId: c.id, maxResults: 250, pageToken: pt, singleEvents: false });
+            for (const e of ev.data.items || []) {
+              // Only delete events we created/own
+              try { await cal.events.delete({ calendarId: c.id, eventId: e.id }); del++; } catch {}
+            }
+            pt = ev.data.nextPageToken;
+          } while (pt);
+        } catch {}
+        summary.eventsDeleted += del;
+        // Remove the shared calendar from the user's calendar list
+        try {
+          await cal.calendarList.delete({ calendarId: c.id });
+          summary.calendarsDeleted++;
+          log.info('[clean-gmail ' + sourceEmail + ']   Removed shared calendar "' + c.summary + '" from list');
+        } catch (err) {
+          summary.errors.push('Remove shared calendar "' + c.summary + '": ' + err.message);
+        }
       }
     }
   } catch (err) { summary.errors.push('Calendars: ' + err.message); }

@@ -172,10 +172,14 @@ async function testConnections(req, res) {
   try {
     const axios = require('axios');
     const env = require('../config/env');
-    const resp = await axios.get(env.MIGRATION_API_URL, {
-      timeout: 10000,
-      validateStatus: () => true,
-    });
+    const { migrationAxiosConfig } = require('../clients/migrationClient');
+    const resp = await axios.get(
+      env.MIGRATION_API_URL,
+      migrationAxiosConfig({
+        timeout: 10000,
+        validateStatus: () => true,
+      })
+    );
     results.migration = { status: 'OK', httpStatus: resp.status };
   } catch (err) {
     results.migration = { status: 'FAILED', error: err.message };
@@ -196,7 +200,7 @@ function loadUsersConfig() {
 
 async function getSourceUsers(req, res) {
   try {
-    const { adminEmail } = req.query;
+    const { adminEmail, provider } = req.query;
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
     const config = loadUsersConfig();
@@ -215,10 +219,22 @@ async function getSourceUsers(req, res) {
       return res.json({ adminEmail, users, source: 'config' });
     }
 
-    // Fallback: try People API / configured accounts
+    // Route by provider
+    if (provider === 'microsoft') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getSourceUsers: fetching Microsoft tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail.split('@')[1]?.toLowerCase();
+      const users = domain
+        ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+        : allUsers;
+      return res.json({ adminEmail, users, source: 'graph' });
+    }
+
+    // Default: Google Workspace
     const gmailClient = require('../clients/gmailClient');
     const users = await gmailClient.listDomainUsers(adminEmail);
-    res.json({ adminEmail, users, source: 'api' });
+    res.json({ adminEmail, users, source: 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -227,46 +243,44 @@ async function getSourceUsers(req, res) {
 
 async function getDestinationUsers(req, res) {
   try {
-    const { adminEmail } = req.query;
-    const outlookClient = require('../clients/outlookClient');
+    const { adminEmail, provider } = req.query;
 
     const config = loadUsersConfig();
     const admin = config.destination?.admins?.find(
       (a) => a.email.toLowerCase() === (adminEmail || '').toLowerCase()
     );
 
-    let allEmails = [];
-
     if (admin && admin.users?.length > 0) {
-      allEmails = admin.users.map((u) => u.email);
-    } else {
-      const env = require('../config/env');
-      const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
-      allEmails = domain
-        ? env.outlookAccounts.filter((e) => e.endsWith(`@${domain}`))
-        : env.outlookAccounts;
+      const users = admin.users.map((u) => ({
+        id: u.email,
+        email: u.email,
+        displayName: `${u.firstName} ${u.lastName}`.trim(),
+        firstName: u.firstName || '',
+        lastName: u.lastName || '',
+      }));
+      logger.info(`getDestinationUsers: using config list (${users.length} users) for admin ${adminEmail}`);
+      return res.json({ adminEmail, users, total: users.length });
     }
 
-    // Filter to only mailbox-enabled users via Graph API
-    logger.info(`Checking mailbox status for ${allEmails.length} destination users...`);
-    const enabledEmails = await outlookClient.filterMailboxEnabled(allEmails);
-    logger.info(`${enabledEmails.length}/${allEmails.length} users have mailbox enabled`);
+    // Route by provider
+    if (provider === 'google') {
+      const gmailClient = require('../clients/gmailClient');
+      logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
+      const users = await gmailClient.listDomainUsers(adminEmail);
+      return res.json({ adminEmail, users, total: users.length, source: 'gmail' });
+    }
 
-    const users = enabledEmails.map((email) => {
-      const configUser = admin?.users?.find((u) => u.email === email);
-      const localPart = email.split('@')[0];
-      return {
-        id: email,
-        email,
-        displayName: configUser
-          ? `${configUser.firstName} ${configUser.lastName}`.trim()
-          : localPart.charAt(0).toUpperCase() + localPart.slice(1),
-        firstName: configUser?.firstName || localPart.charAt(0).toUpperCase() + localPart.slice(1),
-        lastName: configUser?.lastName || '',
-      };
-    });
+    // Default: Microsoft 365 via Graph API
+    const outlookClient = require('../clients/outlookClient');
+    logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
+    const allTenantUsers = await outlookClient.listUsers(adminEmail);
+    const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+    const users = domain
+      ? allTenantUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+      : allTenantUsers;
+    logger.info(`getDestinationUsers: ${users.length} users found${domain ? ` (@${domain})` : ''}`);
 
-    res.json({ adminEmail, users, total: allEmails.length, mailboxEnabled: enabledEmails.length });
+    res.json({ adminEmail, users, total: users.length, source: 'graph' });
   } catch (err) {
     logger.error(`getDestinationUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -303,6 +317,8 @@ async function getMailboxStats(req, res) {
         const calendars = await outlookClient.getCalendars(email);
         result.calendarCount = calendars.length;
         for (const cal of calendars) {
+          // Skip system/read-only calendars that cleanMailbox cannot delete
+          if (cal.name === 'Birthdays' || cal.name.toLowerCase().includes('holidays') || cal.canEdit === false) continue;
           const evtCount = await outlookClient.getEventCount(email, cal.id);
           result.eventCount += evtCount;
         }
@@ -414,9 +430,116 @@ async function cleanSource(req, res) {
   }
 }
 
+async function getCalendarEventCount(req, res) {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    const axios = require('axios');
+    const env = require('../config/env');
+    const base = env.BULK_CALENDAR_API_URL;
+    const { data } = await axios.get(`${base}/bulk/calendar/event-count`, {
+      params: { userEmail: email, olderThanDays: 0 },
+      timeout: 30000,
+    });
+    res.json(data);
+  } catch (err) {
+    logger.error(`getCalendarEventCount error for ${req.query.email}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function deleteCalendarEvents(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const axios = require('axios');
+    const env = require('../config/env');
+    const base = env.BULK_CALENDAR_API_URL;
+    logger.info(`[deleteCalendarEvents] Deleting primary calendar events for ${email}`);
+    const { data } = await axios.post(
+      `${base}/bulk/calendar/delete-all-events`,
+      null,
+      { params: { userEmail: email }, timeout: 0 },
+    );
+    logger.info(`[deleteCalendarEvents] ${email}: deleted ${data.deletedCount ?? 0} events`);
+    res.json(data);
+  } catch (err) {
+    logger.error(`deleteCalendarEvents error for ${req.body?.email}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * GET /source-calendar-stats?email=...
+ * Dry-run primary + secondary Google Calendar delete to get event counts from bulk API.
+ */
+async function getSourceCalendarStats(req, res) {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    const axios = require('axios');
+    const env = require('../config/env');
+    const base = env.BULK_CALENDAR_API_URL;
+    const [primaryRes, secondaryRes] = await Promise.allSettled([
+      axios.post(`${base}/calendar/delete-primary`, null, {
+        params: { userEmail: email, dryRun: true },
+        timeout: 30000,
+      }),
+      axios.post(`${base}/calendar/delete-secondary`, null, {
+        params: { userEmail: email, dryRun: true },
+        timeout: 30000,
+      }),
+    ]);
+    const primaryData = primaryRes.status === 'fulfilled' ? primaryRes.value.data : null;
+    const secondaryData = secondaryRes.status === 'fulfilled' ? secondaryRes.value.data : null;
+    const primaryCount = primaryData?.totalEventsFound ?? 0;
+    const secondaryCount = secondaryData?.totalEventsFound ?? 0;
+    res.json({
+      email,
+      primaryEventCount: primaryCount,
+      secondaryEventCount: secondaryCount,
+      eventCount: primaryCount + secondaryCount,
+    });
+  } catch (err) {
+    logger.error(`getSourceCalendarStats error for ${req.query.email}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /delete-source-calendar-events  { email }
+ * Delete all events from primary + secondary Google Calendars via bulk API.
+ */
+async function deleteSourceCalendarEvents(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const axios = require('axios');
+    const env = require('../config/env');
+    const base = env.BULK_CALENDAR_API_URL;
+    logger.info(`[deleteSourceCalendarEvents] Deleting all calendar events for ${email}`);
+    const { data } = await axios.post(
+      `${base}/calendar/delete-all`,
+      null,
+      { params: { userEmail: email, confirm: true, dryRun: false }, timeout: 0 },
+    );
+    logger.info(`[deleteSourceCalendarEvents] ${email}: deleted ${data.deleted ?? 0} events`);
+    res.json(data);
+  } catch (err) {
+    logger.error(`deleteSourceCalendarEvents error for ${req.body?.email}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
   generatePdf, getSourceMailboxStats, cleanSource,
+  getCalendarEventCount, deleteCalendarEvents,
+  getSourceCalendarStats, deleteSourceCalendarEvents,
 };
 

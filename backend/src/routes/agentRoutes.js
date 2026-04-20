@@ -15,8 +15,10 @@ router.get('/executions/:id/pdf', controller.generatePdf);
 router.post('/clean-destination', controller.cleanDestination);
 router.get('/source-mailbox-stats', controller.getSourceMailboxStats);
 router.post('/clean-source', controller.cleanSource);
-router.get('/source-mailbox-stats', controller.getSourceMailboxStats);
-router.post('/clean-source', controller.cleanSource);
+router.get('/calendar-event-count', controller.getCalendarEventCount);
+router.post('/delete-calendar-events', controller.deleteCalendarEvents);
+router.get('/source-calendar-stats', controller.getSourceCalendarStats);
+router.post('/delete-source-calendar-events', controller.deleteSourceCalendarEvents);
 
 module.exports = router;
 

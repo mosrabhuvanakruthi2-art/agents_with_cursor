@@ -1,4 +1,4 @@
-import { cleanDestination, getMailboxStats } from './api';
+import { cleanDestination, getMailboxStats, deleteCalendarEvents } from './api';
 
 const state = {
   processing: null,
@@ -38,12 +38,20 @@ async function processQueue() {
 
     try {
       const { data } = await cleanDestination(email);
+      // Also delete primary calendar events via bulk API (best-effort, 404 = already gone)
+      let calendarDeleteResult = null;
+      try {
+        const { data: cd } = await deleteCalendarEvents(email);
+        calendarDeleteResult = cd;
+      } catch { /* ignore — bulk API may not be running */ }
+      // Wait for Graph API to catch up (eventual consistency after bulk deletes)
+      await new Promise((resolve) => setTimeout(resolve, 6000));
       let stats = null;
       try {
         const { data: s } = await getMailboxStats(email, true);
         stats = s;
       } catch { /* ignore */ }
-      state.results[email] = { ...data, refreshedStats: stats };
+      state.results[email] = { ...data, calendarDeleteResult, refreshedStats: stats };
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'Connection lost — server may have restarted';
       state.results[email] = { error: msg };

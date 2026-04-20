@@ -28,9 +28,10 @@ const logger = winston.createLogger({
     new winston.transports.Console({
       format: winston.format.combine(
         winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, agent, executionId }) => {
+        winston.format.printf(({ timestamp, level, message, agent, executionId, route }) => {
           const prefix = [agent, executionId].filter(Boolean).join(' | ');
-          return `${timestamp} [${level}]${prefix ? ` (${prefix})` : ''} ${message}`;
+          const routeBit = route ? `${route}: ` : '';
+          return `${timestamp} [${level}]${prefix ? ` (${prefix})` : ''} ${routeBit}${message}`;
         })
       ),
     }),

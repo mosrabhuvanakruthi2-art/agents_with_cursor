@@ -1,6 +1,7 @@
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const axios = require('axios');
 const env = require('../config/env');
+const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
@@ -11,36 +12,119 @@ function graphUserPath(userId) {
   return encodeURIComponent(String(userId == null ? '' : userId).trim());
 }
 
-let tokenCache = { accessToken: null, expiresAt: 0 };
+/** Return '2' if the email's domain belongs to the second tenant, else '1'. */
+function getMsTenant(email) {
+  const domain = (email || '').split('@')[1]?.toLowerCase() || '';
+  if (domain && env.GRAPH_CLIENT_ID_2 && env.GRAPH_TENANT_2_DOMAINS?.includes(domain)) return '2';
+  return '1';
+}
 
-async function getAccessToken() {
-  if (tokenCache.accessToken && Date.now() < tokenCache.expiresAt) {
-    return tokenCache.accessToken;
+/** Return the right Azure AD app credentials for a given tenant key ('1' or '2'). */
+function getMsCredentials(tenant) {
+  if (tenant === '2') {
+    return {
+      clientId: env.GRAPH_CLIENT_ID_2,
+      clientSecret: env.GRAPH_CLIENT_SECRET_2,
+      tenantId: env.GRAPH_TENANT_ID_2,
+    };
   }
-
-  const msalConfig = {
-    auth: {
-      clientId: env.GRAPH_CLIENT_ID,
-      clientSecret: env.GRAPH_CLIENT_SECRET,
-      authority: `https://login.microsoftonline.com/${env.GRAPH_TENANT_ID}`,
-    },
+  return {
+    clientId: env.GRAPH_CLIENT_ID,
+    clientSecret: env.GRAPH_CLIENT_SECRET,
+    tenantId: env.GRAPH_TENANT_ID,
   };
+}
 
-  const cca = new ConfidentialClientApplication(msalConfig);
+// Per-tenant app-only token cache
+const tokenCaches = {};
+
+/**
+ * Refresh the stored Microsoft OAuth delegated token using its refresh_token.
+ * Uses the correct tenant's client credentials based on the stored email.
+ */
+async function refreshStoredMicrosoftToken(stored) {
+  const tenant = getMsTenant(stored.email);
+  const { clientId, clientSecret, tenantId } = getMsCredentials(tenant);
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId || 'common'}/oauth2/v2.0/token`;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: stored.refreshToken,
+    scope: 'offline_access User.Read Mail.ReadWrite Calendars.ReadWrite',
+  });
+  const res = await axios.post(tokenUrl, params.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 15000,
+  });
+  const { access_token, refresh_token, expires_in } = res.data;
+  const updated = {
+    ...stored,
+    accessToken: access_token,
+    refreshToken: refresh_token || stored.refreshToken,
+    expiresAt: Date.now() + expires_in * 1000,
+  };
+  tokenStore.setMicrosoftToken(updated);
+  return access_token;
+}
+
+/**
+ * App-only token via client_credentials for the given tenant ('1' or '2').
+ * Used for tenant-wide operations like listing all users or accessing any mailbox.
+ */
+async function getAppAccessToken(tenant = '1') {
+  const cache = tokenCaches[tenant] || (tokenCaches[tenant] = { accessToken: null, expiresAt: 0 });
+  if (cache.accessToken && Date.now() < cache.expiresAt) return cache.accessToken;
+  const { clientId, clientSecret, tenantId } = getMsCredentials(tenant);
+  const cca = new ConfidentialClientApplication({
+    auth: { clientId, clientSecret, authority: `https://login.microsoftonline.com/${tenantId}` },
+  });
   const result = await cca.acquireTokenByClientCredential({
     scopes: ['https://graph.microsoft.com/.default'],
   });
-
-  tokenCache = {
-    accessToken: result.accessToken,
-    expiresAt: Date.now() + (result.expiresOn - Date.now()) * 0.9,
-  };
-
-  return result.accessToken;
+  cache.accessToken = result.accessToken;
+  cache.expiresAt = Date.now() + (result.expiresOn - Date.now()) * 0.9;
+  return cache.accessToken;
 }
 
-async function graphGet(url) {
-  const token = await getAccessToken();
+/**
+ * Get a valid Microsoft Graph access token.
+ * Priority:
+ *   1. Stored OAuth delegated token (from UI login) — refreshed automatically if expired
+ *      NOTE: delegated tokens only have the scopes requested at login (User.Read,
+ *      Mail.ReadWrite, Calendars.ReadWrite). Use getAppAccessToken() for operations
+ *      that need User.Read.All or other application-level permissions.
+ *   2. App client_credentials token (from GRAPH_* env vars)
+ */
+/**
+ * Get a valid access token for the given email (or first stored account if omitted).
+ * Picks the correct tenant credentials for refresh and app-only fallback.
+ */
+async function getAccessToken(email) {
+  const tenant = getMsTenant(email);
+  // 1. Try stored OAuth token for this specific email (or first account)
+  const stored = tokenStore.getMicrosoftToken(email || null);
+  if (stored?.accessToken) {
+    const bufferMs = 60_000;
+    if (stored.expiresAt && Date.now() < stored.expiresAt - bufferMs) {
+      return stored.accessToken;
+    }
+    if (stored.refreshToken) {
+      try {
+        logger.info(`[auth] Refreshing Microsoft OAuth token for ${stored.email || email}...`);
+        return await refreshStoredMicrosoftToken(stored);
+      } catch (err) {
+        logger.warn(`[auth] Microsoft token refresh failed: ${err.message}. Falling back to client_credentials.`);
+      }
+    }
+  }
+
+  // 2. Fall back to app-only client_credentials for the right tenant
+  return getAppAccessToken(tenant);
+}
+
+async function graphGet(url, userId = null) {
+  const token = await getAccessToken(userId);
   return retryWithBackoff(
     () =>
       axios.get(url, {
@@ -56,7 +140,7 @@ async function getMailFolders(userId) {
   const deepExpand = encodeURIComponent('childFolders($expand=childFolders($expand=childFolders))');
   const shallowExpand = encodeURIComponent('childFolders');
   try {
-    const res = await graphGet(`${base}&$expand=${deepExpand}`);
+    const res = await graphGet(`${base}&$expand=${deepExpand}`, userId);
     return res.data.value || [];
   } catch (err) {
     const status = err.response?.status;
@@ -64,7 +148,7 @@ async function getMailFolders(userId) {
       logger.warn(
         `getMailFolders: deep $expand returned 400 for ${userId}, retrying shallow childFolders expand`
       );
-      const res = await graphGet(`${base}&$expand=${shallowExpand}`);
+      const res = await graphGet(`${base}&$expand=${shallowExpand}`, userId);
       return res.data.value || [];
     }
     throw err;
@@ -89,7 +173,7 @@ async function getAllFoldersFlat(userId) {
 }
 
 async function getTotalMessageCount(userId) {
-  const token = await getAccessToken();
+  const token = await getAccessToken(userId);
   const uid = graphUserPath(userId);
   const res = await retryWithBackoff(
     () =>
@@ -109,7 +193,7 @@ async function getMessages(userId, folderId, top = 100) {
   const url = folderId
     ? `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=${top}&$select=subject,bodyPreview,hasAttachments,receivedDateTime`
     : `${GRAPH_BASE}/users/${uid}/messages?$top=${top}&$select=subject,bodyPreview,hasAttachments,receivedDateTime`;
-  const res = await graphGet(url);
+  const res = await graphGet(url, userId);
   return res.data.value || [];
 }
 
@@ -118,7 +202,7 @@ async function getMessageCount(userId, folderId) {
   const url = folderId
     ? `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/messages/$count`
     : `${GRAPH_BASE}/users/${uid}/messages/$count`;
-  const token = await getAccessToken();
+  const token = await getAccessToken(userId);
   const res = await retryWithBackoff(
     () =>
       axios.get(url, {
@@ -133,7 +217,7 @@ async function getMessageCount(userId, folderId) {
 }
 
 async function getCalendars(userId) {
-  const res = await graphGet(`${GRAPH_BASE}/users/${graphUserPath(userId)}/calendars?$top=100`);
+  const res = await graphGet(`${GRAPH_BASE}/users/${graphUserPath(userId)}/calendars?$top=100`, userId);
   return res.data.value || [];
 }
 
@@ -142,12 +226,12 @@ async function getEvents(userId, calendarId, top = 250) {
   const url = calendarId
     ? `${GRAPH_BASE}/users/${uid}/calendars/${encodeURIComponent(calendarId)}/events?$top=${top}`
     : `${GRAPH_BASE}/users/${uid}/events?$top=${top}`;
-  const res = await graphGet(url);
+  const res = await graphGet(url, userId);
   return res.data.value || [];
 }
 
 async function getEventCount(userId, calendarId) {
-  const token = await getAccessToken();
+  const token = await getAccessToken(userId);
   const uid = graphUserPath(userId);
   const calSeg = calendarId ? encodeURIComponent(calendarId) : '';
   // Try $count endpoint (requires ConsistencyLevel: eventual)
@@ -184,29 +268,24 @@ async function getEventCount(userId, calendarId) {
 
 async function getAttachments(userId, messageId) {
   const res = await graphGet(
-    `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(messageId)}/attachments`
+    `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(messageId)}/attachments`,
+    userId
   );
   return res.data.value || [];
 }
 
 /**
- * List all users in the tenant with a mailbox (has a mail address).
+ * Paginate through all users with a given token.
  */
-async function listUsers() {
-  const token = await getAccessToken();
+async function _fetchAllUsers(token) {
   const users = [];
   let url = `${GRAPH_BASE}/users?$top=999&$select=id,displayName,mail,givenName,surname,userPrincipalName`;
-
   while (url) {
     const res = await retryWithBackoff(
-      () => axios.get(url, {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
+      () => axios.get(url, { headers: { Authorization: `Bearer ${token}` } }),
       { label: 'Graph listUsers' }
     );
-
-    const items = res.data.value || [];
-    for (const u of items) {
+    for (const u of res.data.value || []) {
       if (u.mail) {
         users.push({
           id: u.id,
@@ -217,24 +296,48 @@ async function listUsers() {
         });
       }
     }
-
     url = res.data['@odata.nextLink'] || null;
   }
-
   return users;
 }
 
 /**
- * Check if a user has a mailbox enabled by trying to access their inbox.
- * Returns true if the user has a working mailbox, false otherwise.
+ * List all users in the tenant with a mailbox.
+ * Tries delegated OAuth token first (works when admin has User.Read.All delegated consent),
+ * then falls back to app-only client_credentials (requires User.Read.All application permission).
+ */
+async function listUsers(adminEmail) {
+  const tenant = getMsTenant(adminEmail);
+  // 1. Try delegated OAuth token for this admin
+  try {
+    const token = await getAccessToken(adminEmail);
+    return await _fetchAllUsers(token);
+  } catch (err) {
+    if (err.response?.status !== 403) throw err;
+    logger.warn(`[listUsers] Delegated token lacks User.Read.All for ${adminEmail}; retrying with app-only token (tenant ${tenant})...`);
+  }
+  // 2. Fall back to app-only token for the correct tenant
+  const appToken = await getAppAccessToken(tenant);
+  return _fetchAllUsers(appToken);
+}
+
+/**
+ * Check if a user has a mailbox enabled.
+ * Tries delegated token first, then app-only on 403.
  */
 async function hasMailbox(userEmail) {
+  const url = `${GRAPH_BASE}/users/${graphUserPath(userEmail)}/mailFolders/inbox?$select=id`;
+  async function tryToken(token) {
+    await axios.get(url, { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 });
+  }
   try {
-    const token = await getAccessToken();
-    await axios.get(
-      `${GRAPH_BASE}/users/${graphUserPath(userEmail)}/mailFolders/inbox?$select=id`,
-      { headers: { Authorization: `Bearer ${token}` }, timeout: 10000 }
-    );
+    await tryToken(await getAccessToken());
+    return true;
+  } catch (err) {
+    if (err.response?.status !== 403) return false;
+  }
+  try {
+    await tryToken(await getAppAccessToken());
     return true;
   } catch {
     return false;
@@ -267,16 +370,16 @@ const DEFAULT_FOLDER_NAMES = new Set([
   'RSS Feeds',
 ]);
 
-async function graphDelete(url) {
-  const token = await getAccessToken();
+async function graphDelete(url, userId = null) {
+  const token = await getAccessToken(userId);
   return retryWithBackoff(
     () => axios.delete(url, { headers: { Authorization: `Bearer ${token}` } }),
     { label: `Graph DELETE ${url.replace(GRAPH_BASE, '')}`, maxRetries: 2 }
   );
 }
 
-async function graphPost(url, body) {
-  const token = await getAccessToken();
+async function graphPost(url, body, userId = null) {
+  const token = await getAccessToken(userId);
   return retryWithBackoff(
     () => axios.post(url, body, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -288,9 +391,9 @@ async function graphPost(url, body) {
 /**
  * Send a Graph API $batch request with up to 20 delete operations.
  */
-async function batchDelete(requests) {
+async function batchDelete(requests, userId = null) {
   if (requests.length === 0) return;
-  const token = await getAccessToken();
+  const token = await getAccessToken(userId);
   const batchBody = {
     requests: requests.map((url, i) => ({
       id: String(i + 1),
@@ -307,7 +410,7 @@ async function batchDelete(requests) {
     // Fallback: delete individually if batch fails
     for (const req of requests) {
       try {
-        const tkn = await getAccessToken();
+        const tkn = await getAccessToken(userId);
         await axios.delete(req, { headers: { Authorization: `Bearer ${tkn}` }, timeout: 10000 });
       } catch { /* skip */ }
     }
@@ -319,7 +422,7 @@ async function batchDelete(requests) {
  * deleteSubFolders=false preserves child folder structure (we handle those separately).
  */
 async function emptyFolderViaApi(userId, folderId) {
-  const token = await getAccessToken();
+  const token = await getAccessToken(userId);
   await axios.post(
     `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/emptyFolder?deleteSubFolders=false`,
     {},
@@ -335,7 +438,7 @@ async function deleteAllMessagesInFolder(userId, folderId) {
   let hasMore = true;
 
   while (hasMore) {
-    const token = await getAccessToken();
+    const token = await getAccessToken(userId);
     const res = await axios.get(
       `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=100&$select=id`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -347,7 +450,7 @@ async function deleteAllMessagesInFolder(userId, folderId) {
     const batchSize = 20;
     for (let i = 0; i < messages.length; i += batchSize) {
       const batch = messages.slice(i, i + batchSize);
-      await batchDelete(batch.map((m) => `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(m.id)}`));
+      await batchDelete(batch.map((m) => `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(m.id)}`), userId);
       deleted += batch.length;
     if (deleted % 500 === 0 && deleted > 0) { const log = require('../utils/logger'); log.info('[events] Deleted ' + deleted + ' events so far...'); }
     }
@@ -357,7 +460,7 @@ async function deleteAllMessagesInFolder(userId, folderId) {
 }
 
 function deleteFolder(userId, folderId) {
-  return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}`);
+  return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}`, userId);
 }
 
 /**
@@ -368,7 +471,7 @@ async function deleteAllEventsInCalendar(userId, calendarId) {
   let deleted = 0;
 
   while (true) {
-    const token = await getAccessToken();
+    const token = await getAccessToken(userId);
     const res = await axios.get(
       `${GRAPH_BASE}/users/${graphUserPath(userId)}/calendars/${encodeURIComponent(calendarId)}/events?$top=100&$select=id`,
       { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
@@ -383,7 +486,7 @@ async function deleteAllEventsInCalendar(userId, calendarId) {
     for (let i = 0; i < events.length; i += batchSize) {
       batches.push(events.slice(i, i + batchSize).map((e) => `${GRAPH_BASE}/users/${graphUserPath(userId)}/events/${encodeURIComponent(e.id)}`));
     }
-    await Promise.all(batches.map((b) => batchDelete(b)));
+    await Promise.all(batches.map((b) => batchDelete(b, userId)));
     deleted += events.length;
   }
 
@@ -394,7 +497,7 @@ async function deleteAllEventsInCalendar(userId, calendarId) {
  * Delete a non-default calendar entirely.
  */
 function deleteCalendar(userId, calendarId) {
-  return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/calendars/${encodeURIComponent(calendarId)}`);
+  return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/calendars/${encodeURIComponent(calendarId)}`, userId);
 }
 
 /**
