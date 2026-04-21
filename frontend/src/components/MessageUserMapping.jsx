@@ -618,7 +618,7 @@ function MessageAdminField({
       <label className="block text-sm font-medium" style={{ color: '#0129ac' }}>
         {label} — platform
       </label>
-      <div className="flex gap-2 pt-1">
+      <div className="flex gap-1.5 p-1 rounded-lg" style={{ backgroundColor: '#eef1fb' }}>
         {Object.values(MSG_PROVIDERS).map((pv) => {
           const PvIcon = pv.icon;
           const active = messageProvider === pv.key;
@@ -627,16 +627,16 @@ function MessageAdminField({
               key={pv.key}
               type="button"
               onClick={() => onProviderChange(pv.key)}
-              className="flex-1 flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-xl text-xs font-semibold transition-all border-2"
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition-all"
               style={{
-                backgroundColor: active ? '#fff' : '#f8fafc',
-                borderColor: active ? '#0129ac' : '#c5cef5',
-                color: active ? '#0129ac' : '#64748b',
-                boxShadow: active ? '0 2px 8px rgba(1,41,172,0.15)' : 'none',
+                backgroundColor: active ? '#fff' : 'transparent',
+                color: active ? '#0129ac' : '#4a65c0',
+                boxShadow: active ? '0 1px 4px rgba(1,41,172,0.15)' : 'none',
+                fontWeight: active ? 600 : 400,
               }}
             >
-              <PvIcon className="w-8 h-8 flex-shrink-0" />
-              <span className="truncate w-full text-center leading-tight">{pv.short}</span>
+              <PvIcon className="w-4 h-4 flex-shrink-0" />
+              <span>{pv.short}</span>
             </button>
           );
         })}
@@ -855,15 +855,25 @@ function Pill({ color, text }) {
 
 function SlackIcon({ className }) {
   return (
-    <svg viewBox="0 0 54 54" className={className} xmlns="http://www.w3.org/2000/svg">
-      {/* Green - top left bar (vertical) */}
-      <path fill="#2EB67D" d="M19.6 3.4C18 3.4 16.7 4.7 16.7 6.3s1.3 2.9 2.9 2.9h2.9V6.3c0-1.6-1.3-2.9-2.9-2.9zm0 7.8H8.3c-1.6 0-2.9 1.3-2.9 2.9s1.3 2.9 2.9 2.9h11.3c1.6 0 2.9-1.3 2.9-2.9s-1.3-2.9-2.9-2.9z"/>
-      {/* Yellow - bottom left bar (vertical) */}
-      <path fill="#ECB22E" d="M50.6 14.1c0-1.6-1.3-2.9-2.9-2.9s-2.9 1.3-2.9 2.9v2.9h2.9c1.6 0 2.9-1.3 2.9-2.9zm-7.8 0V2.9C42.8 1.3 41.5 0 39.9 0s-2.9 1.3-2.9 2.9v11.2c0 1.6 1.3 2.9 2.9 2.9s2.9-1.3 2.9-2.9z"/>
-      {/* Red - top right bar (horizontal) */}
-      <path fill="#E01E5A" d="M39.9 50.6c1.6 0 2.9-1.3 2.9-2.9s-1.3-2.9-2.9-2.9H37v2.9c0 1.6 1.3 2.9 2.9 2.9zm0-7.8h11.2c1.6 0 2.9-1.3 2.9-2.9s-1.3-2.9-2.9-2.9H39.9c-1.6 0-2.9 1.3-2.9 2.9s1.3 2.9 2.9 2.9z"/>
-      {/* Blue - bottom right bar (horizontal) */}
-      <path fill="#36C5F0" d="M3.4 39.9c0 1.6 1.3 2.9 2.9 2.9s2.9-1.3 2.9-2.9V37H6.3c-1.6 0-2.9 1.3-2.9 2.9zm7.8 0v11.2c0 1.6 1.3 2.9 2.9 2.9s2.9-1.3 2.9-2.9V39.9c0-1.6-1.3-2.9-2.9-2.9s-2.9 1.3-2.9 2.9z"/>
+    <svg viewBox="0 0 270 270" className={className} xmlns="http://www.w3.org/2000/svg">
+      <g fill="none" fillRule="evenodd">
+        <g fill="#2EB67D">
+          <path d="M99.4 151.2c0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9h12.9v12.9z"/>
+          <path d="M105.9 151.2c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9v-32.3z"/>
+        </g>
+        <g fill="#E01E5A">
+          <path d="M118.8 99c-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9V99h-12.9z"/>
+          <path d="M118.8 105.5c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H86.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3z"/>
+        </g>
+        <g fill="#ECB22E">
+          <path d="M170.6 118.4c0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9h-12.9v-12.9z"/>
+          <path d="M164.1 118.4c0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9V86.1c0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9v32.3z"/>
+        </g>
+        <g fill="#36C5F0">
+          <path d="M151.2 170.6c7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9v-12.9h12.9z"/>
+          <path d="M151.2 164.1c-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9h-32.3z"/>
+        </g>
+      </g>
     </svg>
   );
 }
@@ -871,13 +881,11 @@ function SlackIcon({ className }) {
 function TeamsIcon({ className }) {
   return (
     <svg viewBox="0 0 48 48" className={className} xmlns="http://www.w3.org/2000/svg">
-      <path fill="#5059C9" d="M44 24a6 6 0 1 0-12 0 6 6 0 0 0 12 0z"/>
-      <path fill="#7B83EB" d="M38 12a4 4 0 1 0-8 0 4 4 0 0 0 8 0z"/>
-      <path fill="#7B83EB" d="M42 28h-8a2 2 0 0 0-2 2v10a8 8 0 0 0 12-6.9V30a2 2 0 0 0-2-2z"/>
-      <path fill="#5059C9" d="M26 20H8a2 2 0 0 0-2 2v14a10 10 0 0 0 20 0V22a2 2 0 0 0-2-2z"/>
-      <path fill="#3F4694" d="M26 20H8a2 2 0 0 0-2 2v14a10 10 0 0 0 20 0V22a2 2 0 0 0-2-2z" opacity=".2"/>
-      <path fill="#7B83EB" d="M24 8a6 6 0 1 0-12 0 6 6 0 0 0 12 0z"/>
-      <path fill="#fff" d="M22 20H10v2h4v12h4V22h4v-2z" opacity=".9"/>
+      <circle fill="#7B83EB" cx="18" cy="9" r="7"/>
+      <path fill="#7B83EB" d="M28 20H8a2 2 0 0 0-2 2v14a11 11 0 0 0 22 0V22a2 2 0 0 0-2-2z"/>
+      <path fill="#fff" d="M20 20h-4v2h2v12h2V22h2v-2h-2z" opacity=".9"/>
+      <circle fill="#5059C9" cx="36" cy="11" r="5"/>
+      <path fill="#5059C9" d="M44 22h-8a2 2 0 0 0-2 2v9.5A7.5 7.5 0 0 0 41.5 41 7.5 7.5 0 0 0 46 34V24a2 2 0 0 0-2-2z"/>
     </svg>
   );
 }
@@ -885,8 +893,9 @@ function TeamsIcon({ className }) {
 function GoogleChatIcon({ className }) {
   return (
     <svg viewBox="0 0 48 48" className={className} xmlns="http://www.w3.org/2000/svg">
-      <path fill="#1A73E8" d="M24 4C12.95 4 4 12.95 4 24s8.95 20 20 20c3.1 0 6-.71 8.59-1.97L40 44v-7.41A19.93 19.93 0 0 0 44 24C44 12.95 35.05 4 24 4z"/>
-      <path fill="#fff" d="M28 25h-8v-2h8v2zm4-6H16v-2h16v2z"/>
+      <path fill="#1A73E8" d="M44 24c0 11.05-8.95 20-20 20-3.08 0-5.99-.7-8.59-1.95L6 44v-7.41A19.93 19.93 0 0 1 4 24C4 12.95 12.95 4 24 4s20 8.95 20 20z"/>
+      <rect fill="#fff" x="14" y="20" width="20" height="3" rx="1.5"/>
+      <rect fill="#fff" x="14" y="27" width="14" height="3" rx="1.5"/>
     </svg>
   );
 }
