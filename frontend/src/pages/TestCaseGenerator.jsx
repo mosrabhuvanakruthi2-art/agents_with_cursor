@@ -45,20 +45,20 @@ const MESSAGE_FOLDER_OPTIONS = [
 
 /* ─── Small shared UI pieces ───────────────────────────────────────────────── */
 const LABEL_META = {
-  INBOX:               { label: 'Inbox',      color: 'bg-blue-100 text-blue-700' },
-  SENT:                { label: 'Sent',       color: 'bg-gray-100 text-gray-700' },
-  SPAM:                { label: 'Spam',       color: 'bg-red-100 text-red-700' },
-  TRASH:               { label: 'Trash',      color: 'bg-red-100 text-red-600' },
-  STARRED:             { label: 'Starred',    color: 'bg-yellow-100 text-yellow-700' },
-  IMPORTANT:           { label: 'Important',  color: 'bg-orange-100 text-orange-700' },
-  CATEGORY_SOCIAL:     { label: 'Social',     color: 'bg-purple-100 text-purple-700' },
-  CATEGORY_FORUMS:     { label: 'Forums',     color: 'bg-purple-100 text-purple-700' },
-  CATEGORY_PROMOTIONS: { label: 'Promotions', color: 'bg-purple-100 text-purple-700' },
-  CATEGORY_UPDATES:    { label: 'Updates',    color: 'bg-purple-100 text-purple-700' },
+  INBOX:               { label: 'Inbox',      color: 'bg-[#eef1fb] text-[#0129ac]' },
+  SENT:                { label: 'Sent',       color: 'bg-[#eef1fb] text-[#0129ac]' },
+  SPAM:                { label: 'Spam',       color: 'bg-[#eef1fb] text-[#0129ac]' },
+  TRASH:               { label: 'Trash',      color: 'bg-[#eef1fb] text-[#0129ac]' },
+  STARRED:             { label: 'Starred',    color: 'bg-[#eef1fb] text-[#0129ac]' },
+  IMPORTANT:           { label: 'Important',  color: 'bg-[#eef1fb] text-[#0129ac]' },
+  CATEGORY_SOCIAL:     { label: 'Social',     color: 'bg-[#eef1fb] text-[#0129ac]' },
+  CATEGORY_FORUMS:     { label: 'Forums',     color: 'bg-[#eef1fb] text-[#0129ac]' },
+  CATEGORY_PROMOTIONS: { label: 'Promotions', color: 'bg-[#eef1fb] text-[#0129ac]' },
+  CATEGORY_UPDATES:    { label: 'Updates',    color: 'bg-[#eef1fb] text-[#0129ac]' },
 };
 
 function LabelBadge({ labelId }) {
-  const meta = LABEL_META[labelId] || { label: labelId, color: 'bg-gray-100 text-gray-600' };
+  const meta = LABEL_META[labelId] || { label: labelId, color: 'bg-[#eef1fb] text-[#0129ac]' };
   return (
     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${meta.color}`}>
       {meta.label}
@@ -66,8 +66,8 @@ function LabelBadge({ labelId }) {
   );
 }
 
-const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-gray-600 bg-gray-50 border-b border-r border-gray-200 whitespace-nowrap sticky top-0 z-10';
-const TD = 'px-3 py-2.5 text-xs text-gray-800 border-b border-r border-gray-100 align-top';
+const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
+const TD = 'px-3 py-2.5 text-xs text-black border-b border-r border-[#c5cef5] align-top';
 
 const COLS = {
   id:       'min-w-[120px] w-[120px]',
@@ -99,8 +99,8 @@ function StepsCell({ steps }) {
 function AddOneButton({ label, stateKey, savingState, color, onClick }) {
   const state = savingState[stateKey];
   const colorMap = {
-    amber: { base: 'border-amber-300 text-amber-700 hover:bg-amber-50', loading: 'border-amber-200 text-amber-400', done: 'border-green-300 bg-green-50 text-green-700' },
-    blue:  { base: 'border-blue-300 text-blue-700 hover:bg-blue-50',   loading: 'border-blue-200 text-blue-400',   done: 'border-green-300 bg-green-50 text-green-700' },
+    amber: { base: 'border-[#c5cef5] text-[#0129ac] hover:bg-[#eef1fb]', loading: 'border-[#c5cef5] text-[#4a65c0]', done: 'border-[#0129ac] bg-[#eef1fb] text-[#0129ac]' },
+    blue:  { base: 'border-[#0129ac] text-[#0129ac] hover:bg-[#eef1fb]', loading: 'border-[#c5cef5] text-[#4a65c0]', done: 'border-[#0129ac] bg-[#eef1fb] text-[#0129ac]' },
   };
   const c = colorMap[color];
   const cls = state === 'done' ? c.done : state === 'loading' ? c.loading : c.base;
@@ -124,7 +124,7 @@ function Checkbox({ checked, indeterminate, onChange, title }) {
       ref={(el) => { if (el) el.indeterminate = !!indeterminate; }}
       checked={checked}
       onChange={onChange}
-      className="w-4 h-4 rounded border-gray-300 text-indigo-600 cursor-pointer accent-indigo-600"
+      className="w-4 h-4 rounded border-[#c5cef5] text-[#0129ac] cursor-pointer accent-[#0129ac]"
     />
   );
 }
@@ -158,7 +158,7 @@ function GeneratedTable({ cases, selected, onToggle, onToggleAll, savingState, o
   const allChecked  = cases.length > 0 && selected.size === cases.length;
   const someChecked = selected.size > 0 && selected.size < cases.length;
   return (
-    <div className="rounded-xl border border-gray-200 overflow-hidden">
+    <div className="rounded-xl border border-[#c5cef5] overflow-hidden">
       <div className="overflow-x-auto">
         <table className="border-collapse w-max min-w-full">
           <TableHead showCheckbox allChecked={allChecked} someChecked={someChecked} onToggleAll={onToggleAll} extraCol="Actions" />
@@ -166,21 +166,21 @@ function GeneratedTable({ cases, selected, onToggle, onToggleAll, savingState, o
             {cases.map((tc, idx) => {
               const isSelected = selected.has(idx);
               return (
-                <tr key={idx} className={`transition-colors cursor-pointer ${isSelected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`} onClick={() => onToggle(idx)}>
+                <tr key={idx} className={`transition-colors cursor-pointer ${isSelected ? 'bg-[#eef1fb]' : 'hover:bg-[#eef1fb]/40'}`} onClick={() => onToggle(idx)}>
                   <td className={`${TD} w-10 text-center`} onClick={(e) => e.stopPropagation()}>
                     <Checkbox checked={isSelected} onChange={() => onToggle(idx)} />
                   </td>
-                  <td className={`${TD} ${COLS.id} text-gray-400 italic text-[11px]`}>On save</td>
-                  <td className={`${TD} ${COLS.summary} font-medium text-gray-900`}>{tc.summary || tc.subject || '—'}</td>
+                  <td className={`${TD} ${COLS.id} text-gray-500 italic text-[11px]`}>On save</td>
+                  <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || tc.subject || '—'}</td>
                   <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} ${COLS.testType} text-gray-400 italic text-[11px]`}>On save</td>
+                  <td className={`${TD} ${COLS.testType} text-gray-500 italic text-[11px]`}>On save</td>
                   <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
                   <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
                   <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
                   <td className={`${TD} ${COLS.combo}`}>{tc.combination || <span className="text-gray-300">—</span>}</td>
                   <td className={`${TD} ${COLS.product}`}>
                     {tc.productType
-                      ? <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-700">{tc.productType}</span>
+                      ? <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-[#eef1fb] text-[#0129ac]">{tc.productType}</span>
                       : <span className="text-gray-300">—</span>}
                   </td>
                   <td className={`${TD} ${COLS.folder}`}>{tc.folder || <span className="text-gray-300">—</span>}</td>
@@ -207,16 +207,16 @@ function SavedTable({ cases, activeTab, deletingId, onDelete }) {
         <TableHead showCheckbox={false} extraCol="" />
         <tbody>
           {cases.map((tc) => (
-            <tr key={tc.id} className="hover:bg-indigo-50/30 transition-colors">
+            <tr key={tc.id} className="hover:bg-[#eef1fb]/40 transition-colors">
               <td className={`${TD} ${COLS.id}`}>
-                <span className="font-mono font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 text-[11px]">
+                <span className="font-mono font-semibold text-[#0129ac] bg-[#eef1fb] px-1.5 py-0.5 rounded border border-[#c5cef5] text-[11px]">
                   {tc.testCaseId || tc.id}
                 </span>
               </td>
-              <td className={`${TD} ${COLS.summary} font-medium text-gray-900`}>{tc.summary || tc.subject || '—'}</td>
-              <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
+              <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || tc.subject || '—'}</td>
+              <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-400">—</span>}</td>
               <td className={`${TD} ${COLS.testType}`}>
-                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${tc.testType === 'smoke' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'}`}>
+                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-[#eef1fb] text-[#0129ac]`}>
                   {tc.testType ? tc.testType.charAt(0).toUpperCase() + tc.testType.slice(1) : activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
                 </span>
               </td>
@@ -437,14 +437,14 @@ export default function TestCaseGenerator() {
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Test Case Generator</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className="text-2xl font-bold text-black">Test Case Generator</h1>
+        <p className="text-sm text-black mt-1">
           Select the product type and migration combination, then describe your scenarios to generate accurate test cases.
         </p>
       </div>
 
       {/* Input card */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">
+      <div className="bg-white rounded-xl border border-[#c5cef5] p-6 space-y-6">
         <form onSubmit={handleGenerate} className="space-y-6">
 
           {/* ── Row 1: Product Type + Combination + Folder ── */}
@@ -452,7 +452,7 @@ export default function TestCaseGenerator() {
 
             {/* Product Type */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Product Type</label>
+              <label className="block text-sm font-medium text-black mb-2">Product Type</label>
               <div className="flex gap-2 flex-wrap">
                 {Object.keys(PRODUCT_COMBOS).map((p) => (
                   <button
@@ -461,8 +461,8 @@ export default function TestCaseGenerator() {
                     onClick={() => handleProductChange(p)}
                     className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
                       productType === p
-                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                        : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-600'
+                        ? 'bg-[#0129ac] text-white border-[#0129ac] shadow-sm'
+                        : 'bg-white text-black border-[#c5cef5] hover:border-[#0129ac] hover:text-[#0129ac]'
                     }`}
                   >
                     {p}
@@ -473,9 +473,9 @@ export default function TestCaseGenerator() {
 
             {/* Combination */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-black mb-2">
                 Migration Combination
-                {isContentType && <span className="ml-1 text-xs font-normal text-gray-400">(type manually)</span>}
+                {isContentType && <span className="ml-1 text-xs font-normal text-gray-500">(type manually)</span>}
               </label>
               {isContentType ? (
                 <input
@@ -483,13 +483,13 @@ export default function TestCaseGenerator() {
                   value={customCombo}
                   onChange={(e) => setCustomCombo(e.target.value)}
                   placeholder="e.g. SharePoint → Google Drive"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                  className="w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
                 />
               ) : (
                 <select
                   value={combination}
                   onChange={(e) => setCombination(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                  className="w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none bg-white"
                 >
                   {combos.map((c) => (
                     <option key={c} value={c}>{c}</option>
@@ -500,15 +500,15 @@ export default function TestCaseGenerator() {
 
             {/* Folder / Feature */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label className="block text-sm font-medium text-black mb-2">
                 Folder / Feature
-                <span className="ml-1 text-xs font-normal text-gray-400">(optional)</span>
+                <span className="ml-1 text-xs font-normal text-gray-500">(optional)</span>
               </label>
               <div className="flex gap-2">
                 <select
                   value={folderOptions.includes(folder) ? folder : ''}
                   onChange={(e) => setFolder(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+                  className="flex-1 px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none bg-white"
                 >
                   <option value="">— auto-detect —</option>
                   {folderOptions.map((f) => (
@@ -517,7 +517,7 @@ export default function TestCaseGenerator() {
                 </select>
                 {folder && (
                   <button type="button" onClick={() => setFolder('')}
-                    className="px-2 text-gray-400 hover:text-gray-600 border border-gray-300 rounded-lg text-sm">
+                    className="px-2 text-gray-400 hover:text-gray-600 border border-[#c5cef5] rounded-lg text-sm">
                     ✕
                   </button>
                 )}
@@ -529,7 +529,7 @@ export default function TestCaseGenerator() {
                   value={folder}
                   onChange={(e) => setFolder(e.target.value)}
                   placeholder="Custom folder name"
-                  className="mt-2 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                  className="mt-2 w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
                 />
               )}
             </div>
@@ -537,22 +537,22 @@ export default function TestCaseGenerator() {
 
           {/* Context pill showing current selection */}
           {effectiveCombo && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 font-medium">
+            <div className="flex items-center gap-2 text-xs text-black">
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#eef1fb] border border-[#c5cef5] text-[#0129ac] font-medium">
                 <span>{productType}</span>
-                <span className="text-indigo-400">·</span>
+                <span className="text-[#0129ac]">·</span>
                 <span>{effectiveCombo}</span>
-                {folder && <><span className="text-indigo-400">·</span><span>{folder}</span></>}
+                {folder && <><span className="text-[#0129ac]">·</span><span>{folder}</span></>}
               </span>
-              <span className="text-gray-400">will be applied to all generated test cases</span>
+              <span className="text-black">will be applied to all generated test cases</span>
             </div>
           )}
 
           {/* Scenario textarea */}
           <div>
-            <label htmlFor="scenario" className="block text-sm font-medium text-gray-700 mb-1">
+            <label htmlFor="scenario" className="block text-sm font-medium text-black mb-1">
               Test Scenarios
-              <span className="ml-1.5 text-xs font-normal text-gray-400">— one per paragraph, or numbered (1. … 2. …)</span>
+              <span className="ml-1.5 text-xs font-normal text-gray-500">— one per paragraph, or numbered (1. … 2. …)</span>
             </label>
             <textarea
               id="scenario"
@@ -564,10 +564,10 @@ export default function TestCaseGenerator() {
                   ? `1. Verify direct messages migrate from ${effectiveCombo || 'source → destination'} with timestamps intact.\n\n2. Verify channel messages with attachments migrate correctly.\n\n3. Verify threaded replies are preserved after migration.`
                   : `1. Verify plain-text emails migrate from ${effectiveCombo || 'source → destination'} with all headers intact.\n\n2. Verify HTML emails with PDF attachments migrate correctly.\n\n3. Verify starred emails appear as flagged in destination.`
               }
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-shadow resize-none font-mono"
+              className="w-full px-4 py-3 border border-[#c5cef5] rounded-lg text-sm text-black focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none transition-shadow resize-none font-mono"
             />
             {scenarioCount > 0 && (
-              <p className="text-xs text-indigo-600 mt-1">
+              <p className="text-xs text-[#0129ac] mt-1">
                 {scenarioCount} scenario{scenarioCount > 1 ? 's' : ''} detected
               </p>
             )}
@@ -576,21 +576,21 @@ export default function TestCaseGenerator() {
           {/* Count + Generate row */}
           <div className="flex items-end gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Test cases to generate</label>
+              <label className="block text-sm font-medium text-black mb-1">Test cases to generate</label>
               <div className="flex items-center gap-2">
                 <input
                   type="number" min={1} max={20} value={count}
                   onChange={(e) => setCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
-                  className="w-20 px-3 py-2 border border-gray-300 rounded-lg text-sm text-center focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                  className="w-20 px-3 py-2 border border-[#c5cef5] rounded-lg text-sm text-black text-center focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
                 />
-                <span className="text-xs text-gray-400">total (max 20)</span>
+                <span className="text-xs text-black">total (max 20)</span>
               </div>
             </div>
 
             <button
               type="submit"
               disabled={generating || !canGenerate}
-              className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              className="flex items-center gap-2 px-6 py-2.5 bg-[#0129ac] text-white text-sm font-semibold rounded-lg hover:bg-[#011e8a] focus:ring-4 focus:ring-[#c5cef5] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {generating ? (
                 <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Generating…</>
@@ -613,7 +613,7 @@ export default function TestCaseGenerator() {
             )}
 
             {!effectiveCombo && (
-              <p className="text-xs text-amber-600">Enter a migration combination to enable generation.</p>
+              <p className="text-xs text-[#0129ac]">Enter a migration combination to enable generation.</p>
             )}
           </div>
         </form>
@@ -630,25 +630,25 @@ export default function TestCaseGenerator() {
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <h2 className="text-base font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-black">
                 Generated Test Cases
-                <span className="ml-2 text-sm font-normal text-gray-500">({generatedCases.length})</span>
+                <span className="ml-2 text-sm font-normal text-black">({generatedCases.length})</span>
               </h2>
-              <p className="text-xs text-gray-400 mt-0.5">
+              <p className="text-xs text-black mt-0.5">
                 {selected.size > 0
-                  ? <><span className="text-indigo-600 font-medium">{selected.size} selected</span> — add them to Smoke or Sanity, or pick individual rows.</>
+                  ? <><span className="text-[#0129ac] font-medium">{selected.size} selected</span> — add them to Smoke or Sanity, or pick individual rows.</>
                   : 'Check rows to select, or use the header checkbox to select all, then add to Smoke or Sanity.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
               <button type="button" disabled={bulkSaving.smoke} onClick={() => handleAddSelected('smoke')}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed">
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-[#c5cef5] bg-[#eef1fb] text-[#0129ac] hover:bg-white hover:border-[#0129ac] disabled:opacity-50 disabled:cursor-not-allowed">
                 {bulkSaving.smoke
                   ? <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving…</>
                   : <>{selected.size > 0 ? `Add ${selected.size} Selected` : 'Add All'} → Smoke</>}
               </button>
               <button type="button" disabled={bulkSaving.sanity} onClick={() => handleAddSelected('sanity')}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed">
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-[#0129ac] bg-white text-[#0129ac] hover:bg-[#eef1fb] disabled:opacity-50 disabled:cursor-not-allowed">
                 {bulkSaving.sanity
                   ? <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving…</>
                   : <>{selected.size > 0 ? `Add ${selected.size} Selected` : 'Add All'} → Sanity</>}
@@ -660,15 +660,15 @@ export default function TestCaseGenerator() {
       )}
 
       {/* Saved cases */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-900">Saved Custom Test Cases</h2>
-          <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+      <div className="bg-white rounded-xl border border-[#c5cef5] overflow-hidden">
+        <div className="px-6 py-4 border-b border-[#c5cef5] flex items-center justify-between">
+          <h2 className="text-base font-semibold text-black">Saved Custom Test Cases</h2>
+          <div className="flex rounded-lg border border-[#c5cef5] overflow-hidden text-sm">
             {['smoke', 'sanity'].map((tab) => (
               <button key={tab} type="button" onClick={() => setActiveTab(tab)}
-                className={`px-4 py-1.5 font-medium capitalize transition-colors ${activeTab === tab ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
+                className={`px-4 py-1.5 font-medium capitalize transition-colors ${activeTab === tab ? 'bg-[#0129ac] text-white' : 'text-black hover:bg-[#eef1fb]'}`}>
                 {tab}
-                <span className={`ml-1.5 text-xs ${activeTab === tab ? 'text-indigo-200' : 'text-gray-400'}`}>
+                <span className={`ml-1.5 text-xs ${activeTab === tab ? 'text-white/70' : 'text-black'}`}>
                   ({(savedCases[tab] || []).length})
                 </span>
               </button>
@@ -676,7 +676,7 @@ export default function TestCaseGenerator() {
           </div>
         </div>
         {currentSaved.length === 0 ? (
-          <div className="px-6 py-10 text-center text-sm text-gray-400">
+          <div className="px-6 py-10 text-center text-sm text-gray-500">
             No custom test cases saved for {activeTab} testing yet.
           </div>
         ) : (

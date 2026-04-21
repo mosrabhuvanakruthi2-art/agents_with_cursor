@@ -4,8 +4,8 @@ import { getCustomTestCases, updateCustomTestCase } from '../services/api';
 import { useToast } from '../context/ToastContext';
 
 /* ── Table style constants (identical to TestCaseGenerator) ── */
-const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-gray-600 bg-gray-50 border-b border-r border-gray-200 whitespace-nowrap sticky top-0 z-10';
-const TD = 'px-3 py-2.5 text-xs text-gray-800 border-b border-r border-gray-100 align-top';
+const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
+const TD = 'px-3 py-2.5 text-xs text-black border-b border-r border-[#c5cef5] align-top';
 
 const COLS = {
   id:       'min-w-[120px] w-[120px]',
@@ -22,8 +22,8 @@ const COLS = {
 };
 
 /* shared input / textarea styles */
-const INPUT_CLS  = 'w-full px-2 py-1 text-xs border border-indigo-300 rounded focus:ring-1 focus:ring-indigo-400 outline-none bg-white resize-none';
-const SELECT_CLS = 'w-full px-2 py-1 text-xs border border-indigo-300 rounded focus:ring-1 focus:ring-indigo-400 outline-none bg-white';
+const INPUT_CLS  = 'w-full px-2 py-1 text-xs border border-[#0129ac] rounded focus:ring-1 focus:ring-[#0129ac] outline-none bg-white resize-none';
+const SELECT_CLS = 'w-full px-2 py-1 text-xs border border-[#0129ac] rounded focus:ring-1 focus:ring-[#0129ac] outline-none bg-white';
 
 function StepsCell({ steps }) {
   if (!Array.isArray(steps) || steps.length === 0) return <span className="text-gray-300">—</span>;
@@ -65,9 +65,9 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
   }
 
   return (
-    <tr className="bg-indigo-50/40">
+    <tr className="bg-[#eef1fb]/40">
       <td className={`${TD} ${COLS.id}`}>
-        <span className="font-mono font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 text-[11px]">
+        <span className="font-mono font-semibold text-[#0129ac] bg-[#eef1fb] px-1.5 py-0.5 rounded border border-[#c5cef5] text-[11px]">
           {tc.testCaseId || tc.id}
         </span>
       </td>
@@ -117,7 +117,7 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center justify-center gap-1 px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold rounded transition-colors disabled:opacity-50"
+            className="flex items-center justify-center gap-1 px-2 py-1 bg-[#0129ac] hover:bg-[#011e8a] text-white text-[11px] font-semibold rounded transition-colors disabled:opacity-50"
           >
             {saving ? (
               <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
@@ -134,7 +134,7 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
           <button
             onClick={onCancel}
             disabled={saving}
-            className="flex items-center justify-center gap-1 px-2 py-1 border border-gray-300 text-gray-600 hover:bg-gray-100 text-[11px] font-medium rounded transition-colors disabled:opacity-50"
+            className="flex items-center justify-center gap-1 px-2 py-1 border border-[#c5cef5] text-black hover:bg-[#eef1fb] text-[11px] font-medium rounded transition-colors disabled:opacity-50"
           >
             Cancel
           </button>
@@ -147,17 +147,17 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
 /* ── Read-only row ── */
 function ReadRow({ tc, testType, onEdit }) {
   return (
-    <tr className="hover:bg-indigo-50/20 transition-colors group">
+    <tr className="hover:bg-[#eef1fb]/40 transition-colors group">
       <td className={`${TD} ${COLS.id}`}>
-        <span className="font-mono font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 text-[11px]">
+        <span className="font-mono font-semibold text-[#0129ac] bg-[#eef1fb] px-1.5 py-0.5 rounded border border-[#c5cef5] text-[11px]">
           {tc.testCaseId || tc.id}
         </span>
       </td>
-      <td className={`${TD} ${COLS.summary} font-medium text-gray-900`}>{tc.summary || <span className="text-gray-300">—</span>}</td>
+      <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || <span className="text-gray-400">—</span>}</td>
       <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
       <td className={`${TD} ${COLS.testType}`}>
         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
-          (tc.testType || testType) === 'smoke' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'
+          'bg-[#eef1fb] text-[#0129ac]'
         }`}>
           {((tc.testType || testType).charAt(0).toUpperCase() + (tc.testType || testType).slice(1))}
         </span>
@@ -171,7 +171,7 @@ function ReadRow({ tc, testType, onEdit }) {
       <td className={`${TD} ${COLS.actions} border-r-0`}>
         <button
           onClick={() => onEdit(tc.id)}
-          className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 border border-gray-300 text-gray-600 hover:border-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 text-[11px] font-medium rounded transition-all"
+          className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 border border-[#c5cef5] text-black hover:border-[#0129ac] hover:text-[#0129ac] hover:bg-[#eef1fb] text-[11px] font-medium rounded transition-all"
           title="Edit this test case"
         >
           <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -384,12 +384,12 @@ export default function AgentRepo() {
     <div className="-mx-6 -my-8 flex flex-col h-screen overflow-hidden">
 
       {/* ── Top bar ── */}
-      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-gray-200 flex-shrink-0">
+      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-[#c5cef5] flex-shrink-0">
         <div>
-          <h1 className="text-lg font-bold text-gray-900">Agent Repository</h1>
-          <p className="text-xs text-gray-500">Browse and edit saved test cases by product, combination and folder</p>
+          <h1 className="text-lg font-bold text-black">Agent Repository</h1>
+          <p className="text-xs text-black">Browse and edit saved test cases by product, combination and folder</p>
         </div>
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+        <div className="flex rounded-lg border border-[#c5cef5] overflow-hidden text-sm">
           {['smoke', 'sanity'].map((type) => {
             const count = (allCases[type] || []).length;
             const isActive = testType === type;
@@ -397,11 +397,11 @@ export default function AgentRepo() {
               <button key={type} onClick={() => setTestType(type)}
                 className={`px-5 py-2 font-medium capitalize transition-colors ${
                   isActive
-                    ? type === 'smoke' ? 'bg-amber-500 text-white' : 'bg-indigo-600 text-white'
-                    : 'text-gray-600 hover:bg-gray-50'
+                    ? 'bg-[#0129ac] text-white'
+                    : 'text-black hover:bg-[#eef1fb]'
                 }`}>
                 {type}
-                <span className={`ml-1.5 text-xs ${isActive ? 'opacity-75' : 'text-gray-400'}`}>({count})</span>
+                <span className={`ml-1.5 text-xs ${isActive ? 'text-white/70' : 'text-black'}`}>({count})</span>
               </button>
             );
           })}
@@ -412,13 +412,13 @@ export default function AgentRepo() {
       <div className="flex flex-1 overflow-hidden">
 
         {/* Left 3-level tree */}
-        <aside className="w-64 flex-shrink-0 bg-gray-50 border-r border-gray-200 overflow-y-auto">
-          <p className="px-4 pt-4 pb-2 text-[10px] font-bold tracking-widest text-gray-400 uppercase select-none">
+        <aside className="w-64 flex-shrink-0 bg-white border-r border-[#c5cef5] overflow-y-auto">
+          <p className="px-4 pt-4 pb-2 text-[10px] font-bold tracking-widest text-black uppercase select-none">
             Product Types
           </p>
-          {loading && <p className="px-4 py-3 text-xs text-gray-400">Loading…</p>}
+          {loading && <p className="px-4 py-3 text-xs text-black">Loading…</p>}
           {!loading && Object.keys(tree).length === 0 && (
-            <p className="px-4 py-3 text-xs text-gray-400">No {testType} test cases saved yet.</p>
+            <p className="px-4 py-3 text-xs text-black">No {testType} test cases saved yet.</p>
           )}
 
           {Object.keys(tree).sort().map((pt) => {
@@ -428,10 +428,10 @@ export default function AgentRepo() {
               <div key={pt}>
                 {/* Level 1 — Product Type */}
                 <button onClick={() => togglePT(pt)}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors">
-                  <Icon className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-semibold text-black hover:bg-[#eef1fb] transition-colors">
+                  <Icon className="w-4 h-4 text-[#0129ac] flex-shrink-0" />
                   <span className="flex-1 text-left">{pt}</span>
-                  <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform ${ptExpanded ? 'rotate-180' : ''}`}
+                  <svg className={`w-3.5 h-3.5 text-black transition-transform ${ptExpanded ? 'rotate-180' : ''}`}
                     fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
                   </svg>
@@ -448,8 +448,8 @@ export default function AgentRepo() {
                       <button onClick={() => toggleCombo(pt, combo)}
                         className={`w-full flex items-center gap-1.5 pl-8 pr-3 py-2 text-xs transition-colors text-left border-l-2
                           ${isComboActive
-                            ? 'bg-indigo-50 text-indigo-700 font-semibold border-indigo-500'
-                            : 'text-gray-700 font-medium hover:bg-gray-100 hover:text-gray-900 border-transparent'
+                            ? 'bg-[#eef1fb] text-[#0129ac] font-semibold border-[#0129ac]'
+                            : 'text-black font-medium hover:bg-[#eef1fb] hover:text-[#0129ac] border-transparent'
                           }`}>
                         <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${comboExpanded ? 'rotate-90' : ''}`}
                           fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
@@ -457,7 +457,7 @@ export default function AgentRepo() {
                         </svg>
                         <span className="flex-1 truncate">{combo}</span>
                         <span className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-medium
-                          ${isComboActive ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-200 text-gray-500'}`}>
+                          ${isComboActive ? 'bg-[#0129ac] text-white' : 'bg-[#eef1fb] text-[#0129ac]'}`}>
                           {comboCount(pt, combo)}
                         </span>
                       </button>
@@ -469,12 +469,12 @@ export default function AgentRepo() {
                           <button key={folder} onClick={() => selectFolder(pt, combo, folder)}
                             className={`w-full flex items-center justify-between gap-2 pl-14 pr-3 py-1.5 text-xs transition-colors text-left border-l-2
                               ${isFolderActive
-                                ? 'bg-indigo-50 text-indigo-700 font-semibold border-indigo-500'
-                                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 border-transparent'
+                                ? 'bg-[#eef1fb] text-[#0129ac] font-semibold border-[#0129ac]'
+                                : 'text-black hover:bg-[#eef1fb] hover:text-[#0129ac] border-transparent'
                               }`}>
                             <span className="truncate">{folder}</span>
                             <span className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-medium
-                              ${isFolderActive ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-200 text-gray-500'}`}>
+                              ${isFolderActive ? 'bg-[#0129ac] text-white' : 'bg-[#eef1fb] text-[#0129ac]'}`}>
                               {(tree[pt][combo][folder] || []).length}
                             </span>
                           </button>
@@ -491,44 +491,42 @@ export default function AgentRepo() {
         {/* Right panel */}
         <main className="flex-1 overflow-auto bg-white">
           {!selected ? (
-            <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 gap-3">
-              <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center">
-                <svg className="w-8 h-8 text-gray-300" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <div className="flex flex-col items-center justify-center h-full text-center text-black gap-3">
+              <div className="w-16 h-16 rounded-2xl bg-[#eef1fb] flex items-center justify-center">
+                <svg className="w-8 h-8 text-[#0129ac]" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.06.44H18A2.25 2.25 0 0 1 20.25 9v.776" />
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600">Select a combination or folder</p>
-                <p className="text-xs text-gray-400 mt-0.5">Expand a product type in the left panel to browse</p>
+                <p className="text-sm font-semibold text-black">Select a combination or folder</p>
+                <p className="text-xs text-black mt-0.5">Expand a product type in the left panel to browse</p>
               </div>
             </div>
           ) : (
             <div>
               {/* Panel header */}
-              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0 bg-white sticky top-0 z-20">
+              <div className="px-6 py-4 border-b border-[#c5cef5] flex items-center justify-between flex-shrink-0 bg-white sticky top-0 z-20">
                 <div>
-                  <p className="text-xs text-gray-400 mb-0.5">
+                  <p className="text-xs text-black mb-0.5">
                     {selected.productType} / {selected.combination}
-                    {selected.folder && <> / <span className="font-medium text-gray-600">{selected.folder}</span></>}
+                    {selected.folder && <> / <span className="font-medium text-black">{selected.folder}</span></>}
                   </p>
-                  <h2 className="text-base font-semibold text-gray-900">{panelTitle}</h2>
+                  <h2 className="text-base font-semibold text-black">{panelTitle}</h2>
                 </div>
                 <div className="flex items-center gap-3">
                   {editingId && (
-                    <span className="text-xs text-indigo-600 font-medium bg-indigo-50 px-2 py-1 rounded-full border border-indigo-200">
+                    <span className="text-xs text-[#0129ac] font-medium bg-[#eef1fb] px-2 py-1 rounded-full border border-[#c5cef5]">
                       Editing 1 row
                     </span>
                   )}
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                    testType === 'smoke' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'
-                  }`}>
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-[#0129ac] text-white">
                     {rightCases.length} case{rightCases.length !== 1 ? 's' : ''}
                   </span>
                   {rightCases.length > 0 && (
                     <button
                       type="button"
                       onClick={() => exportToExcel(rightCases, panelTitle || testType)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-600 hover:border-green-400 hover:text-green-700 hover:bg-green-50 text-xs font-medium rounded-lg transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-[#c5cef5] text-black hover:border-[#0129ac] hover:text-[#0129ac] hover:bg-[#eef1fb] text-xs font-medium rounded-lg transition-colors"
                       title="Download as Excel"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
@@ -541,7 +539,7 @@ export default function AgentRepo() {
               </div>
 
               {rightCases.length === 0 ? (
-                <div className="px-6 py-16 text-center text-sm text-gray-400">
+                <div className="px-6 py-16 text-center text-sm text-black">
                   No {testType} test cases found here.
                 </div>
               ) : (
