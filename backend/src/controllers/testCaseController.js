@@ -74,6 +74,181 @@ const MAIL_CONTEXT = {
 };
 
 const MESSAGE_CONTEXT = {
+  'Slack → Microsoft Teams': {
+    how: `1. Messages, channels, DMs, threads, and attachments exist in the Slack source workspace
+2. A CloudFuze migration job exports Slack data and imports it into Microsoft Teams destination
+3. The destination Teams workspace is validated for correct channel/conversation/thread mapping`,
+    mapping: `SLACK → MICROSOFT TEAMS MAPPING:
+- Public Channels → Standard Channels in Teams
+- Private Channels → Private Channels in Teams
+- Direct Messages (DM) → 1:1 Chat in Teams
+- Group Direct Messages → Group Chat in Teams
+- Threads/Replies → Threaded replies inside Teams channel posts
+- Shared Files/Attachments → Files tab in corresponding Teams channel
+- Pinned Messages → Bookmarked or pinned in Teams channel
+- Archived Channels → Archived Teams channels
+- Reactions/Emojis → Mapped to closest Teams emoji equivalent
+- @mentions → @mentions preserved in Teams messages
+- Channel descriptions → Channel description in Teams`,
+    stepVerbs: [
+      'Log in to Slack source workspace and verify messages/channels exist',
+      'Trigger CloudFuze migration job for Slack → Teams',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Microsoft Teams destination workspace',
+      'Navigate to the expected channel/chat and verify message content, threads, and attachments',
+    ],
+  },
+
+  'Slack → Google Chat': {
+    how: `1. Messages, channels, DMs, threads, and attachments exist in the Slack source workspace
+2. A CloudFuze migration job exports Slack data and imports it into Google Chat destination
+3. The destination Google Chat is validated for correct Spaces/DM/thread mapping`,
+    mapping: `SLACK → GOOGLE CHAT MAPPING:
+- Public Channels → Google Chat Spaces (public)
+- Private Channels → Google Chat Spaces (restricted)
+- Direct Messages (DM) → Direct Messages in Google Chat
+- Group Direct Messages → Group Conversations in Google Chat
+- Threads/Replies → Threaded replies inside Google Chat Spaces
+- Shared Files/Attachments → Files attached to Google Chat messages (stored in Drive)
+- Pinned Messages → Starred messages in Google Chat
+- Archived Channels → Archived Google Chat Spaces
+- Reactions/Emojis → Mapped to closest Google Chat emoji equivalent
+- @mentions → @mentions preserved in Google Chat messages
+- Channel descriptions → Space description in Google Chat`,
+    stepVerbs: [
+      'Log in to Slack source workspace and verify channels/messages exist',
+      'Trigger CloudFuze migration job for Slack → Google Chat',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Google Chat destination workspace',
+      'Navigate to the expected Space/DM and verify message content, threads, and file attachments',
+    ],
+  },
+
+  'Teams → Slack': {
+    how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
+2. A CloudFuze migration job exports Teams data and imports it into Slack destination workspace
+3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
+    mapping: `MICROSOFT TEAMS → SLACK MAPPING:
+- Standard Channels → Public Channels in Slack
+- Private Channels → Private Channels in Slack
+- 1:1 Chat → Direct Messages (DM) in Slack
+- Group Chat → Multi-person DM or Private Channel in Slack
+- Threaded replies → Thread replies in Slack
+- Files tab / Attachments → Files shared inside Slack channels
+- Pinned messages → Pinned messages in Slack channel
+- Archived Teams channels → Archived Slack channels
+- Reactions → Mapped to closest Slack emoji equivalent
+- @mentions → @mentions preserved in Slack
+- Channel descriptions → Slack channel topic/description`,
+    stepVerbs: [
+      'Log in to Microsoft Teams source workspace and verify channel messages exist',
+      'Trigger CloudFuze migration job for Teams → Slack',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Slack destination workspace',
+      'Navigate to the expected channel/DM and verify message content, threads, and attachments',
+    ],
+  },
+
+  'Teams → Teams': {
+    how: `1. Messages, channels, chats, threads, and attachments exist in the source Microsoft Teams workspace/tenant
+2. A CloudFuze migration job copies Teams data to the destination Teams workspace/tenant
+3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
+    mapping: `MICROSOFT TEAMS → MICROSOFT TEAMS MAPPING:
+- Standard Channels → Standard Channels (same name)
+- Private Channels → Private Channels (same name)
+- 1:1 Chat → 1:1 Chat in destination tenant
+- Group Chat → Group Chat in destination tenant
+- Threaded replies → Threaded replies preserved
+- Files/Attachments → Files migrated to corresponding channel Files tab
+- Pinned messages → Pinned in destination channel
+- Archived channels → Archived in destination
+- Reactions/Emojis → Same emoji preserved
+- @mentions → @mentions re-mapped to destination tenant users
+- Channel descriptions → Channel description preserved`,
+    stepVerbs: [
+      'Log in to source Microsoft Teams tenant and verify channel messages and chats exist',
+      'Trigger CloudFuze migration job for Teams → Teams',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to destination Microsoft Teams tenant',
+      'Navigate to the expected channel/chat and verify messages, threads, files, and reactions are present',
+    ],
+  },
+
+  'Teams → Google Chat': {
+    how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
+2. A CloudFuze migration job exports Teams data and imports it into Google Chat destination
+3. The destination Google Chat is validated for correct Spaces/DM/thread mapping`,
+    mapping: `MICROSOFT TEAMS → GOOGLE CHAT MAPPING:
+- Standard Channels → Google Chat Spaces (public)
+- Private Channels → Google Chat Spaces (restricted)
+- 1:1 Chat → Direct Messages in Google Chat
+- Group Chat → Group Conversations in Google Chat
+- Threaded replies → Threaded replies inside Google Chat Spaces
+- Files/Attachments → Files attached to messages (stored in Google Drive)
+- Pinned messages → Starred messages in Google Chat
+- Archived Teams channels → Archived Google Chat Spaces
+- Reactions → Mapped to closest Google Chat emoji equivalent
+- @mentions → @mentions preserved in Google Chat
+- Channel descriptions → Space description in Google Chat`,
+    stepVerbs: [
+      'Log in to Microsoft Teams source workspace and verify channels and messages exist',
+      'Trigger CloudFuze migration job for Teams → Google Chat',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Google Chat destination workspace',
+      'Navigate to the expected Space/DM and verify message content, threads, and attachments',
+    ],
+  },
+
+  'Chat → Teams': {
+    how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
+2. A CloudFuze migration job exports Google Chat data and imports it into Microsoft Teams destination
+3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
+    mapping: `GOOGLE CHAT → MICROSOFT TEAMS MAPPING:
+- Google Chat Spaces (public) → Standard Channels in Teams
+- Google Chat Spaces (restricted) → Private Channels in Teams
+- Direct Messages → 1:1 Chat in Teams
+- Group Conversations → Group Chat in Teams
+- Threaded replies → Threaded replies inside Teams channel posts
+- Files (from Google Drive) → Files tab in corresponding Teams channel
+- Starred messages → Bookmarked/pinned in Teams
+- Archived Spaces → Archived Teams channels
+- Reactions/Emojis → Mapped to closest Teams emoji equivalent
+- @mentions → @mentions preserved in Teams messages
+- Space descriptions → Channel description in Teams`,
+    stepVerbs: [
+      'Log in to Google Chat source workspace and verify Spaces/DMs/messages exist',
+      'Trigger CloudFuze migration job for Google Chat → Teams',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Microsoft Teams destination workspace',
+      'Navigate to the expected channel/chat and verify message content, threads, and file attachments',
+    ],
+  },
+
+  'Chat → Slack': {
+    how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
+2. A CloudFuze migration job exports Google Chat data and imports it into Slack destination workspace
+3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
+    mapping: `GOOGLE CHAT → SLACK MAPPING:
+- Google Chat Spaces (public) → Public Channels in Slack
+- Google Chat Spaces (restricted) → Private Channels in Slack
+- Direct Messages → Direct Messages (DM) in Slack
+- Group Conversations → Multi-person DM or Private Channel in Slack
+- Threaded replies → Thread replies in Slack
+- Files (from Google Drive) → Files shared inside Slack channels
+- Starred messages → Pinned messages in Slack
+- Archived Spaces → Archived Slack channels
+- Reactions → Mapped to closest Slack emoji equivalent
+- @mentions → @mentions preserved in Slack
+- Space descriptions → Slack channel topic/description`,
+    stepVerbs: [
+      'Log in to Google Chat source workspace and verify Spaces/DMs/messages exist',
+      'Trigger CloudFuze migration job for Google Chat → Slack',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to Slack destination workspace',
+      'Navigate to the expected channel/DM and verify message content, threads, and file attachments',
+    ],
+  },
+
   default: {
     how: `1. Messages/channels exist in the source messaging platform
 2. A CloudFuze migration job copies them to the destination platform
@@ -84,14 +259,20 @@ const MESSAGE_CONTEXT = {
 - Threads → threaded replies in destination
 - Attachments → file attachments migrated with messages
 - Reactions/Emojis → mapped to closest equivalent`,
-    stepVerbs: ['Log in to source messaging platform', 'Trigger CloudFuze migration', 'Log in to destination platform', 'Navigate to the expected channel/conversation'],
+    stepVerbs: [
+      'Log in to source messaging platform and verify messages/channels exist',
+      'Trigger CloudFuze migration job',
+      'Wait for the migration job to complete',
+      'Log in to destination platform',
+      'Navigate to the expected channel/conversation and verify data',
+    ],
   },
 };
 
 function buildSystemPrompt(productType, combination, folder) {
   const isMessage = productType === 'Message';
   const ctx = isMessage
-    ? MESSAGE_CONTEXT.default
+    ? (MESSAGE_CONTEXT[combination] || MESSAGE_CONTEXT.default)
     : (MAIL_CONTEXT[combination] || MAIL_CONTEXT['Gmail → Outlook']);
 
   const folderInstruction = folder
@@ -123,11 +304,11 @@ Each test case object MUST have ALL of these fields:
   "action": "The specific migration action being tested — name both source and destination platforms explicitly",
   "testData": "Concrete description of the test data — be specific about content type, format, and metadata",
   "testSteps": [
-    "${ctx.stepVerbs[0]} and confirm test data exists",
-    "Trigger CloudFuze migration job for the source account",
-    "Wait for migration job to complete successfully",
+    "${ctx.stepVerbs[0]}",
+    "${ctx.stepVerbs[1]}",
     "${ctx.stepVerbs[2]}",
-    "Navigate to the expected location and verify the data is present with all fields intact"
+    "${ctx.stepVerbs[3]}",
+    "${ctx.stepVerbs[4]}"
   ],
   "expectedResult": "Specific expected outcome — describe exactly what should match between source and destination",
   "combination": "${combination}",
