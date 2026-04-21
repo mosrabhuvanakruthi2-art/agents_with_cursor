@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Google Chat Space Cleaner</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f4ff;min-height:100vh;color:#1a1a2e}
+
+  header{background:#0129ac;color:#fff;padding:16px 32px;display:flex;align-items:center;gap:14px;box-shadow:0 3px 12px rgba(1,41,172,.35)}
+  header h1{font-size:20px;font-weight:700}
+  header span{font-size:13px;opacity:.7;margin-left:4px}
+
+  main{max-width:1150px;margin:32px auto;padding:0 24px}
+
+  .card{background:#fff;border-radius:12px;padding:28px;margin-bottom:24px;box-shadow:0 2px 16px rgba(1,41,172,.08)}
+
+  .sec-title{font-size:13px;font-weight:700;color:#0129ac;margin-bottom:20px;display:flex;align-items:center;gap:8px;text-transform:uppercase;letter-spacing:.5px}
+
+  .form-row{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap}
+  .form-group{display:flex;flex-direction:column;gap:6px}
+  label{font-size:11px;font-weight:700;color:#0129ac;text-transform:uppercase;letter-spacing:.5px}
+  input[type=date]{padding:11px 14px;border:2px solid #d0d8f0;border-radius:8px;font-size:15px;color:#1a1a2e;outline:none;transition:border-color .2s;background:#fff}
+  input[type=date]:focus{border-color:#0129ac}
+
+  .btn{padding:11px 22px;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px}
+  .btn-primary{background:#0129ac;color:#fff}
+  .btn-primary:hover:not(:disabled){background:#0120a0;box-shadow:0 4px 14px rgba(1,41,172,.3);transform:translateY(-1px)}
+  .btn-outline{background:#fff;color:#0129ac;border:2px solid #0129ac}
+  .btn-outline:hover:not(:disabled){background:#f0f4ff}
+  .btn-sm{padding:7px 14px;font-size:12px;border-radius:6px}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+
+  .progress-wrap{display:flex;align-items:center;gap:10px;margin-top:16px;padding:12px 16px;background:#f0f4ff;border-radius:8px;border-left:4px solid #0129ac}
+  .spinner{width:16px;height:16px;border:2px solid #c0caf0;border-top-color:#0129ac;border-radius:50%;animation:spin .75s linear infinite;flex-shrink:0}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #progressMsg{font-size:13px;color:#0129ac;font-weight:500}
+
+  /* Stat boxes */
+  .summary-row{display:flex;gap:14px;margin-bottom:22px;flex-wrap:wrap}
+  .stat-box{flex:1;min-width:120px;background:#f0f4ff;border:2px solid #0129ac;border-radius:10px;padding:14px 18px;text-align:center;transition:transform .15s}
+  .stat-box:hover{transform:translateY(-2px)}
+  .stat-box .num{font-size:28px;font-weight:800;color:#0129ac;line-height:1}
+  .stat-box .lbl{font-size:11px;color:#555;margin-top:5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+  .stat-box.dup{background:#0129ac;border-color:#0129ac}
+  .stat-box.dup .num{color:#fff}
+  .stat-box.dup .lbl{color:rgba(255,255,255,.8)}
+
+  /* Tabs */
+  .tabs{display:flex;gap:0;border-bottom:2px solid #e0e8ff;margin-bottom:0}
+  .tab{padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;color:#999;transition:all .15s;display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .tab.active{color:#0129ac;border-bottom-color:#0129ac}
+  .tab-badge{border-radius:20px;padding:1px 8px;font-size:11px;font-weight:700}
+  .tab.active .tab-badge{background:#0129ac;color:#fff}
+  .tab:not(.active) .tab-badge{background:#ddd;color:#888}
+
+  .tab-panel{display:none}.tab-panel.active{display:block}
+
+  /* Toolbar above each table */
+  .tab-toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 4px 12px;min-height:44px}
+  .sel-info{font-size:13px;color:#0129ac;font-weight:600}
+
+  /* Table */
+  .table-wrap{overflow-x:auto;border-radius:8px;border:1.5px solid #e0e8ff}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  thead tr{background:#0129ac;color:#fff}
+  th{padding:11px 16px;text-align:left;font-weight:700;font-size:12px;letter-spacing:.3px}
+  td{padding:10px 16px;border-bottom:1px solid #eef1fb;color:#1a1a2e}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#f5f7ff}
+  tbody tr.selected-row{background:#e8edff}
+  .idx{color:#bbb;width:44px;font-size:12px}
+  .chk-col{width:36px;text-align:center!important;padding:10px 8px!important}
+
+  /* Checkbox styling */
+  input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#0129ac;border-radius:3px}
+  thead input[type=checkbox]{accent-color:#fff}
+
+  .badge-space{background:#0129ac;color:#fff;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+  .badge-dm{background:#fff;color:#0129ac;border:1.5px solid #0129ac;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+  .badge-group{background:#0129ac;color:#fff;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;opacity:.7}
+  .badge-date{background:#f0f4ff;color:#0129ac;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
+  .badge-dup{background:#0129ac;color:#fff;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .space-id{display:inline-block;font-size:11px;color:#0129ac;font-family:'Courier New',monospace;background:#e8edff;border:1px solid #c0cef8;border-radius:6px;padding:2px 8px;font-weight:600;letter-spacing:.2px}
+
+  .empty{text-align:center;padding:32px;color:#aaa;font-size:14px}
+
+  /* Duplicate groups */
+  .dup-group{margin-bottom:20px;border:1.5px solid #0129ac;border-radius:10px;overflow:hidden}
+  .dup-group-header{background:#0129ac;color:#fff;padding:12px 18px;display:flex;align-items:center;justify-content:space-between}
+  .dup-group-header .gname{font-weight:700;font-size:14px}
+  .dup-group-header .ginfo{font-size:12px;opacity:.8;display:flex;align-items:center;gap:8px}
+  .dup-group table{border:none}
+  .dup-group thead tr{background:#e8edff}
+  .dup-group thead th{color:#0129ac}
+  .dup-group td{background:#fff}
+  .dup-group tbody tr:hover td{background:#f5f7ff}
+  .dup-group tbody tr.selected-row td{background:#e8edff}
+
+  /* Log console */
+  .log-console{background:#0129ac;border-radius:10px;padding:20px 22px;max-height:440px;overflow-y:auto;font-family:'Courier New',Courier,monospace}
+  .log-console::-webkit-scrollbar{width:5px}
+  .log-console::-webkit-scrollbar-thumb{background:rgba(255,255,255,.3);border-radius:3px}
+  .log-line{font-size:13px;line-height:1.9;color:rgba(255,255,255,.7)}
+  .log-line.success{color:#fff;font-weight:600}
+  .log-line.failed{color:rgba(255,255,255,.4);font-style:italic}
+  .log-line.done{color:#fff;font-weight:800;font-size:15px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.2)}
+  .log-line.err{color:rgba(255,255,255,.5)}
+
+  /* Dialog */
+  .overlay{position:fixed;inset:0;background:rgba(1,41,172,.2);display:flex;align-items:center;justify-content:center;z-index:999;backdrop-filter:blur(3px)}
+  .dialog{background:#fff;border-radius:16px;padding:32px;max-width:440px;width:90%;box-shadow:0 12px 40px rgba(1,41,172,.2)}
+  .dialog-icon{width:50px;height:50px;background:#e8edff;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:16px}
+  .dialog h3{color:#0129ac;font-size:18px;margin-bottom:10px}
+  .dialog p{color:#555;line-height:1.6;margin-bottom:24px;font-size:14px}
+  .dialog-btns{display:flex;gap:12px;justify-content:flex-end}
+
+  .hidden{display:none!important}
+
+  /* Sidebar layout */
+  .app-layout{display:flex;min-height:calc(100vh - 60px)}
+  .sidebar{width:260px;background:#fff;border-right:2px solid #e0e8ff;padding:24px 0;flex-shrink:0;display:flex;flex-direction:column;gap:8px;box-shadow:2px 0 12px rgba(1,41,172,.04)}
+  .sidebar-section{padding:0 20px;margin-bottom:8px}
+  .sidebar-label{display:block;font-size:10px;font-weight:700;color:#0129ac;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
+  .sidebar-select{width:100%;padding:10px 14px;border:2px solid #d0d8f0;border-radius:8px;font-size:14px;font-weight:600;color:#1a1a2e;background:#fff;cursor:pointer;outline:none;transition:border-color .2s;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%230129ac' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+  .sidebar-select:focus{border-color:#0129ac}
+  .sidebar-select option{font-weight:600;padding:8px}
+  .sidebar-divider{height:1px;background:#e0e8ff;margin:12px 20px}
+  .sidebar-nav{display:flex;flex-direction:column;gap:2px;padding:0 8px}
+  .sidebar-nav-item{display:flex;align-items:center;gap:10px;padding:11px 16px;font-size:14px;font-weight:600;color:#888;cursor:pointer;transition:all .15s;border-left:3px solid transparent;text-decoration:none;border-radius:0 8px 8px 0}
+  .sidebar-nav-item:hover{background:#f0f4ff;color:#0129ac}
+  .sidebar-nav-item.active{color:#0129ac;background:#f0f4ff;border-left-color:#0129ac}
+  .sidebar-version{padding:0 20px;margin-top:auto;font-size:11px;color:#bbb;font-weight:600}
+  .app-layout main{max-width:none;margin:0;padding:28px 32px;flex:1;min-width:0;overflow-y:auto;max-height:calc(100vh - 60px)}
+
+  /* Toast notifications */
+  .toast-container{position:fixed;top:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:10px;pointer-events:none}
+  .toast{display:flex;align-items:center;gap:10px;padding:13px 18px;border-radius:10px;font-size:13px;font-weight:600;max-width:380px;min-width:220px;box-shadow:0 4px 20px rgba(1,41,172,.2);animation:toastIn .3s ease;pointer-events:auto;line-height:1.4}
+  .toast.success{background:#0129ac;color:#fff}
+  .toast.error{background:#fff;color:#0129ac;border:2px solid #0129ac}
+  .toast.info{background:#fff;color:#0129ac;border:2px solid #0129ac}
+  .toast svg{flex-shrink:0}
+  .toast.fade-out{animation:toastOut .35s ease forwards}
+  @keyframes toastIn{from{opacity:0;transform:translateX(50px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes toastOut{from{opacity:1;transform:translateX(0)}to{opacity:0;transform:translateX(50px)}}
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+  <h1><span id="headerTitle">Google Chat Space Cleaner</span> <span>— CloudFuze</span></h1>
+</header>
+
+<div class="app-layout">
+
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Platform</div>
+      <select class="sidebar-select" id="cleanerSelect" onchange="switchCleaner(this.value)">
+        <option value="gchat" selected>Google Chat Cleaner</option>
+        <option value="teams">Teams Cleaner</option>
+        <option value="slack">Slack Cleaner</option>
+      </select>
+    </div>
+    <div class="sidebar-divider"></div>
+    <nav class="sidebar-nav">
+      <a class="sidebar-nav-item active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        Message Deletion
+      </a>
+    </nav>
+    <div class="sidebar-version">CloudFuze Data Cleaner v1.0</div>
+  </aside>
+
+<main>
+
+  <!-- Form -->
+  <div class="card">
+    <div class="sec-title">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="#0129ac"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.1 0-2 .9-2 2L3 19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+      Select Date Range
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Start Date</label>
+        <input type="date" id="startDate" value="2024-01-01">
+      </div>
+      <div class="form-group">
+        <label>End Date</label>
+        <input type="date" id="endDate" value="2024-12-31">
+      </div>
+      <button class="btn btn-outline" id="btnPreview" onclick="runPreview()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+        Preview
+      </button>
+      <button class="btn btn-primary hidden" id="btnDelete" onclick="openConfirm()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        Delete All
+      </button>
+      <button class="btn btn-outline hidden" id="btnDeleteSelected" onclick="openConfirmSelected()">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        Delete Selected (<span id="selCount">0</span>)
+      </button>
+    </div>
+    <div class="progress-wrap hidden" id="progressWrap">
+      <div class="spinner"></div>
+      <span id="progressMsg">Loading...</span>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="card hidden" id="resultsCard">
+
+    <!-- Stat boxes -->
+    <div class="summary-row">
+      <div class="stat-box">
+        <div class="num" id="cntSpaces">0</div>
+        <div class="lbl" id="lblSpaces">Spaces</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="cntDMs">0</div>
+        <div class="lbl" id="lblDMs">Direct Messages</div>
+      </div>
+      <div class="stat-box">
+        <div class="num" id="cntTotal">0</div>
+        <div class="lbl">Total</div>
+      </div>
+      <div class="stat-box dup">
+        <div class="num" id="cntDup">0</div>
+        <div class="lbl">Duplicates</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab active" id="tabSpaces" onclick="switchTab('spaces')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+        <span id="tabTextSpaces">Spaces</span> <span class="tab-badge" id="badgeSpaces">0</span>
+      </div>
+      <div class="tab" id="tabDMs" onclick="switchTab('dms')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM9 11H7V9h2v2zm4 0h-2V9h2v2zm4 0h-2V9h2v2z"/></svg>
+        <span id="tabTextDMs">Direct Messages</span> <span class="tab-badge" id="badgeDMs">0</span>
+      </div>
+      <div class="tab" id="tabDup" onclick="switchTab('dup')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        Duplicates <span class="tab-badge" id="badgeDup">0</span>
+      </div>
+    </div>
+
+    <!-- Spaces Panel -->
+    <div class="tab-panel active" id="panelSpaces">
+      <div class="tab-toolbar">
+        <span class="sel-info" id="selInfoSpaces"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="chk-col"><input type="checkbox" class="check-all" data-tbody="tbodySpaces"></th>
+            <th class="idx">#</th>
+            <th id="colSpaceNameHdr">Space Name</th>
+            <th id="colSpaceIdHdr">Space ID</th>
+            <th>Last Activity</th>
+          </tr></thead>
+          <tbody id="tbodySpaces"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- DMs Panel -->
+    <div class="tab-panel" id="panelDMs">
+      <div class="tab-toolbar">
+        <span class="sel-info" id="selInfoDMs"></span>
+        <span id="dmNoDeleteNote" class="hidden" style="font-size:12px;color:#0129ac;background:#e8edff;padding:5px 12px;border-radius:6px;font-weight:600">
+          ℹ️ Chats / DMs are view-only — Microsoft Graph API does not support chat deletion
+        </span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="chk-col"><input type="checkbox" class="check-all" id="checkAllDMs" data-tbody="tbodyDMs"></th>
+            <th class="idx">#</th>
+            <th>Name</th>
+            <th>DM ID</th>
+            <th>Type</th>
+            <th>Last Activity</th>
+          </tr></thead>
+          <tbody id="tbodyDMs"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Duplicates Panel -->
+    <div class="tab-panel" id="panelDup">
+      <div class="tab-toolbar">
+        <span class="sel-info" id="selInfoDup"></span>
+      </div>
+      <div id="dupContent"></div>
+    </div>
+
+  </div>
+
+  <!-- Logs -->
+  <div class="card hidden" id="logCard">
+    <div class="sec-title">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="#0129ac"><path d="M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z"/></svg>
+      Deletion Logs
+    </div>
+    <div class="log-console" id="logConsole"></div>
+  </div>
+
+</main>
+
+</div><!-- /app-layout -->
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- Confirm Delete All Dialog -->
+<div class="overlay hidden" id="overlay">
+  <div class="dialog">
+    <div class="dialog-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="#0129ac"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+    </div>
+    <h3>Confirm Delete All</h3>
+    <p>This will permanently delete <strong id="confirmSpaces">0</strong> space(s), <strong id="confirmDMs">0</strong> direct message(s) including <strong id="confirmDup">0</strong> duplicate(s). This action <strong>cannot be undone</strong>.</p>
+    <div class="dialog-btns">
+      <button class="btn btn-outline" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-primary" onclick="startDelete()">Yes, Delete All</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Delete Selected Dialog -->
+<div class="overlay hidden" id="overlaySelected">
+  <div class="dialog">
+    <div class="dialog-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="#0129ac"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+    </div>
+    <h3>Confirm Delete Selected</h3>
+    <p>This will permanently delete <strong id="confirmSelCount">0</strong> selected item(s). This action <strong>cannot be undone</strong>.</p>
+    <div class="dialog-btns">
+      <button class="btn btn-outline" onclick="closeConfirmSelected()">Cancel</button>
+      <button class="btn btn-primary" onclick="startDeleteSelected()">Yes, Delete Selected</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  let allItems   = [];
+  let dupGroups  = [];
+  let es         = null;
+  let selectedIds = new Set();
+
+  let currentCleaner = 'gchat';
+  const cleanerConfig = {
+    gchat:  { name: 'Google Chat Space Cleaner', preview: '/api/preview',       delete: '/api/delete',       deleteSelected: '/api/delete-selected',       spaceLabel: 'Spaces', dmLabel: 'Direct Messages', canDeleteDMs: true  },
+    teams:  { name: 'Teams Cleaner',             preview: '/api/teams/preview', delete: '/api/teams/delete', deleteSelected: '/api/teams/delete-selected', spaceLabel: 'Teams',  dmLabel: 'Chats / DMs',    canDeleteDMs: true  },
+    slack:  { name: 'Slack Cleaner',             preview: '/api/slack/preview', delete: '/api/slack/delete', deleteSelected: '/api/slack/delete-selected', spaceLabel: 'Spaces', dmLabel: 'Direct Messages', canDeleteDMs: true  }
+  };
+
+  function switchCleaner(val) {
+    currentCleaner = val;
+    const cfg = cleanerConfig[val];
+    document.getElementById('headerTitle').textContent = cfg.name;
+    document.title = cfg.name;
+    document.getElementById('lblSpaces').textContent    = cfg.spaceLabel;
+    document.getElementById('lblDMs').textContent       = cfg.dmLabel;
+    document.getElementById('tabTextSpaces').textContent = cfg.spaceLabel;
+    document.getElementById('tabTextDMs').textContent   = cfg.dmLabel;
+    document.getElementById('dmNoDeleteNote').classList.toggle('hidden', cfg.canDeleteDMs !== false);
+    const checkAllDMs = document.getElementById('checkAllDMs');
+    if (checkAllDMs) { checkAllDMs.disabled = !cfg.canDeleteDMs; checkAllDMs.style.opacity = cfg.canDeleteDMs ? '' : '.3'; }
+    const isTeams = val === 'teams';
+    document.getElementById('colSpaceNameHdr').textContent = isTeams ? 'Team Name' : 'Space Name';
+    document.getElementById('colSpaceIdHdr').textContent   = isTeams ? 'Team ID'   : 'Space ID';
+    allItems = []; dupGroups = []; selectedIds.clear();
+    updateSelectionUI();
+    document.getElementById('resultsCard').classList.add('hidden');
+    document.getElementById('logCard').classList.add('hidden');
+    document.getElementById('btnDelete').classList.add('hidden');
+    document.getElementById('btnDeleteSelected').classList.add('hidden');
+    if (es) { es.close(); es = null; }
+    setLoading(false);
+  }
+
+  // ── Selection management ─────────────────────────────────────────────────
+  function toggleSelect(id, checked) {
+    if (checked) selectedIds.add(id);
+    else selectedIds.delete(id);
+    updateSelectionUI();
+  }
+
+  function toggleSelectAll(tbodyId, checked) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    tbody.querySelectorAll('input.row-check').forEach(cb => {
+      cb.checked = checked;
+      const row = cb.closest('tr');
+      if (row) row.classList.toggle('selected-row', checked);
+      if (checked) selectedIds.add(cb.dataset.id);
+      else selectedIds.delete(cb.dataset.id);
+    });
+    updateSelectionUI();
+  }
+
+  function updateSelectionUI() {
+    const n = selectedIds.size;
+    document.getElementById('selCount').textContent = n;
+    document.getElementById('btnDeleteSelected').classList.toggle('hidden', n === 0);
+
+    const spaceSel = allItems.filter(i => i.spaceType === 'SPACE' && selectedIds.has(i.name)).length;
+    const dmSel    = allItems.filter(i => i.spaceType !== 'SPACE' && selectedIds.has(i.name)).length;
+    const dupSel   = n - spaceSel - dmSel;
+
+    document.getElementById('selInfoSpaces').textContent = spaceSel > 0 ? spaceSel + ' selected' : '';
+    document.getElementById('selInfoDMs').textContent    = dmSel    > 0 ? dmSel    + ' selected' : '';
+    document.getElementById('selInfoDup').textContent    = (n - spaceSel - dmSel) > 0 ? (n - spaceSel - dmSel) + ' selected' : '';
+  }
+
+  // Event delegation for checkboxes
+  document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('row-check')) {
+      const id = e.target.dataset.id;
+      const row = e.target.closest('tr');
+      if (row) row.classList.toggle('selected-row', e.target.checked);
+      toggleSelect(id, e.target.checked);
+    } else if (e.target.classList.contains('check-all')) {
+      const tbodyId = e.target.dataset.tbody;
+      if (tbodyId) {
+        toggleSelectAll(tbodyId, e.target.checked);
+      } else {
+        // check-all inside a dup group — scope to that table
+        const table = e.target.closest('table');
+        if (!table) return;
+        table.querySelectorAll('input.row-check').forEach(cb => {
+          cb.checked = e.target.checked;
+          const row = cb.closest('tr');
+          if (row) row.classList.toggle('selected-row', e.target.checked);
+          if (e.target.checked) selectedIds.add(cb.dataset.id);
+          else selectedIds.delete(cb.dataset.id);
+        });
+        updateSelectionUI();
+      }
+    }
+  });
+
+  // ── Duplicate detection ──────────────────────────────────────────────────
+  function detectDuplicates(items) {
+    const map = {};
+    items.forEach(item => {
+      const name = (item.displayName || '').trim();
+      if (!name || name === 'Direct Message' || name === 'Group Chat') return;
+      const key = item.spaceType + '::' + name.toLowerCase();
+      if (!map[key]) map[key] = { name, type: item.spaceType, items: [] };
+      map[key].items.push(item);
+    });
+    return Object.values(map).filter(g => g.items.length > 1);
+  }
+
+  // ── Row builders ─────────────────────────────────────────────────────────
+  function buildSpaceRows(spaces) {
+    if (!spaces.length) return '<tr><td colspan="5" class="empty">No spaces in this date range</td></tr>';
+    return spaces.map((sp, i) => {
+      const checked = selectedIds.has(sp.name) ? 'checked' : '';
+      const selCls  = selectedIds.has(sp.name) ? ' selected-row' : '';
+      return `<tr data-id="${esc(sp.name)}"${selCls ? ' class="selected-row"' : ''}>
+        <td class="chk-col"><input type="checkbox" class="row-check" data-id="${esc(sp.name)}" ${checked}></td>
+        <td class="idx">${i+1}</td>
+        <td><strong>${esc(sp.displayName)}</strong></td>
+        <td><div class="space-id">${esc(sp.name)}</div></td>
+        <td><span class="badge-date">${sp.lastActivity || 'N/A'}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  function buildDMRows(dms) {
+    if (!dms.length) return '<tr><td colspan="6" class="empty">No direct messages in this date range</td></tr>';
+    const canDelete = cleanerConfig[currentCleaner].canDeleteDMs;
+    return dms.map((sp, i) => {
+      const checked = selectedIds.has(sp.name) ? 'checked' : '';
+      const chkCell = canDelete
+        ? `<input type="checkbox" class="row-check" data-id="${esc(sp.name)}" ${checked}>`
+        : `<input type="checkbox" disabled title="Chats cannot be deleted via Microsoft Graph API" style="opacity:.3;cursor:not-allowed">`;
+      return `<tr data-id="${esc(sp.name)}"${selectedIds.has(sp.name) ? ' class="selected-row"' : ''}>
+        <td class="chk-col">${chkCell}</td>
+        <td class="idx">${i+1}</td>
+        <td><strong>${esc(sp.displayName)}</strong></td>
+        <td><div class="space-id">${esc(sp.name)}</div></td>
+        <td><span class="${sp.spaceType === 'GROUP_CHAT' ? 'badge-group' : 'badge-dm'}">${sp.spaceType === 'GROUP_CHAT' ? 'Group Chat' : 'DM'}</span></td>
+        <td><span class="badge-date">${sp.lastActivity || 'N/A'}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Preview ──────────────────────────────────────────────────────────────
+  function runPreview() {
+    const s = document.getElementById('startDate').value;
+    const e = document.getElementById('endDate').value;
+    if (!s || !e) return alert('Please select both dates.');
+    if (s > e)   return alert('End date must be after start date.');
+
+    selectedIds.clear();
+    updateSelectionUI();
+    setLoading(true);
+    document.getElementById('resultsCard').classList.add('hidden');
+    document.getElementById('logCard').classList.add('hidden');
+    document.getElementById('btnDelete').classList.add('hidden');
+    allItems = []; dupGroups = [];
+
+    if (es) es.close();
+    es = new EventSource(cleanerConfig[currentCleaner].preview + '?startDate=' + s + '&endDate=' + e);
+    es.addEventListener('progress', ev => { document.getElementById('progressMsg').textContent = safeParse(ev.data); });
+    es.addEventListener('result', ev => {
+      allItems  = safeParse(ev.data);
+      dupGroups = detectDuplicates(allItems);
+      renderResults(allItems, dupGroups);
+      setLoading(false);
+      if (allItems.length > 0) document.getElementById('btnDelete').classList.remove('hidden');
+      es.close();
+    });
+    es.addEventListener('fail', ev => {
+      document.getElementById('progressMsg').textContent = 'Error: ' + safeParse(ev.data);
+      setLoading(false, true); es.close();
+    });
+    es.onerror = () => { setLoading(false); es.close(); };
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  function renderResults(items, dups) {
+    const spaces   = items.filter(i => i.spaceType === 'SPACE');
+    const dms      = items.filter(i => i.spaceType !== 'SPACE');
+    const dupCount = dups.reduce((s, g) => s + g.items.length, 0);
+
+    document.getElementById('cntSpaces').textContent   = spaces.length;
+    document.getElementById('cntDMs').textContent      = dms.length;
+    document.getElementById('cntTotal').textContent    = items.length;
+    document.getElementById('cntDup').textContent      = dupCount;
+    document.getElementById('badgeSpaces').textContent = spaces.length;
+    document.getElementById('badgeDMs').textContent    = dms.length;
+    document.getElementById('badgeDup').textContent    = dupCount;
+
+    try { document.getElementById('tbodySpaces').innerHTML = buildSpaceRows(spaces); } catch(e) { console.error(e); }
+    try { document.getElementById('tbodyDMs').innerHTML    = buildDMRows(dms); }      catch(e) { console.error(e); }
+
+    // Duplicates
+    const dupEl = document.getElementById('dupContent');
+    if (!dups.length) {
+      dupEl.innerHTML = '<div class="empty" style="padding:40px 0">No duplicate spaces or DMs found in this date range</div>';
+    } else {
+      dupEl.innerHTML = dups.map((g, gi) => `
+        <div class="dup-group">
+          <div class="dup-group-header">
+            <span class="gname">${esc(g.name)}</span>
+            <span class="ginfo">
+              <span class="${g.type === 'SPACE' ? 'badge-space' : 'badge-dm'}" style="font-size:11px">${g.type === 'SPACE' ? 'Space' : g.type === 'GROUP_CHAT' ? 'Group Chat' : 'DM'}</span>
+              <span class="badge-dup">${g.items.length} duplicates</span>
+            </span>
+          </div>
+          <div class="table-wrap" style="border:none;border-radius:0">
+            <table>
+              <thead><tr>
+                <th class="chk-col"><input type="checkbox" class="check-all"></th>
+                <th class="idx">#</th>
+                <th>Internal Name</th>
+                <th>Last Activity</th>
+              </tr></thead>
+              <tbody>${g.items.map((it, i) => `<tr data-id="${esc(it.name)}"${selectedIds.has(it.name) ? ' class="selected-row"' : ''}>
+                <td class="chk-col"><input type="checkbox" class="row-check" data-id="${esc(it.name)}"${selectedIds.has(it.name) ? ' checked' : ''}></td>
+                <td class="idx">${i+1}</td>
+                <td><div class="space-id" style="font-size:11px">${esc(it.name)}</div></td>
+                <td><span class="badge-date">${it.lastActivity || 'N/A'}</span></td>
+              </tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </div>`).join('');
+    }
+
+    document.getElementById('resultsCard').classList.remove('hidden');
+    updateSelectionUI();
+  }
+
+  // ── Tabs ─────────────────────────────────────────────────────────────────
+  const TAB_IDS = { spaces: 'Spaces', dms: 'DMs', dup: 'Dup' };
+  function switchTab(tab) {
+    Object.keys(TAB_IDS).forEach(t => {
+      const id = TAB_IDS[t];
+      document.getElementById('tab'   + id).classList.toggle('active', t === tab);
+      document.getElementById('panel' + id).classList.toggle('active', t === tab);
+    });
+    if (tab === 'dms' && allItems.length > 0) {
+      try {
+        document.getElementById('tbodyDMs').innerHTML = buildDMRows(allItems.filter(i => i.spaceType !== 'SPACE'));
+      } catch(e) { console.error(e); }
+    }
+  }
+
+  // ── Confirm Delete All dialog ─────────────────────────────────────────────
+  function openConfirm() {
+    document.getElementById('confirmSpaces').textContent = allItems.filter(i => i.spaceType === 'SPACE').length;
+    document.getElementById('confirmDMs').textContent    = allItems.filter(i => i.spaceType !== 'SPACE').length;
+    document.getElementById('confirmDup').textContent    = dupGroups.reduce((s, g) => s + g.items.length, 0);
+    document.getElementById('overlay').classList.remove('hidden');
+  }
+  function closeConfirm() { document.getElementById('overlay').classList.add('hidden'); }
+
+  // ── Confirm Delete Selected dialog ────────────────────────────────────────
+  function openConfirmSelected() {
+    document.getElementById('confirmSelCount').textContent = selectedIds.size;
+    document.getElementById('overlaySelected').classList.remove('hidden');
+  }
+  function closeConfirmSelected() { document.getElementById('overlaySelected').classList.add('hidden'); }
+
+  // ── Shared log helpers ────────────────────────────────────────────────────
+  function prepareLogConsole() {
+    document.getElementById('logCard').classList.remove('hidden');
+    document.getElementById('btnPreview').disabled = true;
+    document.getElementById('btnDelete').disabled  = true;
+    document.getElementById('btnDeleteSelected').disabled = true;
+    const con = document.getElementById('logConsole');
+    con.innerHTML = '';
+    return con;
+  }
+
+  function addLogLine(con, text, cls) {
+    const d = document.createElement('div');
+    d.className = 'log-line ' + (cls || '');
+    d.textContent = '> ' + text;
+    con.appendChild(d);
+    con.scrollTop = con.scrollHeight;
+  }
+
+  function reenableButtons() {
+    document.getElementById('btnPreview').disabled = false;
+    document.getElementById('btnDelete').disabled  = false;
+    document.getElementById('btnDeleteSelected').disabled = false;
+  }
+
+  function handleDeletedEvent(d) {
+    if (!d || !d.id) return;
+    const row = document.querySelector(`tr[data-id="${CSS.escape(d.id)}"]`);
+    if (row) row.remove();
+    allItems = allItems.filter(i => i.name !== d.id);
+    selectedIds.delete(d.id);
+    updateStats(allItems);
+    updateSelectionUI();
+  }
+
+  // ── Delete All ────────────────────────────────────────────────────────────
+  function startDelete() {
+    closeConfirm();
+    const s = document.getElementById('startDate').value;
+    const e = document.getElementById('endDate').value;
+    const con = prepareLogConsole();
+
+    if (es) es.close();
+    es = new EventSource(cleanerConfig[currentCleaner].delete + '?startDate=' + s + '&endDate=' + e);
+    es.addEventListener('log',  ev => addLogLine(con, safeParse(ev.data)));
+    es.addEventListener('deleted', ev => { const d = safeParse(ev.data); addLogLine(con, d.msg, 'success'); handleDeletedEvent(d); showToast(d.msg, 'success', 2500); });
+    es.addEventListener('failed',  ev => { const d = safeParse(ev.data); addLogLine(con, d.msg, 'failed');  showToast(d.msg, 'error', 4000); });
+    es.addEventListener('done', ev => {
+      const msg = safeParse(ev.data);
+      addLogLine(con, msg, 'done');
+      dupGroups = detectDuplicates(allItems);
+      renderResults(allItems, dupGroups);
+      if (allItems.length === 0) document.getElementById('btnDelete').classList.add('hidden');
+      reenableButtons();
+
+      const failMatch = msg.match(/Failed:\s*(\d+)/);
+      const failCount = failMatch ? parseInt(failMatch[1]) : 0;
+      if (failCount > 0) {
+        showToast('Deletion completed with ' + failCount + ' failure(s). Check logs for details.', 'error');
+      } else {
+        showToast('All spaces deleted successfully!', 'success');
+      }
+      es.close();
+    });
+    es.addEventListener('fail', ev => {
+      const errMsg = safeParse(ev.data);
+      addLogLine(con, 'ERROR: ' + errMsg, 'err');
+      showToast('Deletion failed: ' + errMsg, 'error');
+      reenableButtons();
+      es.close();
+    });
+    es.onerror = () => {
+      showToast('Connection lost during deletion.', 'error');
+      reenableButtons();
+      es.close();
+    };
+  }
+
+  // ── Delete Selected (POST + fetch streaming) ──────────────────────────────
+  async function startDeleteSelected() {
+    closeConfirmSelected();
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+
+    const con = prepareLogConsole();
+    addLogLine(con, 'Deleting ' + ids.length + ' selected item(s)...');
+
+    try {
+      const response = await fetch(cleanerConfig[currentCleaner].deleteSelected, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ids)
+      });
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events separated by double newline
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          let evtName = '', evtData = '';
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event:')) evtName = line.slice(6).trim();
+            else if (line.startsWith('data:')) evtData = line.slice(5).trim();
+          }
+          if (!evtData) continue;
+          const data = safeParse(evtData);
+
+          if (evtName === 'log') {
+            addLogLine(con, data);
+          } else if (evtName === 'deleted') {
+            addLogLine(con, data.msg, 'success');
+            handleDeletedEvent(data);
+            showToast(data.msg, 'success', 2500);
+          } else if (evtName === 'failed') {
+            addLogLine(con, data.msg, 'failed');
+            showToast(data.msg, 'error', 4000);
+          } else if (evtName === 'done') {
+            addLogLine(con, data, 'done');
+            selectedIds.clear();
+            dupGroups = detectDuplicates(allItems);
+            renderResults(allItems, dupGroups);
+            if (allItems.length === 0) document.getElementById('btnDelete').classList.add('hidden');
+            reenableButtons();
+
+            const failMatch = data.match(/Failed:\s*(\d+)/);
+            const failCount = failMatch ? parseInt(failMatch[1]) : 0;
+            if (failCount > 0) {
+              showToast('Deletion completed with ' + failCount + ' failure(s). Check logs for details.', 'error');
+            } else {
+              showToast('Selected items deleted successfully!', 'success');
+            }
+          } else if (evtName === 'fail') {
+            addLogLine(con, 'ERROR: ' + data, 'err');
+            showToast('Deletion failed: ' + data, 'error');
+            reenableButtons();
+          }
+        }
+      }
+    } catch (err) {
+      addLogLine(con, 'ERROR: ' + err.message, 'err');
+      showToast('Deletion failed: ' + err.message, 'error');
+      reenableButtons();
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function safeParse(str) {
+    try { return JSON.parse(str); } catch(e) { return str; }
+  }
+
+  function updateStats(items) {
+    const spaces   = items.filter(i => i.spaceType === 'SPACE').length;
+    const dms      = items.filter(i => i.spaceType !== 'SPACE').length;
+    const dupCount = detectDuplicates(items).reduce((s, g) => s + g.items.length, 0);
+    document.getElementById('cntSpaces').textContent   = spaces;
+    document.getElementById('cntDMs').textContent      = dms;
+    document.getElementById('cntTotal').textContent    = items.length;
+    document.getElementById('cntDup').textContent      = dupCount;
+    document.getElementById('badgeSpaces').textContent = spaces;
+    document.getElementById('badgeDMs').textContent    = dms;
+    document.getElementById('badgeDup').textContent    = dupCount;
+  }
+
+  function setLoading(on, keepMsg) {
+    document.getElementById('progressWrap').classList.toggle('hidden', !on);
+    document.getElementById('btnPreview').disabled = on;
+    if (!on && !keepMsg) document.getElementById('progressMsg').textContent = 'Loading...';
+  }
+
+  function showToast(message, type, duration) {
+    const container = document.getElementById('toastContainer');
+    // Cap stacked toasts to 5 visible at once to avoid flooding
+    if (container.children.length >= 5) container.firstChild.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+
+    const icons = {
+      success: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
+      error:   '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>',
+      info:    '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>'
+    };
+
+    toast.innerHTML = (icons[type] || icons.info) + '<span>' + esc(message) + '</span>';
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.classList.add('fade-out');
+      toast.addEventListener('animationend', () => toast.remove());
+    }, duration || 4500);
+  }
+
+  function esc(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Apply correct labels for whichever cleaner is pre-selected on load
+  switchCleaner(document.getElementById('cleanerSelect').value);
+</script>
+</body>
+</html>

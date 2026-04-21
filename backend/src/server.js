@@ -7,6 +7,7 @@ const agentRoutes = require('./routes/agentRoutes');
 const testRepositoryRoutes = require('./routes/testRepositoryRoutes');
 const testCaseRoutes = require('./routes/testCaseRoutes');
 const authRoutes = require('./routes/authRoutes');
+const chatCleanerProxy = require('./routes/chatCleanerProxy');
 const { initScheduler } = require('./config/scheduler');
 
 process.on('unhandledRejection', (reason) => {
@@ -26,6 +27,7 @@ app.use('/api/agents', agentRoutes);
 app.use('/api/test-repository', testRepositoryRoutes);
 app.use('/api/test-cases', testCaseRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/chat-cleaner', chatCleanerProxy);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

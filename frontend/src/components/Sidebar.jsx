@@ -10,6 +10,7 @@ const navItems = [
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
   { to: '/clean', label: 'Clean Destination', icon: TrashIcon },
   { to: '/clean-source', label: 'Clean Source', icon: TrashIcon },
+  { to: '/clean-space', label: 'Clean Space', icon: TrashIcon },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
