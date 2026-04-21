@@ -470,8 +470,14 @@ function addCustomTestCase(req, res) {
     htmlBody: testCase.htmlBody || undefined,
     labelIds: testCase.labelIds || ['INBOX'],
     hasAttachment: !!testCase.hasAttachment,
+    messageChannelId: testCase.messageChannelId || undefined,
+    messageSpaceId: testCase.messageSpaceId || undefined,
+    messageTeamId: testCase.messageTeamId || undefined,
   };
   if (!entry.htmlBody) delete entry.htmlBody;
+  ['messageChannelId', 'messageSpaceId', 'messageTeamId'].forEach((k) => {
+    if (!entry[k]) delete entry[k];
+  });
 
   data[testType].push(entry);
   writeCustomCases(data);
@@ -518,10 +524,16 @@ function addBulkTestCases(req, res) {
       subject: testCase.subject,
       textBody: testCase.textBody || '',
       htmlBody: testCase.htmlBody || undefined,
-      labelIds: testCase.labelIds || ['INBOX'],
-      hasAttachment: !!testCase.hasAttachment,
+    labelIds: testCase.labelIds || ['INBOX'],
+    hasAttachment: !!testCase.hasAttachment,
+    messageChannelId: testCase.messageChannelId || undefined,
+    messageSpaceId: testCase.messageSpaceId || undefined,
+    messageTeamId: testCase.messageTeamId || undefined,
     };
     if (!entry.htmlBody) delete entry.htmlBody;
+    ['messageChannelId', 'messageSpaceId', 'messageTeamId'].forEach((k) => {
+      if (!entry[k]) delete entry[k];
+    });
     data[testType].push(entry);
     added.push(entry);
   }
@@ -554,6 +566,7 @@ const UPDATABLE_FIELDS = [
   'summary', 'action', 'testData', 'testSteps', 'expectedResult',
   'combination', 'productType', 'folder', 'subject', 'textBody',
   'labelIds', 'hasAttachment',
+  'messageChannelId', 'messageSpaceId', 'messageTeamId',
 ];
 
 function updateCustomTestCase(req, res) {

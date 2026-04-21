@@ -7,6 +7,7 @@ export default function AgentForm({ onSubmit, loading }) {
     migrationType: 'FULL',
     includeMail: true,
     includeCalendar: true,
+    productType: 'Mail',
   });
   const [mappedPairs, setMappedPairs] = useState(null);
 
@@ -29,10 +30,15 @@ export default function AgentForm({ onSubmit, loading }) {
   function handleSubmit(e) {
     e.preventDefault();
     if (!mappedPairs || mappedPairs.length === 0) return;
+    const base = { ...form, productType: 'Mail' };
     if (mappedPairs.length === 1) {
-      onSubmit({ ...form, sourceEmail: mappedPairs[0].sourceEmail, destinationEmail: mappedPairs[0].destinationEmail });
+      onSubmit({
+        ...base,
+        sourceEmail: mappedPairs[0].sourceEmail,
+        destinationEmail: mappedPairs[0].destinationEmail,
+      });
     } else {
-      onSubmit({ ...form, mappedPairs });
+      onSubmit({ ...base, mappedPairs });
     }
   }
 
@@ -53,6 +59,10 @@ export default function AgentForm({ onSubmit, loading }) {
           )}
         </div>
         <UserMapping onMappingComplete={handleMappingComplete} />
+        <p className="text-xs pt-2" style={{ color: '#4a65c0', borderTop: '1px solid #c5cef5' }}>
+          For <strong>Slack / Google Chat / Microsoft Teams</strong> message seeding and migration QA, use the{' '}
+          <strong>Message Agent</strong> page in the sidebar.
+        </p>
         {mappedPairs && (
           <div className="rounded-lg p-3 text-sm" style={{ backgroundColor: '#eef1fb', border: '1px solid #c5cef5', color: '#0129ac' }}>
             {mappedPairs.length} pair{mappedPairs.length > 1 ? 's' : ''} mapped.
@@ -140,8 +150,8 @@ export default function AgentForm({ onSubmit, loading }) {
         disabled={loading || !mappedPairs || mappedPairs.length === 0}
         className="w-full md:w-auto px-8 py-3 text-white text-sm font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         style={{ backgroundColor: '#0129ac' }}
-        onMouseEnter={e => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#011e8a'; }}
-        onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0129ac'}
+        onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#011e8a'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#0129ac'; }}
       >
         {loading ? (
           <span className="flex items-center gap-2">

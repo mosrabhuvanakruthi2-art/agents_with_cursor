@@ -5,6 +5,7 @@ const navItems = [
   { to: '/test-case-generator', label: 'Test Case Generator', icon: SparklesIcon },
   { to: '/agent-repo', label: 'Agent Repo', icon: AgentRepoIcon },
   { to: '/run', label: 'Run Agent', icon: PlayIcon },
+  { to: '/message-agent', label: 'Message Agent', icon: MessageAgentIcon },
   { to: '/logs', label: 'Execution Logs', icon: LogsIcon },
   { to: '/validation', label: 'Validation Results', icon: CheckIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
@@ -109,6 +110,14 @@ function PlayIcon(props) {
   return (
     <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+    </svg>
+  );
+}
+
+function MessageAgentIcon(props) {
+  return (
+    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.712 16.418 3.25 14.265 3.25 12A8.973 8.973 0 0 1 6.422 4.906 4.48 4.48 0 0 0 7.906 2.25 4.48 4.48 0 0 1 8.971 3.84C10.73 3.117 12.65 2.75 15 2.75c4.97 0 9 3.694 9 8.25Z" />
     </svg>
   );
 }

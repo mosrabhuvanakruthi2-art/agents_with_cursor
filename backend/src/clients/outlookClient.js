@@ -655,6 +655,7 @@ async function cleanMailbox(userId) {
 }
 
 module.exports = {
+  getAppAccessToken,
   getMailFolders,
   getAllFoldersFlat,
   getTotalMessageCount,

@@ -4,6 +4,7 @@ import { ToastProvider } from './context/ToastContext';
 import Dashboard from './pages/Dashboard';
 import TestCaseGenerator from './pages/TestCaseGenerator';
 import RunAgent from './pages/RunAgent';
+import MessageAgent from './pages/MessageAgent';
 import ExecutionLogs from './pages/ExecutionLogs';
 import ValidationResults from './pages/ValidationResults';
 import CleanDestination from './pages/CleanDestination';
@@ -24,6 +25,7 @@ function App() {
         <Route index element={<Dashboard />} />
         <Route path="test-case-generator" element={<TestCaseGenerator />} />
         <Route path="run" element={<RunAgent />} />
+        <Route path="message-agent" element={<MessageAgent />} />
         <Route path="logs" element={<ExecutionLogs />} />
         <Route path="validation" element={<ValidationResults />} />
         <Route path="clean" element={<CleanDestination />} />

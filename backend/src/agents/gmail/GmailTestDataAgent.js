@@ -18,8 +18,10 @@ function loadCustomTestCases(testType, log) {
     const filePath = path.resolve(__dirname, '../../../data/custom-test-cases.json');
     if (!fs.existsSync(filePath)) return [];
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    const cases = (data[testType.toLowerCase()] || []);
-    if (cases.length > 0) log.info(`Loading ${cases.length} custom test case(s) for ${testType}`);
+    const cases = (data[testType.toLowerCase()] || []).filter(
+      (tc) => (tc.productType || 'Mail') === 'Mail'
+    );
+    if (cases.length > 0) log.info(`Loading ${cases.length} Mail custom test case(s) for ${testType}`);
     return cases.map((tc) => ({
       subject: tc.subject,
       textBody: tc.textBody,

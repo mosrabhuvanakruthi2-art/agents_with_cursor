@@ -237,6 +237,8 @@ module.exports = {
   BACKFILL_BATCH_SIZE: Math.max(1, Math.min(20, parseInt(process.env.BACKFILL_BATCH_SIZE || '5', 10) || 5)),
   /** Minimum ms between batch requests during backfill to avoid 429 rate limits. Default 1500. */
   BACKFILL_DELAY_MS: Math.max(0, parseInt(process.env.BACKFILL_DELAY_MS || '1500', 10) || 1500),
+  /** When true, Message product runs CloudFuze MigrationAgent after seeding (default: mail API only). */
+  MESSAGE_RUN_CLOUDFUZE: String(process.env.MESSAGE_RUN_CLOUDFUZE || '').trim().toLowerCase() === 'true',
   /** OpenAI API key — required for the Test Case Generator feature. */
   OPENAI_API_KEY: (process.env.OPENAI_API_KEY || '').trim(),
   /** Base URL for the bulk calendar API (no trailing slash). Default: http://localhost:8080 */
