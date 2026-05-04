@@ -39,8 +39,7 @@ public class SpaceCleanerController {
                 send(emitter, "result", matched);
                 emitter.complete();
             } catch (Exception e) {
-                send(emitter, "fail", e.getMessage());
-                emitter.completeWithError(e);
+                sendFail(emitter, e);
             }
         });
         return emitter;
@@ -80,8 +79,7 @@ public class SpaceCleanerController {
                 send(emitter, "done", "Done — Deleted: " + success + " | Failed: " + failed);
                 emitter.complete();
             } catch (Exception e) {
-                send(emitter, "fail", e.getMessage());
-                emitter.completeWithError(e);
+                sendFail(emitter, e);
             }
         });
         return emitter;
@@ -115,8 +113,7 @@ public class SpaceCleanerController {
                 send(emitter, "done", "Done — Deleted: " + success + " | Failed: " + failed);
                 emitter.complete();
             } catch (Exception e) {
-                send(emitter, "fail", e.getMessage());
-                emitter.completeWithError(e);
+                sendFail(emitter, e);
             }
         });
         return emitter;
@@ -126,5 +123,14 @@ public class SpaceCleanerController {
         try {
             emitter.send(SseEmitter.event().name(event).data(data, MediaType.APPLICATION_JSON));
         } catch (Exception ignored) {}
+    }
+
+    /** Deliver the error to the browser BEFORE closing — plain-text so no JSON converter is needed. */
+    private void sendFail(SseEmitter emitter, Exception e) {
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        try {
+            emitter.send(SseEmitter.event().name("fail").data(msg, MediaType.TEXT_PLAIN));
+        } catch (Exception ignored) {}
+        emitter.complete();
     }
 }

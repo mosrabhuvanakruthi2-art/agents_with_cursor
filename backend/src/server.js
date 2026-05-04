@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
 const env = require('./config/env');
 const logger = require('./utils/logger');
 const { connectMongo } = require('./db/mongo');
@@ -38,6 +39,47 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+/**
+ * If SLACK_USER_TOKEN is set in .env, resolve identity via Slack auth.test + users.info
+ * and store it in the token store so the Message Agent can use it without an OAuth popup.
+ * Re-runs on every startup so a rotated token in .env is picked up automatically.
+ */
+async function autoLoadSlackToken() {
+  const token = env.SLACK_USER_TOKEN;
+  if (!token || !token.startsWith('xox')) return;
+  try {
+    const { setSlackToken } = require('./clients/oauthTokenStore');
+
+    // 1. Verify token + get userId / teamId
+    const authRes = await axios.post(
+      'https://slack.com/api/auth.test',
+      new URLSearchParams({ token }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    if (!authRes.data?.ok) {
+      logger.warn(`[slack] SLACK_USER_TOKEN auto-load failed: ${authRes.data?.error}`);
+      return;
+    }
+    const { user_id: userId, team_id: teamId, team: teamName } = authRes.data;
+
+    // 2. Resolve real email via users.info
+    let email = '';
+    try {
+      const infoRes = await axios.get('https://slack.com/api/users.info', {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { user: userId },
+      });
+      if (infoRes.data?.ok) email = infoRes.data.user?.profile?.email || '';
+    } catch { /* fall through */ }
+    if (!email) email = `${userId}@slack-local.invalid`;
+
+    setSlackToken({ email, userAccessToken: token, userId, teamId: teamId || '', teamName: teamName || '', scope: 'env', agent: 'message' });
+    logger.info(`[slack] Auto-loaded SLACK_USER_TOKEN for ${email} (${teamName || teamId})`);
+  } catch (err) {
+    logger.warn(`[slack] SLACK_USER_TOKEN auto-load error: ${err.message}`);
+  }
+}
+
 async function start() {
   try {
     await connectMongo(logger);
@@ -50,6 +92,9 @@ async function start() {
       process.exit(1);
     }
   }
+
+  // Auto-install pre-issued Slack user token from .env (if set)
+  await autoLoadSlackToken();
 
   const server = app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT}`);

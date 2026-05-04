@@ -15,6 +15,13 @@ const CLEANERS = {
     delete: '/api/chat-cleaner/teams/delete',
     deleteSelected: '/api/chat-cleaner/teams/delete-selected',
   },
+  slack: {
+    name: 'Slack Cleaner',
+    spaceLabel: 'Channels', dmLabel: 'DMs / Group DMs',
+    preview: '/api/chat-cleaner/slack/preview',
+    delete: '/api/chat-cleaner/slack/delete',
+    deleteSelected: '/api/chat-cleaner/slack/delete-selected',
+  },
 };
 
 export default function CleanSpace() {
@@ -30,6 +37,8 @@ export default function CleanSpace() {
   const [showConfirmAll, setShowConfirmAll] = useState(false);
   const [showConfirmSel, setShowConfirmSel] = useState(false);
   const [hasResults, setHasResults] = useState(false);
+  const [status, setStatus] = useState(null); // { gchat, teams, slack }
+  const [statusError, setStatusError] = useState('');
 
   const esRef = useRef(null);
   const logRef = useRef(null);
@@ -40,9 +49,35 @@ export default function CleanSpace() {
   const dupGroups = detectDuplicates(items);
   const dupCount = dupGroups.reduce((s, g) => s + g.items.length, 0);
 
+  const currentStatus = status ? status[cleaner] : null;
+  const isConfigured = currentStatus?.configured !== false;
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs]);
+
+  // Fetch cleaner status on mount and every time the selected cleaner changes,
+  // bypassing any HTTP cache so config edits (e.g. microsoft.admin.email) show
+  // up immediately after the Java cleaner restarts.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/chat-cleaner/status?_=' + Date.now(), {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache' },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) { setStatus(data); setStatusError(''); }
+      } catch (err) {
+        if (!cancelled) setStatusError(
+          `Could not reach the backend server (details: ${err.message}). Ensure the Node.js backend is running.`
+        );
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cleaner]);
 
   function switchCleaner(val) {
     setCleaner(val);
@@ -73,6 +108,10 @@ export default function CleanSpace() {
   function runPreview() {
     if (!startDate || !endDate) return alert('Please select both dates.');
     if (startDate > endDate) return alert('End date must be after start date.');
+    if (!isConfigured) {
+      setProgressMsg('Cleaner not configured — see banner above');
+      return;
+    }
     setLoading(true);
     setHasResults(false);
     setItems([]);
@@ -83,9 +122,19 @@ export default function CleanSpace() {
     if (esRef.current) esRef.current.close();
     const es = new EventSource(`${cfg.preview}?startDate=${startDate}&endDate=${endDate}`);
     esRef.current = es;
+    let gotTerminalEvent = false;
 
     es.addEventListener('progress', ev => setProgressMsg(safeParse(ev.data)));
+    es.addEventListener('partial', ev => {
+      // Teams sends teams first while chats are still loading
+      const data = safeParse(ev.data);
+      if (Array.isArray(data) && data.length > 0) {
+        setItems(data);
+        setHasResults(true);
+      }
+    });
     es.addEventListener('result', ev => {
+      gotTerminalEvent = true;
       const data = safeParse(ev.data);
       setItems(Array.isArray(data) ? data : []);
       setHasResults(true);
@@ -93,11 +142,22 @@ export default function CleanSpace() {
       es.close();
     });
     es.addEventListener('fail', ev => {
+      gotTerminalEvent = true;
       setProgressMsg('Error: ' + safeParse(ev.data));
       setLoading(false);
       es.close();
     });
-    es.onerror = () => { setLoading(false); es.close(); };
+    es.onerror = () => {
+      if (!gotTerminalEvent) {
+        setProgressMsg(
+          cleaner === 'gchat'
+            ? 'Connection dropped. Ensure you are signed in via Message Agent (Step 1 → Google tab) with a Google admin account.'
+            : 'Connection dropped. Ensure the Node.js backend is running on port 5000 and the account is connected.'
+        );
+      }
+      setLoading(false);
+      es.close();
+    };
   }
 
   function startDeleteAll() {
@@ -202,10 +262,59 @@ export default function CleanSpace() {
           className="px-4 py-2 rounded-lg text-sm font-semibold outline-none bg-white"
           style={{ border: '2px solid #0129ac', color: '#0129ac' }}
         >
-          <option value="gchat">Google Chat Cleaner</option>
-          <option value="teams">Teams Cleaner</option>
+          <option value="gchat">
+            Google Chat Cleaner{status && !status.gchat?.configured ? ' (not configured)' : ''}
+          </option>
+          <option value="teams">
+            Teams Cleaner{status && !status.teams?.configured ? ' (not configured)' : ''}
+          </option>
+          <option value="slack">
+            Slack Cleaner{status && !status.slack?.configured ? ' (not configured)' : ''}
+          </option>
         </select>
       </div>
+
+      {/* Configuration banners — so the user knows WHY data is not fetching */}
+      {statusError && (
+        <div className="rounded-xl p-4 text-sm" style={{ backgroundColor: '#fff0f0', border: '1px solid #e88', color: '#8b1a1a' }}>
+          <strong>Chat Cleaner service unreachable.</strong>
+          <div className="mt-1">{statusError}</div>
+        </div>
+      )}
+      {!statusError && status && currentStatus && !currentStatus.configured && (
+        <div className="rounded-xl p-4 text-sm" style={{ backgroundColor: '#fff8e5', border: '1px solid #e5b94a', color: '#7a5400' }}>
+          <strong>
+            {cleaner === 'gchat' && 'Google Chat Cleaner is not configured.'}
+            {cleaner === 'teams' && 'Teams Cleaner is not configured.'}
+            {cleaner === 'slack' && 'Slack Cleaner is not configured.'}
+          </strong>
+          <div className="mt-1">{currentStatus.reason}</div>
+          {cleaner === 'gchat' && (
+            <div className="mt-2 text-xs">
+              Fix: Go to the <strong>Message Agent</strong> page → Step 1 → Google tab and sign in with a Google admin account that has access to manage Google Chat spaces.
+            </div>
+          )}
+          {cleaner === 'teams' && (
+            <div className="mt-2 text-xs">
+              Fix: in Azure AD, open your app registration → API permissions → add Microsoft Graph
+              <em> Application</em> permissions (<code>Group.ReadWrite.All</code>, <code>User.Read.All</code>,
+              <code>Chat.Read.All</code>, <code>ChatMessage.Read.All</code>), click <em>Grant admin consent</em>,
+              then restart the Node.js backend.
+            </div>
+          )}
+          {cleaner === 'slack' && (
+            <div className="mt-2 text-xs">
+              Fix: go to the <strong>Message Agent</strong> page → Step 1 → Slack tab and connect your Slack account,
+              or paste an <code>xoxp-</code> user token directly using the token input field there.
+            </div>
+          )}
+        </div>
+      )}
+      {!statusError && status && cleaner === 'teams' && status.teams?.configured && status.teams?.note && (
+        <div className="rounded-xl p-4 text-xs" style={{ backgroundColor: '#eef1fb', border: '1px solid #c5cef5', color: '#0129ac' }}>
+          Heads-up: {status.teams.note}
+        </div>
+      )}
 
       {/* Date range + actions */}
       <div className="bg-white rounded-xl p-6 space-y-4" style={{ border: '1px solid #c5cef5' }}>
@@ -227,8 +336,9 @@ export default function CleanSpace() {
             />
           </div>
           <button
-            onClick={runPreview} disabled={loading}
-            className="px-5 py-2 rounded-lg text-sm font-bold transition-all disabled:opacity-40"
+            onClick={runPreview} disabled={loading || !isConfigured}
+            title={!isConfigured ? 'Cleaner not configured — see banner above' : ''}
+            className="px-5 py-2 rounded-lg text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ border: '2px solid #0129ac', color: '#0129ac', backgroundColor: '#fff' }}
           >
             Preview

@@ -5,6 +5,7 @@
       {
         "email": "granger@cloudfuze.us",
         "domain": "cloudfuze.us",
+        "cloud": "google",
         "users": [
           { "email": "granger@cloudfuze.us", "firstName": "Granger", "lastName": "G" },
           { "email": "alex@cloudfuze.us", "firstName": "Alex", "lastName": "" },
@@ -16,6 +17,40 @@
           { "email": "peter@cloudfuze.us", "firstName": "Peter", "lastName": "" },
           { "email": "sonia@cloudfuze.us", "firstName": "Sonia", "lastName": "" }
         ]
+      },
+      {
+        "email": "mia@cloudfuze.com",
+        "domain": "cloudfuze.com",
+        "cloud": "google",
+        "notes": "Google Chat / Workspace admin for cloudfuze.com (domain-wide delegation also uses this account for Clean Space).",
+        "users": [
+          { "email": "mia@cloudfuze.com", "firstName": "Mia", "lastName": "" },
+          { "email": "granger@cloudfuze.com", "firstName": "Granger", "lastName": "" },
+          { "email": "alex@cloudfuze.com", "firstName": "Alex", "lastName": "" },
+          { "email": "austin@cloudfuze.com", "firstName": "Austin", "lastName": "" },
+          { "email": "ben@cloudfuze.com", "firstName": "Ben", "lastName": "" },
+          { "email": "dan@cloudfuze.com", "firstName": "Dan", "lastName": "" },
+          { "email": "harry@cloudfuze.com", "firstName": "Harry", "lastName": "" },
+          { "email": "peter@cloudfuze.com", "firstName": "Peter", "lastName": "" },
+          { "email": "sonia@cloudfuze.com", "firstName": "Sonia", "lastName": "" }
+        ]
+      },
+      {
+        "email": "erik@filefuze.co",
+        "domain": "filefuze.co",
+        "cloud": "google",
+        "notes": "Google Chat / Workspace admin for filefuze.co.",
+        "users": [
+          { "email": "erik@filefuze.co", "firstName": "Erik", "lastName": "" },
+          { "email": "granger@filefuze.co", "firstName": "Granger", "lastName": "" },
+          { "email": "alex@filefuze.co", "firstName": "Alex", "lastName": "" },
+          { "email": "austin@filefuze.co", "firstName": "Austin", "lastName": "" },
+          { "email": "ben@filefuze.co", "firstName": "Ben", "lastName": "" },
+          { "email": "dan@filefuze.co", "firstName": "Dan", "lastName": "" },
+          { "email": "harry@filefuze.co", "firstName": "Harry", "lastName": "" },
+          { "email": "peter@filefuze.co", "firstName": "Peter", "lastName": "" },
+          { "email": "sonia@filefuze.co", "firstName": "Sonia", "lastName": "" }
+        ]
       }
     ]
   },
@@ -25,6 +60,7 @@
       {
         "email": "granger@gajha.com",
         "domain": "gajha.com",
+        "cloud": "microsoft",
         "users": [
           { "email": "granger@gajha.com", "firstName": "Granger", "lastName": "" },
           { "email": "alex@gajha.com", "firstName": "Alex", "lastName": "" },
@@ -47,6 +83,40 @@
           { "email": "sophia@gajha.com", "firstName": "Sophia", "lastName": "" },
           { "email": "supportcftest@gajha.com", "firstName": "Supportcftest", "lastName": "" },
           { "email": "test_room@gajha.com", "firstName": "Test_room", "lastName": "" }
+        ]
+      },
+      {
+        "email": "mia@cloudfuze.com",
+        "domain": "cloudfuze.com",
+        "cloud": "google",
+        "notes": "Google Chat / Workspace admin for cloudfuze.com (domain-wide delegation also uses this account for Clean Space).",
+        "users": [
+          { "email": "mia@cloudfuze.com", "firstName": "Mia", "lastName": "" },
+          { "email": "granger@cloudfuze.com", "firstName": "Granger", "lastName": "" },
+          { "email": "alex@cloudfuze.com", "firstName": "Alex", "lastName": "" },
+          { "email": "austin@cloudfuze.com", "firstName": "Austin", "lastName": "" },
+          { "email": "ben@cloudfuze.com", "firstName": "Ben", "lastName": "" },
+          { "email": "dan@cloudfuze.com", "firstName": "Dan", "lastName": "" },
+          { "email": "harry@cloudfuze.com", "firstName": "Harry", "lastName": "" },
+          { "email": "peter@cloudfuze.com", "firstName": "Peter", "lastName": "" },
+          { "email": "sonia@cloudfuze.com", "firstName": "Sonia", "lastName": "" }
+        ]
+      },
+      {
+        "email": "erik@filefuze.co",
+        "domain": "filefuze.co",
+        "cloud": "google",
+        "notes": "Google Chat / Workspace admin for filefuze.co.",
+        "users": [
+          { "email": "erik@filefuze.co", "firstName": "Erik", "lastName": "" },
+          { "email": "granger@filefuze.co", "firstName": "Granger", "lastName": "" },
+          { "email": "alex@filefuze.co", "firstName": "Alex", "lastName": "" },
+          { "email": "austin@filefuze.co", "firstName": "Austin", "lastName": "" },
+          { "email": "ben@filefuze.co", "firstName": "Ben", "lastName": "" },
+          { "email": "dan@filefuze.co", "firstName": "Dan", "lastName": "" },
+          { "email": "harry@filefuze.co", "firstName": "Harry", "lastName": "" },
+          { "email": "peter@filefuze.co", "firstName": "Peter", "lastName": "" },
+          { "email": "sonia@filefuze.co", "firstName": "Sonia", "lastName": "" }
         ]
       }
     ]

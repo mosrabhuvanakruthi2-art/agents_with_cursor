@@ -1,9 +1,10 @@
-﻿import { Routes, Route } from 'react-router-dom';
+import { Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import { ToastProvider } from './context/ToastContext';
 import Dashboard from './pages/Dashboard';
 import TestCaseGenerator from './pages/TestCaseGenerator';
 import RunAgent from './pages/RunAgent';
+import MessageAgent from './pages/MessageAgent';
 import ExecutionLogs from './pages/ExecutionLogs';
 import ValidationResults from './pages/ValidationResults';
 import CleanDestination from './pages/CleanDestination';
@@ -13,6 +14,7 @@ import TestRepository from './pages/TestRepository';
 import AgentRepo from './pages/AgentRepo';
 import ConnectAccounts from './pages/ConnectAccounts';
 import OAuthCallback from './pages/OAuthCallback';
+import MigrationReports from './pages/MigrationReports';
 
 function App() {
   return (
@@ -24,6 +26,8 @@ function App() {
         <Route index element={<Dashboard />} />
         <Route path="test-case-generator" element={<TestCaseGenerator />} />
         <Route path="run" element={<RunAgent />} />
+        <Route path="message-agent" element={<MessageAgent />} />
+        <Route path="migration-reports" element={<MigrationReports />} />
         <Route path="logs" element={<ExecutionLogs />} />
         <Route path="validation" element={<ValidationResults />} />
         <Route path="clean" element={<CleanDestination />} />

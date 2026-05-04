@@ -11,6 +11,9 @@
  *   },
  *   "microsoft": {
  *     "accounts": { "email": { "accessToken":"...", "refreshToken":"...", "expiresAt":0, "connectedAt":"..." } }
+ *   },
+ *   "slack": {
+ *     "accounts": { "email": { "userAccessToken":"...", "userId":"...", "teamId":"...", "teamName":"...", "connectedAt":"..." } }
  *   }
  * }
  */
@@ -19,6 +22,49 @@ const path = require('path');
 
 const TOKEN_FILE = path.join(__dirname, '../../data/oauth-tokens.json');
 const COLLECTION = 'connected_accounts';
+
+/**
+ * Resolve which agent an account "belongs" to ('mail' | 'message' | 'both').
+ *
+ * Order of precedence:
+ *   1. Explicit `entry.agent` field set when the account was written.
+ *   2. Provider/domain heuristic for accounts stored before tagging existed.
+ *      - Slack → always 'message' (Slack is only used by the Message Agent).
+ *      - Google → 'message' when the email's domain is listed under
+ *        GOOGLE_TENANT_3_DOMAINS or GOOGLE_TENANT_4_DOMAINS (the
+ *        Message-Agent tenants).
+ *      - Everything else defaults to 'mail'.
+ */
+function resolveAccountAgent(entry, provider, email) {
+  if (entry && entry.agent === 'both') return 'both';
+  if (entry && (entry.agent === 'mail' || entry.agent === 'message')) return entry.agent;
+  try {
+    if (provider === 'slack') return 'message';
+    if (provider === 'google') {
+      const domain = String(email || '').split('@')[1]?.toLowerCase() || '';
+      const env = require('../config/env');
+      const t3 = env.GOOGLE_TENANT_3_DOMAINS || [];
+      const t4 = env.GOOGLE_TENANT_4_DOMAINS || [];
+      if (domain && (t3.includes(domain) || t4.includes(domain))) return 'message';
+    }
+  } catch { /* ignore */ }
+  return 'mail';
+}
+
+/** True if an account tagged `accountAgent` should surface under the `filter` view. */
+function agentMatches(accountAgent, filter) {
+  if (!filter) return true;            // no filter = show everything (legacy)
+  if (accountAgent === 'both') return true;
+  return accountAgent === filter;
+}
+
+/** When an account is re-connected by the other agent, promote it to 'both'. */
+function mergeAgent(existingEntry, provider, email, newAgent) {
+  const current = existingEntry ? resolveAccountAgent(existingEntry, provider, email) : null;
+  if (!newAgent) return current || 'mail';
+  if (!current || current === newAgent) return newAgent;
+  return 'both';
+}
 
 // ─── JSON helpers ─────────────────────────────────────────────────────────────
 
@@ -36,6 +82,9 @@ function read() {
 
 /** Migrate old single-microsoft shape { microsoft: { email, accessToken, … } } to new accounts map. */
 function migrateIfNeeded(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    data = {};
+  }
   if (data.microsoft && !data.microsoft.accounts && data.microsoft.email) {
     const { email, ...rest } = data.microsoft;
     data.microsoft = { accounts: { [email.toLowerCase()]: { ...rest, connectedAt: rest.connectedAt || new Date().toISOString() } } };
@@ -44,6 +93,8 @@ function migrateIfNeeded(data) {
   if (!data.google.accounts) data.google.accounts = {};
   if (!data.microsoft) data.microsoft = { accounts: {} };
   if (!data.microsoft.accounts) data.microsoft.accounts = {};
+  if (!data.slack) data.slack = { accounts: {} };
+  if (!data.slack.accounts) data.slack.accounts = {};
   return data;
 }
 
@@ -97,12 +148,28 @@ async function loadFromMongo() {
       const { _id, provider, email, ...rest } = doc;
       if (!provider || !email) continue;
       if (provider === 'google') {
-        data.google.accounts[email.toLowerCase()] = { refreshToken: rest.refreshToken, connectedAt: rest.connectedAt };
+        data.google.accounts[email.toLowerCase()] = {
+          refreshToken: rest.refreshToken,
+          connectedAt: rest.connectedAt,
+          ...(rest.agent ? { agent: rest.agent } : {}),
+        };
         loaded++;
       } else if (provider === 'microsoft') {
         data.microsoft.accounts[email.toLowerCase()] = {
           accessToken: rest.accessToken, refreshToken: rest.refreshToken,
           expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+          ...(rest.agent ? { agent: rest.agent } : {}),
+        };
+        loaded++;
+      } else if (provider === 'slack') {
+        data.slack.accounts[email.toLowerCase()] = {
+          userAccessToken: rest.userAccessToken,
+          userId: rest.userId,
+          teamId: rest.teamId,
+          teamName: rest.teamName,
+          scope: rest.scope,
+          connectedAt: rest.connectedAt,
+          ...(rest.agent ? { agent: rest.agent } : {}),
         };
         loaded++;
       }
@@ -123,10 +190,16 @@ function getGoogleToken(email) {
   return data.google.accounts[email.toLowerCase()] || null;
 }
 
-function setGoogleToken(email, refreshToken) {
+function setGoogleToken(email, refreshToken, agent) {
   const data = read();
   const key = email.toLowerCase();
-  const entry = { refreshToken, connectedAt: data.google.accounts[key]?.connectedAt || new Date().toISOString() };
+  const existing = data.google.accounts[key];
+  const nextAgent = mergeAgent(existing, 'google', key, agent);
+  const entry = {
+    refreshToken,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+    agent: nextAgent,
+  };
   data.google.accounts[key] = entry;
   write(data);
   syncToMongo('google', key, entry);
@@ -140,9 +213,11 @@ function removeGoogleToken(email) {
   removeFromMongo('google', key);
 }
 
-function getGoogleStatus() {
+function getGoogleStatus(filter) {
   const data = read();
-  const emails = Object.keys(data.google.accounts);
+  const emails = Object.entries(data.google.accounts)
+    .filter(([email, entry]) => agentMatches(resolveAccountAgent(entry, 'google', email), filter))
+    .map(([email]) => email);
   return { connected: emails.length > 0, emails, count: emails.length };
 }
 
@@ -170,12 +245,17 @@ function getMicrosoftToken(email) {
 }
 
 function setMicrosoftToken(tokenData) {
-  const { email, ...rest } = tokenData;
+  const { email, agent, ...rest } = tokenData;
   if (!email) return;
   const data = read();
   const key = email.toLowerCase();
   const existing = data.microsoft.accounts[key];
-  const entry = { ...rest, connectedAt: existing?.connectedAt || new Date().toISOString() };
+  const nextAgent = mergeAgent(existing, 'microsoft', key, agent);
+  const entry = {
+    ...rest,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+    agent: nextAgent,
+  };
   data.microsoft.accounts[key] = entry;
   write(data);
   syncToMongo('microsoft', key, { email: key, ...entry });
@@ -197,9 +277,11 @@ function removeMicrosoftToken(email) {
   write(data);
 }
 
-function getMicrosoftStatus() {
+function getMicrosoftStatus(filter) {
   const data = read();
-  const emails = Object.keys(data.microsoft.accounts);
+  const emails = Object.entries(data.microsoft.accounts)
+    .filter(([email, entry]) => agentMatches(resolveAccountAgent(entry, 'microsoft', email), filter))
+    .map(([email]) => email);
   return {
     connected: emails.length > 0,
     emails,
@@ -208,17 +290,91 @@ function getMicrosoftStatus() {
   };
 }
 
+// ─── Slack (user token — workspace install) ───────────────────────────────────
+
+function getSlackToken(email) {
+  const data = read();
+  if (!email) return null;
+  return data.slack.accounts[email.toLowerCase()] || null;
+}
+
+function setSlackToken({ email, userAccessToken, userId, teamId, teamName, scope, agent }) {
+  if (!email || !userAccessToken) return;
+  const data = read();
+  const key = email.toLowerCase();
+  const existing = data.slack.accounts[key];
+  const nextAgent = mergeAgent(existing, 'slack', key, agent);
+  const entry = {
+    userAccessToken,
+    userId,
+    teamId,
+    teamName: teamName || '',
+    scope: scope || '',
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+    agent: nextAgent,
+  };
+  data.slack.accounts[key] = entry;
+  write(data);
+  syncToMongo('slack', key, { email: key, ...entry });
+}
+
+function removeSlackToken(email) {
+  if (!email) return;
+  const data = read();
+  const key = email.toLowerCase();
+  delete data.slack.accounts[key];
+  write(data);
+  removeFromMongo('slack', key);
+}
+
+function getSlackStatus(filter) {
+  const data = read();
+  const emails = Object.entries(data.slack?.accounts || {})
+    .filter(([email, entry]) => agentMatches(resolveAccountAgent(entry, 'slack', email), filter))
+    .map(([email]) => email);
+  return { connected: emails.length > 0, emails, count: emails.length };
+}
+
 // ─── All accounts ─────────────────────────────────────────────────────────────
 
-/** Return all connected accounts across both providers, sorted by connectedAt desc. */
-function getAllConnectedAccounts() {
+/**
+ * Return all connected accounts across both providers, sorted by connectedAt desc.
+ *
+ * @param {Object} [opts]
+ * @param {'mail'|'message'} [opts.agent] - when set, filter to accounts that
+ *        belong to the given agent (matches 'both' too, and infers legacy
+ *        untagged entries via provider/domain heuristic).
+ */
+function getAllConnectedAccounts(opts) {
+  const filter = opts && (opts.agent === 'mail' || opts.agent === 'message') ? opts.agent : null;
   const data = read();
   const accounts = [];
-  for (const [email, entry] of Object.entries(data.google.accounts)) {
-    accounts.push({ provider: 'google', email, connectedAt: entry.connectedAt });
+  const gAcc = data.google?.accounts;
+  const mAcc = data.microsoft?.accounts;
+  const sAcc = data.slack?.accounts;
+  if (gAcc && typeof gAcc === 'object') {
+    for (const [email, entry] of Object.entries(gAcc)) {
+      if (!agentMatches(resolveAccountAgent(entry, 'google', email), filter)) continue;
+      accounts.push({ provider: 'google', email, connectedAt: entry?.connectedAt });
+    }
   }
-  for (const [email, entry] of Object.entries(data.microsoft.accounts)) {
-    accounts.push({ provider: 'microsoft', email, connectedAt: entry.connectedAt });
+  if (mAcc && typeof mAcc === 'object') {
+    for (const [email, entry] of Object.entries(mAcc)) {
+      if (!agentMatches(resolveAccountAgent(entry, 'microsoft', email), filter)) continue;
+      accounts.push({ provider: 'microsoft', email, connectedAt: entry?.connectedAt });
+    }
+  }
+  if (sAcc && typeof sAcc === 'object') {
+    for (const [email, entry] of Object.entries(sAcc)) {
+      if (!agentMatches(resolveAccountAgent(entry, 'slack', email), filter)) continue;
+      accounts.push({
+        provider: 'slack',
+        email,
+        connectedAt: entry?.connectedAt,
+        teamId: entry?.teamId,
+        teamName: entry?.teamName,
+      });
+    }
   }
   return accounts.sort((a, b) => (b.connectedAt || '').localeCompare(a.connectedAt || ''));
 }
@@ -238,4 +394,9 @@ module.exports = {
   getMicrosoftStatus,
   // Combined
   getAllConnectedAccounts,
+  // Slack
+  getSlackToken,
+  setSlackToken,
+  removeSlackToken,
+  getSlackStatus,
 };

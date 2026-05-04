@@ -118,6 +118,14 @@ module.exports = {
   GOOGLE_CLIENT_ID_2: process.env.GOOGLE_CLIENT_ID_2,
   GOOGLE_CLIENT_SECRET_2: process.env.GOOGLE_CLIENT_SECRET_2,
   GOOGLE_TENANT_2_DOMAINS: (process.env.GOOGLE_TENANT_2_DOMAINS || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  // Third Google tenant (cloudfuze.com — Message Agent admins like mia@cloudfuze.com)
+  GOOGLE_CLIENT_ID_3: process.env.GOOGLE_CLIENT_ID_3,
+  GOOGLE_CLIENT_SECRET_3: process.env.GOOGLE_CLIENT_SECRET_3,
+  GOOGLE_TENANT_3_DOMAINS: (process.env.GOOGLE_TENANT_3_DOMAINS || 'cloudfuze.com').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  // Fourth Google tenant (filefuze.co — Message Agent admins like erik@filefuze.co)
+  GOOGLE_CLIENT_ID_4: process.env.GOOGLE_CLIENT_ID_4,
+  GOOGLE_CLIENT_SECRET_4: process.env.GOOGLE_CLIENT_SECRET_4,
+  GOOGLE_TENANT_4_DOMAINS: (process.env.GOOGLE_TENANT_4_DOMAINS || 'filefuze.co').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
   googleAccounts,
   pickCorrespondentEmail,
   pickCcEmail,
@@ -125,6 +133,9 @@ module.exports = {
   GRAPH_CLIENT_ID: process.env.GRAPH_CLIENT_ID,
   GRAPH_CLIENT_SECRET: process.env.GRAPH_CLIENT_SECRET,
   GRAPH_TENANT_ID: process.env.GRAPH_TENANT_ID,
+  // Message Agent dedicated Microsoft app (Teams scopes — same tenant as GRAPH_TENANT_ID)
+  MS_MESSAGE_CLIENT_ID: process.env.MS_MESSAGE_CLIENT_ID || '',
+  MS_MESSAGE_CLIENT_SECRET: process.env.MS_MESSAGE_CLIENT_SECRET || '',
   // Second Microsoft tenant (filefuze.co)
   GRAPH_CLIENT_ID_2: process.env.GRAPH_CLIENT_ID_2,
   GRAPH_CLIENT_SECRET_2: process.env.GRAPH_CLIENT_SECRET_2,
@@ -142,11 +153,21 @@ module.exports = {
   MIGRATION_API_KEY: process.env.MIGRATION_API_KEY || '',
   /**
    * Optional JWT from Migration UI: DevTools → Network → initiate (or login) → Authorization.
-   * Paste the token only or the full "Bearer …" value. When set, POST /mail/login is skipped.
+   * Paste the token only or the full "Bearer …" value. When set, POST /auth/user is skipped.
    */
   MIGRATION_API_BEARER_TOKEN: cleanEnvValue(process.env.MIGRATION_API_BEARER_TOKEN || ''),
-  /** Base64(userId:apiSecret) from Email Migration UI Network → Authorization (optional; overrides MIGRATION_API_KEY for Basic auth) */
+  /**
+   * Base64(userId:apiSecret) from Email/Chat Migration UI Network → Authorization header.
+   * When set, /auth/user login is skipped — this value is used directly as the Basic auth credential.
+   * Copy from DevTools → Network → any API request → Authorization header (paste only the part after "Basic ").
+   */
   MIGRATION_API_BASIC_AUTH: (process.env.MIGRATION_API_BASIC_AUTH || '').trim(),
+  /**
+   * CloudFuze login credentials for automatic two-step login via POST /auth/user.
+   * Used only when MIGRATION_API_BASIC_AUTH and MIGRATION_API_BEARER_TOKEN are not set.
+   */
+  MIGRATION_API_USERNAME: (process.env.MIGRATION_API_USERNAME || '').trim(),
+  MIGRATION_API_PASSWORD: (process.env.MIGRATION_API_PASSWORD || '').trim(),
   /**
    * Path segment(s) for start-migration POST, relative to MIGRATION_API_URL (no leading slash).
    * Default: mail/move/initiate. Copy from DevTools → Network → initiate → Request URL if you get HTTP 405.
@@ -241,4 +262,25 @@ module.exports = {
   OPENAI_API_KEY: (process.env.OPENAI_API_KEY || '').trim(),
   /** Base URL for the bulk calendar API (no trailing slash). Default: http://localhost:8080 */
   BULK_CALENDAR_API_URL: (process.env.BULK_CALENDAR_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
+
+  /**
+   * Optional override for the CloudFuze chat migration initiate path (no leading slash).
+   * Default candidates tried in order: chat/move/initiate, chat/initiate, message/move/initiate, message/initiate.
+   * Copy from DevTools → Network → chat initiate → Request URL if you get HTTP 405.
+   */
+  CHAT_MIGRATION_API_INITIATE_PATH: (process.env.CHAT_MIGRATION_API_INITIATE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''),
+
+  /** Slack OAuth (Message Agent) — create an app at https://api.slack.com/apps → OAuth & Permissions */
+  SLACK_CLIENT_ID: cleanEnvValue(process.env.SLACK_CLIENT_ID || ''),
+  SLACK_CLIENT_SECRET: cleanEnvValue(process.env.SLACK_CLIENT_SECRET || ''),
+  /**
+   * Optional: full redirect URL registered in Slack (must match oauth.v2.authorize exactly).
+   * Default: http://localhost:{PORT}/api/auth/slack/callback
+   */
+  SLACK_REDIRECT_URI: cleanEnvValue(process.env.SLACK_REDIRECT_URI || ''),
+  /**
+   * Pre-issued Slack user token (xoxp-…).  When set, the backend auto-installs it
+   * into the token store on startup — no OAuth popup required.
+   */
+  SLACK_USER_TOKEN: cleanEnvValue(process.env.SLACK_USER_TOKEN || ''),
 };

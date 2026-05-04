@@ -301,4 +301,142 @@ function buildComparisonRows(sourceLabels, destFolders, mapping) {
   return rows;
 }
 
-module.exports = { generateValidationPdf };
+/**
+ * Generate a validation report PDF for a message / chat migration execution.
+ */
+function generateMessageValidationPdf(execution, stream) {
+  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
+  doc.pipe(stream);
+
+  const result     = execution.result || {};
+  const context    = execution.context || {};
+  const validation = result.validationSummary || {};
+  const sourceData = result.sourceData        || {};
+  const migration  = result.migrationResult   || {};
+
+  // ── Title ──────────────────────────────────────────────────────────────────
+  doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a')
+    .text('Message Migration Validation Report', MARGIN, 50, { width: CONTENT_W, align: 'center' });
+  doc.moveDown(0.25);
+  doc.fontSize(10).font('Helvetica').fillColor('#64748b')
+    .text(`Generated: ${new Date().toLocaleString()}`, { width: CONTENT_W, align: 'center' });
+  doc.x = MARGIN;
+  doc.moveDown(1);
+
+  // ── Execution details ──────────────────────────────────────────────────────
+  drawSectionHeader(doc, 'Execution details');
+  drawMetadataTable(doc, [
+    ['Execution ID',    execution.executionId],
+    ['Source email',    context.sourceEmail || 'N/A'],
+    ['Destination',     context.destinationEmail || 'N/A'],
+    ['Combination',     validation.combination || context.messageCombination || 'N/A'],
+    ['Test type',       context.testType || 'N/A'],
+    ['Migration type',  context.migrationType || 'FULL'],
+    ['Migration mode',  validation.migrationMode || migration.mode || 'N/A'],
+    ['Run status',      result.status || 'N/A'],
+    ['Duration',        result.duration ? `${(result.duration / 1000).toFixed(1)} s` : 'N/A'],
+    ['Started',         execution.createdAt ? new Date(execution.createdAt).toLocaleString() : 'N/A'],
+    ['Completed',       execution.completedAt ? new Date(execution.completedAt).toLocaleString() : 'N/A'],
+  ]);
+
+  // ── Overall status ─────────────────────────────────────────────────────────
+  drawSectionHeader(doc, 'Overall validation status');
+  const statusColor = validation.overallStatus === 'PASSED' ? '#15803d' : '#b91c1c';
+  doc.x = contentLeft(doc);
+  doc.fontSize(18).font('Helvetica-Bold').fillColor(statusColor)
+    .text(validation.overallStatus || result.status || 'N/A');
+  if (validation.isDryRun) {
+    doc.fontSize(10).font('Helvetica').fillColor('#64748b')
+      .text('(Dry-run mode — platform not connected live, messages were simulated)');
+  }
+  doc.moveDown(0.5);
+
+  // ── Source seeding summary ─────────────────────────────────────────────────
+  drawSectionHeader(doc, 'Source seeding summary');
+  const counts = validation.counts || {};
+  drawMetadataTableCompact(doc, [
+    ['Test cases matched',    String(counts.testCases        || 0)],
+    ['Targets (channels/DMs)', String(counts.targets         || 0)],
+    ['Messages attempted',    String(counts.postsAttempted   || 0)],
+    ['Messages posted ✓',     String(counts.postsSucceeded   || 0)],
+    ['Messages failed ✗',     String(counts.postsFailed      || 0)],
+    ['Live posting',          sourceData.livePosting || sourceData.liveSlackPosting ? 'Yes' : 'No (dry-run)'],
+  ]);
+
+  // ── CloudFuze migration summary ───────────────────────────────────────────
+  drawSectionHeader(doc, 'CloudFuze migration summary');
+  drawMetadataTableCompact(doc, [
+    ['Migration mode',       migration.mode || validation.migrationMode || 'N/A'],
+    ['CloudFuze API status', validation.cloudFuzeStatus || migration.cloudFuzeStatus || 'N/A'],
+    ['Targets initiated',    String(counts.targetsInitiated ?? '—')],
+    ['Targets failed',       String(counts.targetsFailed   ?? '—')],
+    ['Messages migrated',    String(counts.messagesMigrated || 0)],
+    ['Migration note',       validation.migrationNote || migration.note || '—'],
+  ]);
+
+  // ── Per-channel / DM breakdown ────────────────────────────────────────────
+  const perTarget = validation.perTarget || [];
+  if (perTarget.length > 0) {
+    drawSectionHeader(doc, `Per-channel / DM breakdown (${perTarget.length} target${perTarget.length !== 1 ? 's' : ''})`);
+
+    const colW = [180, 55, 55, 55, 70, 80];
+    const headers = ['Target ID', 'Attempted', 'Posted ✓', 'Failed ✗', 'Migration', 'Status'];
+    const rows = perTarget.map((t) => [
+      t.id.length > 30 ? t.id.slice(0, 28) + '…' : t.id,
+      String(t.seeding?.attempted || 0),
+      String(t.seeding?.succeeded || 0),
+      String(t.seeding?.failed    || 0),
+      t.migration?.jobId ? `job: ${String(t.migration.jobId).slice(0, 12)}` : t.migration?.status || '—',
+      t.status || '—',
+    ]);
+    drawDataTable(doc, headers, rows, colW);
+  }
+
+  // ── CloudFuze per-target job results ─────────────────────────────────────
+  const cfResults = validation.chatMigrationResults || migration.chatMigrationResults || [];
+  if (cfResults.length > 0) {
+    drawSectionHeader(doc, 'CloudFuze job IDs per target');
+    const colWcf = [200, 60, CONTENT_W - 260];
+    const cfRows = cfResults.map((r) => [
+      r.target.length > 35 ? r.target.slice(0, 33) + '…' : r.target,
+      r.kind || '—',
+      r.jobId ? `Job: ${r.jobId}` : (r.error ? `Error: ${r.error.slice(0, 60)}` : '—'),
+    ]);
+    drawDataTable(doc, ['Target ID', 'Kind', 'Result'], cfRows, colWcf);
+  }
+
+  // ── Mismatches ────────────────────────────────────────────────────────────
+  const mismatches = validation.mismatches || [];
+  if (mismatches.length > 0) {
+    drawSectionHeader(doc, `Mismatches (${mismatches.length})`);
+    const mwCols = [70, 130, CONTENT_W - 200];
+    const misRows = mismatches.map((m) => [
+      m.category || '—',
+      m.field    || '—',
+      `Expected: ${String(m.expected).slice(0, 60)}  →  Actual: ${String(m.actual).slice(0, 100)}`,
+    ]);
+    drawDataTable(doc, ['Category', 'Field', 'Expected vs actual'], misRows, mwCols);
+  } else if (validation.overallStatus === 'PASSED') {
+    doc.x = contentLeft(doc);
+    doc.fontSize(10).font('Helvetica').fillColor('#15803d')
+      .text('No mismatches detected — all validation checks passed.');
+    doc.moveDown(0.3);
+  }
+
+  // ── Agent results ─────────────────────────────────────────────────────────
+  const agentResults = result.agentResults || [];
+  if (agentResults.length > 0) {
+    drawSectionHeader(doc, 'Agent execution results');
+    const arCols = [200, 80, CONTENT_W - 280];
+    const arRows = agentResults.map((a) => [
+      a.name || '—',
+      a.status || '—',
+      a.error  || (a.status === 'COMPLETED' ? 'Success' : '—'),
+    ]);
+    drawDataTable(doc, ['Agent', 'Status', 'Notes'], arRows, arCols);
+  }
+
+  doc.end();
+}
+
+module.exports = { generateValidationPdf, generateMessageValidationPdf };

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   generateTestCases,
   getCustomTestCases,
@@ -8,6 +9,7 @@ import {
 } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import usePersistedState from '../hooks/usePersistedState';
+import { MESSAGE_MIGRATION_COMBINATIONS } from '../constants/messageCombinations';
 
 /* ─── Product / combination catalogue ─────────────────────────────────────── */
 const PRODUCT_COMBOS = {
@@ -17,16 +19,7 @@ const PRODUCT_COMBOS = {
     'Outlook → Outlook',
     'Outlook → Gmail',
   ],
-  Message: [
-    'Slack → Google Chat',
-    'Slack → Microsoft Teams',
-    'Teams → Google Chat',
-    'Teams → Teams',
-    'Teams → Slack',
-    'Chat → Teams',
-    'Chat → Chat',
-    'Chat → Slack',
-  ],
+  Message: MESSAGE_MIGRATION_COMBINATIONS,
   Content: [], // user will supply combinations later
 };
 
@@ -74,6 +67,7 @@ const COLS = {
   summary:  'min-w-[200px] w-[200px]',
   action:   'min-w-[180px] w-[180px]',
   testType: 'min-w-[90px]  w-[90px]',
+  msgCount: 'min-w-[90px]  w-[90px]',
   testData: 'min-w-[170px] w-[170px]',
   steps:    'min-w-[230px] w-[230px]',
   expected: 'min-w-[200px] w-[200px]',
@@ -142,6 +136,7 @@ function TableHead({ showCheckbox, allChecked, someChecked, onToggleAll, extraCo
         <th className={`${TH} ${COLS.summary}`}>Summary</th>
         <th className={`${TH} ${COLS.action}`}>Action</th>
         <th className={`${TH} ${COLS.testType}`}>Test Type</th>
+        <th className={`${TH} ${COLS.msgCount}`}>Msg Count</th>
         <th className={`${TH} ${COLS.testData}`}>Test Data</th>
         <th className={`${TH} ${COLS.steps}`}>Test Steps</th>
         <th className={`${TH} ${COLS.expected}`}>Expected Result</th>
@@ -174,6 +169,11 @@ function GeneratedTable({ cases, selected, onToggle, onToggleAll, savingState, o
                   <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || tc.subject || '—'}</td>
                   <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
                   <td className={`${TD} ${COLS.testType} text-gray-500 italic text-[11px]`}>On save</td>
+                  <td className={`${TD} ${COLS.msgCount} text-center`}>
+                    {tc.messageCount ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold bg-[#0129ac] text-white">{tc.messageCount.toLocaleString()}</span>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
                   <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
                   <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
                   <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
@@ -220,6 +220,13 @@ function SavedTable({ cases, activeTab, deletingId, onDelete }) {
                   {tc.testType ? tc.testType.charAt(0).toUpperCase() + tc.testType.slice(1) : activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
                 </span>
               </td>
+              <td className={`${TD} ${COLS.msgCount} text-center`}>
+                {tc.messageCount ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold bg-[#0129ac] text-white">
+                    {tc.messageCount.toLocaleString()}
+                  </span>
+                ) : <span className="text-gray-300">—</span>}
+              </td>
               <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
               <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
               <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
@@ -246,6 +253,7 @@ function SavedTable({ cases, activeTab, deletingId, onDelete }) {
 /* ─── Main page ─────────────────────────────────────────────────────────────── */
 export default function TestCaseGenerator() {
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [scenarioText, setScenarioText] = usePersistedState('tcg-scenario', '');
   const [count, setCount]               = usePersistedState('tcg-count', 5);
@@ -258,6 +266,32 @@ export default function TestCaseGenerator() {
   const [selected, setSelected]         = usePersistedState('tcg-selected', new Set());
 
   const abortControllerRef = useRef(null);
+
+  // Apply ?productType=…&combination=…&folder=…&scenario=… prefill once (e.g. from Message Agent
+  // "Generate Test Cases from these IDs"). We strip the params after applying so a refresh
+  // doesn't keep clobbering user edits.
+  const prefillAppliedRef = useRef(false);
+  useEffect(() => {
+    if (prefillAppliedRef.current) return;
+    const pt       = searchParams.get('productType');
+    const combo    = searchParams.get('combination');
+    const fld      = searchParams.get('folder');
+    const scenario = searchParams.get('scenario');
+    if (!pt && !combo && !fld && !scenario) return;
+    if (pt && PRODUCT_COMBOS[pt]) {
+      setProductType(pt);
+      const combos = PRODUCT_COMBOS[pt] || [];
+      setCombination(combos[0] || '');
+    }
+    if (combo) {
+      if (pt === 'Content') setCustomCombo(combo);
+      else setCombination(combo);
+    }
+    if (fld) setFolder(fld);
+    if (scenario) setScenarioText(scenario);
+    prefillAppliedRef.current = true;
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams, setProductType, setCombination, setCustomCombo, setFolder, setScenarioText]);
 
   const [generating, setGenerating]   = useState(false);
   const [generateError, setGenerateError] = useState(null);
@@ -380,9 +414,10 @@ export default function TestCaseGenerator() {
     setSavingState((prev) => ({ ...prev, [key]: 'loading' }));
     try {
       await addCustomTestCase({ testType: type, testCase: tc });
+      setSavingState((prev) => ({ ...prev, [key]: 'done' }));
       loadSaved();
       toast.success(`Added to ${type.charAt(0).toUpperCase() + type.slice(1)}`, tc.summary || tc.subject);
-      setTimeout(() => removeFromGenerated([idx]), 600);
+      setTimeout(() => removeFromGenerated([idx]), 800);
     } catch (err) {
       setSavingState((prev) => ({ ...prev, [key]: undefined }));
       if (err.response?.status === 409) toast.warning('Duplicate skipped', err.response.data.message);
@@ -579,11 +614,11 @@ export default function TestCaseGenerator() {
               <label className="block text-sm font-medium text-black mb-1">Test cases to generate</label>
               <div className="flex items-center gap-2">
                 <input
-                  type="number" min={1} max={20} value={count}
-                  onChange={(e) => setCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
+                  type="number" min={1} max={40} value={count}
+                  onChange={(e) => setCount(Math.min(40, Math.max(1, parseInt(e.target.value) || 1)))}
                   className="w-20 px-3 py-2 border border-[#c5cef5] rounded-lg text-sm text-black text-center focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
                 />
-                <span className="text-xs text-black">total (max 20)</span>
+                <span className="text-xs text-black">total (max 40)</span>
               </div>
             </div>
 

@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.Collections;
@@ -26,25 +27,41 @@ public class MicrosoftTeamsConfig {
             log.warn("Teams: microsoft.tenant-id not configured — Teams features disabled");
             return new RestTemplate();
         }
+        if (clientId == null || clientId.isBlank()) {
+            log.warn("Teams: microsoft.client-id not configured — Teams features disabled");
+            return new RestTemplate();
+        }
+        if (clientSecret == null || clientSecret.isBlank()) {
+            log.warn("Teams: microsoft.client-secret not configured — set MICROSOFT_CLIENT_SECRET or microsoft.client-secret");
+            return new RestTemplate();
+        }
 
+        // Client credentials: scope ".default" uses every application permission
+        // granted + admin-consented on this app (User, Group, Chat, etc.).
         ConfidentialClientApplication app = ConfidentialClientApplication
                 .builder(clientId, ClientCredentialFactory.createFromSecret(clientSecret))
                 .authority("https://login.microsoftonline.com/" + tenantId)
                 .build();
-        log.info("Teams: MSAL4J initialized — tenant={}, client={}", tenantId, clientId);
-        log.info("Teams: Admin account   : {}", adminEmail);
+        log.info("Teams: MSAL using https://graph.microsoft.com/.default (all consented app roles)");
+        log.info("Teams: tenant={}, client id={}", tenantId, clientId);
+        log.info("Teams: admin email (reference): {}", adminEmail);
 
-        RestTemplate rt = new RestTemplate();
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(15000);
+        factory.setReadTimeout(120000);
+        RestTemplate rt = new RestTemplate(factory);
         rt.getInterceptors().add((request, body, execution) -> {
             try {
                 ClientCredentialParameters params = ClientCredentialParameters
                         .builder(Collections.singleton("https://graph.microsoft.com/.default"))
                         .build();
-                // MSAL4J caches the token internally; only fetches new one when expired
                 IAuthenticationResult result = app.acquireToken(params).get();
                 request.getHeaders().setBearerAuth(result.accessToken());
             } catch (Exception e) {
                 log.error("Teams: failed to acquire access token: {}", e.getMessage());
+                throw new IllegalStateException(
+                        "Microsoft Graph token failed. Check tenant-id, client-id, client-secret, and admin consent on application permissions.",
+                        e);
             }
             return execution.execute(request, body);
         });

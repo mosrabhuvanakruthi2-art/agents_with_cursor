@@ -25,6 +25,11 @@ backend/data/executions.json
 backend/data/custom-test-cases.json
 backend/data/test-repository.json
 
+# Google service-account private key — keep local only
+chat-cleaner/service-account.json
+# Spring Boot local secrets override (client secrets, tokens)
+chat-cleaner/src/main/resources/application-local.properties
+
 # Claude IDE local config
 .claude/settings.local.json
 .claude/settings.json

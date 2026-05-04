@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getSourceUsers, getDestinationUsers,
-  getGoogleOAuthUrl, getMicrosoftOAuthUrl,
-  getConnectedAccounts, signOutGoogle, signOutMicrosoft,
+  getGoogleOAuthUrl, getMicrosoftOAuthUrl, getSlackOAuthUrl,
+  getConnectedAccounts, signOutGoogle, signOutMicrosoft, signOutSlack,
+  connectSlackToken, connectMicrosoftAdmin,
 } from '../services/api';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -11,6 +12,7 @@ import usePersistedState from '../hooks/usePersistedState';
 const PROVIDERS = {
   google: { key: 'google', label: 'Google Workspace', short: 'Google', icon: GoogleIcon },
   microsoft: { key: 'microsoft', label: 'Microsoft 365', short: 'Microsoft', icon: MicrosoftIcon },
+  slack: { key: 'slack', label: 'Slack Cloud', short: 'Slack', icon: SlackIcon },
 };
 
 // ─── OAuth popup ──────────────────────────────────────────────────────────────
@@ -26,21 +28,26 @@ function openOAuthPopup(url) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function UserMapping({ onMappingComplete }) {
-  const [srcProvider, setSrcProvider] = usePersistedState('map-srcProvider', 'google');
-  const [srcEmail, setSrcEmail] = usePersistedState('map-srcAdmin', '');
-  const [dstProvider, setDstProvider] = usePersistedState('map-dstProvider', 'microsoft');
-  const [dstEmail, setDstEmail] = usePersistedState('map-destAdmin', '');
+export default function UserMapping({ onMappingComplete, includeSlack = false, onSourceProviderChange }) {
+  const pk = includeSlack ? 'msg-' : '';
+  const [srcProvider, setSrcProvider] = usePersistedState(`${pk}map-srcProvider`, 'google');
 
-  const [sourceUsers, setSourceUsers] = usePersistedState('map-srcUsers', []);
-  const [destUsers, setDestUsers] = usePersistedState('map-destUsers', []);
-  const [mappings, setMappings] = usePersistedState('map-mappings', []);
-  const [unmappedSource, setUnmappedSource] = usePersistedState('map-unmapSrc', []);
-  const [unmappedDest, setUnmappedDest] = usePersistedState('map-unmapDest', []);
+  useEffect(() => {
+    onSourceProviderChange?.(srcProvider);
+  }, [srcProvider, onSourceProviderChange]);
+  const [srcEmail, setSrcEmail] = usePersistedState(`${pk}map-srcAdmin`, '');
+  const [dstProvider, setDstProvider] = usePersistedState(`${pk}map-dstProvider`, 'microsoft');
+  const [dstEmail, setDstEmail] = usePersistedState(`${pk}map-destAdmin`, '');
+
+  const [sourceUsers, setSourceUsers] = usePersistedState(`${pk}map-srcUsers`, []);
+  const [destUsers, setDestUsers] = usePersistedState(`${pk}map-destUsers`, []);
+  const [mappings, setMappings] = usePersistedState(`${pk}map-mappings`, []);
+  const [unmappedSource, setUnmappedSource] = usePersistedState(`${pk}map-unmapSrc`, []);
+  const [unmappedDest, setUnmappedDest] = usePersistedState(`${pk}map-unmapDest`, []);
   const [selectedIndices, setSelectedIndices] = useState(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [fetched, setFetched] = usePersistedState('map-fetched', false);
+  const [fetched, setFetched] = usePersistedState(`${pk}map-fetched`, false);
 
   // connected accounts (from backend)
   const [accounts, setAccounts] = useState([]);  // [{ provider, email, connectedAt }]
@@ -57,10 +64,15 @@ export default function UserMapping({ onMappingComplete }) {
 
   const loadAccounts = useCallback(async () => {
     try {
-      const res = await getConnectedAccounts();
-      setAccounts(res.data.accounts || []);
-    } catch { /* ignore */ }
-    finally { setAccountsLoading(false); }
+      // Message Agent view only — keeps Run Agent's account list separate.
+      const res = await getConnectedAccounts('message');
+      const list = res?.data?.accounts;
+      setAccounts(Array.isArray(list) ? list : []);
+    } catch {
+      setAccounts([]);
+    } finally {
+      setAccountsLoading(false);
+    }
   }, []);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
@@ -102,6 +114,7 @@ export default function UserMapping({ onMappingComplete }) {
   async function handleSignOut(provider, email) {
     try {
       if (provider === 'google') await signOutGoogle(email);
+      else if (provider === 'slack') await signOutSlack(email);
       else await signOutMicrosoft(email);
       await loadAccounts();
     } catch { /* ignore */ }
@@ -112,10 +125,20 @@ export default function UserMapping({ onMappingComplete }) {
     setOauthError(null);
     setOauthLoading(true);
     try {
-      const getFn = providerKey === 'google' ? getGoogleOAuthUrl : getMicrosoftOAuthUrl;
-      const tenant = providerKey === 'google' ? googleTenant : msTenant;
-      const res = await getFn('popup', tenant);
-      popupRef.current = openOAuthPopup(res.data.url);
+      let res;
+      if (providerKey === 'slack') {
+        res = await getSlackOAuthUrl('popup', 'message');
+      } else if (providerKey === 'google') {
+        // Message Agent flow → Google Chat scopes only (no Gmail/Calendar).
+        res = await getGoogleOAuthUrl('popup', googleTenant, 'message');
+      } else {
+        res = await getMicrosoftOAuthUrl('popup', msTenant, 'message');
+      }
+      const authUrl = res?.data?.url;
+      if (!authUrl) {
+        throw new Error(res?.data?.error || 'OAuth URL not returned. Is the backend running on port 5000?');
+      }
+      popupRef.current = openOAuthPopup(authUrl);
       startPolling(providerKey, (email) => {
         if (target === 'source') setSrcEmail(email);
         else setDstEmail(email);
@@ -127,12 +150,87 @@ export default function UserMapping({ onMappingComplete }) {
     }
   }
 
+  async function handleSlackTokenPaste(target, token) {
+    setOauthError(null);
+    setOauthLoading(true);
+    try {
+      const res = await connectSlackToken(token, 'message');
+      const email = res?.data?.email;
+      if (!email) throw new Error('Token accepted but no email returned');
+      if (target === 'source') setSrcEmail(email);
+      else setDstEmail(email);
+      await loadAccounts();
+      setLoginTarget(null);
+    } catch (err) {
+      setOauthError(err.response?.data?.error || err.message);
+    } finally {
+      setOauthLoading(false);
+    }
+  }
+
+  async function handleMicrosoftAdminConnect(target, email) {
+    setOauthError(null);
+    setOauthLoading(true);
+    try {
+      const res = await connectMicrosoftAdmin(email, msTenant, 'message');
+      const connectedEmail = res?.data?.email || email;
+      if (target === 'source') setSrcEmail(connectedEmail);
+      else setDstEmail(connectedEmail);
+      await loadAccounts();
+      setLoginTarget(null);
+    } catch (err) {
+      setOauthError(err.response?.data?.error || err.message);
+    } finally {
+      setOauthLoading(false);
+    }
+  }
+
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   // ─── User mapping ─────────────────────────────────────────────────────────────
 
+  // Build a user-shaped entry for an admin account (used to inject admin→admin pairs).
+  function adminAsUser(email, provider) {
+    const local = (email || '').split('@')[0] || '';
+    const parts = local.replace(/[._-]+/g, ' ').trim().split(/\s+/);
+    const firstName = parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1).toLowerCase() : '';
+    const lastName = parts.slice(1).join(' ');
+    return {
+      id: `admin:${provider}:${email}`,
+      email,
+      firstName,
+      lastName,
+      displayName: firstName + (lastName ? ` ${lastName}` : ''),
+      role: 'admin',
+      _adminProvider: provider,
+    };
+  }
+
+  // Union helper — dedup by email (case-insensitive).
+  function unionUsersByEmail(lists) {
+    const seen = new Set();
+    const out = [];
+    for (const list of lists) {
+      for (const u of list || []) {
+        const key = (u?.email || u?.id || '').toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(u);
+      }
+    }
+    return out;
+  }
+
   async function fetchUsers() {
-    if (!srcEmail || !dstEmail) return;
+    // Allow either the active admin field OR any connected accounts on that side.
+    const srcAdminEmails = Array.from(new Set(
+      [srcEmail, ...srcAccounts.map((a) => a.email)].filter(Boolean)
+    ));
+    const dstAdminEmails = Array.from(new Set(
+      [dstEmail, ...dstAccounts.map((a) => a.email)].filter(Boolean)
+    ));
+    if (srcAdminEmails.length === 0 || dstAdminEmails.length === 0) return;
+
     setLoading(true);
     setError(null);
     setFetched(false);
@@ -140,15 +238,20 @@ export default function UserMapping({ onMappingComplete }) {
     setUnmappedSource([]);
     setUnmappedDest([]);
     try {
-      const [srcRes, destRes] = await Promise.all([
-        getSourceUsers(srcEmail, srcProvider),
-        getDestinationUsers(dstEmail, dstProvider),
+      // Fetch users for every connected admin on each side, then union.
+      const [srcLists, dstLists] = await Promise.all([
+        Promise.all(srcAdminEmails.map((e) =>
+          getSourceUsers(e, srcProvider).then((r) => r.data.users || []).catch(() => [])
+        )),
+        Promise.all(dstAdminEmails.map((e) =>
+          getDestinationUsers(e, dstProvider).then((r) => r.data.users || []).catch(() => [])
+        )),
       ]);
-      const src = srcRes.data.users || [];
-      const dest = destRes.data.users || [];
+      const src = unionUsersByEmail(srcLists);
+      const dest = unionUsersByEmail(dstLists);
       setSourceUsers(src);
       setDestUsers(dest);
-      autoMap(src, dest);
+      autoMap(src, dest, srcAdminEmails, dstAdminEmails);
       setFetched(true);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
@@ -157,19 +260,49 @@ export default function UserMapping({ onMappingComplete }) {
     }
   }
 
-  function autoMap(src, dest) {
-    const mapped = [], usedDest = new Set(), unmatched = [];
-    for (const s of src) {
+  function autoMap(src, dest, srcAdminEmails = [], dstAdminEmails = []) {
+    // 1. Admin→admin pairs first — source admin #i ↔ destination admin #i by list order.
+    //    Ensures mia@gajha.com → granger@gajha.com, mia@pepperwood.club → erik@filefuze.co
+    //    appear as "auto" mapped pairs at the top, exactly as the user asked.
+    const adminPairs = [];
+    const adminSrcEmails = new Set();
+    const adminDstEmails = new Set();
+    const pairCount = Math.min(srcAdminEmails.length, dstAdminEmails.length);
+    for (let i = 0; i < pairCount; i++) {
+      const s = adminAsUser(srcAdminEmails[i], srcProvider);
+      const d = adminAsUser(dstAdminEmails[i], dstProvider);
+      adminPairs.push({ source: s, destination: d, autoMatched: true, isAdminPair: true });
+      adminSrcEmails.add(s.email.toLowerCase());
+      adminDstEmails.add(d.email.toLowerCase());
+    }
+    // Extra admins on either side that have no counterpart → surface as unmatched
+    // with an admin marker so they can be paired manually.
+    const extraSrcAdmins = srcAdminEmails.slice(pairCount)
+      .map((e) => adminAsUser(e, srcProvider));
+    const extraDstAdmins = dstAdminEmails.slice(pairCount)
+      .map((e) => adminAsUser(e, dstProvider));
+
+    // 2. Strip any regular user entry that duplicates an admin we just paired.
+    const srcForMap = src.filter((u) => !adminSrcEmails.has((u.email || '').toLowerCase()));
+    const destForMap = dest.filter((u) => !adminDstEmails.has((u.email || '').toLowerCase()));
+
+    // 3. First-name auto-map for the remaining users.
+    const userPairs = [];
+    const usedDest = new Set();
+    const unmatched = [];
+    for (const s of srcForMap) {
       const f = (s.firstName || '').toLowerCase().trim();
       if (!f) { unmatched.push(s); continue; }
-      const m = dest.find((d) => !usedDest.has(d.id) && (d.firstName || '').toLowerCase().trim() === f);
-      if (m) { mapped.push({ source: s, destination: m, autoMatched: true }); usedDest.add(m.id); }
+      const m = destForMap.find((d) => !usedDest.has(d.id) && (d.firstName || '').toLowerCase().trim() === f);
+      if (m) { userPairs.push({ source: s, destination: m, autoMatched: true }); usedDest.add(m.id); }
       else unmatched.push(s);
     }
+
+    const mapped = [...adminPairs, ...userPairs];
     setMappings(mapped);
     setSelectedIndices(new Set(mapped.map((_, i) => i)));
-    setUnmappedSource(unmatched);
-    setUnmappedDest(dest.filter((d) => !usedDest.has(d.id)));
+    setUnmappedSource([...extraSrcAdmins, ...unmatched]);
+    setUnmappedDest([...extraDstAdmins, ...destForMap.filter((d) => !usedDest.has(d.id))]);
   }
 
   function manualMap(srcUser, destEmail) {
@@ -206,16 +339,29 @@ export default function UserMapping({ onMappingComplete }) {
 
   function handleConfirm() {
     const selected = mappings.filter((_, i) => selectedIndices.has(i));
-    onMappingComplete(selected.map((m) => ({
+    const pairs = selected.map((m) => ({
       sourceEmail: m.source.email, destinationEmail: m.destination.email,
       sourceName: m.source.displayName, destinationName: m.destination.displayName,
       autoMatched: m.autoMatched,
-    })));
+    }));
+    // Second arg gives the parent the admin emails + providers used for
+    // source / destination. Consumers (e.g. Message Agent) use this to fetch
+    // channels & DMs by name from the source platform without having to
+    // re-derive which admin is connected to which provider.
+    const meta = {
+      sourceAdmin: srcEmail || null,
+      sourceProvider: srcProvider || null,
+      destinationAdmin: dstEmail || null,
+      destinationProvider: dstProvider || null,
+    };
+    onMappingComplete(pairs, meta);
   }
 
   // Accounts for each provider
   const srcAccounts = accounts.filter((a) => a.provider === srcProvider);
   const dstAccounts = accounts.filter((a) => a.provider === dstProvider);
+
+  const providerKeys = includeSlack ? ['google', 'microsoft', 'slack'] : ['google', 'microsoft'];
 
   return (
     <div className="space-y-5">
@@ -224,6 +370,7 @@ export default function UserMapping({ onMappingComplete }) {
         <AdminField
           label="Source Admin"
           provider={srcProvider}
+          providerKeys={providerKeys}
           email={srcEmail}
           connectedAccounts={srcAccounts}
           accountsLoading={accountsLoading}
@@ -235,6 +382,7 @@ export default function UserMapping({ onMappingComplete }) {
         <AdminField
           label="Destination Admin"
           provider={dstProvider}
+          providerKeys={providerKeys}
           email={dstEmail}
           connectedAccounts={dstAccounts}
           accountsLoading={accountsLoading}
@@ -248,7 +396,11 @@ export default function UserMapping({ onMappingComplete }) {
       <button
         type="button"
         onClick={fetchUsers}
-        disabled={loading || !srcEmail || !dstEmail}
+        disabled={
+          loading ||
+          (!srcEmail && srcAccounts.length === 0) ||
+          (!dstEmail && dstAccounts.length === 0)
+        }
         className="px-6 py-2.5 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
       >
         {loading ? 'Fetching...' : 'Fetch & Auto-Map Users'}
@@ -320,12 +472,22 @@ export default function UserMapping({ onMappingComplete }) {
             </div>
           )}
 
-          {unmappedSource.length > 0 && (
-            <div className="bg-white border border-yellow-200 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 bg-yellow-50 border-b border-yellow-200">
-                <h3 className="text-sm font-semibold text-yellow-800">Unmatched Source Users ({unmappedSource.length})</h3>
-                <p className="text-xs text-yellow-600 mt-0.5">Select a destination user to map manually</p>
+          <div className="bg-white border border-yellow-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 bg-yellow-50 border-b border-yellow-200 flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-yellow-800">
+                  Manual Mapping ({unmappedSource.length} unmatched source · {unmappedDest.length} unmatched destination)
+                </h3>
+                <p className="text-xs text-yellow-600 mt-0.5">
+                  Pair any source user with a destination user. Auto-matched pairs above can also be removed and re-mapped here.
+                </p>
               </div>
+            </div>
+            {unmappedSource.length === 0 ? (
+              <div className="px-4 py-4 text-xs text-gray-500">
+                All source users are mapped. Remove a pair above to re-map it manually.
+              </div>
+            ) : (
               <div className="divide-y divide-gray-100 max-h-60 overflow-y-auto">
                 {unmappedSource.map((s) => (
                   <div key={s.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
@@ -341,8 +503,8 @@ export default function UserMapping({ onMappingComplete }) {
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {mappings.length > 0 && (
             <button type="button" onClick={handleConfirm} disabled={selectedIndices.size === 0}
@@ -364,7 +526,10 @@ export default function UserMapping({ onMappingComplete }) {
           msTenant={msTenant}
           onMsTenantChange={setMsTenant}
           onConnect={() => handleLogin(loginTarget)}
+          onSlackTokenSubmit={(token) => handleSlackTokenPaste(loginTarget, token)}
+          onMicrosoftAdminSubmit={(email) => handleMicrosoftAdminConnect(loginTarget, email)}
           onClose={() => { setLoginTarget(null); setOauthError(null); stopPolling(); popupRef.current?.close(); }}
+          hasSlack={includeSlack}
         />
       )}
     </div>
@@ -373,8 +538,20 @@ export default function UserMapping({ onMappingComplete }) {
 
 // ─── AdminField ───────────────────────────────────────────────────────────────
 
-function AdminField({ label, provider, email, connectedAccounts, accountsLoading, onProviderChange, onEmailChange, onLogin, onSignOut }) {
-  const p = PROVIDERS[provider];
+function AdminField({
+  label,
+  provider,
+  providerKeys,
+  email,
+  connectedAccounts,
+  accountsLoading,
+  onProviderChange,
+  onEmailChange,
+  onLogin,
+  onSignOut,
+}) {
+  const keys = providerKeys || ['google', 'microsoft'];
+  const p = PROVIDERS[provider] || PROVIDERS.google;
   const Icon = p.icon;
   const count = connectedAccounts.length;
   const hasAccounts = count > 0;
@@ -393,17 +570,18 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
       </div>
 
       {/* Provider toggle */}
-      <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
-        {Object.values(PROVIDERS).map((pv) => {
+      <div className={`grid gap-1.5 p-1 bg-gray-100 rounded-lg ${keys.length > 2 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        {keys.map((k) => {
+          const pv = PROVIDERS[k];
+          if (!pv) return null;
           const PvIcon = pv.icon;
-          const pvCount = connectedAccounts.filter ? 0 : 0; // unused but keep pattern
           const active = provider === pv.key;
           return (
             <button
               key={pv.key}
               type="button"
               onClick={() => onProviderChange(pv.key)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition-all ${
                 active ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
@@ -452,7 +630,9 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             className={`w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
               provider === 'google'
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
-                : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                : provider === 'slack'
+                  ? 'border-purple-200 bg-purple-50 text-purple-900 hover:bg-purple-100'
+                  : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
             }`}
           >
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
@@ -482,7 +662,9 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors flex-shrink-0 ${
               provider === 'google'
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
-                : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                : provider === 'slack'
+                  ? 'border-purple-200 bg-purple-50 text-purple-900 hover:bg-purple-100'
+                  : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
             }`}
           >
             <Icon className="w-3.5 h-3.5" />
@@ -496,9 +678,26 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
 
 // ─── Login Modal ──────────────────────────────────────────────────────────────
 
-function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant, onGoogleTenantChange, msTenant, onMsTenantChange }) {
-  const p = PROVIDERS[provider];
+function LoginModal({
+  provider,
+  loading,
+  error,
+  onConnect,
+  onSlackTokenSubmit,
+  onMicrosoftAdminSubmit,
+  onClose,
+  googleTenant,
+  onGoogleTenantChange,
+  msTenant,
+  onMsTenantChange,
+  hasSlack,
+}) {
+  const p = PROVIDERS[provider] || PROVIDERS.google;
   const Icon = p.icon;
+  const [slackMode, setSlackMode] = useState('oauth'); // 'oauth' | 'token'
+  const [slackToken, setSlackToken] = useState('');
+  const [msMode, setMsMode] = useState('oauth'); // 'oauth' | 'admin'
+  const [msAdminEmail, setMsAdminEmail] = useState('');
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
@@ -528,40 +727,162 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
             ))}
           </ol>
           {provider === 'google' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-500 flex-shrink-0">Google tenant:</span>
-              <select
-                value={googleTenant}
-                onChange={(e) => onGoogleTenantChange(e.target.value)}
-                className="flex-1 text-xs rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              >
-                <option value="1">cloudfuze.us</option>
-                <option value="2">storefuze.com</option>
-              </select>
-            </div>
+            <>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-500 flex-shrink-0">Google tenant:</span>
+                <select
+                  value={googleTenant}
+                  onChange={(e) => onGoogleTenantChange(e.target.value)}
+                  className="flex-1 text-xs rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                >
+                  <option value="1">cloudfuze.us</option>
+                  <option value="2">storefuze.com</option>
+                  <option value="3">cloudfuze.com</option>
+                  <option value="4">filefuze.co</option>
+                </select>
+              </div>
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                If Google shows &quot;access blocked&quot; or &quot;app not verified&quot;: open Google Cloud Console →
+                APIs &amp; Services → OAuth consent screen, and add this user under <strong>Test users</strong> (or
+                publish the app).
+              </p>
+            </>
           )}
           {provider === 'microsoft' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-gray-500 flex-shrink-0">Microsoft tenant:</span>
-              <select
-                value={msTenant}
-                onChange={(e) => onMsTenantChange(e.target.value)}
-                className="flex-1 text-xs rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              >
-                <option value="1">gajha.com</option>
-                <option value="2">filefuze.co</option>
-              </select>
-            </div>
+            <>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-500 flex-shrink-0">Microsoft tenant:</span>
+                <select
+                  value={msTenant}
+                  onChange={(e) => onMsTenantChange(e.target.value)}
+                  className="flex-1 text-xs rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                >
+                  <option value="1">gajha.com</option>
+                  <option value="2">filefuze.co</option>
+                </select>
+              </div>
+              <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setMsMode('oauth')}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${msMode === 'oauth' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                >
+                  OAuth popup
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMsMode('admin')}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${msMode === 'admin' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                >
+                  Admin email
+                </button>
+              </div>
+              {msMode === 'oauth' ? (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Azure AD app → <strong>Authentication</strong> must list redirect URI{' '}
+                  <code className="text-[11px] break-all text-gray-900">http://localhost:5000/api/auth/microsoft/callback</code>{' '}
+                  (Web). Delegated permissions <code>User.Read</code>, <code>User.ReadBasic.All</code>,{' '}
+                  <code>offline_access</code> must have admin consent granted.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-gray-700">Admin email (app-only, no popup)</label>
+                  <input
+                    type="email"
+                    value={msAdminEmail}
+                    onChange={(e) => setMsAdminEmail(e.target.value)}
+                    placeholder="granger@gajha.com"
+                    className="w-full text-xs rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                  <p className="text-[11px] text-gray-500">
+                    Uses the app&apos;s client_credentials token (no popup, no user consent).
+                    Requires <code className="text-[11px]">User.Read.All</code>{' '}
+                    <strong>Application</strong> permission with admin consent on the Azure app.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+          {hasSlack && provider === 'slack' && (
+            <>
+              <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => setSlackMode('oauth')}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${slackMode === 'oauth' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                >
+                  OAuth popup
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSlackMode('token')}
+                  className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${slackMode === 'token' ? 'bg-white shadow text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
+                >
+                  Paste token
+                </button>
+              </div>
+              {slackMode === 'oauth' ? (
+                <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                  Slack app → <strong>OAuth &amp; Permissions</strong> → <strong>Redirect URLs</strong> must list this
+                  exact URL (same host/port as your API):{' '}
+                  <code className="text-[11px] break-all text-gray-900">http://localhost:5000/api/auth/slack/callback</code>
+                  . If your API uses another port, add <code className="text-[11px]">SLACK_REDIRECT_URI</code> in{' '}
+                  <code className="text-[11px]">backend/.env</code> and register that same value in Slack.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-gray-700">
+                    Slack user token (<code className="text-[11px]">xoxp-…</code>)
+                  </label>
+                  <textarea
+                    value={slackToken}
+                    onChange={(e) => setSlackToken(e.target.value)}
+                    placeholder="xoxp-..."
+                    rows={3}
+                    className="w-full text-xs font-mono rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                  />
+                  <p className="text-[11px] text-gray-500">
+                    Get it from Slack app → <strong>OAuth &amp; Permissions</strong> → <strong>User OAuth Token</strong>.
+                    The app must have <code className="text-[11px]">users:read</code> and{' '}
+                    <code className="text-[11px]">users:read.email</code> scopes installed.
+                  </p>
+                </div>
+              )}
+            </>
           )}
           {error && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
         </div>
         <div className="px-6 pb-6 flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors">Cancel</button>
-          <button onClick={onConnect} disabled={loading}
-            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 transition-colors ${provider === 'google' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+          <button
+            onClick={() => {
+              if (provider === 'slack' && slackMode === 'token') {
+                const t = slackToken.trim();
+                if (!t) return;
+                onSlackTokenSubmit?.(t);
+              } else if (provider === 'microsoft' && msMode === 'admin') {
+                const e = msAdminEmail.trim();
+                if (!e) return;
+                onMicrosoftAdminSubmit?.(e);
+              } else {
+                onConnect();
+              }
+            }}
+            disabled={
+              loading ||
+              (provider === 'slack' && slackMode === 'token' && !slackToken.trim()) ||
+              (provider === 'microsoft' && msMode === 'admin' && !msAdminEmail.trim())
+            }
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 transition-colors ${
+              provider === 'google' ? 'bg-blue-600 hover:bg-blue-700' : provider === 'slack' ? 'bg-[#4A154B] hover:bg-[#3d1140]' : 'bg-indigo-600 hover:bg-indigo-700'
+            }`}>
             {loading
               ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Waiting…</>
-              : <><Icon className="w-3.5 h-3.5" />Sign in</>}
+              : provider === 'slack' && slackMode === 'token'
+                ? <><Icon className="w-3.5 h-3.5" />Install token</>
+                : provider === 'microsoft' && msMode === 'admin'
+                  ? <><Icon className="w-3.5 h-3.5" />Connect admin</>
+                  : <><Icon className="w-3.5 h-3.5" />Sign in</>}
           </button>
         </div>
       </div>
@@ -594,6 +915,29 @@ function MicrosoftIcon({ className }) {
       <rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
       <rect x="1" y="12" width="10" height="10" fill="#00A4EF" />
       <rect x="12" y="12" width="10" height="10" fill="#FFB900" />
+    </svg>
+  );
+}
+
+function SlackIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 27 27" aria-hidden>
+      <path
+        fill="#E01E5A"
+        d="M5.042 15.165a2.528 2.528 0 01-2.52 2.523A2.528 2.528 0 01.005 15.165a2.527 2.527 0 012.522-2.52h2.52v2.52zM6.313 15.165a2.528 2.528 0 012.522-2.52 2.527 2.527 0 012.523 2.52v6.313A2.528 2.528 0 018.835 24a2.528 2.528 0 01-2.523-2.522v-6.313z"
+      />
+      <path
+        fill="#36C5F0"
+        d="M8.835 5.042a2.528 2.528 0 012.523-2.52 2.527 2.527 0 012.52 2.52v2.52H8.835V5.042zm0 3.145a2.528 2.528 0 012.523 2.523 2.528 2.528 0 01-2.523 2.52H2.522A2.528 2.528 0 010 10.71a2.528 2.528 0 012.522-2.523h6.313z"
+      />
+      <path
+        fill="#2EB67D"
+        d="M21.955 10.71a2.528 2.528 0 012.52 2.523 2.527 2.527 0 01-2.52 2.52h-2.52v-2.52a2.528 2.528 0 012.52-2.523zm-3.145 2.52a2.528 2.528 0 01-2.523 2.523 2.528 2.528 0 01-2.52-2.523V6.41a2.528 2.528 0 012.52-2.52 2.528 2.528 0 012.523 2.52v6.82z"
+      />
+      <path
+        fill="#ECB22E"
+        d="M15.287 21.955a2.528 2.528 0 01-2.523 2.52A2.528 2.528 0 0110.24 21.955a2.528 2.528 0 012.522-2.52h2.525v2.52zm0-3.145a2.528 2.528 0 01-2.523-2.523 2.528 2.528 0 012.523-2.52h6.313A2.528 2.528 0 0124 16.287a2.528 2.528 0 01-2.522 2.523h-6.191z"
+      />
     </svg>
   );
 }

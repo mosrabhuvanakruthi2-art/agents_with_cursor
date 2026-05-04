@@ -1,8 +1,24 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/agentController');
 
 router.post('/run', controller.runAgents);
+router.post('/message-run', controller.runMessageAgent);
+router.post('/message-seed', controller.seedMessageAgent);
+router.post('/message-migrate', controller.migrateMessageAgent);
+router.get('/message-targets', controller.getMessageTargets);
+router.get('/message-user-status', controller.getMessageUserStatus);
+router.get('/debug-google-chat', controller.debugGoogleChat);
+router.get('/debug-teams', controller.debugTeams);
+router.get('/cf-cloud-accounts', controller.getCFCloudAccounts);
+router.get('/cf-channels', controller.getCFChannels);
+router.get('/cf-dms', controller.getCFDMs);
+router.get('/cf-channels-all', controller.getCFChannelsAll);
+router.get('/cf-channels-cache', controller.getCFChannelsCache);
+router.get('/cf-reports', controller.getCFReports);
+router.post('/cf-browser-migrate', controller.startCFBrowserMigration);
+router.post('/cf-browser-abort', controller.abortCFBrowserMigration);
+router.get('/cf-browser-events', controller.getCFBrowserEvents);
 router.get('/executions', controller.getExecutions);
 router.get('/executions/:id', controller.getExecution);
 router.get('/executions/:id/logs', controller.getExecutionLogs);

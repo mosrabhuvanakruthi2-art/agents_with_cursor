@@ -3,9 +3,11 @@ import { useSearchParams } from 'react-router-dom';
 import { getExecutions, getExecutionLogs } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
 import LogViewer from '../components/LogViewer';
+import MigrationReports from './MigrationReports';
 
 export default function ExecutionLogs() {
   const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState('logs');
   const [executions, setExecutions] = useState([]);
   const [selectedId, setSelectedId] = useState(searchParams.get('id') || '');
   const [logs, setLogs] = useState([]);
@@ -58,13 +60,35 @@ export default function ExecutionLogs() {
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Execution Logs</h1>
-        <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>View detailed logs for each agent execution</p>
+    <div className="space-y-6">
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Execution Logs</h1>
+          <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>View detailed logs for each agent execution</p>
+        </div>
+        <div className="flex rounded-lg overflow-hidden" style={{ border: '2px solid #0129ac' }}>
+          {[
+            { key: 'logs',    label: 'Execution Logs' },
+            { key: 'reports', label: 'CF Migration Reports' },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className="px-4 py-2 text-sm font-semibold transition-colors"
+              style={{
+                backgroundColor: activeTab === tab.key ? '#0129ac' : '#fff',
+                color: activeTab === tab.key ? '#fff' : '#0129ac',
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {activeTab === 'reports' && <MigrationReports />}
+
+      {activeTab === 'logs' && <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1">
           <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
             <div className="px-4 py-3" style={{ borderBottom: '1px solid #eef1fb' }}>
@@ -130,7 +154,7 @@ export default function ExecutionLogs() {
             <LogViewer logs={logs} />
           )}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

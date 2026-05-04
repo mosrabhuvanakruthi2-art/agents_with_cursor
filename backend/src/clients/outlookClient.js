@@ -39,19 +39,70 @@ function getMsCredentials(tenant) {
 const tokenCaches = {};
 
 /**
+ * Decode the appid from a JWT access token without verifying the signature.
+ * Returns null if the token is missing or malformed.
+ */
+function decodeJwtAppId(accessToken) {
+  if (!accessToken) return null;
+  try {
+    const parts = accessToken.split('.');
+    if (parts.length < 2) return null;
+    // JWT uses base64url — replace - with + and _ with /
+    const padded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(padded, 'base64').toString('utf8');
+    const payload = JSON.parse(json);
+    return payload.appid || payload.azp || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Refresh the stored Microsoft OAuth delegated token using its refresh_token.
- * Uses the correct tenant's client credentials based on the stored email.
+ *
+ * Refresh tokens are bound to the Azure AD app that issued them — we decode the
+ * JWT appid to detect which app to use. Falling back to agent-tag heuristics
+ * only when no access token is present.
  */
 async function refreshStoredMicrosoftToken(stored) {
   const tenant = getMsTenant(stored.email);
-  const { clientId, clientSecret, tenantId } = getMsCredentials(tenant);
+  const isMessageAgent = stored.agent === 'message' || stored.agent === 'both';
+
+  // Detect which app originally issued this token
+  const issuingAppId = decodeJwtAppId(stored.accessToken);
+  logger.info(
+    `[auth] Refreshing token for ${stored.email} — issuingAppId=${issuingAppId || 'unknown'} agent=${stored.agent || 'mail'}`
+  );
+
+  let clientId, clientSecret, tenantId, refreshScope;
+
+  if (issuingAppId && env.MS_MESSAGE_CLIENT_ID && issuingAppId === env.MS_MESSAGE_CLIENT_ID) {
+    // Token was issued by the dedicated Message Agent app
+    clientId     = env.MS_MESSAGE_CLIENT_ID;
+    clientSecret = env.MS_MESSAGE_CLIENT_SECRET;
+    tenantId     = env.GRAPH_TENANT_ID;
+    refreshScope = 'offline_access User.Read Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send ChannelMessage.Read.All Chat.Read Chat.ReadWrite ChatMessage.Send';
+  } else {
+    // Token was issued by the standard mail/calendar app (GRAPH_CLIENT_ID or tenant-2 variant)
+    ({ clientId, clientSecret, tenantId } = getMsCredentials(tenant));
+    // If the original token had Teams scopes (agent=message), request them here too —
+    // Microsoft will include them when the app already has consent.
+    if (isMessageAgent) {
+      refreshScope =
+        'offline_access User.Read Mail.ReadWrite Calendars.ReadWrite ' +
+        'Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Send Chat.ReadWrite ChatMessage.Send';
+    } else {
+      refreshScope = 'offline_access User.Read Mail.ReadWrite Calendars.ReadWrite';
+    }
+  }
+
   const tokenUrl = `https://login.microsoftonline.com/${tenantId || 'common'}/oauth2/v2.0/token`;
   const params = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
     grant_type: 'refresh_token',
     refresh_token: stored.refreshToken,
-    scope: 'offline_access User.Read Mail.ReadWrite Calendars.ReadWrite',
+    scope: refreshScope,
   });
   const res = await axios.post(tokenUrl, params.toString(), {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -654,6 +705,290 @@ async function cleanMailbox(userId) {
   return summary;
 }
 
+/**
+ * List Teams channels and chats visible to the admin user via Graph.
+ *
+ * Returns: { publicChannels, privateChannels, dms, groupDms }
+ *   publicChannels: { id (teamId/channelId), name ("TeamName / channelName"), memberCount }
+ *   privateChannels: same shape (private / shared)
+ *   dms: { id (chatId), name (partner displayName), members }
+ *   groupDms: { id (chatId), name (topic or joined names), members }
+ *
+ * Requires delegated scopes: Team.ReadBasic.All, Channel.ReadBasic.All, Chat.Read.
+ * This uses the admin's own delegated token (the `adminEmail` one connected via OAuth).
+ */
+async function listTeamsTargets(adminEmail) {
+  const stored = tokenStore.getMicrosoftToken(adminEmail);
+  if (!stored?.accessToken && !stored?.refreshToken) {
+    throw new Error(
+      `Microsoft is not connected for ${adminEmail}. Connect this admin via Login with Microsoft (Message Agent Step 1) before fetching Teams channels.`
+    );
+  }
+  const token = await getAccessToken(adminEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+
+  // Decode scopes from the access token (JWT middle segment) to give a clear
+  // error when the token was issued with mail scopes instead of Teams scopes.
+  function extractScopes(jwt) {
+    try {
+      const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
+      return (payload.scp || payload.scope || '').split(' ');
+    } catch { return []; }
+  }
+  const grantedScopes = extractScopes(token);
+  const hasTeamsScope = grantedScopes.some((s) =>
+    s.toLowerCase().includes('team') || s.toLowerCase().includes('channel') || s.toLowerCase().includes('chat')
+  );
+
+  if (!hasTeamsScope) {
+    throw new Error(
+      `The token for ${adminEmail} has mail/calendar scopes only (${grantedScopes.filter(s => !['openid','email','profile','offline_access'].includes(s)).join(', ')}). ` +
+      `Sign out ${adminEmail} and re-authenticate via Message Agent Step 1 → Microsoft tab to get Teams scopes (Team.ReadBasic.All, Channel.ReadBasic.All, Chat.Read).`
+    );
+  }
+
+  const publicChannels = [];
+  const privateChannels = [];
+
+  // ── joined teams → channels ─────────────────────────────────────────────
+  let teams = [];
+  let teamsError = null;
+  try {
+    const r = await axios.get(`${GRAPH_BASE}/me/joinedTeams?$select=id,displayName`, { headers });
+    teams = r.data.value || [];
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.error?.message || err.message;
+    teamsError = { status, msg };
+    logger.warn(`[listTeamsTargets] /me/joinedTeams ${status}: ${msg}`);
+    if (status === 403) {
+      throw new Error(
+        `Access denied fetching Teams for ${adminEmail} (403). ` +
+        `Sign out and re-authenticate via Message Agent Step 1 → Microsoft tab with Teams permissions.`
+      );
+    }
+  }
+
+  for (const team of teams) {
+    try {
+      const r = await axios.get(
+        `${GRAPH_BASE}/teams/${team.id}/allChannels?$select=id,displayName,membershipType`,
+        { headers }
+      );
+      for (const ch of r.data.value || []) {
+        const item = {
+          id: `${team.id}/${ch.id}`,
+          name: `${team.displayName} / ${ch.displayName}`,
+          type: ch.membershipType === 'private' ? 'private_channel' : 'public_channel',
+          teamId: team.id,
+          channelId: ch.id,
+        };
+        if (ch.membershipType === 'private' || ch.membershipType === 'shared') {
+          privateChannels.push(item);
+        } else {
+          publicChannels.push(item);
+        }
+      }
+    } catch (err) {
+      logger.warn(`[listTeamsTargets] allChannels for team ${team.id} failed: ${err.response?.data?.error?.message || err.message}`);
+    }
+  }
+
+  // ── chats (1:1 + group) ─────────────────────────────────────────────────
+  const dms = [];
+  const groupDms = [];
+  try {
+    let url = `${GRAPH_BASE}/me/chats?$expand=members&$top=50`;
+    while (url) {
+      const r = await axios.get(url, { headers });
+      for (const chat of r.data.value || []) {
+        const members = (chat.members || []).map((m) => ({
+          id: m.userId || m.id,
+          name: m.displayName || m.email || '',
+          email: m.email || null,
+        }));
+        if (chat.chatType === 'oneOnOne') {
+          const partner = members.find((m) => (m.email || '').toLowerCase() !== (adminEmail || '').toLowerCase());
+          dms.push({
+            id: chat.id,
+            name: (partner?.name || partner?.email || chat.topic || chat.id),
+            type: 'dm',
+            members,
+          });
+        } else if (chat.chatType === 'group' || chat.chatType === 'meeting') {
+          groupDms.push({
+            id: chat.id,
+            name: chat.topic || members.slice(0, 5).map((m) => m.name).filter(Boolean).join(', ') || chat.id,
+            type: 'group_dm',
+            members,
+          });
+        }
+      }
+      url = r.data['@odata.nextLink'];
+    }
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.error?.message || err.message;
+    logger.warn(`[listTeamsTargets] /me/chats ${status}: ${msg}`);
+    if (status === 403) {
+      throw new Error(
+        `Access denied fetching Teams chats for ${adminEmail} (403). ` +
+        `Sign out and re-authenticate via Message Agent Step 1 → Microsoft tab with Chat.Read permission.`
+      );
+    }
+  }
+
+  publicChannels.sort((a, b) => a.name.localeCompare(b.name));
+  privateChannels.sort((a, b) => a.name.localeCompare(b.name));
+  dms.sort((a, b) => a.name.localeCompare(b.name));
+  groupDms.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { publicChannels, privateChannels, dms, groupDms };
+}
+
+/**
+ * Post a message to a Teams channel or chat using the user's delegated token.
+ * Requires ChannelMessage.Send (channels) or Chat.ReadWrite (chats).
+ *
+ * targetId format:
+ *   "teamId/channelId" → channel post  (POST /teams/{t}/channels/{c}/messages)
+ *   "chatId" (19:…)    → chat message  (POST /chats/{id}/messages)
+ *
+ * contentType: "html" (default — Teams renders bold/italic/lists) | "text"
+ *
+ * Returns { ok, id, isChannel } — id is the Graph message ID, needed for replies.
+ */
+async function postTeamsMessage(userEmail, targetId, htmlContent, contentType = 'html') {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const body = { body: { content: htmlContent, contentType } };
+
+  let url;
+  let isChannel = false;
+  const slashIdx = targetId.indexOf('/');
+  if (slashIdx !== -1) {
+    const teamId    = targetId.slice(0, slashIdx);
+    const channelId = targetId.slice(slashIdx + 1);
+    url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
+    isChannel = true;
+  } else {
+    url = `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages`;
+  }
+
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id, isChannel };
+}
+
+/**
+ * Post a reply to an existing channel message (creates / extends a thread).
+ * Only works for channels (targetId "teamId/channelId"). Chat replies are not
+ * supported by Graph API — for chats just post sequential messages instead.
+ */
+async function postTeamsReply(userEmail, targetId, parentMessageId, htmlContent, contentType = 'html') {
+  if (!targetId.includes('/')) {
+    // Chats don't have thread replies via Graph; fall back to a regular message
+    return postTeamsMessage(userEmail, targetId, htmlContent, contentType);
+  }
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const slashIdx = targetId.indexOf('/');
+  const teamId    = targetId.slice(0, slashIdx);
+  const channelId = targetId.slice(slashIdx + 1);
+  const url =
+    `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+    `/channels/${encodeURIComponent(channelId)}` +
+    `/messages/${encodeURIComponent(parentMessageId)}/replies`;
+  const body = { body: { content: htmlContent, contentType } };
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id };
+}
+
+/**
+ * True if a delegated Microsoft token with Teams posting scopes is stored for this user.
+ *
+ * Checks (in order):
+ *   1. Explicit agent tag: 'message' or 'both'
+ *   2. JWT scp fallback: token contains ChannelMessage.Send or Chat.ReadWrite
+ *
+ * App-only tokens are always rejected — messages must be sent as a user.
+ */
+function hasTeamsToken(userEmail) {
+  try {
+    const stored = tokenStore.getMicrosoftToken(userEmail);
+    if (!stored?.accessToken && !stored?.refreshToken) return false;
+    if (stored.mode === 'app-only') return false;
+    const agent = (stored.agent || '').toLowerCase();
+    // Explicitly tagged message accounts always pass
+    if (agent === 'message' || agent === 'both') return true;
+    // For untagged accounts: decode the stored access token JWT and check for Teams scopes
+    if (stored.accessToken) {
+      try {
+        const payload = JSON.parse(Buffer.from(stored.accessToken.split('.')[1], 'base64').toString());
+        const scp = (payload.scp || payload.scope || '').toLowerCase();
+        if (scp.includes('channel') || scp.includes('team') || scp.includes('chat')) return true;
+      } catch { /* ignore JWT decode errors */ }
+    }
+    return false;
+  } catch { return false; }
+}
+
+/**
+ * Read recent messages from a Teams chat (DM) or channel.
+ *
+ * For DMs/group chats (targetId has no '/'):
+ *   GET /chats/{chatId}/messages  — requires Chat.Read or Chat.ReadWrite (delegated)
+ *
+ * For channels (targetId "teamId/channelId"):
+ *   GET /teams/{teamId}/channels/{channelId}/messages
+ *   — requires ChannelMessage.Read.All (typically needs admin consent)
+ *   — falls back gracefully with an empty array + warning if forbidden.
+ *
+ * Returns an array of raw Graph message objects (newest-first order may vary).
+ * Pass { top, sinceMinutes } to limit results.
+ */
+async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes = 120 } = {}) {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+  const sinceMs = Date.now() - sinceMinutes * 60 * 1000;
+
+  let url;
+  const isChannel = targetId.includes('/');
+  if (isChannel) {
+    const slash = targetId.indexOf('/');
+    const teamId    = targetId.slice(0, slash);
+    const channelId = targetId.slice(slash + 1);
+    // Teams channel messages: Graph supports $top but not $filter createdDateTime on this endpoint
+    url =
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}/messages?$top=${top}`;
+  } else {
+    // Chat messages: $top supported; filter by date client-side
+    url =
+      `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages?$top=${top}`;
+  }
+
+  try {
+    const res = await axios.get(url, { headers });
+    const all = res.data.value || [];
+    // Filter to the time window on the client side
+    return all.filter((m) => {
+      if (!m.createdDateTime) return true;
+      return new Date(m.createdDateTime).getTime() >= sinceMs;
+    });
+  } catch (err) {
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.message;
+    if (status === 403) {
+      logger.warn(
+        `[readTeamsMessages] 403 reading ${targetId} for ${userEmail}: ${errMsg}. ` +
+        (isChannel ? 'Add ChannelMessage.Read.All consent in Azure.' : 'Token missing Chat.Read scope.')
+      );
+      return [];
+    }
+    throw err;
+  }
+}
+
 module.exports = {
   getMailFolders,
   getAllFoldersFlat,
@@ -674,4 +1009,9 @@ module.exports = {
   deleteAllEventsInCalendar,
   deleteCalendar,
   cleanMailbox,
+  listTeamsTargets,
+  postTeamsMessage,
+  postTeamsReply,
+  readTeamsMessages,
+  hasTeamsToken,
 };

@@ -9,6 +9,32 @@ export function runAgents(payload) {
   return api.post('/agents/run', payload);
 }
 
+export function runMessageAgent(payload) {
+  return api.post('/agents/message-run', payload);
+}
+
+/** Stage 1 of split Message-Agent flow — seed Agent Repo test cases into source channels/DMs. */
+export function seedMessageAgent(payload) {
+  return api.post('/agents/message-seed', payload);
+}
+
+/** Stage 2 — migrate + validate on the user-selected subset of already-seeded targets. */
+export function migrateMessageAgent(payload) {
+  return api.post('/agents/message-migrate', payload);
+}
+
+/**
+ * Fetch source channels + DMs by name for the Message Agent picker.
+ *
+ * @param {'slack'|'microsoft'|'google'} provider
+ * @param {string} adminEmail
+ * @returns `{ provider, adminEmail, publicChannels, privateChannels, dms, groupDms }`
+ */
+export function getMessageTargets(provider, adminEmail) {
+  const params = new URLSearchParams({ provider, adminEmail });
+  return api.get(`/agents/message-targets?${params}`);
+}
+
 export function getExecutions() {
   return api.get('/agents/executions');
 }
@@ -125,7 +151,7 @@ export function generateTestCases({ scenarios, count, productType, combination, 
   return api.post(
     '/test-cases/generate',
     { scenarios, count, productType, combination, folder },
-    { timeout: 120000, ...(signal ? { signal } : {}) },
+    { timeout: 0, ...(signal ? { signal } : {}) },
   );
 }
 
@@ -151,18 +177,21 @@ export function deleteCustomTestCase(id, testType) {
 
 // ─── OAuth / Connect Accounts ────────────────────────────────────────────────
 
-export function getAuthStatus() {
-  return api.get('/auth/status');
+export function getAuthStatus(agent) {
+  const qs = agent ? `?agent=${encodeURIComponent(agent)}` : '';
+  return api.get('/auth/status' + qs);
 }
 
-export function getConnectedAccounts() {
-  return api.get('/auth/accounts');
+export function getConnectedAccounts(agent) {
+  const qs = agent ? `?agent=${encodeURIComponent(agent)}` : '';
+  return api.get('/auth/accounts' + qs);
 }
 
-export function getGoogleOAuthUrl(source, tenant) {
+export function getGoogleOAuthUrl(source, tenant, agent) {
   const params = new URLSearchParams();
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
+  if (agent) params.set('agent', agent);
   const qs = params.toString();
   return api.get('/auth/google/url' + (qs ? `?${qs}` : ''));
 }
@@ -171,16 +200,116 @@ export function signOutGoogle(email) {
   return api.post('/auth/google/signout', { email });
 }
 
-export function getMicrosoftOAuthUrl(source, tenant) {
+export function getMicrosoftOAuthUrl(source, tenant, agent) {
   const params = new URLSearchParams();
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
+  if (agent) params.set('agent', agent);
   const qs = params.toString();
   return api.get('/auth/microsoft/url' + (qs ? `?${qs}` : ''));
 }
 
 export function signOutMicrosoft(email) {
   return api.post('/auth/microsoft/signout', { email: email || null });
+}
+
+export function connectMicrosoftAdmin(email, tenant = '1', agent) {
+  const body = { email, tenant };
+  if (agent) body.agent = agent;
+  return api.post('/auth/microsoft/admin', body);
+}
+
+export function getSlackOAuthUrl(source = 'popup', agent) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  if (agent) params.set('agent', agent);
+  const qs = params.toString();
+  return api.get('/auth/slack/url' + (qs ? `?${qs}` : ''));
+}
+
+export function signOutSlack(email) {
+  return api.post('/auth/slack/signout', { email });
+}
+
+export function connectSlackToken(token, agent) {
+  const body = { token };
+  if (agent) body.agent = agent;
+  return api.post('/auth/slack/token', body);
+}
+
+export function getMessageUserStatus(emails, platform) {
+  const params = new URLSearchParams({ emails: emails.join(','), platform });
+  return api.get(`/agents/message-user-status?${params}`);
+}
+
+// ─── CloudFuze direct API proxies ────────────────────────────────────────────
+
+/** Returns all cloud accounts connected to the CloudFuze subscriber. */
+export function getCFCloudAccounts() {
+  return api.get('/agents/cf-cloud-accounts');
+}
+
+/**
+ * Fetch channels from CloudFuze for the given cloud account IDs.
+ * @param {{ srcCloudId?: string, dstCloudId?: string, channelType?: 'public'|'private'|'all', combination?: string }} params
+ */
+export function getCFChannels(params = {}) {
+  return api.get('/agents/cf-channels', { params });
+}
+
+/**
+ * Fetch DMs from CloudFuze for the given cloud account IDs.
+ * @param {{ srcCloudId?: string, dstCloudId?: string, combination?: string }} params
+ */
+export function getCFDMs(params = {}) {
+  return api.get('/agents/cf-dms', { params });
+}
+
+/**
+ * Fetch public channels + private channels + DMs in a single request.
+ * Saves all three to the server-side cache for the given combination.
+ * @param {{ srcCloudId: string, dstCloudId: string, combination?: string }} params
+ */
+export function getCFChannelsAll(params = {}) {
+  return api.get('/agents/cf-channels-all', { params });
+}
+
+/**
+ * Return previously cached channels/DMs without hitting the CF API.
+ * @param {{ srcCloudId: string, dstCloudId: string, combination?: string }} params
+ * @returns `{ cached: boolean, publicChannels, privateChannels, dms, fetchedAt? }`
+ */
+export function getCFChannelsCache(params = {}) {
+  return api.get('/agents/cf-channels-cache', { params });
+}
+
+/**
+ * Fetch migration jobs/reports from CloudFuze.
+ * @param {{ combination?: string, migrationStatus?: string }} params
+ */
+export function getCFReports(params = {}) {
+  return api.get('/agents/cf-reports', { params });
+}
+
+/**
+ * Launch CloudFuze browser automation — opens a visible Chromium window,
+ * logs in, maps users, selects channels/DMs, starts migration, goes to reports.
+ */
+export function startCFBrowserMigration(payload) {
+  return api.post('/agents/cf-browser-migrate', payload);
+}
+
+/** Stop the active CloudFuze browser automation session. */
+export function abortCFBrowserMigration() {
+  return api.post('/agents/cf-browser-abort');
+}
+
+/**
+ * Poll the current browser automation session events.
+ * Returns { running: boolean, events: [{type, step, detail, ts}] }
+ */
+export function getCFBrowserEvents() {
+  return api.get('/agents/cf-browser-events');
 }
 
 export default api;

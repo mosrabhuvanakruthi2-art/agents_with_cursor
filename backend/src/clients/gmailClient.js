@@ -4,11 +4,24 @@ const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
-/** Return '2' if the email belongs to the second Google tenant, else '1'. */
+/** Return '1' | '2' | '3' | '4' based on the email domain (tenant 1 is the default). */
 function getGoogleTenant(email) {
   const domain = (email || '').split('@')[1]?.toLowerCase() || '';
-  if (domain && env.GOOGLE_CLIENT_ID_2 && env.GOOGLE_TENANT_2_DOMAINS?.includes(domain)) return '2';
+  if (!domain) return '1';
+  if (env.GOOGLE_CLIENT_ID_2 && env.GOOGLE_TENANT_2_DOMAINS?.includes(domain)) return '2';
+  if (env.GOOGLE_CLIENT_ID_3 && env.GOOGLE_TENANT_3_DOMAINS?.includes(domain)) return '3';
+  if (env.GOOGLE_CLIENT_ID_4 && env.GOOGLE_TENANT_4_DOMAINS?.includes(domain)) return '4';
   return '1';
+}
+
+/** Credentials for tenant "1" | "2" | "3" | "4". */
+function getTenantCreds(tenant) {
+  switch (String(tenant)) {
+    case '2': return { clientId: env.GOOGLE_CLIENT_ID_2, clientSecret: env.GOOGLE_CLIENT_SECRET_2 };
+    case '3': return { clientId: env.GOOGLE_CLIENT_ID_3, clientSecret: env.GOOGLE_CLIENT_SECRET_3 };
+    case '4': return { clientId: env.GOOGLE_CLIENT_ID_4, clientSecret: env.GOOGLE_CLIENT_SECRET_4 };
+    default:  return { clientId: env.GOOGLE_CLIENT_ID,   clientSecret: env.GOOGLE_CLIENT_SECRET };
+  }
 }
 
 /**
@@ -17,8 +30,7 @@ function getGoogleTenant(email) {
  */
 function getAuthForToken(refreshToken, email) {
   const tenant = getGoogleTenant(email);
-  const clientId = tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
-  const clientSecret = tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
+  const { clientId, clientSecret } = getTenantCreds(tenant);
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
   oauth2Client.setCredentials({ refresh_token: refreshToken });
   return oauth2Client;

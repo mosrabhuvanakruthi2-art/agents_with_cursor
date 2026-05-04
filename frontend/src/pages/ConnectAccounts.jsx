@@ -10,7 +10,7 @@ import {
 
 export default function ConnectAccounts() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [status, setStatus] = useState({ google: null, microsoft: null });
+  const [status, setStatus] = useState({ google: null, microsoft: null, slack: null });
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [googleTenant, setGoogleTenant] = useState('1');
@@ -39,11 +39,13 @@ export default function ConnectAccounts() {
     const message = searchParams.get('message');
 
     if (connected) {
-      const label = connected === 'google' ? 'Google Workspace' : 'Microsoft 365';
+      const label =
+        connected === 'google' ? 'Google Workspace' : connected === 'slack' ? 'Slack' : 'Microsoft 365';
       showToast(`${label} connected${email ? ` — ${email}` : ''}`, 'success');
       setSearchParams({}, { replace: true });
     } else if (errorProvider) {
-      const label = errorProvider === 'google' ? 'Google Workspace' : 'Microsoft 365';
+      const label =
+        errorProvider === 'google' ? 'Google Workspace' : errorProvider === 'slack' ? 'Slack' : 'Microsoft 365';
       showToast(`${label} connection failed: ${message || 'Unknown error'}`, 'error');
       setSearchParams({}, { replace: true });
     }

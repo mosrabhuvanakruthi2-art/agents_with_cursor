@@ -124,7 +124,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Teams → Slack': {
+  'Microsoft Teams → Slack': {
     how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
 2. A CloudFuze migration job exports Teams data and imports it into Slack destination workspace
 3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
@@ -149,7 +149,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Teams → Teams': {
+  'Microsoft Teams → Microsoft Teams': {
     how: `1. Messages, channels, chats, threads, and attachments exist in the source Microsoft Teams workspace/tenant
 2. A CloudFuze migration job copies Teams data to the destination Teams workspace/tenant
 3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
@@ -174,7 +174,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Teams → Google Chat': {
+  'Microsoft Teams → Google Chat': {
     how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
 2. A CloudFuze migration job exports Teams data and imports it into Google Chat destination
 3. The destination Google Chat is validated for correct Spaces/DM/thread mapping`,
@@ -199,7 +199,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Chat → Teams': {
+  'Google Chat → Microsoft Teams': {
     how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
 2. A CloudFuze migration job exports Google Chat data and imports it into Microsoft Teams destination
 3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
@@ -224,7 +224,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Chat → Slack': {
+  'Google Chat → Slack': {
     how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
 2. A CloudFuze migration job exports Google Chat data and imports it into Slack destination workspace
 3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
@@ -246,6 +246,31 @@ const MESSAGE_CONTEXT = {
       'Wait for the migration job to complete in CloudFuze dashboard',
       'Log in to Slack destination workspace',
       'Navigate to the expected channel/DM and verify message content, threads, and file attachments',
+    ],
+  },
+
+  'Google Chat → Google Chat': {
+    how: `1. Messages, spaces, DMs, threads, and attachments exist in the source Google Chat workspace
+2. A CloudFuze migration job copies Google Chat data to the destination Google Chat workspace
+3. The destination Google Chat workspace is validated for correct Spaces/DM/thread mapping`,
+    mapping: `GOOGLE CHAT → GOOGLE CHAT MAPPING:
+- Google Chat Spaces (public) → Google Chat Spaces (public, same name)
+- Google Chat Spaces (restricted) → Google Chat Spaces (restricted, same name)
+- Direct Messages → Direct Messages in destination workspace
+- Group Conversations → Group Conversations in destination workspace
+- Threaded replies → Threaded replies preserved in destination
+- Files (from Google Drive) → Files re-attached in destination Space messages
+- Starred messages → Starred messages in destination
+- Archived Spaces → Archived Spaces in destination
+- Reactions/Emojis → Same emoji preserved
+- @mentions → @mentions re-mapped to destination workspace users
+- Space descriptions → Space description preserved`,
+    stepVerbs: [
+      'Log in to source Google Chat workspace and verify Spaces/DMs/messages exist',
+      'Trigger CloudFuze migration job for Google Chat → Google Chat',
+      'Wait for the migration job to complete in CloudFuze dashboard',
+      'Log in to destination Google Chat workspace',
+      'Navigate to the expected Space/DM and verify message content, threads, files, and reactions are present',
     ],
   },
 
@@ -302,7 +327,8 @@ Each test case object MUST have ALL of these fields:
 {
   "summary": "One-line title describing what is being validated",
   "action": "The specific migration action being tested — name both source and destination platforms explicitly",
-  "testData": "Concrete description of the test data — be specific about content type, format, and metadata",
+  "messageCount": <integer — EXTRACT the number of messages from the scenario text (e.g. "5000 messages" → 5000, "100 bold messages" → 100, "validate 2000 threads" → 2000). If the scenario does not mention a count, use 100>,
+  "testData": "MUST start with the messageCount followed by the message type, e.g. '5000 bold text messages sent at 1-minute intervals from mapped user'. Be specific about content type, format, and metadata",
   "testSteps": [
     "${ctx.stepVerbs[0]}",
     "${ctx.stepVerbs[1]}",
@@ -322,6 +348,8 @@ Each test case object MUST have ALL of these fields:
 
 RULES:
 - Every field must have a real, meaningful value — no empty strings, no null, no "N/A"
+- messageCount MUST be a positive integer extracted from the scenario — this is critical
+- testData MUST start with the messageCount number (e.g. "5000 bold text messages...")
 - testSteps must have 4–5 concrete steps specific to ${combination} migration
 - Each test case must validate a DISTINCT aspect of the scenario
 - subject must always start with "QA Custom - "
@@ -351,7 +379,7 @@ async function generateTestCases(req, res) {
     return res.status(400).json({ error: 'At least one scenario is required' });
   }
 
-  const requestedCount   = Math.min(Math.max(parseInt(count, 10) || 5, 1), 20);
+  const requestedCount   = Math.min(Math.max(parseInt(count, 10) || 5, 1), 40);
   const effectiveProduct = (productType || 'Mail').trim();
   const effectiveCombo   = (combination || 'Gmail → Outlook').trim();
   const effectiveFolder  = (folder || '').trim();
@@ -376,12 +404,12 @@ async function generateTestCases(req, res) {
           { role: 'user',   content: userPrompt },
         ],
         response_format: { type: 'json_object' },
-        max_tokens: 6000,
+        max_tokens: 16000,
         temperature: 0.5,
       },
       {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 90000,
+        timeout: 300000,
       }
     );
 
@@ -459,6 +487,7 @@ function addCustomTestCase(req, res) {
     addedAt: new Date().toISOString(),
     summary: testCase.summary || testCase.subject,
     action: testCase.action || '',
+    messageCount: parseInt(testCase.messageCount, 10) || 0,
     testData: testCase.testData || '',
     testSteps: Array.isArray(testCase.testSteps) ? testCase.testSteps : [],
     expectedResult: testCase.expectedResult || '',
@@ -509,6 +538,7 @@ function addBulkTestCases(req, res) {
       addedAt: new Date().toISOString(),
       summary: testCase.summary || testCase.subject,
       action: testCase.action || '',
+      messageCount: parseInt(testCase.messageCount, 10) || 0,
       testData: testCase.testData || '',
       testSteps: Array.isArray(testCase.testSteps) ? testCase.testSteps : [],
       expectedResult: testCase.expectedResult || '',
@@ -551,7 +581,7 @@ function deleteCustomTestCase(req, res) {
 }
 
 const UPDATABLE_FIELDS = [
-  'summary', 'action', 'testData', 'testSteps', 'expectedResult',
+  'summary', 'action', 'messageCount', 'testData', 'testSteps', 'expectedResult',
   'combination', 'productType', 'folder', 'subject', 'textBody',
   'labelIds', 'hasAttachment',
 ];
