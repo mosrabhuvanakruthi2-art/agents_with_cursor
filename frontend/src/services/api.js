@@ -71,6 +71,18 @@ export function cleanSource(email) {
   return api.post('/agents/clean-source', { email }, { timeout: 0 });
 }
 
+export function cleanSourceEmails(email) {
+  return api.post('/agents/clean-source-emails', { email }, { timeout: 0 });
+}
+
+export function cleanSourceFolders(email) {
+  return api.post('/agents/clean-source-folders', { email }, { timeout: 0 });
+}
+
+export function cleanSourceCalendars(email) {
+  return api.post('/agents/clean-source-calendars', { email }, { timeout: 0 });
+}
+
 export function getTestRepositoryData() {
   return api.get('/test-repository/data');
 }
@@ -181,6 +193,38 @@ export function getMicrosoftOAuthUrl(source, tenant) {
 
 export function signOutMicrosoft(email) {
   return api.post('/auth/microsoft/signout', { email: email || null });
+}
+
+export function addDwdAccount(email) {
+  return api.post('/auth/dwd', { email });
+}
+
+export function removeDwdAccount(email) {
+  return api.delete(`/auth/dwd/${encodeURIComponent(email)}`);
+}
+
+export function cleanDestinationEmails(email) {
+  return api.post('/agents/clean-destination-emails', { email }, { timeout: 0 });
+}
+
+export function cleanDestinationFolders(email) {
+  return api.post('/agents/clean-destination-folders', { email }, { timeout: 0 });
+}
+
+export function cleanDestinationEvents(email) {
+  return api.post('/agents/clean-destination-events', { email }, { timeout: 0 });
+}
+
+export function createOutlookData(sourceEmail, destinationEmail, testType) {
+  return api.post('/agents/create-outlook-data', { sourceEmail, destinationEmail, testType }, { timeout: 0 });
+}
+
+export function cancelExecution(id) {
+  return api.post(`/agents/executions/${id}/cancel`);
+}
+
+export function createTestData(payload) {
+  return api.post('/agents/create-test-data', payload, { timeout: 0 });
 }
 
 export default api;

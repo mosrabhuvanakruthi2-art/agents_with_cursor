@@ -69,6 +69,8 @@ const googleAccounts = parseGoogleAccounts();
 const {
   pickCorrespondentEmail: pickCorrespondentFromMap,
   pickCcEmail: pickCcFromMap,
+  pickBccEmail: pickBccFromMap,
+  buildInboundSenderRotation,
 } = require('../utils/googleAccountsPicker');
 
 /** Another GOOGLE_ACCOUNTS address for To: / attendees (falls back to source if sole account). */
@@ -79,6 +81,25 @@ function pickCorrespondentEmail(sourceEmail) {
 /** Distinct Cc address from GOOGLE_ACCOUNTS when possible. */
 function pickCcEmail(sourceEmail, toEmail) {
   return pickCcFromMap(googleAccounts, sourceEmail, toEmail);
+}
+
+/** Distinct Bcc address from GOOGLE_ACCOUNTS (never source/to/cc) when possible. */
+function pickBccEmail(sourceEmail, toEmail, ccEmail) {
+  return pickBccFromMap(googleAccounts, sourceEmail, toEmail, ccEmail);
+}
+
+/**
+ * Sorted GOOGLE_ACCOUNTS addresses (excluding source) to rotate as inbound senders when we
+ * seed test mails INTO the Gmail source's Inbox. Returns [] when only the source is configured;
+ * callers should fall back to a single correspondent address in that case.
+ */
+function buildGoogleInboundSenders(sourceEmail) {
+  return buildInboundSenderRotation(googleAccounts, sourceEmail);
+}
+
+/** Same idea for Outlook source mailbox — rotate inbound senders from OUTLOOK_ACCOUNTS. */
+function buildOutlookInboundSenders(sourceEmail) {
+  return buildInboundSenderRotation(outlookAccounts, sourceEmail);
 }
 
 function parseOutlookAccounts() {
@@ -118,9 +139,23 @@ module.exports = {
   GOOGLE_CLIENT_ID_2: process.env.GOOGLE_CLIENT_ID_2,
   GOOGLE_CLIENT_SECRET_2: process.env.GOOGLE_CLIENT_SECRET_2,
   GOOGLE_TENANT_2_DOMAINS: (process.env.GOOGLE_TENANT_2_DOMAINS || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  // Third Google tenant (migrationn.com)
+  GOOGLE_CLIENT_ID_3: process.env.GOOGLE_CLIENT_ID_3,
+  GOOGLE_CLIENT_SECRET_3: process.env.GOOGLE_CLIENT_SECRET_3,
+  GOOGLE_TENANT_3_DOMAINS: (process.env.GOOGLE_TENANT_3_DOMAINS || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  /** Absolute or relative-to-cwd path to the service account JSON key for tenant 3 (migrationn.com DWD). */
+  GOOGLE_SERVICE_ACCOUNT_KEY_3: (() => {
+    const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_3 || '').trim();
+    if (!raw) return '';
+    if (path.isAbsolute(raw)) return raw;
+    return path.resolve(__dirname, '../../', raw);
+  })(),
   googleAccounts,
   pickCorrespondentEmail,
   pickCcEmail,
+  pickBccEmail,
+  buildGoogleInboundSenders,
+  buildOutlookInboundSenders,
   outlookAccounts,
   GRAPH_CLIENT_ID: process.env.GRAPH_CLIENT_ID,
   GRAPH_CLIENT_SECRET: process.env.GRAPH_CLIENT_SECRET,
@@ -156,6 +191,14 @@ module.exports = {
     .replace(/^\/+/, '')
     .replace(/\/+$/, ''),
   CLOUDFUZE_OWNER_EMAIL: process.env.CLOUDFUZE_OWNER_EMAIL || '',
+  /** Admin email for the source cloud in /mail/clouds (e.g. granger@cloudfuze.us). Falls back to domain-matching. */
+  CLOUDFUZE_SOURCE_ADMIN_EMAIL: (process.env.CLOUDFUZE_SOURCE_ADMIN_EMAIL || '').trim().toLowerCase(),
+  /** Admin email for the destination cloud in /mail/clouds (e.g. erik@filefuze.co). Falls back to domain-matching. */
+  CLOUDFUZE_DEST_ADMIN_EMAIL: (process.env.CLOUDFUZE_DEST_ADMIN_EMAIL || '').trim().toLowerCase(),
+  /** Direct cloud ID for source — bypasses GET /mail/clouds entirely. Get from DevTools → /mail/clouds response → id field. */
+  CLOUDFUZE_SOURCE_CLOUD_ID: (process.env.CLOUDFUZE_SOURCE_CLOUD_ID || '').trim(),
+  /** Direct cloud ID for destination — bypasses GET /mail/clouds entirely. */
+  CLOUDFUZE_DEST_CLOUD_ID: (process.env.CLOUDFUZE_DEST_CLOUD_ID || '').trim(),
   SCHEDULER_ENABLED: process.env.SCHEDULER_ENABLED === 'true',
   DEFAULT_SOURCE_EMAIL: process.env.DEFAULT_SOURCE_EMAIL || '',
   DEFAULT_DEST_EMAIL: process.env.DEFAULT_DEST_EMAIL || '',
@@ -241,4 +284,6 @@ module.exports = {
   OPENAI_API_KEY: (process.env.OPENAI_API_KEY || '').trim(),
   /** Base URL for the bulk calendar API (no trailing slash). Default: http://localhost:8080 */
   BULK_CALENDAR_API_URL: (process.env.BULK_CALENDAR_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
+  /** Base URL for the create-mails-outlook Spring Boot service. Default: http://localhost:8080 */
+  OUTLOOK_DATA_API_URL: (process.env.OUTLOOK_DATA_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
 };

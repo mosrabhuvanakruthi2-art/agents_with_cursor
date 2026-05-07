@@ -21,6 +21,15 @@ const GMAIL_TO_OUTLOOK_MAP = {
   SPAM: 'Junk Email',
 };
 
+// Maps Outlook default folder display names → Gmail label IDs used in comparison
+const OUTLOOK_TO_GMAIL_ID = {
+  'Inbox': 'INBOX',
+  'Sent Items': 'SENT',
+  'Drafts': 'DRAFT',
+  'Deleted Items': 'TRASH',
+  'Junk Email': 'SPAM',
+};
+
 class OutlookValidationAgent extends BaseAgent {
   constructor() {
     super('OutlookValidationAgent');
@@ -33,10 +42,14 @@ class OutlookValidationAgent extends BaseAgent {
     const sourceUser = context.sourceEmail;
     const testType = context.testType || 'E2E';
 
-    log.info(`Validating [${testType}]: ${sourceUser} → ${destUser}`);
+    log.info(`Validating [${testType}]: ${sourceUser} → ${destUser} (sourceProvider=${context.sourceProvider || 'google'})`);
 
-    // Fetch source Gmail data
-    await this._fetchSourceData(sourceUser, result, log);
+    // Fetch source data — Outlook or Gmail depending on source provider
+    if (context.sourceProvider === 'microsoft') {
+      await this._fetchOutlookSourceData(sourceUser, result, log);
+    } else {
+      await this._fetchSourceData(sourceUser, result, log);
+    }
 
     // Fetch destination Outlook data
     await this._fetchDestinationData(destUser, result, log);
@@ -55,8 +68,38 @@ class OutlookValidationAgent extends BaseAgent {
       await this._validateCalendar(sourceUser, destUser, result, log);
     }
 
+    /**
+     * Best-effort contacts totals for the summary table. Always populated so the PDF shows 0
+     * rather than '—' when the scope isn't granted — keeps the 4-metric layout consistent.
+     * Errors/warnings are logged but do not fail validation.
+     */
+    try {
+      let srcContacts = { count: 0, available: false };
+      if (context.sourceProvider === 'microsoft') {
+        srcContacts = await outlookClient.getContactsCount(sourceUser);
+      } else {
+        srcContacts = await gmailClient.getGmailContactsCount(sourceUser);
+      }
+      const dstContacts = await outlookClient.getContactsCount(destUser);
+      result.contactsValidation.sourceCount = Number(srcContacts?.count) || 0;
+      result.contactsValidation.destinationCount = Number(dstContacts?.count) || 0;
+      result.contactsValidation.available = Boolean(srcContacts?.available || dstContacts?.available);
+      result.contactsValidation.countMatch =
+        result.contactsValidation.sourceCount === result.contactsValidation.destinationCount;
+      log.info(
+        `Contacts: source=${result.contactsValidation.sourceCount} dest=${result.contactsValidation.destinationCount}${srcContacts?.note ? ` [src: ${srcContacts.note}]` : ''}${dstContacts?.note ? ` [dst: ${dstContacts.note}]` : ''}`
+      );
+    } catch (contactsErr) {
+      log.warn(`Contacts count failed: ${contactsErr.message}`);
+    }
+
     // Compare source vs destination
     this._compareSourceAndDestination(result, log);
+
+    if (context.includeMail && context.deepValidation) {
+      const { runDeepMailValidation } = require('../../validation/deepMailValidator');
+      await runDeepMailValidation(context, result, log);
+    }
 
     result.computeOverallStatus();
     log.info(`Validation complete [${testType}]: ${result.overallStatus} (${result.mismatches.length} mismatches)`);
@@ -83,11 +126,75 @@ class OutlookValidationAgent extends BaseAgent {
         }
       }
 
-      const totalSource = result.sourceData.defaultLabels.reduce((s, l) => s + l.messageCount, 0);
-      result.mailValidation.sourceCount = totalSource;
-      log.info(`Source: ${result.sourceData.defaultLabels.length} default labels, ${result.sourceData.customLabels.length} custom labels`);
+      /**
+       * True source mailbox total comes from users.getProfile().messagesTotal — NOT the sum of
+       * per-label counts. Gmail labels (STARRED, IMPORTANT, CATEGORY_*, UNREAD, INBOX) overlap,
+       * so summing them double-counts every message that has more than one label. The 69 vs 81
+       * mismatch seen in earlier reports was caused by that overlap. Use getMailboxStats for
+       * an apples-to-apples comparison with Outlook's "sum of totalItemCount across folders".
+       */
+      try {
+        const stats = await gmailClient.getGmailMailboxStats(sourceUser);
+        // getGmailMailboxStats returns { mailCount, folderCount, calendarCount, eventCount }
+        result.mailValidation.sourceCount = Number(stats?.mailCount ?? stats?.totalMessages) || 0;
+        if (stats && typeof stats.calendarCount === 'number') {
+          result.calendarValidation.sourceCalendarCount = stats.calendarCount;
+        }
+      } catch (statsErr) {
+        log.warn(`Gmail getProfile failed; falling back to labels-sum: ${statsErr.message}`);
+        const fallbackSrc = result.sourceData.defaultLabels
+          .filter((l) => ['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM'].includes(l.id))
+          .reduce((s, l) => s + l.messageCount, 0);
+        result.mailValidation.sourceCount = fallbackSrc;
+      }
+      log.info(`Source: ${result.sourceData.defaultLabels.length} default labels, ${result.sourceData.customLabels.length} custom labels, total ${result.mailValidation.sourceCount} messages`);
     } catch (err) {
       log.error(`Failed to fetch source Gmail data: ${err.message}`);
+    }
+  }
+
+  /**
+   * For Outlook→Outlook: fetch source mailbox folders via Graph API.
+   * Default folders are stored with Gmail-compatible IDs (INBOX, SENT, etc.)
+   * so that _compareSourceAndDestination and PDF buildComparisonRows work unchanged.
+   */
+  async _fetchOutlookSourceData(sourceUser, result, log) {
+    log.info(`Fetching source Outlook data for: ${sourceUser}`);
+    try {
+      const folders = await outlookClient.getMailFolders(sourceUser);
+      const defaults = outlookClient.DEFAULT_FOLDER_NAMES;
+      result.sourceData.defaultLabels = [];
+      result.sourceData.customLabels = [];
+
+      this._walkOutlookSourceFolders(folders, defaults, '', result.sourceData.defaultLabels, result.sourceData.customLabels);
+
+      const totalSource = result.sourceData.defaultLabels.reduce((s, l) => s + l.messageCount, 0)
+        + result.sourceData.customLabels.reduce((s, l) => s + l.messageCount, 0);
+      result.mailValidation.sourceCount = totalSource;
+      log.info(`Source Outlook: ${result.sourceData.defaultLabels.length} default, ${result.sourceData.customLabels.length} custom`);
+    } catch (err) {
+      log.error(`Failed to fetch source Outlook data: ${err.message}`);
+    }
+  }
+
+  _walkOutlookSourceFolders(folders, defaults, parentPath, defaultLabels, customLabels) {
+    if (!folders?.length) return;
+    for (const folder of folders) {
+      const segment = (folder.displayName || '').trim();
+      const fullPath = parentPath ? `${parentPath}/${segment}` : segment;
+      const count = folder.totalItemCount || 0;
+
+      if (defaults.has(segment)) {
+        // Normalize to Gmail label ID so existing comparison + PDF logic matches
+        const gmailId = OUTLOOK_TO_GMAIL_ID[segment] || segment.toUpperCase();
+        defaultLabels.push({ id: gmailId, name: segment, messageCount: count });
+      } else {
+        customLabels.push({ id: fullPath, name: fullPath, messageCount: count });
+      }
+
+      if (folder.childFolders?.length) {
+        this._walkOutlookSourceFolders(folder.childFolders, defaults, fullPath, defaultLabels, customLabels);
+      }
     }
   }
 
@@ -278,6 +385,7 @@ class OutlookValidationAgent extends BaseAgent {
       const calendars = await outlookClient.getCalendars(destUser);
       result.calendarValidation.primaryCalendar = calendars.find((c) => c.isDefaultCalendar) || null;
       result.calendarValidation.secondaryCalendars = calendars.filter((c) => !c.isDefaultCalendar);
+      result.calendarValidation.destinationCalendarCount = calendars.length;
 
       let totalEvents = 0;
       for (const cal of calendars) {

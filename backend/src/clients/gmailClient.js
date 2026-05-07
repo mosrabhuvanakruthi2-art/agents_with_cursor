@@ -1,14 +1,48 @@
+const fs = require('fs');
+const path = require('path');
 const { google } = require('googleapis');
 const env = require('../config/env');
 const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
-/** Return '2' if the email belongs to the second Google tenant, else '1'. */
+/** Return '2' or '3' if the email belongs to the second/third Google tenant, else '1'. */
 function getGoogleTenant(email) {
   const domain = (email || '').split('@')[1]?.toLowerCase() || '';
+  if (domain && env.GOOGLE_CLIENT_ID_3 && env.GOOGLE_TENANT_3_DOMAINS?.includes(domain)) return '3';
   if (domain && env.GOOGLE_CLIENT_ID_2 && env.GOOGLE_TENANT_2_DOMAINS?.includes(domain)) return '2';
   return '1';
+}
+
+const SERVICE_ACCOUNT_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/contacts',
+  'https://www.googleapis.com/auth/directory.readonly',
+  'https://www.googleapis.com/auth/admin.directory.user.readonly',
+];
+
+// Superset scopes required for permanent delete (batchDelete/messages.delete).
+// The DWD entry in admin.google.com must also include https://mail.google.com/
+const SERVICE_ACCOUNT_SCOPES_WRITE = [
+  'https://mail.google.com/',
+  ...SERVICE_ACCOUNT_SCOPES,
+];
+
+/**
+ * Returns a service-account JWT auth client impersonating the given user.
+ * Used for tenant 3 (migrationn.com) — no per-user OAuth needed.
+ */
+function getServiceAccountAuth(email, write = false) {
+  const keyPath = env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
+  if (!keyPath) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_3 not set in .env');
+  const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+  return new google.auth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: write ? SERVICE_ACCOUNT_SCOPES_WRITE : SERVICE_ACCOUNT_SCOPES,
+    subject: email,
+  });
 }
 
 /**
@@ -17,8 +51,17 @@ function getGoogleTenant(email) {
  */
 function getAuthForToken(refreshToken, email) {
   const tenant = getGoogleTenant(email);
-  const clientId = tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
-  const clientSecret = tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
+  let clientId, clientSecret;
+  if (tenant === '3') {
+    clientId = env.GOOGLE_CLIENT_ID_3;
+    clientSecret = env.GOOGLE_CLIENT_SECRET_3;
+  } else if (tenant === '2') {
+    clientId = env.GOOGLE_CLIENT_ID_2;
+    clientSecret = env.GOOGLE_CLIENT_SECRET_2;
+  } else {
+    clientId = env.GOOGLE_CLIENT_ID;
+    clientSecret = env.GOOGLE_CLIENT_SECRET;
+  }
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
   oauth2Client.setCredentials({ refresh_token: refreshToken });
   return oauth2Client;
@@ -59,11 +102,25 @@ function getRefreshTokenForEmail(email) {
 }
 
 function getGmailForEmail(email) {
+  if (getGoogleTenant(email) === '3') {
+    return google.gmail({ version: 'v1', auth: getServiceAccountAuth(email, false) });
+  }
+  const refreshToken = getRefreshTokenForEmail(email);
+  return google.gmail({ version: 'v1', auth: getAuthForToken(refreshToken, email) });
+}
+
+function getGmailForWrite(email) {
+  if (getGoogleTenant(email) === '3') {
+    return google.gmail({ version: 'v1', auth: getServiceAccountAuth(email, true) });
+  }
   const refreshToken = getRefreshTokenForEmail(email);
   return google.gmail({ version: 'v1', auth: getAuthForToken(refreshToken, email) });
 }
 
 function getCalendarAuthForEmail(email) {
+  if (getGoogleTenant(email) === '3') {
+    return getServiceAccountAuth(email);
+  }
   const refreshToken = getRefreshTokenForEmail(email);
   return getAuthForToken(refreshToken, email);
 }
@@ -85,6 +142,44 @@ function formatAddressList(cc) {
  * Builds a RFC 2822 compliant raw email message.
  * Supports plain text, HTML, attachments, inline images, Cc, Bcc.
  */
+function normalizeCRLF(text) {
+  return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\r\n');
+}
+
+/** RFC 2045 §6.8 — base64 lines must not exceed 76 characters. */
+function wrapBase64(data) {
+  return String(data || '').replace(/(.{1,76})/g, '$1\r\n').trimEnd();
+}
+
+/** RFC 2822 date string, e.g. "Fri, 25 Apr 2026 10:30:00 +0000" */
+function rfc2822Date(date = new Date()) {
+  return date.toUTCString().replace('GMT', '+0000');
+}
+
+/** Convert plain text to minimal HTML, preserving line breaks. */
+function textToSimpleHtml(text) {
+  const escaped = String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r\n/g, '<br>\r\n')
+    .replace(/\n/g, '<br>\r\n');
+  return `<html><body><p>${escaped}</p></body></html>`;
+}
+
+/**
+ * Builds a RFC 2822 compliant raw email message.
+ *
+ * MIME structure mirrors what email clients (Gmail UI, Outlook) produce so that
+ * migration tools reliably find the body:
+ *
+ *   text only               → text/plain
+ *   html only               → multipart/alternative (text/plain + text/html)
+ *   text + attach           → multipart/mixed > multipart/alternative (text/plain + auto-html)
+ *   html + attach           → multipart/mixed > multipart/alternative (text/plain + text/html)
+ *   html + inline imgs      → multipart/alternative (text/plain + multipart/related(html + images))
+ *   html + inline + attach  → multipart/mixed > multipart/alternative (text/plain + multipart/related)
+ */
 function buildRawMessage({
   to,
   from,
@@ -96,10 +191,17 @@ function buildRawMessage({
   attachments = [],
   inlineImages = [],
 }) {
-  const boundary = `boundary_${Date.now()}`;
-  const mixedBoundary = `mixed_${Date.now()}`;
-  const hasAttachments = attachments.length > 0 || inlineImages.length > 0;
+  const ts = Date.now();
+  const altBoundary = `alt_${ts}`;
+  const mixedBoundary = `mixed_${ts}`;
+  const relBoundary = `related_${ts}`;
+  const hasRegularAttachments = attachments.length > 0;
+  const hasInlineImages = inlineImages.length > 0;
   const hasHtml = !!htmlBody;
+
+  // Normalize line endings to RFC 2822 CRLF so MIME parsers (including Outlook's
+  // migration importer) don't collapse bare \n into spaces.
+  const plainBody = normalizeCRLF(textBody);
 
   let message = '';
   message += `From: ${from}\r\n`;
@@ -109,32 +211,60 @@ function buildRawMessage({
   const bccLine = formatAddressList(bcc);
   if (bccLine) message += `Bcc: ${bccLine}\r\n`;
   message += `Subject: ${encodeSubject(subject)}\r\n`;
+  message += `Date: ${rfc2822Date()}\r\n`;
+  message += `Message-ID: <${ts}-${Math.random().toString(36).slice(2)}@cloudfuze.qa>\r\n`;
   message += `MIME-Version: 1.0\r\n`;
 
-  if (hasAttachments) {
+  // Helper: emit the multipart/related block (html + inline images)
+  const emitRelated = () => {
+    message += `Content-Type: multipart/related; boundary="${relBoundary}"\r\n\r\n`;
+    message += `--${relBoundary}\r\n`;
+    message += `Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+    message += `${htmlBody}\r\n`;
+    for (const img of inlineImages) {
+      message += `--${relBoundary}\r\n`;
+      message += `Content-Type: ${img.mimeType}\r\n`;
+      message += `Content-Transfer-Encoding: base64\r\n`;
+      message += `Content-ID: <${img.contentId}>\r\n`;
+      message += `Content-Disposition: inline; filename="${img.contentId}"\r\n\r\n`;
+      message += `${wrapBase64(img.data)}\r\n`;
+    }
+    message += `--${relBoundary}--\r\n`;
+  };
+
+  if (hasRegularAttachments) {
+    // multipart/mixed wraps the body + file attachments
     message += `Content-Type: multipart/mixed; boundary="${mixedBoundary}"\r\n\r\n`;
     message += `--${mixedBoundary}\r\n`;
 
-    if (hasHtml && inlineImages.length > 0) {
-      message += `Content-Type: multipart/related; boundary="${boundary}"\r\n\r\n`;
-      message += `--${boundary}\r\n`;
-      message += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
-      message += `${htmlBody}\r\n`;
-
-      for (const img of inlineImages) {
-        message += `--${boundary}\r\n`;
-        message += `Content-Type: ${img.mimeType}\r\n`;
-        message += `Content-Transfer-Encoding: base64\r\n`;
-        message += `Content-ID: <${img.contentId}>\r\n\r\n`;
-        message += `${img.data}\r\n`;
-      }
-      message += `--${boundary}--\r\n`;
+    if (hasHtml && hasInlineImages) {
+      message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+      message += `--${altBoundary}\r\n`;
+      message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+      message += `${plainBody}\r\n`;
+      message += `--${altBoundary}\r\n`;
+      emitRelated();
+      message += `--${altBoundary}--\r\n\r\n`;
     } else if (hasHtml) {
-      message += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+      message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+      message += `--${altBoundary}\r\n`;
+      message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+      message += `${plainBody}\r\n`;
+      message += `--${altBoundary}\r\n`;
+      message += `Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
       message += `${htmlBody}\r\n`;
+      message += `--${altBoundary}--\r\n\r\n`;
     } else {
-      message += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
-      message += `${textBody}\r\n`;
+      // text only + attachments: auto-generate HTML so migration tools find the body
+      const autoHtml = textToSimpleHtml(plainBody);
+      message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+      message += `--${altBoundary}\r\n`;
+      message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+      message += `${plainBody}\r\n`;
+      message += `--${altBoundary}\r\n`;
+      message += `Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+      message += `${autoHtml}\r\n`;
+      message += `--${altBoundary}--\r\n\r\n`;
     }
 
     for (const att of attachments) {
@@ -142,33 +272,53 @@ function buildRawMessage({
       message += `Content-Type: ${att.mimeType}; name="${att.filename}"\r\n`;
       message += `Content-Disposition: attachment; filename="${att.filename}"\r\n`;
       message += `Content-Transfer-Encoding: base64\r\n\r\n`;
-      message += `${att.data}\r\n`;
+      message += `${wrapBase64(att.data)}\r\n`;
     }
     message += `--${mixedBoundary}--\r\n`;
+
+  } else if (hasHtml && hasInlineImages) {
+    // Inline images only (no file attachments): multipart/alternative → multipart/related
+    // Do NOT wrap in multipart/mixed — that signals file attachments and breaks inline rendering
+    message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+    message += `--${altBoundary}\r\n`;
+    message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+    message += `${plainBody}\r\n`;
+    message += `--${altBoundary}\r\n`;
+    emitRelated();
+    message += `--${altBoundary}--\r\n`;
+
   } else if (hasHtml) {
-    message += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n\r\n`;
-    message += `--${boundary}\r\n`;
-    message += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
-    message += `${textBody || ''}\r\n`;
-    message += `--${boundary}\r\n`;
-    message += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+    message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+    message += `--${altBoundary}\r\n`;
+    message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+    message += `${plainBody}\r\n`;
+    message += `--${altBoundary}\r\n`;
+    message += `Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
     message += `${htmlBody}\r\n`;
-    message += `--${boundary}--\r\n`;
+    message += `--${altBoundary}--\r\n`;
   } else {
-    message += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
-    message += `${textBody}\r\n`;
+    message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+    message += `${plainBody}\r\n`;
   }
 
   return Buffer.from(message).toString('base64url');
 }
 
-async function insertEmail(sourceEmail, userId, rawMessage, labelIds = ['INBOX']) {
+/**
+ * @param {string[]} labelIds
+ * @param {{ threadId?: string }} [opts] - pass threadId to append to an existing Gmail thread (conversation)
+ */
+async function insertEmail(sourceEmail, userId, rawMessage, labelIds = ['INBOX'], opts = {}) {
   const gmail = getGmailForEmail(sourceEmail);
+  const requestBody = { raw: rawMessage, labelIds };
+  if (opts.threadId) {
+    requestBody.threadId = opts.threadId;
+  }
   const res = await retryWithBackoff(
     () =>
       gmail.users.messages.insert({
         userId,
-        requestBody: { raw: rawMessage, labelIds },
+        requestBody,
       }),
     { label: `Gmail insertEmail (${sourceEmail})` }
   );
@@ -237,6 +387,228 @@ async function getMessageCount(sourceEmail, userId, labelId = 'INBOX') {
 }
 
 /**
+ * Paginated message id list for a label (e.g. INBOX).
+ */
+async function listMessageIdsForLabel(sourceEmail, labelId, options = {}) {
+  const maxResults = Math.min(Math.max(options.maxResults || 100, 1), 500);
+  const pageToken = options.pageToken || undefined;
+  const gmail = getGmailForEmail(sourceEmail);
+  const res = await retryWithBackoff(
+    () =>
+      gmail.users.messages.list({
+        userId: 'me',
+        labelIds: labelId ? [labelId] : undefined,
+        maxResults,
+        pageToken,
+      }),
+    { label: `Gmail messages.list (${sourceEmail})` }
+  );
+  return {
+    messages: res.data.messages || [],
+    nextPageToken: res.data.nextPageToken || null,
+    resultSizeEstimate: res.data.resultSizeEstimate,
+  };
+}
+
+function headersArrayToMap(headers) {
+  const map = {};
+  if (!headers || !Array.isArray(headers)) return map;
+  for (const h of headers) {
+    const name = String(h.name || '').toLowerCase();
+    map[name] = h.value || '';
+  }
+  return map;
+}
+
+function normalizeInternetMessageId(raw) {
+  const inner = String(raw || '')
+    .trim()
+    .replace(/^<+/, '')
+    .replace(/>+$/, '')
+    .trim();
+  if (!inner) return '';
+  return `<${inner}>`;
+}
+
+async function getMessageMetadata(sourceEmail, messageId, format = 'metadata') {
+  const gmail = getGmailForEmail(sourceEmail);
+  const res = await retryWithBackoff(
+    () =>
+      gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format,
+      }),
+    { label: `Gmail messages.get (${sourceEmail})` }
+  );
+  const data = res.data;
+  const headerMap = headersArrayToMap(data.payload?.headers);
+  const midHeader = headerMap['message-id'] || '';
+  const internalMs =
+    data.internalDate != null && String(data.internalDate).length > 0 ? Number(data.internalDate) : null;
+  return {
+    id: data.id,
+    threadId: data.threadId,
+    labelIds: data.labelIds || [],
+    snippet: data.snippet || '',
+    sizeEstimate: data.sizeEstimate,
+    payload: data.payload,
+    headers: headerMap,
+    internetMessageId: normalizeInternetMessageId(midHeader),
+    /** Epoch ms when Gmail stored the message (preferred for pairing with Graph receivedDateTime). */
+    internalDateMs: Number.isFinite(internalMs) ? internalMs : null,
+    subject: headerMap.subject || '',
+    from: headerMap.from || '',
+    to: headerMap.to || '',
+    cc: headerMap.cc || '',
+    bcc: headerMap.bcc || '',
+    date: headerMap.date || '',
+    raw: data,
+  };
+}
+
+function collectGmailAttachmentParts(payload, out = []) {
+  if (!payload) return out;
+  const filename = payload.filename;
+  const body = payload.body || {};
+  if (filename && body.attachmentId) {
+    out.push({
+      filename,
+      size: Number(body.size) || 0,
+      attachmentId: body.attachmentId,
+      mimeType: payload.mimeType || '',
+    });
+  }
+  const parts = payload.parts;
+  if (parts && Array.isArray(parts)) {
+    for (const p of parts) collectGmailAttachmentParts(p, out);
+  }
+  return out;
+}
+
+function decodeMimePartBody(data) {
+  if (!data || typeof data !== 'string') return '';
+  const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+  try {
+    return Buffer.from(b64, 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function stripHtmlMinimal(html) {
+  return String(html || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Best-effort plain text from Gmail MIME payload (prefers text/plain, else text/html stripped).
+ */
+function extractPlainBodyFromPayload(payload, depth = 0) {
+  if (!payload || depth > 24) return '';
+  const mime = String(payload.mimeType || '').toLowerCase();
+  const body = payload.body || {};
+
+  if (mime.includes('multipart')) {
+    for (const p of payload.parts || []) {
+      const got = extractPlainBodyFromPayload(p, depth + 1);
+      if (got) return got;
+    }
+    return '';
+  }
+  if (mime.includes('text/plain') && body.data) {
+    return decodeMimePartBody(body.data).trim();
+  }
+  if (mime.includes('text/html') && body.data) {
+    return stripHtmlMinimal(decodeMimePartBody(body.data));
+  }
+  if (body.data && mime.includes('text')) {
+    return decodeMimePartBody(body.data).trim();
+  }
+  return '';
+}
+
+/**
+ * Extract raw text/html part (first occurrence) from Gmail MIME payload. Returns '' if none.
+ * Used by deep mail validation so the HTML part on Gmail compares against Outlook's HTML body,
+ * avoiding a false-positive when the text/plain alternative differs from the HTML content.
+ */
+function extractHtmlBodyFromPayload(payload, depth = 0) {
+  if (!payload || depth > 24) return '';
+  const mime = String(payload.mimeType || '').toLowerCase();
+  const body = payload.body || {};
+  if (mime.includes('multipart')) {
+    for (const p of payload.parts || []) {
+      const got = extractHtmlBodyFromPayload(p, depth + 1);
+      if (got) return got;
+    }
+    return '';
+  }
+  if (mime.includes('text/html') && body.data) {
+    return decodeMimePartBody(body.data);
+  }
+  return '';
+}
+
+/**
+ * Human-readable Gmail label list for a message (sorted, joined).
+ * @param {string[]} labelIds
+ * @param {Map<string,string>} labelIdToName
+ */
+function formatGmailLabelsForCompare(labelIds, labelIdToName) {
+  const names = (labelIds || [])
+    .map((id) => labelIdToName?.get?.(id) || id)
+    .filter(Boolean);
+  return [...new Set(names)].sort((a, b) => String(a).localeCompare(String(b))).join(' | ');
+}
+
+async function getMessageFullForValidation(sourceEmail, messageId) {
+  const meta = await getMessageMetadata(sourceEmail, messageId, 'full');
+  const attachments = collectGmailAttachmentParts(meta.payload);
+  return { ...meta, attachments };
+}
+
+async function getAttachmentData(sourceEmail, messageId, attachmentId) {
+  const gmail = getGmailForEmail(sourceEmail);
+  const res = await retryWithBackoff(
+    () =>
+      gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachmentId,
+      }),
+    { label: `Gmail attachments.get (${sourceEmail})` }
+  );
+  const data = res.data?.data;
+  if (!data) return Buffer.alloc(0);
+  const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(b64, 'base64');
+}
+
+async function listMessageIdsForLabelUpTo(sourceEmail, labelId, maxIds, options = {}) {
+  const cap = Math.min(Math.max(maxIds || 500, 1), 5000);
+  const collected = [];
+  let pageToken = undefined;
+  const pageSize = Math.min(100, cap);
+  while (collected.length < cap) {
+    const page = await listMessageIdsForLabel(sourceEmail, labelId, {
+      maxResults: Math.min(pageSize, cap - collected.length),
+      pageToken,
+    });
+    for (const m of page.messages || []) {
+      collected.push(m.id);
+      if (collected.length >= cap) break;
+    }
+    if (!page.nextPageToken || collected.length >= cap) break;
+    pageToken = page.nextPageToken;
+  }
+  return collected;
+}
+
+/**
  * Returns all configured Google account emails.
  */
 function getConfiguredAccounts() {
@@ -248,9 +620,46 @@ function getConfiguredAccounts() {
  * Falls back to returning configured accounts if the directory API is not available.
  */
 async function listDomainUsers(adminEmail) {
-  const refreshToken = getRefreshTokenForEmail(adminEmail);
-  const auth = getAuthForToken(refreshToken, adminEmail);
+  const tenant = getGoogleTenant(adminEmail);
   const domain = adminEmail.split('@')[1];
+
+  // Tenant 3 (migrationn.com): use Admin SDK Directory API via service account DWD
+  if (tenant === '3') {
+    try {
+      const auth = getServiceAccountAuth(adminEmail);
+      const adminSdk = google.admin({ version: 'directory_v1', auth });
+      const users = [];
+      let pageToken = undefined;
+      do {
+        const res = await adminSdk.users.list({
+          domain,
+          maxResults: 500,
+          orderBy: 'email',
+          pageToken,
+        });
+        for (const u of res.data.users || []) {
+          const email = (u.primaryEmail || '').toLowerCase();
+          if (!email) continue;
+          const name = u.name || {};
+          users.push({
+            id: u.id || email,
+            email,
+            displayName: name.fullName || email.split('@')[0],
+            firstName: name.givenName || email.split('@')[0],
+            lastName: name.familyName || '',
+          });
+        }
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
+      logger.info(`Admin SDK listed ${users.length} users for ${domain}`);
+      return users;
+    } catch (err) {
+      logger.warn(`Admin SDK user listing failed for ${adminEmail}: ${err.message}`);
+      return [];
+    }
+  }
+
+  const auth = getAuthForToken(getRefreshTokenForEmail(adminEmail), adminEmail);
 
   // Try People API directory listing first
   try {
@@ -380,9 +789,57 @@ async function getGmailMailboxStats(sourceEmail) {
   return { mailCount: totalMessages, folderCount: customLabelCount, calendarCount, eventCount };
 }
 
+/**
+ * Best-effort Google Contacts count for the source mailbox user.
+ *
+ * Uses People API `people.connections.list` against `people/me` paginated at 1000/page.
+ * Returns 0 with `available:false` when the user's OAuth refresh token lacks the
+ * https://www.googleapis.com/auth/contacts.readonly scope — caller renders the validation
+ * report row with that 0 and a note so the 4-metric Mail/Folders/Calendars/Contacts layout
+ * stays consistent across executions.
+ *
+ * @param {string} sourceEmail
+ * @returns {Promise<{ count: number, available: boolean, note?: string }>}
+ */
+async function getGmailContactsCount(sourceEmail) {
+  try {
+    const auth = getGoogleTenant(sourceEmail) === '3'
+      ? getServiceAccountAuth(sourceEmail)
+      : getAuthForToken(getRefreshTokenForEmail(sourceEmail), sourceEmail);
+    const people = google.people({ version: 'v1', auth });
+    let count = 0;
+    let pageToken = undefined;
+    // Cap at 10k for safety (large tenants can time out); good enough for reporting tile.
+    for (let i = 0; i < 20; i++) {
+      const res = await people.people.connections.list({
+        resourceName: 'people/me',
+        personFields: 'metadata',
+        pageSize: 1000,
+        pageToken,
+      });
+      const items = res.data.connections || [];
+      count += items.length;
+      pageToken = res.data.nextPageToken;
+      if (!pageToken) break;
+    }
+    return { count, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    // "ACCESS_TOKEN_SCOPE_INSUFFICIENT" or 403/401 → scope/permissions
+    const scope = /scope|permission|invalid_grant|403|401/i.test(msg);
+    return {
+      count: 0,
+      available: false,
+      note: scope
+        ? 'Contacts scope not granted to the refresh token — enable contacts.readonly to include this count.'
+        : `Contacts fetch failed: ${msg.substring(0, 160)}`,
+    };
+  }
+}
+
 async function cleanGmailMailbox(sourceEmail) {
   const log = require('../utils/logger');
-  const gmail = getGmailForEmail(sourceEmail);
+  const gmail = getGmailForWrite(sourceEmail);
   const summary = { messagesDeleted: 0, foldersDeleted: 0, eventsDeleted: 0, calendarsDeleted: 0, errors: [] };
 
   log.info('[clean-gmail ' + sourceEmail + '] Step 1: Deleting custom labels...');
@@ -485,6 +942,91 @@ async function cleanGmailMailbox(sourceEmail) {
   return summary;
 }
 
+async function cleanGmailEmailsOnly(sourceEmail) {
+  const log = require('../utils/logger');
+  const gmail = getGmailForWrite(sourceEmail);
+  const summary = { messagesDeleted: 0, errors: [] };
+  log.info('[clean-gmail-emails ' + sourceEmail + '] Deleting all messages...');
+  try {
+    let hasMore = true;
+    while (hasMore) {
+      const res = await gmail.users.messages.list({ userId: 'me', maxResults: 100, includeSpamTrash: true });
+      const messages = res.data.messages || [];
+      if (messages.length === 0) { hasMore = false; break; }
+      const ids = messages.map((m) => m.id);
+      await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids } });
+      summary.messagesDeleted += ids.length;
+    }
+  } catch (err) { summary.errors.push('Messages: ' + err.message); }
+  try {
+    let hasMore = true;
+    while (hasMore) {
+      const res = await gmail.users.drafts.list({ userId: 'me', maxResults: 100 });
+      const drafts = res.data.drafts || [];
+      if (drafts.length === 0) { hasMore = false; break; }
+      for (const d of drafts) { try { await gmail.users.drafts.delete({ userId: 'me', id: d.id }); summary.messagesDeleted++; } catch {} }
+    }
+  } catch (err) { summary.errors.push('Drafts: ' + err.message); }
+  log.info('[clean-gmail-emails ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs/drafts');
+  return summary;
+}
+
+async function cleanGmailFoldersOnly(sourceEmail) {
+  const log = require('../utils/logger');
+  const gmail = getGmailForWrite(sourceEmail);
+  const summary = { foldersDeleted: 0, errors: [] };
+  log.info('[clean-gmail-folders ' + sourceEmail + '] Deleting custom labels...');
+  try {
+    const labelsRes = await gmail.users.labels.list({ userId: 'me' });
+    for (const label of labelsRes.data.labels || []) {
+      if (!GMAIL_SYSTEM_LABEL_IDS.has(label.id) && label.type === 'user') {
+        try { await gmail.users.labels.delete({ userId: 'me', id: label.id }); summary.foldersDeleted++; }
+        catch (err) { summary.errors.push('Label "' + label.name + '": ' + err.message); }
+      }
+    }
+  } catch (err) { summary.errors.push('Labels: ' + err.message); }
+  log.info('[clean-gmail-folders ' + sourceEmail + '] DONE: ' + summary.foldersDeleted + ' labels');
+  return summary;
+}
+
+async function cleanGmailCalendarsOnly(sourceEmail) {
+  const log = require('../utils/logger');
+  const summary = { eventsDeleted: 0, calendarsDeleted: 0, errors: [] };
+  log.info('[clean-gmail-cals ' + sourceEmail + '] Cleaning calendars...');
+  try {
+    const calAuth = getCalendarAuthForEmail(sourceEmail);
+    const cal = google.calendar({ version: 'v3', auth: calAuth });
+    const calList = await cal.calendarList.list();
+    for (const c of calList.data.items || []) {
+      if (c.primary) {
+        let pt, del = 0;
+        do {
+          const ev = await cal.events.list({ calendarId: c.id, maxResults: 250, pageToken: pt, singleEvents: false });
+          for (const e of ev.data.items || []) { try { await cal.events.delete({ calendarId: c.id, eventId: e.id }); del++; } catch {} }
+          pt = ev.data.nextPageToken;
+        } while (pt);
+        summary.eventsDeleted += del;
+      } else if (c.accessRole === 'owner') {
+        try { await cal.calendars.delete({ calendarId: c.id }); summary.calendarsDeleted++; }
+        catch (err) { summary.errors.push('Calendar "' + c.summary + '": ' + err.message); }
+      } else {
+        let pt, del = 0;
+        try {
+          do {
+            const ev = await cal.events.list({ calendarId: c.id, maxResults: 250, pageToken: pt, singleEvents: false });
+            for (const e of ev.data.items || []) { try { await cal.events.delete({ calendarId: c.id, eventId: e.id }); del++; } catch {} }
+            pt = ev.data.nextPageToken;
+          } while (pt);
+        } catch {}
+        summary.eventsDeleted += del;
+        try { await cal.calendarList.delete({ calendarId: c.id }); summary.calendarsDeleted++; } catch {}
+      }
+    }
+  } catch (err) { summary.errors.push('Calendars: ' + err.message); }
+  log.info('[clean-gmail-cals ' + sourceEmail + '] DONE: ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' cals');
+  return summary;
+}
+
 module.exports = {
   buildRawMessage,
   insertEmail,
@@ -493,11 +1035,25 @@ module.exports = {
   createDraft,
   listLabels,
   getMessageCount,
+  listMessageIdsForLabel,
+  listMessageIdsForLabelUpTo,
+  getMessageMetadata,
+  getMessageFullForValidation,
+  getAttachmentData,
+  collectGmailAttachmentParts,
+  extractPlainBodyFromPayload,
+  extractHtmlBodyFromPayload,
+  formatGmailLabelsForCompare,
+  normalizeInternetMessageId,
   getCalendarAuthForEmail,
   getRefreshTokenForEmail,
   getConfiguredAccounts,
   listDomainUsers,
   getGmailMailboxStats,
+  getGmailContactsCount,
   cleanGmailMailbox,
+  cleanGmailEmailsOnly,
+  cleanGmailFoldersOnly,
+  cleanGmailCalendarsOnly,
   GMAIL_SYSTEM_LABEL_IDS,
 };

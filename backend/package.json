@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node test/googleAccountsPicker.test.js",
+    "test": "node test/googleAccountsPicker.test.js && node test/mailMigrationComparator.test.js",
     "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js",
     "import-test-repository": "node scripts/import-test-repository.js",
     "push-test-repository-json-to-mongo": "node scripts/push-test-repository-json-to-mongo.js",

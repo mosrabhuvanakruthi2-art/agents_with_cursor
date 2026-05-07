@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getExecutions, getExecutionLogs } from '../services/api';
+import { getExecutions, getExecutionLogs, cancelExecution } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
 import LogViewer from '../components/LogViewer';
 
@@ -11,6 +11,7 @@ export default function ExecutionLogs() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const selectedExec = executions.find((e) => e.executionId === selectedId);
 
@@ -42,6 +43,23 @@ export default function ExecutionLogs() {
       // API may not be running
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleCancel() {
+    if (!selectedId || cancelling) return;
+    setCancelling(true);
+    try {
+      await cancelExecution(selectedId);
+    } catch {
+      // ignore cancel error — still refresh below
+    }
+    try {
+      await loadExecutions();
+    } catch {
+      // ignore
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -108,7 +126,23 @@ export default function ExecutionLogs() {
                     {selectedExec.context?.migrationType} | {new Date(selectedExec.createdAt).toLocaleString()}
                   </p>
                 </div>
-                <StatusBadge status={selectedExec.status} />
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={selectedExec.status} />
+                  {selectedExec.status === 'RUNNING' && (
+                    <button
+                      type="button"
+                      onClick={handleCancel}
+                      disabled={cancelling}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {cancelling ? (
+                        <><svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Stopping…</>
+                      ) : (
+                        <><svg className="w-3 h-3" fill="currentColor" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>Stop</>
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
               {selectedExec.currentAgent && (
                 <p className="text-xs text-indigo-700 mt-2">

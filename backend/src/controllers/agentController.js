@@ -1,4 +1,4 @@
-﻿const orchestrator = require('../orchestrator/AgentOrchestrator');
+const orchestrator = require('../orchestrator/AgentOrchestrator');
 const executionService = require('../services/executionService');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
@@ -9,31 +9,43 @@ const logsDir = path.resolve(__dirname, '../../logs');
 
 async function runAgents(req, res) {
   try {
-    const { sourceEmail, destinationEmail, migrationType, includeMail, includeCalendar, testType, mappedPairs } = req.body;
+    const {
+      sourceEmail,
+      destinationEmail,
+      migrationType,
+      includeMail,
+      includeCalendar,
+      includeContacts,
+      testType,
+      mappedPairs,
+      sourceProvider,
+      destinationProvider,
+      userEmailMappings,
+      sourceAdminEmail,
+      destAdminEmail,
+    } = req.body;
+    const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
 
-    // Bulk migration: multiple mapped pairs
+    // Bulk migration: multiple mapped pairs — phased execution
+    // Phase 1 (parallel): create test data in all source accounts
+    // Phase 2 (sequential): migrate each pair one at a time
+    // Phase 3 (parallel): validate all destination mailboxes
     if (mappedPairs && Array.isArray(mappedPairs) && mappedPairs.length > 0) {
-      const results = [];
-      for (const pair of mappedPairs) {
-        try {
-          const result = await orchestrator.runFullFlow({
-            sourceEmail: pair.sourceEmail,
-            destinationEmail: pair.destinationEmail,
-            migrationType: migrationType || 'FULL',
-            includeMail: includeMail !== false,
-            includeCalendar: includeCalendar !== false,
-            testType: testType || 'E2E',
-          });
-          results.push(result);
-        } catch (err) {
-          results.push({
-            sourceEmail: pair.sourceEmail,
-            destinationEmail: pair.destinationEmail,
-            status: 'FAILED',
-            error: err.message,
-          });
-        }
-      }
+      const pairsData = mappedPairs.map((pair) => ({
+        sourceEmail: pair.sourceEmail,
+        destinationEmail: pair.destinationEmail,
+        migrationType: migrationType || 'FULL',
+        includeMail,
+        includeCalendar,
+        includeContacts,
+        testType: testType || 'E2E',
+        sourceProvider: pair.sourceProvider || 'google',
+        destinationProvider: pair.destinationProvider || 'microsoft',
+        userEmailMappings: normalizedUserMappings,
+        sourceAdminEmail: sourceAdminEmail || '',
+        destAdminEmail: destAdminEmail || '',
+      }));
+      const results = await orchestrator.runBulkFlow(pairsData);
       return res.json({
         bulk: true,
         totalPairs: mappedPairs.length,
@@ -53,9 +65,18 @@ async function runAgents(req, res) {
       sourceEmail,
       destinationEmail,
       migrationType: migrationType || 'FULL',
-      includeMail: includeMail !== false,
-      includeCalendar: includeCalendar !== false,
+      includeMail,
+      includeCalendar,
+      includeContacts,
       testType: testType || 'E2E',
+      sourceProvider: sourceProvider || 'google',
+      destinationProvider: destinationProvider || 'microsoft',
+      userEmailMappings: normalizedUserMappings,
+      sourceAdminEmail: sourceAdminEmail || '',
+      destAdminEmail: destAdminEmail || '',
+      migrationServerUrl: req.body.migrationServerUrl || '',
+      migrationServerEmail: req.body.migrationServerEmail || '',
+      migrationServerPassword: req.body.migrationServerPassword || '',
     });
     context.validate();
 
@@ -294,9 +315,10 @@ async function getMailboxStats(req, res) {
 
     const outlookClient = require('../clients/outlookClient');
 
-    const [folders, totalMessages] = await Promise.all([
+    const [folders, totalMessages, recoverableCount] = await Promise.all([
       outlookClient.getMailFolders(email),
       outlookClient.getTotalMessageCount(email),
+      outlookClient.getRecoverableItemsCount(email),
     ]);
     const defaults = outlookClient.DEFAULT_FOLDER_NAMES;
 
@@ -310,7 +332,14 @@ async function getMailboxStats(req, res) {
       }
     }
 
-    const result = { email, mailCount: totalMessages, folderCount: customFolderCount, calendarCount: 0, eventCount: 0 };
+    const result = {
+      email,
+      mailCount: totalMessages + recoverableCount,
+      recoverableCount,
+      folderCount: customFolderCount,
+      calendarCount: 0,
+      eventCount: 0,
+    };
 
     if (includeCalendar === 'true') {
       try {
@@ -400,7 +429,9 @@ async function getSourceMailboxStats(req, res) {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: 'email query param is required' });
     const envCheck = require('../config/env');
-    if (!envCheck.googleAccounts.has(email.toLowerCase())) {
+    const emailDomain = email.toLowerCase().split('@')[1] || '';
+    const isDwdUser = Array.isArray(envCheck.GOOGLE_TENANT_3_DOMAINS) && envCheck.GOOGLE_TENANT_3_DOMAINS.includes(emailDomain);
+    if (!isDwdUser && !envCheck.googleAccounts.has(email.toLowerCase())) {
       return res.json({ email, mailCount: 0, folderCount: 0, calendarCount: 0, eventCount: 0, noToken: true });
     }
     const gmailClient = require('../clients/gmailClient');
@@ -408,8 +439,131 @@ async function getSourceMailboxStats(req, res) {
     res.json({ email, ...stats });
   } catch (err) {
     require('../utils/logger').error('getSourceMailboxStats error: ' + err.message);
-    // Return graceful 200 so the UI can show a helpful message instead of just "error"
     res.json({ email: req.query.email, mailCount: 0, folderCount: 0, calendarCount: 0, eventCount: 0, tokenError: true, tokenErrorMsg: err.message });
+  }
+}
+
+async function cleanSourceEmails(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const gmailClient = require('../clients/gmailClient');
+    const summary = await gmailClient.cleanGmailEmailsOnly(email);
+    const after = await gmailClient.getGmailMailboxStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    require('../utils/logger').error('cleanSourceEmails error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanSourceFolders(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const gmailClient = require('../clients/gmailClient');
+    const summary = await gmailClient.cleanGmailFoldersOnly(email);
+    const after = await gmailClient.getGmailMailboxStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    require('../utils/logger').error('cleanSourceFolders error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanSourceCalendars(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const gmailClient = require('../clients/gmailClient');
+    const summary = await gmailClient.cleanGmailCalendarsOnly(email);
+    const after = await gmailClient.getGmailMailboxStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    require('../utils/logger').error('cleanSourceCalendars error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function _getOutlookAfterStats(email) {
+  const outlookClient = require('../clients/outlookClient');
+  const [folders, totalMessages, recoverableCount] = await Promise.all([
+    outlookClient.getMailFolders(email),
+    outlookClient.getTotalMessageCount(email),
+    outlookClient.getRecoverableItemsCount(email),
+  ]);
+  const defaults = outlookClient.DEFAULT_FOLDER_NAMES;
+  let customFolderCount = 0;
+  for (const f of folders) {
+    if (!defaults.has(f.displayName)) customFolderCount++;
+    if (f.childFolders?.length > 0) {
+      for (const child of f.childFolders) {
+        if (!defaults.has(child.displayName)) customFolderCount++;
+      }
+    }
+  }
+  let eventCount = 0;
+  try {
+    const calendars = await outlookClient.getCalendars(email);
+    for (const cal of calendars) {
+      if (cal.name === 'Birthdays' || cal.name.toLowerCase().includes('holidays') || cal.canEdit === false) continue;
+      eventCount += await outlookClient.getEventCount(email, cal.id);
+    }
+  } catch { /* best-effort */ }
+  return { mailCount: totalMessages + recoverableCount, recoverableCount, folderCount: customFolderCount, eventCount };
+}
+
+async function cleanDestinationEmails(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const outlookClient = require('../clients/outlookClient');
+    const summary = await outlookClient.cleanOutlookEmailsOnly(email);
+    const after = await _getOutlookAfterStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    logger.error('cleanDestinationEmails error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanDestinationFolders(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const outlookClient = require('../clients/outlookClient');
+    const summary = await outlookClient.cleanOutlookFoldersOnly(email);
+    const after = await _getOutlookAfterStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    logger.error('cleanDestinationFolders error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanDestinationEvents(req, res) {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+    const outlookClient = require('../clients/outlookClient');
+    const summary = await outlookClient.cleanOutlookEventsOnly(email);
+    const after = await _getOutlookAfterStats(email);
+    res.json({ email, deleted: summary, after });
+  } catch (err) {
+    logger.error('cleanDestinationEvents error: ' + err.message);
+    res.status(500).json({ error: err.message });
   }
 }
 
@@ -535,11 +689,176 @@ async function deleteSourceCalendarEvents(req, res) {
   }
 }
 
+/**
+ * POST /agents/executions/:id/cancel
+ * Marks a running execution as cancelled. The orchestrator and MigrationAgent
+ * check this flag between steps / poll iterations and stop gracefully.
+ */
+async function cancelExecution(req, res) {
+  try {
+    const { id } = req.params;
+    const execution = executionService.get(id);
+    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (execution.status !== 'RUNNING') {
+      return res.status(400).json({ error: `Execution is not running (status: ${execution.status})` });
+    }
+    executionService.cancel(id);
+    logger.info(`Execution ${id} cancelled by user`);
+    res.json({ ok: true, executionId: id, status: 'CANCELLED' });
+  } catch (err) {
+    logger.error(`cancelExecution error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-outlook-data
+ * Body: { sourceEmail, destinationEmail?, testType? }
+ *
+ * Runs OutlookTestDataAgent standalone — lists mailbox folders, then fills
+ * Inbox, Drafts, Sent Items, Junk Email, Deleted Items, and Migration_Test_*
+ * custom folders via the create-mails-outlook Spring Boot service.
+ * Returns 202 immediately; poll GET /agents/executions/:id for progress.
+ */
+async function createOutlookData(req, res) {
+  try {
+    const { sourceEmail, destinationEmail, testType } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+
+    const OutlookTestDataAgent = require('../agents/outlook/OutlookTestDataAgent');
+    const MigrationContext = require('../models/MigrationContext');
+    const executionService = require('../services/executionService');
+
+    const context = new MigrationContext({
+      sourceEmail,
+      destinationEmail: destinationEmail || sourceEmail,
+      migrationType: 'FULL',
+      includeMail: true,
+      includeCalendar: false,
+      testType: testType || 'E2E',
+    });
+
+    executionService.create(context);
+    executionService.update(context.executionId, {
+      status: 'RUNNING',
+      currentAgent: 'OutlookTestDataAgent',
+      progress: 'OutlookTestDataAgent: listing folders, provisioning test mail data…',
+    });
+
+    res.status(202).json({
+      executionId: context.executionId,
+      status: 'RUNNING',
+      message: 'Outlook data creation started. Poll GET /api/agents/executions/:id for progress.',
+      context: context.toJSON(),
+    });
+
+    setImmediate(async () => {
+      const agent = new OutlookTestDataAgent();
+      try {
+        const result = await agent.run(context);
+        executionService.update(context.executionId, {
+          status: 'COMPLETED',
+          result: { executionId: context.executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], sourceData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createOutlookData failed: ${err.message}`);
+        executionService.update(context.executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId: context.executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createOutlookData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-test-data
+ * Body: { sourceEmail, destinationEmail?, sourceProvider ('google'|'microsoft'), testType? }
+ *
+ * Unified endpoint: routes to GmailTestDataAgent or OutlookTestDataAgent based on sourceProvider.
+ * Returns 202; poll GET /agents/executions/:id for completion.
+ */
+async function createTestData(req, res) {
+  try {
+    const { sourceEmail, destinationEmail, sourceProvider, testType } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+
+    const isOutlook = (sourceProvider || 'google') === 'microsoft';
+    const AgentClass = isOutlook
+      ? require('../agents/outlook/OutlookTestDataAgent')
+      : require('../agents/gmail/GmailTestDataAgent');
+    const agentName = isOutlook ? 'OutlookTestDataAgent' : 'GmailTestDataAgent';
+
+    const context = new MigrationContext({
+      sourceEmail,
+      destinationEmail: destinationEmail || sourceEmail,
+      migrationType: 'FULL',
+      includeMail: true,
+      includeCalendar: false,
+      testType: testType || 'E2E',
+      sourceProvider: sourceProvider || 'google',
+      destinationProvider: isOutlook ? 'microsoft' : 'google',
+    });
+
+    executionService.create(context);
+    executionService.update(context.executionId, {
+      status: 'RUNNING',
+      currentAgent: agentName,
+      progress: isOutlook
+        ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
+        : 'GmailTestDataAgent: creating labels, mail, drafts…',
+    });
+
+    res.status(202).json({
+      executionId: context.executionId,
+      status: 'RUNNING',
+      message: 'Test data creation started. Poll GET /api/agents/executions/:id for progress.',
+      context: context.toJSON(),
+    });
+
+    setImmediate(async () => {
+      const agent = new AgentClass();
+      try {
+        const result = await agent.run(context);
+        executionService.update(context.executionId, {
+          status: 'COMPLETED',
+          result: { executionId: context.executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], sourceData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createTestData failed: ${err.message}`);
+        executionService.update(context.executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId: context.executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createTestData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
   generatePdf, getSourceMailboxStats, cleanSource,
+  cleanSourceEmails, cleanSourceFolders, cleanSourceCalendars,
+  cleanDestinationEmails, cleanDestinationFolders, cleanDestinationEvents,
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
+  createOutlookData, cancelExecution, createTestData,
 };
 

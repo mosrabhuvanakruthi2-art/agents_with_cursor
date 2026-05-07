@@ -26,7 +26,8 @@ function initScheduler() {
         destinationEmail: env.DEFAULT_DEST_EMAIL,
         migrationType: 'FULL',
         includeMail: true,
-        includeCalendar: true,
+        includeCalendar: false,
+        includeContacts: false,
       });
       logger.info(`Scheduled run completed: ${result.status} (${result.executionId})`);
     } catch (err) {
