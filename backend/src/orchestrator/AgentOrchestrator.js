@@ -113,7 +113,7 @@ class AgentOrchestrator {
       }
       executionService.update(context.executionId, {
         currentAgent: outlookAgent.getName(),
-        progress: '[3/3] OutlookValidationAgent: comparing Gmail vs Outlook…',
+        progress: '[3/3] OutlookValidationAgent: comparing source vs destination mailbox…',
       });
       try {
         pair.validationResult = await outlookAgent.run(context);
@@ -228,7 +228,7 @@ class AgentOrchestrator {
       // Step 3: Validate in Outlook
       executionService.update(context.executionId, {
         currentAgent: outlookAgent.getName(),
-        progress: 'OutlookValidationAgent: comparing Gmail vs Outlook and running checks…',
+        progress: 'OutlookValidationAgent: comparing source vs destination mailbox and running checks…',
       });
       log.info('Step 3: Running OutlookValidationAgent');
       const validationResult = await outlookAgent.run(context);

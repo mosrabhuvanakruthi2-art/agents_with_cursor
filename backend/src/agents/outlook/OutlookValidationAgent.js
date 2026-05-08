@@ -65,7 +65,7 @@ class OutlookValidationAgent extends BaseAgent {
     }
 
     if (context.includeCalendar && testType === 'E2E') {
-      await this._validateCalendar(sourceUser, destUser, result, log);
+      await this._validateCalendar(sourceUser, destUser, result, log, context.sourceProvider);
     }
 
     /**
@@ -364,20 +364,30 @@ class OutlookValidationAgent extends BaseAgent {
     }
   }
 
-  async _validateCalendar(sourceUser, destUser, result, log) {
+  async _validateCalendar(sourceUser, destUser, result, log, sourceProvider = 'google') {
     log.info('E2E: Validating calendar...');
     try {
       let sourceTotal = 0;
       try {
-        const srcCals = await calendarClient.listCalendars(sourceUser);
-        for (const cal of srcCals) {
-          const calId = cal.id;
-          if (!calId) continue;
-          const items = await calendarClient.listEvents(sourceUser, calId, 250);
-          sourceTotal += items.length;
+        if (sourceProvider === 'microsoft') {
+          const srcCals = await outlookClient.getCalendars(sourceUser);
+          for (const cal of srcCals) {
+            const events = await outlookClient.getEvents(sourceUser, cal.id);
+            sourceTotal += events.length;
+          }
+          result.calendarValidation.sourceEventCount = sourceTotal;
+          log.info(`  Source Outlook: ${sourceTotal} events (sampled, up to 250 per calendar)`);
+        } else {
+          const srcCals = await calendarClient.listCalendars(sourceUser);
+          for (const cal of srcCals) {
+            const calId = cal.id;
+            if (!calId) continue;
+            const items = await calendarClient.listEvents(sourceUser, calId, 250);
+            sourceTotal += items.length;
+          }
+          result.calendarValidation.sourceEventCount = sourceTotal;
+          log.info(`  Source Gmail: ${sourceTotal} events (sampled, up to 250 per calendar)`);
         }
-        result.calendarValidation.sourceEventCount = sourceTotal;
-        log.info(`  Source Gmail: ${sourceTotal} events (sampled, up to 250 per calendar)`);
       } catch (srcErr) {
         log.warn(`E2E: Could not count source calendar events: ${srcErr.message}`);
       }
