@@ -65,7 +65,7 @@ class OutlookValidationAgent extends BaseAgent {
     }
 
     if (context.includeCalendar && testType === 'E2E') {
-      await this._validateCalendar(sourceUser, destUser, result, log);
+      await this._validateCalendar(sourceUser, destUser, result, log, context.sourceProvider);
     }
 
     /**
@@ -96,7 +96,29 @@ class OutlookValidationAgent extends BaseAgent {
     // Compare source vs destination
     this._compareSourceAndDestination(result, log);
 
-    if (context.includeMail && context.deepValidation) {
+    // ── Mailbox size comparison ────────────────────────────────────────────
+    try {
+      const { buildMailboxSizeValidation } = require('../../utils/mailMigrationComparator');
+      const isMicrosoftSrc = context.sourceProvider === 'microsoft';
+      const combination = isMicrosoftSrc ? 'outlook_to_outlook' : 'gmail_to_outlook';
+      const [srcSize, dstSize] = await Promise.all([
+        isMicrosoftSrc
+          ? outlookClient.getMailboxSizeBytes(sourceUser)
+          : gmailClient.getGmailMailboxSizeBytes(sourceUser),
+        outlookClient.getMailboxSizeBytes(destUser),
+      ]);
+      result.mailboxSizeValidation = buildMailboxSizeValidation(srcSize, dstSize, combination);
+      log.info(
+        `Mailbox size: src=${result.mailboxSizeValidation.sourceSizeHuman} ` +
+        `dst=${result.mailboxSizeValidation.destSizeHuman} ` +
+        `ratio=${result.mailboxSizeValidation.sizeRatio?.toFixed(2)} [${result.mailboxSizeValidation.severity}]`
+      );
+    } catch (err) {
+      log.warn(`Mailbox size validation failed: ${err.message}`);
+      result.mailboxSizeValidation = { available: false, error: err.message };
+    }
+
+    if (context.includeMail) {
       const { runDeepMailValidation } = require('../../validation/deepMailValidator');
       await runDeepMailValidation(context, result, log);
     }
@@ -185,9 +207,14 @@ class OutlookValidationAgent extends BaseAgent {
       const count = folder.totalItemCount || 0;
 
       if (defaults.has(segment)) {
-        // Normalize to Gmail label ID so existing comparison + PDF logic matches
-        const gmailId = OUTLOOK_TO_GMAIL_ID[segment] || segment.toUpperCase();
-        defaultLabels.push({ id: gmailId, name: segment, messageCount: count });
+        const gmailId = OUTLOOK_TO_GMAIL_ID[segment];
+        if (gmailId) {
+          defaultLabels.push({ id: gmailId, name: segment, messageCount: count });
+        } else {
+          // Default folder has no Gmail ID equivalent (e.g. Calendar, Contacts) — skip to avoid
+          // injecting invalid IDs like "SENT ITEMS" into the comparison
+          log.warn(`OutlookValidationAgent: skipping default folder with no Gmail ID mapping: "${segment}"`);
+        }
       } else {
         customLabels.push({ id: fullPath, name: fullPath, messageCount: count });
       }
@@ -364,20 +391,30 @@ class OutlookValidationAgent extends BaseAgent {
     }
   }
 
-  async _validateCalendar(sourceUser, destUser, result, log) {
+  async _validateCalendar(sourceUser, destUser, result, log, sourceProvider = 'google') {
     log.info('E2E: Validating calendar...');
     try {
       let sourceTotal = 0;
       try {
-        const srcCals = await calendarClient.listCalendars(sourceUser);
-        for (const cal of srcCals) {
-          const calId = cal.id;
-          if (!calId) continue;
-          const items = await calendarClient.listEvents(sourceUser, calId, 250);
-          sourceTotal += items.length;
+        if (sourceProvider === 'microsoft') {
+          const srcCals = await outlookClient.getCalendars(sourceUser);
+          for (const cal of srcCals) {
+            const events = await outlookClient.getEvents(sourceUser, cal.id);
+            sourceTotal += events.length;
+          }
+          result.calendarValidation.sourceEventCount = sourceTotal;
+          log.info(`  Source Outlook: ${sourceTotal} events (sampled, up to 250 per calendar)`);
+        } else {
+          const srcCals = await calendarClient.listCalendars(sourceUser);
+          for (const cal of srcCals) {
+            const calId = cal.id;
+            if (!calId) continue;
+            const items = await calendarClient.listEvents(sourceUser, calId, 250);
+            sourceTotal += items.length;
+          }
+          result.calendarValidation.sourceEventCount = sourceTotal;
+          log.info(`  Source Gmail: ${sourceTotal} events (sampled, up to 250 per calendar)`);
         }
-        result.calendarValidation.sourceEventCount = sourceTotal;
-        log.info(`  Source Gmail: ${sourceTotal} events (sampled, up to 250 per calendar)`);
       } catch (srcErr) {
         log.warn(`E2E: Could not count source calendar events: ${srcErr.message}`);
       }

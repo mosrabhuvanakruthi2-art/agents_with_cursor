@@ -705,6 +705,385 @@ function sha256Hex(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+/**
+ * Compare attachment sizes across platforms, accounting for base64 encoding overhead.
+ *
+ * Why sizes differ:
+ *   Gmail API  → reports the decoded binary size (raw file bytes).
+ *   Graph API  → reports the base64-encoded + MIME-envelope size (~33–45 % larger).
+ *
+ * So for Gmail→Outlook: dest size ≈ src × 1.33–1.45  (encoding added at destination)
+ *    for Outlook→Gmail: dest size ≈ src × 0.68–0.75  (encoding removed at destination)
+ *    for same-platform: dest size ≈ src × ~1.0        (no encoding change)
+ *
+ * Severity rules (based on dest/src ratio):
+ *   'info'    – ratio within expected encoding range; content may still be intact.
+ *   'warning' – ratio slightly outside expected; recommend Tier B hash verification.
+ *   'error'   – ratio far outside expected; possible truncation or corruption.
+ *
+ * @param {Array<{filename?:string, name?:string, size:number}>} srcAttachments
+ * @param {Array<{filename?:string, name?:string, size:number}>} dstAttachments
+ * @param {'gmail_to_outlook'|'outlook_to_gmail'|'outlook_to_outlook'|'gmail_to_gmail'} combination
+ * @returns {FieldDiff[]}
+ */
+function compareAttachmentSizesWithTolerance(srcAttachments, dstAttachments, combination) {
+  if (!srcAttachments || srcAttachments.length === 0) return [];
+
+  const CONFIG = {
+    gmail_to_outlook: {
+      infoMin: 1.00, infoMax: 1.60,
+      warnMin: 0.85, warnMax: 2.00,
+      expectedNote:
+        'Gmail API reports decoded (raw) bytes; Graph API includes base64 encoding + MIME envelope overhead (~33–45% larger). ' +
+        'This size difference is expected during Gmail→Outlook migration.',
+    },
+    outlook_to_gmail: {
+      infoMin: 0.55, infoMax: 1.05,
+      warnMin: 0.40, warnMax: 1.20,
+      expectedNote:
+        'Graph API reports base64-encoded + MIME size; Gmail API reports decoded (raw) bytes (~25–32% smaller). ' +
+        'This size difference is expected during Outlook→Gmail migration.',
+    },
+    outlook_to_outlook: {
+      infoMin: 0.90, infoMax: 1.10,
+      warnMin: 0.70, warnMax: 1.30,
+      expectedNote: 'Same platform (Outlook→Outlook): attachment sizes should be near-identical.',
+    },
+    gmail_to_gmail: {
+      infoMin: 0.90, infoMax: 1.10,
+      warnMin: 0.70, warnMax: 1.30,
+      expectedNote: 'Same platform (Gmail→Gmail): attachment sizes should be near-identical.',
+    },
+  };
+
+  const cfg = CONFIG[combination] || CONFIG.outlook_to_outlook;
+
+  const toMap = (list) =>
+    new Map(
+      (list || [])
+        .filter((a) => a && (a.filename || a.name))
+        .map((a) => [String(a.filename || a.name).toLowerCase().trim(), Number(a.size || 0)])
+    );
+
+  const srcMap = toMap(srcAttachments);
+  const dstMap = toMap(dstAttachments);
+
+  const diffs = [];
+
+  for (const [name, srcSize] of srcMap) {
+    if (!dstMap.has(name)) continue; // missing file already caught by Tier A name check
+    const dstSize = dstMap.get(name);
+    if (srcSize === 0 && dstSize === 0) continue;
+
+    if (srcSize === 0) {
+      diffs.push({
+        field: `attachmentSize:${name}`,
+        ok: true,
+        expected: '0 bytes (source)',
+        actual: `${dstSize} bytes (destination)`,
+        displaySource: '0B',
+        displayDestination: `${dstSize}B`,
+        severity: 'info',
+        note: 'Source attachment size is 0 bytes; size ratio cannot be computed.',
+      });
+      continue;
+    }
+
+    const ratio = dstSize / srcSize;
+    const srcMB  = (srcSize / 1048576).toFixed(2);
+    const dstMB  = (dstSize / 1048576).toFixed(2);
+    const diffPct = ((ratio - 1) * 100).toFixed(1);
+    const sign    = ratio >= 1 ? '+' : '';
+
+    let severity;
+    let note;
+
+    if (ratio >= cfg.infoMin && ratio <= cfg.infoMax) {
+      severity = 'info';
+      note = `${cfg.expectedNote} Ratio: ${ratio.toFixed(3)} (${sign}${diffPct}%).`;
+    } else if (ratio >= cfg.warnMin && ratio <= cfg.warnMax) {
+      severity = 'warning';
+      note =
+        `Attachment size ratio ${ratio.toFixed(3)} (${sign}${diffPct}%) is outside the expected range ` +
+        `[${cfg.infoMin}–${cfg.infoMax}]. ${cfg.expectedNote} ` +
+        `Recommend Tier B hash comparison to confirm content integrity.`;
+    } else {
+      severity = 'error';
+      note =
+        `Attachment size ratio ${ratio.toFixed(3)} (${sign}${diffPct}%) is far outside the expected range — ` +
+        `possible truncation or corruption. ${cfg.expectedNote}`;
+    }
+
+    diffs.push({
+      field: `attachmentSize:${name}`,
+      ok: severity !== 'error',
+      expected: `${srcSize}B (${srcMB} MB) [source]`,
+      actual: `${dstSize}B (${dstMB} MB) [destination]`,
+      displaySource: `${srcSize}B`,
+      displayDestination: `${dstSize}B`,
+      sizeRatio: ratio.toFixed(3),
+      combination,
+      severity,
+      note,
+    });
+  }
+
+  return diffs;
+}
+
+/**
+ * Compare Outlook isRead vs Gmail UNREAD label (Outlook→Gmail).
+ * srcIsRead=true  → UNREAD should be absent at dest.
+ * srcIsRead=false → UNREAD should be present at dest.
+ */
+function compareOutlookReadToGmailUnread(srcIsRead, gmailLabelIds) {
+  if (typeof srcIsRead !== 'boolean') return [];
+  const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
+  const destIsUnread = labels.includes('UNREAD');
+  const srcIsUnread = !srcIsRead;
+  if (srcIsUnread === destIsUnread) return [];
+  return [{
+    field: 'readState',
+    ok: false,
+    expected: srcIsUnread ? 'unread (UNREAD label present)' : 'read (no UNREAD label)',
+    actual: destIsUnread ? 'unread (has UNREAD label)' : 'read (no UNREAD label)',
+    displaySource: srcIsUnread ? 'unread' : 'read',
+    displayDestination: destIsUnread ? 'unread' : 'read',
+    severity: 'warning',
+  }];
+}
+
+/**
+ * Compare Gmail UNREAD label vs Outlook isRead (Gmail→Outlook).
+ */
+function compareGmailUnreadToOutlookIsRead(gmailLabelIds, destIsRead) {
+  const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
+  const srcIsUnread = labels.includes('UNREAD');
+  if (typeof destIsRead !== 'boolean') return [];
+  const destIsUnread = !destIsRead;
+  if (srcIsUnread === destIsUnread) return [];
+  return [{
+    field: 'readState',
+    ok: false,
+    expected: srcIsUnread ? 'unread (isRead=false)' : 'read (isRead=true)',
+    actual: destIsUnread ? 'unread (isRead=false)' : 'read (isRead=true)',
+    displaySource: srcIsUnread ? 'unread' : 'read',
+    displayDestination: destIsUnread ? 'unread' : 'read',
+    severity: 'warning',
+  }];
+}
+
+/**
+ * Compare Outlook isRead vs Outlook isRead (Outlook→Outlook).
+ */
+function compareReadState(srcIsRead, destIsRead) {
+  if (typeof srcIsRead !== 'boolean' || typeof destIsRead !== 'boolean') return [];
+  if (srcIsRead === destIsRead) return [];
+  return [{
+    field: 'readState',
+    ok: false,
+    expected: srcIsRead ? 'read' : 'unread',
+    actual: destIsRead ? 'read' : 'unread',
+    displaySource: srcIsRead ? 'read' : 'unread',
+    displayDestination: destIsRead ? 'read' : 'unread',
+    severity: 'warning',
+  }];
+}
+
+/**
+ * Compare Outlook flag state vs Gmail STARRED label (Outlook→Gmail).
+ * flagged → expect STARRED; notFlagged/complete → STARRED should not be caused by source flag.
+ */
+function compareOutlookFlagToGmailStarred(srcFlagStatus, gmailLabelIds) {
+  const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
+  const srcFlagged = String(srcFlagStatus || '').toLowerCase() === 'flagged';
+  const destStarred = labels.includes('STARRED');
+  if (srcFlagged === destStarred) return [];
+  if (srcFlagged && !destStarred) {
+    return [{
+      field: 'flag',
+      ok: false,
+      expected: 'STARRED (flagged at Outlook source)',
+      actual: 'not starred',
+      displaySource: 'flagged',
+      displayDestination: 'not starred',
+      severity: 'warning',
+    }];
+  }
+  // destStarred but source not flagged — Gmail may auto-star; treat as info-warning
+  return [{
+    field: 'flag',
+    ok: false,
+    expected: 'not starred (source not flagged)',
+    actual: 'STARRED',
+    displaySource: String(srcFlagStatus || 'notFlagged'),
+    displayDestination: 'STARRED',
+    severity: 'warning',
+  }];
+}
+
+/**
+ * Compare Outlook flag states (Outlook→Outlook).
+ */
+function compareFlagState(srcFlag, destFlag, severity = 'warning') {
+  const s = String(srcFlag?.flagStatus || srcFlag || 'notFlagged').toLowerCase();
+  const d = String(destFlag?.flagStatus || destFlag || 'notFlagged').toLowerCase();
+  if (s === d) return [];
+  return [{
+    field: 'flag',
+    ok: false,
+    expected: s,
+    actual: d,
+    displaySource: s,
+    displayDestination: d,
+    severity,
+  }];
+}
+
+/**
+ * Compare Outlook importance vs Gmail IMPORTANT label (Outlook→Gmail).
+ * Only warns when source is 'high' and IMPORTANT is absent — Gmail auto-applies IMPORTANT via ML
+ * so presence on non-high messages is expected and not flagged.
+ */
+function compareOutlookImportanceToGmailImportant(srcImportance, gmailLabelIds) {
+  const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
+  const srcHigh = String(srcImportance || '').toLowerCase() === 'high';
+  if (!srcHigh) return [];
+  const destImportant = labels.includes('IMPORTANT');
+  if (destImportant) return [];
+  return [{
+    field: 'importance',
+    ok: false,
+    expected: 'IMPORTANT (high importance at Outlook source)',
+    actual: 'not important',
+    displaySource: 'high',
+    displayDestination: 'not important',
+    severity: 'warning',
+  }];
+}
+
+/**
+ * Compare importance values (Outlook→Outlook).
+ */
+function compareImportanceOutlookToOutlook(srcImportance, destImportance, severity = 'warning') {
+  const s = String(srcImportance || 'normal').toLowerCase();
+  const d = String(destImportance || 'normal').toLowerCase();
+  if (s === d) return [];
+  return [{
+    field: 'importance',
+    ok: false,
+    expected: s,
+    actual: d,
+    displaySource: s,
+    displayDestination: d,
+    severity,
+  }];
+}
+
+/**
+ * Compare sent timestamps between source and destination.
+ * Parses both ISO 8601 and RFC 2822 (Gmail Date header) formats.
+ * Uses 'warning' severity — some platforms re-stamp on import.
+ *
+ * @param {string|number|null} srcDate source sentDateTime (ISO string, RFC 2822, or epoch ms)
+ * @param {string|number|null} destDate destination sentDateTime (ISO string, RFC 2822, or epoch ms)
+ * @param {number} toleranceMs allowed delta in ms before flagging (default: 300000 = 5 min)
+ */
+function compareSentDateTime(srcDate, destDate, toleranceMs = 300000) {
+  const toMs = (v) => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    const parsed = Date.parse(String(v));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const srcMs = toMs(srcDate);
+  const dstMs = toMs(destDate);
+  if (srcMs == null || dstMs == null) return [];
+  const deltaMs = Math.abs(srcMs - dstMs);
+  if (deltaMs <= toleranceMs) return [];
+  const fmt = (ms) => new Date(ms).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const deltaMins = Math.round(deltaMs / 60000);
+  return [{
+    field: 'sentDateTime',
+    ok: false,
+    expected: fmt(srcMs),
+    actual: fmt(dstMs),
+    displaySource: fmt(srcMs),
+    displayDestination: `${fmt(dstMs)} (Δ ${deltaMins >= 1440 ? `${Math.round(deltaMins / 1440)}d` : `${deltaMins}m`})`,
+    severity: 'warning',
+  }];
+}
+
+// ── Mailbox size validation ───────────────────────────────────────────────────
+
+function formatBytes(bytes) {
+  if (bytes == null) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// Per-combination tolerance for total mailbox size ratio (dst / src).
+const MAILBOX_SIZE_CONFIG = {
+  outlook_to_gmail:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
+    note: 'Outlook MIME sizes vs Gmail sizeEstimate — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
+  gmail_to_outlook:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
+    note: 'Gmail sizeEstimate vs Outlook MIME sizes — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
+  outlook_to_outlook: { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
+    note: 'Same platform (Outlook→Outlook): mailbox sizes should be near-identical (±15%).' },
+  gmail_to_gmail:     { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
+    note: 'Same platform (Gmail→Gmail): mailbox sizes should be near-identical (±15%).' },
+};
+
+/**
+ * Build a structured mailbox size comparison result.
+ * @param {{ sizeBytes: number, messageCount: number, partial?: boolean, method?: string }} src
+ * @param {{ sizeBytes: number, messageCount: number, partial?: boolean, method?: string }} dst
+ * @param {'outlook_to_gmail'|'gmail_to_outlook'|'outlook_to_outlook'|'gmail_to_gmail'} combination
+ */
+function buildMailboxSizeValidation(src, dst, combination) {
+  const cfg = MAILBOX_SIZE_CONFIG[combination] || MAILBOX_SIZE_CONFIG['gmail_to_outlook'];
+  const srcBytes = Number(src?.sizeBytes) || 0;
+  const dstBytes = Number(dst?.sizeBytes) || 0;
+  const ratio = srcBytes > 0 ? dstBytes / srcBytes : null;
+  const diffBytes = dstBytes - srcBytes;
+  const diffPct = srcBytes > 0 ? Math.round((diffBytes / srcBytes) * 100) : null;
+
+  let severity = 'info';
+  let statusLabel = 'Expected';
+  if (ratio !== null) {
+    if (ratio < cfg.warnMin || ratio > cfg.warnMax) {
+      severity = 'error';
+      statusLabel = `Anomaly (${diffPct != null ? (diffPct >= 0 ? '+' : '') + diffPct + '%' : 'N/A'})`;
+    } else if (ratio < cfg.infoMin || ratio > cfg.infoMax) {
+      severity = 'warning';
+      statusLabel = `Notable (${diffPct != null ? (diffPct >= 0 ? '+' : '') + diffPct + '%' : 'N/A'})`;
+    } else {
+      statusLabel = `Expected (${diffPct != null ? (diffPct >= 0 ? '+' : '') + diffPct + '%' : '0%'})`;
+    }
+  }
+
+  return {
+    available: true,
+    sourceSizeBytes: srcBytes,
+    destSizeBytes: dstBytes,
+    sourceSizeHuman: formatBytes(srcBytes) + (src?.partial ? ' (partial)' : ''),
+    destSizeHuman: formatBytes(dstBytes) + (dst?.partial ? ' (partial)' : ''),
+    sourceMessageCount: src?.messageCount ?? null,
+    destMessageCount: dst?.messageCount ?? null,
+    sizeRatio: ratio,
+    diffBytes,
+    diffPercent: diffPct,
+    combination,
+    severity,
+    statusLabel,
+    note: cfg.note,
+    srcMethod: src?.method,
+    dstMethod: dst?.method,
+  };
+}
+
 module.exports = {
   normalizeSubject,
   parseRecipientEmails,
@@ -725,4 +1104,14 @@ module.exports = {
   normalizeMailBodyPlain,
   htmlToPlainLoose,
   sha256Hex,
+  compareOutlookReadToGmailUnread,
+  compareGmailUnreadToOutlookIsRead,
+  compareReadState,
+  compareOutlookFlagToGmailStarred,
+  compareFlagState,
+  compareOutlookImportanceToGmailImportant,
+  compareImportanceOutlookToOutlook,
+  compareSentDateTime,
+  compareAttachmentSizesWithTolerance,
+  buildMailboxSizeValidation,
 };

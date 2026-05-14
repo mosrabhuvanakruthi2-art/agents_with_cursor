@@ -42,6 +42,10 @@ const tokenCaches = {};
 // Per-tenant EWS token cache (Exchange Web Services — separate scope from Graph)
 const ewsTokenCaches = {};
 
+// In-memory cache for getMailFolders — avoids 40+ repeated Graph calls during validation
+const _folderCache = new Map(); // userId -> { data, expiresAt }
+const FOLDER_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 const EWS_ENDPOINT = 'https://outlook.office365.com/EWS/Exchange.asmx';
 
 /**
@@ -152,13 +156,19 @@ async function graphGetWithHeaders(url, userId = null, extraHeaders = {}) {
 }
 
 async function getMailFolders(userId) {
+  const cached = _folderCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
   const uid = graphUserPath(userId);
   const base = `${GRAPH_BASE}/users/${uid}/mailFolders?$top=100`;
   const deepExpand = encodeURIComponent('childFolders($expand=childFolders($expand=childFolders))');
   const shallowExpand = encodeURIComponent('childFolders');
+  let data;
   try {
     const res = await graphGet(`${base}&$expand=${deepExpand}`, userId);
-    return res.data.value || [];
+    data = res.data.value || [];
   } catch (err) {
     const status = err.response?.status;
     if (status === 400) {
@@ -166,10 +176,19 @@ async function getMailFolders(userId) {
         `getMailFolders: deep $expand returned 400 for ${userId}, retrying shallow childFolders expand`
       );
       const res = await graphGet(`${base}&$expand=${shallowExpand}`, userId);
-      return res.data.value || [];
+      data = res.data.value || [];
+    } else {
+      throw err;
     }
-    throw err;
   }
+
+  _folderCache.set(userId, { data, expiresAt: Date.now() + FOLDER_CACHE_TTL_MS });
+  return data;
+}
+
+function clearFolderCache(userId) {
+  if (userId) _folderCache.delete(userId);
+  else _folderCache.clear();
 }
 
 async function getAllFoldersFlat(userId) {
@@ -1063,7 +1082,11 @@ async function cleanOutlookFoldersOnly(userId) {
         summary.foldersDeleted++;
         log.info(`[cleanFoldersOnly ${userId}] Deleted "${folder.displayName}"`);
       } catch (err) {
-        summary.errors.push(`Folder "${folder.displayName}": ${err.message}`);
+        if (/404/.test(err.message)) {
+          log.info(`[cleanFoldersOnly ${userId}] Folder "${folder.displayName}" already gone (404), skipping`);
+        } else {
+          summary.errors.push(`Folder "${folder.displayName}": ${err.message}`);
+        }
       }
     } else if (folder.childFolders?.length > 0) {
       for (const child of folder.childFolders) {
@@ -1073,11 +1096,13 @@ async function cleanOutlookFoldersOnly(userId) {
             await deleteFolder(userId, child.id);
             summary.foldersDeleted++;
           } catch (err) {
-            summary.errors.push(`Child folder "${child.displayName}": ${err.message}`);
-          }
+            if (!/404/.test(err.message)) {
+              summary.errors.push(`Child folder "${child.displayName}": ${err.message}`);
+            }
         }
       }
     }
+  }
   }
   log.info(`[cleanFoldersOnly ${userId}] Done — ${summary.foldersDeleted} folders deleted`);
   return summary;
@@ -1311,21 +1336,566 @@ async function cleanMailbox(userId) {
 }
 
 /**
- * Create a message directly in a mail folder (inbox, drafts, sentitems, junkemail, deleteditems, or custom folder ID).
- * Uses well-known folder names or folder IDs.
+ * Encode a header value using RFC 2047 base64 encoded-word if it contains non-ASCII chars.
+ */
+function encodeHeaderValue(str) {
+  if (!str) return '';
+  if (/^[\x20-\x7E]*$/.test(str)) return str;
+  return `=?UTF-8?B?${Buffer.from(str, 'utf8').toString('base64')}?=`;
+}
+
+/**
+ * Simple quoted-printable encoder for MIME body parts.
+ * Encodes non-ASCII bytes and keeps line endings as CRLF.
+ */
+function encodeQP(str) {
+  return str
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, c => {
+      return [...Buffer.from(c, 'utf8')].map(b => `=${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
+    })
+    .replace(/\r\n|\r|\n/g, '\r\n');
+}
+
+/**
+ * Build a MIME RFC 5322 message string from a Graph-API-style message object.
+ * Supports plain text, HTML, regular attachments, and inline images.
+ */
+function buildMimeMessage(msg) {
+  const boundary    = `----=_MQA_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const relBoundary = `----=_Related_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+  const fmt = r => r?.emailAddress
+    ? (r.emailAddress.name ? `${r.emailAddress.name} <${r.emailAddress.address}>` : r.emailAddress.address)
+    : '';
+
+  const fromStr = fmt(msg.from);
+  const toStr   = (msg.toRecipients  || []).map(fmt).filter(Boolean).join(', ');
+  const ccStr   = (msg.ccRecipients  || []).map(fmt).filter(Boolean).join(', ');
+  const bccStr  = (msg.bccRecipients || []).map(fmt).filter(Boolean).join(', ');
+
+  const isHtml      = (msg.body?.contentType || '').toLowerCase() === 'html';
+  const bodyContent = msg.body?.content || '';
+  const allAttach   = msg.attachments || [];
+  const inlineAtts  = allAttach.filter(a => a.isInline);
+  const regularAtts = allAttach.filter(a => !a.isInline);
+  const hasInline   = inlineAtts.length > 0;
+  const hasRegular  = regularAtts.length > 0;
+
+  const msgId = `<mqa-${Date.now()}-${Math.random().toString(36).slice(2)}@mqa.local>`;
+  const L = [];
+
+  // ── headers ──
+  L.push(`Message-ID: ${msgId}`);
+  if (fromStr) L.push(`From: ${fromStr}`);
+  if (toStr)   L.push(`To: ${toStr}`);
+  if (ccStr)   L.push(`Cc: ${ccStr}`);
+  if (bccStr)  L.push(`Bcc: ${bccStr}`);
+  L.push(`Subject: ${encodeHeaderValue(msg.subject || '')}`);
+  L.push(`Date: ${new Date().toUTCString()}`);
+  L.push('MIME-Version: 1.0');
+  L.push('X-Mailer: MigrationQA-Agent');
+  if (msg.importance === 'high') { L.push('Importance: high'); L.push('X-Priority: 1'); }
+  else if (msg.importance === 'low') { L.push('Importance: low'); L.push('X-Priority: 5'); }
+
+  const addBodyPart = (lines, bodyBoundary) => {
+    lines.push(`--${bodyBoundary}`);
+    if (hasInline) {
+      lines.push(`Content-Type: multipart/related; boundary="${relBoundary}"`);
+      lines.push('');
+      lines.push(`--${relBoundary}`);
+      lines.push(`Content-Type: ${isHtml ? 'text/html' : 'text/plain'}; charset=UTF-8`);
+      lines.push('Content-Transfer-Encoding: quoted-printable');
+      lines.push('');
+      lines.push(encodeQP(bodyContent));
+      for (const att of inlineAtts) {
+        lines.push(`--${relBoundary}`);
+        lines.push(`Content-Type: ${att.contentType || 'image/png'}; name="${att.name}"`);
+        lines.push(`Content-ID: <${att.contentId || att.name}>`);
+        lines.push(`Content-Disposition: inline; filename="${att.name}"`);
+        lines.push('Content-Transfer-Encoding: base64');
+        lines.push('');
+        lines.push(att.contentBytes);
+      }
+      lines.push(`--${relBoundary}--`);
+    } else {
+      lines.push(`Content-Type: ${isHtml ? 'text/html' : 'text/plain'}; charset=UTF-8`);
+      lines.push('Content-Transfer-Encoding: quoted-printable');
+      lines.push('');
+      lines.push(encodeQP(bodyContent));
+    }
+  };
+
+  if (!hasRegular && !hasInline) {
+    // Simple message — no attachments at all
+    L.push(`Content-Type: ${isHtml ? 'text/html' : 'text/plain'}; charset=UTF-8`);
+    L.push('Content-Transfer-Encoding: quoted-printable');
+    L.push('');
+    L.push(encodeQP(bodyContent));
+  } else {
+    L.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+    L.push('');
+    addBodyPart(L, boundary);
+    for (const att of regularAtts) {
+      L.push(`--${boundary}`);
+      L.push(`Content-Type: ${att.contentType || 'application/octet-stream'}; name="${att.name}"`);
+      L.push(`Content-Disposition: attachment; filename="${att.name}"`);
+      L.push('Content-Transfer-Encoding: base64');
+      L.push('');
+      L.push(att.contentBytes);
+    }
+    L.push(`--${boundary}--`);
+  }
+
+  return L.join('\r\n');
+}
+
+/**
+ * Send an email AS senderEmail using Graph sendMail (requires Mail.Send.All app permission).
+ * Returns immediately — the message is delivered by Exchange and appears as a proper
+ * received/sent email (isDraft=false, real receivedDateTime, real SMTP headers).
+ */
+async function sendMailAsUser(senderEmail, messagePayload, saveToSentItems) {
+  const token = await getAppAccessToken(getMsTenant(senderEmail));
+  const uid   = graphUserPath(senderEmail);
+  const msg   = {
+    subject:       messagePayload.subject,
+    body:          messagePayload.body,
+    toRecipients:  messagePayload.toRecipients  || [],
+    ccRecipients:  messagePayload.ccRecipients  || [],
+    bccRecipients: messagePayload.bccRecipients || [],
+  };
+  if (Array.isArray(messagePayload.attachments) && messagePayload.attachments.length > 0) {
+    msg.attachments = messagePayload.attachments;
+  }
+  await axios.post(
+    `${GRAPH_BASE}/users/${uid}/sendMail`,
+    { message: msg, saveToSentItems: Boolean(saveToSentItems) },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+  );
+}
+
+/**
+ * Wait for a message delivered via sendMail to appear in the recipient's Inbox,
+ * then return its Graph message ID.  Retries up to 3× with 2 s gaps.
+ * Returns null if not found (caller logs / falls back).
+ */
+async function findDeliveredInboxMessage(recipientEmail, subject, fromEmail) {
+  await new Promise((r) => setTimeout(r, 3000));
+  try {
+    const token      = await getAppAccessToken(getMsTenant(recipientEmail));
+    const uid        = graphUserPath(recipientEmail);
+    const safeSubj   = (subject || '').replace(/'/g, "''");
+    const fromLower  = (fromEmail || '').toLowerCase();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 3000));
+      const res = await axios.get(
+        `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messages` +
+        `?$filter=${encodeURIComponent(`subject eq '${safeSubj}'`)}&$select=id,subject,from&$top=10`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const found = (res.data.value || []).find(
+        (m) => (m.from?.emailAddress?.address || '').toLowerCase() === fromLower
+      );
+      if (found) return found.id;
+    }
+  } catch (err) {
+    logger.warn(`findDeliveredInboxMessage: "${subject}": ${err.message}`);
+  }
+  return null;
+}
+
+/** Mark a delivered inbox message as read (sendMail always delivers unread). */
+async function patchDeliveredInboxIsRead(recipientEmail, subject, fromEmail) {
+  try {
+    const msgId = await findDeliveredInboxMessage(recipientEmail, subject, fromEmail);
+    if (!msgId) { logger.warn(`patchDeliveredInboxIsRead: "${subject}" not found`); return; }
+    const token = await getAppAccessToken(getMsTenant(recipientEmail));
+    const uid   = graphUserPath(recipientEmail);
+    await axios.patch(
+      `${GRAPH_BASE}/users/${uid}/messages/${msgId}`,
+      { isRead: true },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+  } catch (err) {
+    logger.warn(`patchDeliveredInboxIsRead: "${subject}": ${err.message}`);
+  }
+}
+
+// ─── EWS message injection helpers ───────────────────────────────────────────
+
+// EWS well-known folder name mapping (Graph folder key → EWS DistinguishedFolderId)
+const EWS_FOLDER_MAP = {
+  inbox: 'inbox',
+  sentitems: 'sentitems',
+  'sent items': 'sentitems',
+  drafts: 'drafts',
+  deleteditems: 'deleteditems',
+  'deleted items': 'deleteditems',
+  junkemail: 'junkemail',
+  'junk email': 'junkemail',
+  junk: 'junkemail',
+  archive: 'archive',
+  recoverableitemsdeletions: 'recoverableitemsdeletions',
+};
+
+function xmlEsc(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function ewsMailboxXml(emailObj) {
+  let address, name;
+  if (emailObj?.emailAddress) { address = emailObj.emailAddress.address; name = emailObj.emailAddress.name; }
+  else if (emailObj?.address)  { address = emailObj.address;             name = emailObj.name; }
+  if (!address) return '';
+  return `<t:Mailbox>${name ? `<t:Name>${xmlEsc(name)}</t:Name>` : ''}<t:EmailAddress>${xmlEsc(address)}</t:EmailAddress></t:Mailbox>`;
+}
+
+function ewsRecipientsXml(tag, list) {
+  if (!Array.isArray(list) || !list.length) return '';
+  const inner = list.map(ewsMailboxXml).filter(Boolean).join('');
+  return inner ? `<t:${tag}>${inner}</t:${tag}>` : '';
+}
+
+function ewsAttachmentsXml(attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return '';
+  const items = attachments.map((att) => {
+    const name    = xmlEsc(att.name || 'attachment');
+    const ct      = xmlEsc(att.contentType || 'application/octet-stream');
+    const content = att.contentBytes || '';
+    const inline  = att.isInline  ? '<t:IsInline>true</t:IsInline>' : '';
+    const cid     = att.contentId ? `<t:ContentId>${xmlEsc(att.contentId)}</t:ContentId>` : '';
+    return `<t:FileAttachment><t:Name>${name}</t:Name><t:ContentType>${ct}</t:ContentType>${inline}${cid}<t:Content>${content}</t:Content></t:FileAttachment>`;
+  });
+  return `<t:Attachments>${items.join('')}</t:Attachments>`;
+}
+
+/**
+ * Insert a message directly into a mailbox folder via EWS CreateItem (SaveOnly).
+ * Sets PR_MESSAGE_FLAGS = 0 (no MSGFLAG_UNSENT) so the message appears as a real
+ * delivered/sent email — not a draft — regardless of from/to/cc addresses.
+ *
+ * Returns a minimal object { isDraft: false, subject } on success, or null if the
+ * folder is not a well-known name (caller should fall back to Graph POST).
+ */
+/**
+ * Generate a synthetic RFC 2822 Message-ID.
+ * Format: <timestamp.random@domain> — unique per call, deterministic-looking.
+ */
+function generateMessageId(userId) {
+  const domain    = (userId || 'qatestagent.com').split('@')[1] || 'qatestagent.com';
+  const ts        = Date.now().toString(36);
+  const rand      = Math.random().toString(36).slice(2, 8);
+  return `<${ts}.${rand}@${domain}>`;
+}
+
+async function createMessageViaEws(userId, folderId, messageBody) {
+  const folderKey        = String(folderId).trim().toLowerCase();
+  const ewsFolderId      = EWS_FOLDER_MAP[folderKey];
+  if (!ewsFolderId) return null; // custom folder — caller handles separately
+
+  const savedItemFolderXml = `<t:DistinguishedFolderId Id="${ewsFolderId}">
+          <t:Mailbox><t:EmailAddress>${xmlEsc(userId)}</t:EmailAddress></t:Mailbox>
+        </t:DistinguishedFolderId>`;
+
+  const tenant = getMsTenant(userId);
+  const token  = await getEwsToken(tenant);
+  const now    = new Date().toISOString();
+
+  const isRead      = messageBody.isRead !== false;
+  const msgFlagVal  = isRead ? 1 : 0; // 0x1=MSGFLAG_READ; 0x8=MSGFLAG_UNSENT cleared
+  const receivedDt  = messageBody.receivedDateTime || now;
+  const sentDt      = messageBody.sentDateTime     || now;
+
+  // Message-ID: use caller-supplied or generate a fresh unique one.
+  // PR_INTERNET_MESSAGE_ID (0x1035) — used by migration tools for deduplication
+  // and by Exchange for thread linking (In-Reply-To / References).
+  const messageId  = messageBody.internetMessageId || generateMessageId(userId);
+  const inReplyTo  = messageBody.inReplyTo  || '';   // PR_IN_REPLY_TO_ID  (0x1042)
+  const references = messageBody.references || '';   // PR_INTERNET_REFERENCES (0x1039)
+
+  const bodyType    = (messageBody.body?.contentType || 'text').toLowerCase() === 'html' ? 'HTML' : 'Text';
+  const bodyContent = messageBody.body?.content || '';
+  // HTML must be wrapped in CDATA so the XML parser treats it as character data, not
+  // XML child elements — otherwise Exchange reads the <t:Body> text node as empty.
+  const bodyXml     = bodyType === 'HTML'
+    ? `<t:Body BodyType="HTML"><![CDATA[${bodyContent}]]></t:Body>`
+    : `<t:Body BodyType="Text">${xmlEsc(bodyContent)}</t:Body>`;
+
+  const importanceMap = { low: 'Low', normal: 'Normal', high: 'High' };
+  const importance  = importanceMap[(messageBody.importance || 'normal').toLowerCase()] || 'Normal';
+
+  const fromXml   = messageBody.from   ? `<t:From>${ewsMailboxXml(messageBody.from)}</t:From>`                       : '';
+  const senderXml = (messageBody.sender || messageBody.from)
+    ? `<t:Sender>${ewsMailboxXml(messageBody.sender || messageBody.from)}</t:Sender>` : '';
+
+  const toXml  = ewsRecipientsXml('ToRecipients', messageBody.toRecipients);
+  const ccXml  = ewsRecipientsXml('CcRecipients', messageBody.ccRecipients);
+  const bccXml = ewsRecipientsXml('BccRecipients', messageBody.bccRecipients);
+
+  const catXml = Array.isArray(messageBody.categories) && messageBody.categories.length
+    ? `<t:Categories>${messageBody.categories.map((c) => `<t:String>${xmlEsc(c)}</t:String>`).join('')}</t:Categories>` : '';
+
+  let flagXml = '';
+  const flagStatus = messageBody.flag?.flagStatus;
+  if (flagStatus === 'flagged')  flagXml = '<t:Flag><t:FlagStatus>Flagged</t:FlagStatus></t:Flag>';
+  else if (flagStatus === 'complete') flagXml = '<t:Flag><t:FlagStatus>Complete</t:FlagStatus></t:Flag>';
+
+  const attachXml = ewsAttachmentsXml(messageBody.attachments);
+
+  const soap = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:PrimarySmtpAddress>${xmlEsc(userId)}</t:PrimarySmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:CreateItem MessageDisposition="SaveOnly">
+      <m:SavedItemFolderId>
+        ${savedItemFolderXml}
+      </m:SavedItemFolderId>
+      <m:Items>
+        <t:Message>
+          <t:Subject>${xmlEsc(messageBody.subject || '')}</t:Subject>
+          ${bodyXml}
+          <t:Importance>${importance}</t:Importance>
+          <t:IsRead>${isRead}</t:IsRead>
+          ${fromXml}
+          ${senderXml}
+          ${toXml}
+          ${ccXml}
+          ${bccXml}
+          ${catXml}
+          ${flagXml}
+          ${attachXml}
+          <t:ExtendedProperty>
+            <t:ExtendedFieldURI PropertyTag="0x0E07" PropertyType="Integer"/>
+            <t:Value>${msgFlagVal}</t:Value>
+          </t:ExtendedProperty>
+          <t:ExtendedProperty>
+            <t:ExtendedFieldURI PropertyTag="0x0E06" PropertyType="SystemTime"/>
+            <t:Value>${receivedDt}</t:Value>
+          </t:ExtendedProperty>
+          <t:ExtendedProperty>
+            <t:ExtendedFieldURI PropertyTag="0x0039" PropertyType="SystemTime"/>
+            <t:Value>${sentDt}</t:Value>
+          </t:ExtendedProperty>
+          <t:ExtendedProperty>
+            <t:ExtendedFieldURI PropertyTag="0x1035" PropertyType="String"/>
+            <t:Value>${xmlEsc(messageId)}</t:Value>
+          </t:ExtendedProperty>
+          ${inReplyTo  ? `<t:ExtendedProperty><t:ExtendedFieldURI PropertyTag="0x1042" PropertyType="String"/><t:Value>${xmlEsc(inReplyTo)}</t:Value></t:ExtendedProperty>` : ''}
+          ${references ? `<t:ExtendedProperty><t:ExtendedFieldURI PropertyTag="0x1039" PropertyType="String"/><t:Value>${xmlEsc(references)}</t:Value></t:ExtendedProperty>` : ''}
+        </t:Message>
+      </m:Items>
+    </m:CreateItem>
+  </soap:Body>
+</soap:Envelope>`;
+
+  const res = await axios.post(EWS_ENDPOINT, soap, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: '"http://schemas.microsoft.com/exchange/services/2006/messages/CreateItem"',
+    },
+    timeout: 60000,
+  });
+
+  if (!String(res.data).includes('NoError')) {
+    const errMatch = String(res.data).match(/<m:MessageText>([^<]+)<\/m:MessageText>/);
+    throw new Error(`EWS CreateItem: ${errMatch?.[1] || String(res.data).substring(0, 200)}`);
+  }
+
+  return { isDraft: false, subject: messageBody.subject, internetMessageId: messageId };
+}
+
+/**
+ * Clear MSGFLAG_UNSENT on an existing message so it appears as isDraft=false.
+ * Uses EWS UpdateItem on the Graph message ID (Exchange uses the same ID format).
+ * flagVal: 1 = MSGFLAG_READ (read non-draft), 0 = unread non-draft.
+ */
+async function ewsClearDraftFlag(userId, graphMessageId, flagVal = 1) {
+  const tenant = getMsTenant(userId);
+  const token  = await getEwsToken(tenant);
+  const soap = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:PrimarySmtpAddress>${xmlEsc(userId)}</t:PrimarySmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:UpdateItem MessageDisposition="SaveOnly" ConflictResolution="AlwaysOverwrite">
+      <m:ItemChanges>
+        <t:ItemChange>
+          <t:ItemId Id="${xmlEsc(graphMessageId)}"/>
+          <t:Updates>
+            <t:SetItemField>
+              <t:ExtendedFieldURI PropertyTag="0x0E07" PropertyType="Integer"/>
+              <t:Message>
+                <t:ExtendedProperty>
+                  <t:ExtendedFieldURI PropertyTag="0x0E07" PropertyType="Integer"/>
+                  <t:Value>${flagVal}</t:Value>
+                </t:ExtendedProperty>
+              </t:Message>
+            </t:SetItemField>
+          </t:Updates>
+        </t:ItemChange>
+      </m:ItemChanges>
+    </m:UpdateItem>
+  </soap:Body>
+</soap:Envelope>`;
+  const res = await axios.post(EWS_ENDPOINT, soap, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: '"http://schemas.microsoft.com/exchange/services/2006/messages/UpdateItem"',
+    },
+    timeout: 30000,
+  });
+  if (!String(res.data).includes('NoError')) {
+    const errMatch = String(res.data).match(/<m:MessageText>([^<]+)<\/m:MessageText>/);
+    throw new Error(`EWS UpdateItem: ${errMatch?.[1] || String(res.data).substring(0, 200)}`);
+  }
+}
+
+// ─── End EWS message injection helpers ───────────────────────────────────────
+
+/**
+ * Find the Graph message ID for a message that was just injected via EWS.
+ * Searches in `folder` (well-known name or Graph folder ID) by internetMessageId.
+ * Retries up to `retries` times with `delayMs` between attempts.
+ * Returns the Graph message id string, or null if not found.
+ */
+async function getGraphIdByInternetMessageId(userId, folder, internetMessageId, { retries = 4, delayMs = 1500 } = {}) {
+  if (!internetMessageId) return null;
+  const uid     = graphUserPath(userId);
+  const token   = await getAccessToken(userId);
+  const safeMid = internetMessageId.replace(/'/g, "''");
+  for (let i = 0; i < retries; i++) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    try {
+      const res = await axios.get(
+        `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folder)}/messages` +
+        `?$filter=${encodeURIComponent(`internetMessageId eq '${safeMid}'`)}&$select=id&$top=1`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const id = (res.data?.value || [])[0]?.id;
+      if (id) return id;
+    } catch (_) { /* ignore transient errors */ }
+  }
+  return null;
+}
+
+/**
+ * Create a message directly in a mail folder without triggering Exchange delivery.
+ *
+ * Uses EWS CreateItem with SaveOnly + PR_MESSAGE_FLAGS=0 so the message appears as a
+ * real received/sent email (isDraft=false) for ALL folders — well-known (inbox, sentitems,
+ * deleteditems, junkemail, archive) and custom folders alike.
+ *
+ * Falls back to Graph POST only when EWS fails entirely (network error, auth failure).
  */
 async function createMessageInFolder(userId, folderId, messageBody) {
+  const folderKey   = String(folderId).trim().toLowerCase();
+  const isDraftFolder = folderKey === 'drafts' || folderKey === 'draft' || messageBody.isDraft === true;
+
+  if (!isDraftFolder) {
+    try {
+      const result = await createMessageViaEws(userId, folderId, messageBody);
+      if (result !== null) return result; // well-known EWS folder handled it
+    } catch (ewsErr) {
+      logger.warn(`[EWS insert ${userId}] ${ewsErr.message} — falling back to Graph POST`);
+    }
+
+    // Custom folder: EWS can't accept Graph folder IDs directly.
+    // Strategy: inject into inbox via EWS (isDraft=false guaranteed), then move via Graph.
+    if (EWS_FOLDER_MAP[folderKey] === undefined) {
+      try {
+        const msgId = messageBody.internetMessageId || generateMessageId(userId);
+        // Strip attachments from the EWS inject — upload them to the moved message separately
+        // to avoid Exchange locking the message while it processes inline attachment data.
+        const hasAttachments = Array.isArray(messageBody.attachments) && messageBody.attachments.length > 0;
+        await createMessageViaEws(userId, 'inbox', {
+          ...messageBody,
+          attachments: undefined,
+          internetMessageId: msgId,
+        });
+
+        // Retry-aware lookup: Exchange may take a moment to index the new message
+        const graphMsgId = await getGraphIdByInternetMessageId(userId, 'inbox', msgId, {
+          retries: 4, delayMs: 2000,
+        });
+        if (!graphMsgId) throw new Error('Message not found in inbox after EWS inject (4 retries)');
+
+        // Move to the custom target folder
+        const token2 = await getAccessToken(userId);
+        const uid2   = graphUserPath(userId);
+        const moveRes = await axios.post(
+          `${GRAPH_BASE}/users/${uid2}/messages/${graphMsgId}/move`,
+          { destinationId: folderId },
+          { headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+        );
+        const movedId = moveRes.data?.id;
+
+        // Upload attachments to the moved message if any
+        if (hasAttachments && movedId) {
+          for (const att of messageBody.attachments) {
+            try {
+              await axios.post(
+                `${GRAPH_BASE}/users/${uid2}/messages/${movedId}/attachments`,
+                att,
+                { headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+              );
+            } catch (attErr) {
+              logger.warn(`[EWS+move attach ${userId}] ${att.name || 'att'}: ${attErr.message}`);
+            }
+          }
+        }
+
+        return { isDraft: false, subject: messageBody.subject, internetMessageId: msgId, id: movedId };
+      } catch (customErr) {
+        logger.warn(`[EWS+move ${userId}/${folderId}] ${customErr.message} — falling back to Graph POST`);
+      }
+    }
+  }
+
+  // Graph POST fallback (drafts folder or EWS+move failure)
+  const uid   = graphUserPath(userId);
   const token = await getAccessToken(userId);
-  const uid = graphUserPath(userId);
+  const body  = { ...messageBody };
+  if (!isDraftFolder) {
+    const now = new Date().toISOString();
+    body.receivedDateTime = body.receivedDateTime || now;
+    body.sentDateTime     = body.sentDateTime     || now;
+    if (!body.sender && body.from) body.sender = body.from;
+  }
   const res = await axios.post(
     `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/messages`,
-    messageBody,
-    {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      timeout: 20000,
-    }
+    body,
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 20000 }
   );
-  return res.data;
+  const created = res.data;
+  const patch = {};
+  if (messageBody.flag)                                                         patch.flag       = messageBody.flag;
+  if (messageBody.importance && messageBody.importance !== 'normal')            patch.importance = messageBody.importance;
+  if (Array.isArray(messageBody.categories) && messageBody.categories.length)  patch.categories = messageBody.categories;
+  if (Object.keys(patch).length > 0 && created.id) {
+    await axios.patch(
+      `${GRAPH_BASE}/users/${uid}/messages/${created.id}`,
+      patch,
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+    );
+  }
+  return created;
 }
 
 /**
@@ -1375,6 +1945,445 @@ async function getContactsCount(userId) {
   }
 }
 
+// ── Test data creation helpers ────────────────────────────────────────────────
+
+async function createContact(userId, contact) {
+  const uid = graphUserPath(userId);
+  const res = await graphPost(`${GRAPH_BASE}/users/${uid}/contacts`, contact, userId);
+  return res.data;
+}
+
+async function createCalendarEvent(userId, calendarId, event) {
+  const uid = graphUserPath(userId);
+  const url = calendarId
+    ? `${GRAPH_BASE}/users/${uid}/calendars/${encodeURIComponent(calendarId)}/events`
+    : `${GRAPH_BASE}/users/${uid}/events`;
+  const res = await graphPost(url, event, userId);
+  return res.data;
+}
+
+async function getOrCreateCalendar(userId, name) {
+  const cals = await getCalendars(userId);
+  const existing = cals.find((c) => c.name?.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  const token = await getAccessToken(userId);
+  const uid = graphUserPath(userId);
+  const res = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/calendars`,
+    { name },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return res.data;
+}
+
+async function shareCalendar(userId, calendarId, recipientEmail, role = 'write') {
+  const uid = graphUserPath(userId);
+  const url = `${GRAPH_BASE}/users/${uid}/calendars/${encodeURIComponent(calendarId)}/calendarPermissions`;
+  const res = await graphPost(url, {
+    isRemovable: true,
+    isInsideOrganization: true,
+    role,
+    emailAddress: { address: recipientEmail },
+  }, userId);
+  return res.data;
+}
+
+async function createGroup(displayName, mailNickname, description = '', isPrivate = false, userId = null) {
+  const tenant = getMsTenant(userId || '');
+  const token = await getAppAccessToken(tenant);
+  const res = await retryWithBackoff(
+    () => axios.post(
+      `${GRAPH_BASE}/groups`,
+      {
+        displayName,
+        mailNickname: (mailNickname || displayName.replace(/\s+/g, '').toLowerCase()).substring(0, 64),
+        description,
+        groupTypes: ['Unified'],
+        mailEnabled: true,
+        securityEnabled: false,
+        visibility: isPrivate ? 'Private' : 'Public',
+      },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+    ),
+    { label: `Graph POST /groups (${displayName})`, maxRetries: 2 }
+  );
+  return res.data;
+}
+
+/**
+ * Count Microsoft 365 Groups in the tenant (app-only token).
+ * @param {string} userId - any user in the target tenant (used to pick credentials)
+ * @returns {Promise<{ count: number, available: boolean, note?: string }>}
+ */
+async function getGroupsCount(userId = '') {
+  try {
+    const tenant = getMsTenant(userId);
+    const token  = await getAppAccessToken(tenant);
+    let count = 0;
+    let url   = `${GRAPH_BASE}/groups?$select=id&$top=999`;
+    for (let page = 0; page < 20; page++) {
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 20000,
+      });
+      count += (res.data.value || []).length;
+      url = res.data['@odata.nextLink'];
+      if (!url) break;
+    }
+    return { count, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    return {
+      count: 0,
+      available: false,
+      note: `Groups count failed: ${msg.substring(0, 160)}`,
+    };
+  }
+}
+
+/**
+ * Creates a message in a folder and attaches a large file via upload session.
+ * Handles files >3MB (Graph API limit for inline attachments).
+ * sizeMB: desired file size in megabytes (e.g. 26).
+ */
+/**
+ * Create a message with a large (>3 MB) attachment using the Graph upload-session API.
+ *
+ * Flow (primary):
+ *   1. Create a draft in the SENDER's mailbox (not in the recipient's folder — avoids isDraft issue)
+ *   2. Create an upload session on that draft and upload the file in 4 MB chunks
+ *   3. Send the draft → Exchange delivers it to the recipient's Inbox
+ *   4. Find the delivered message in the recipient's Inbox
+ *   5. Move to the target folder if it isn't Inbox; patch isRead
+ *
+ * Fallback (if upload session or send fails):
+ *   Send via sendMailAsUser with a referenceAttachment (link) so the message is still
+ *   a real non-draft in the Inbox — it won't have a binary attachment but the subject
+ *   and link name reflect the intended size.
+ */
+async function createMessageWithLargeAttachment(userId, folderId, messageBody, fileName, sizeMB = 26) {
+  const recipientToken = await getAppAccessToken(getMsTenant(userId));
+  const recipientUid   = graphUserPath(userId);
+  const sizeBytes      = sizeMB * 1024 * 1024;
+
+  let draftId = null;
+
+  try {
+    // ── Step 1: create draft directly in recipient's mailbox (no send) ──────
+    const draftRes = await axios.post(
+      `${GRAPH_BASE}/users/${recipientUid}/messages`,
+      {
+        subject:      messageBody.subject,
+        body:         messageBody.body,
+        from:         messageBody.from,
+        toRecipients: messageBody.toRecipients || [],
+        importance:   messageBody.importance   || 'normal',
+      },
+      { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+    draftId = draftRes.data.id;
+
+    // ── Step 2: create upload session on the draft ──────────────────────────
+    const sessionRes = await axios.post(
+      `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}/attachments/createUploadSession`,
+      { AttachmentItem: { attachmentType: 'file', name: fileName, size: sizeBytes } },
+      { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+    const uploadUrl = sessionRes.data.uploadUrl;
+
+    // ── Step 3: upload in 4 MB chunks ───────────────────────────────────────
+    const chunkSize = 4 * 1024 * 1024;
+    const pattern   = Buffer.from('QA Migration Large Attachment Test Data — CloudFuze QA Agent\n');
+    let offset = 0;
+    while (offset < sizeBytes) {
+      const end      = Math.min(offset + chunkSize - 1, sizeBytes - 1);
+      const chunkLen = end - offset + 1;
+      const chunk    = Buffer.alloc(chunkLen);
+      for (let i = 0; i < chunkLen; i++) chunk[i] = pattern[i % pattern.length];
+      await axios.put(uploadUrl, chunk, {
+        headers: {
+          'Content-Length': chunkLen,
+          'Content-Range': `bytes ${offset}-${end}/${sizeBytes}`,
+          'Content-Type': 'application/octet-stream',
+        },
+        timeout: 120000,
+        maxBodyLength: chunkSize + 1024,
+      });
+      offset = end + 1;
+    }
+
+    // ── Step 4: move draft to target folder, capture new message ID ─────────
+    const targetFolder = folderId || 'inbox';
+    let movedId = draftId;
+    if (targetFolder !== 'drafts' && targetFolder !== 'draft') {
+      const moveRes = await axios.post(
+        `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}/move`,
+        { destinationId: targetFolder },
+        { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      movedId = moveRes.data?.id || draftId;
+    }
+
+    // ── Step 5: clear MSGFLAG_UNSENT via Graph extended property → isDraft=false ─
+    // EWS UpdateItem requires an EWS item ID; movedId is a Graph REST ID, so use
+    // Graph singleValueExtendedProperties PATCH to set PR_MESSAGE_FLAGS directly.
+    const isRead = messageBody.isRead !== false;
+    try {
+      await axios.patch(
+        `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(movedId)}`,
+        { singleValueExtendedProperties: [{ id: 'Integer 0x0e07', value: String(isRead ? 1 : 0) }] },
+        { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      logger.info(`createMessageWithLargeAttachment: ${sizeMB} MB attachment in ${targetFolder} (isDraft cleared via Graph PATCH)`);
+    } catch (clearErr) {
+      logger.warn(`createMessageWithLargeAttachment: clear-draft PATCH failed (${clearErr.message})`);
+    }
+    return { id: movedId };
+
+  } catch (err) {
+    logger.warn(`createMessageWithLargeAttachment: ${err.message}`);
+    if (draftId) {
+      try {
+        await axios.delete(
+          `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}`,
+          { headers: { Authorization: `Bearer ${recipientToken}` }, timeout: 15000 }
+        );
+      } catch (_) { /* ignore */ }
+    }
+    return null;
+  }
+}
+
+/**
+ * Create an Outlook inbox message rule via Graph API.
+ * Rules are evaluated when new mail ARRIVES through Exchange transport (not on direct API inserts).
+ *
+ * @param {string} userId
+ * @param {string} displayName   — visible rule name in Outlook → Manage Rules
+ * @param {object} conditions    — e.g. { senderContains: ['user@domain.com'] }
+ * @param {object} actions       — e.g. { moveToFolder: 'folderId' }
+ * @param {number} [sequence=1] — rule evaluation order (1 = highest priority)
+ */
+async function createMessageRule(userId, displayName, conditions, actions, sequence = 1) {
+  const uid = graphUserPath(userId);
+  const res = await graphPost(
+    `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules`,
+    { displayName, sequence, isEnabled: true, conditions, actions },
+    userId
+  );
+  return res.data;
+}
+
+async function listMessageRules(userId) {
+  const res = await graphGet(
+    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/inbox/messageRules`,
+    userId
+  );
+  return res.data.value || [];
+}
+
+async function deleteMessageRule(userId, ruleId) {
+  return graphDelete(
+    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/inbox/messageRules/${encodeURIComponent(ruleId)}`,
+    userId
+  );
+}
+
+/**
+ * Send an email as a specific mailbox user via Graph sendMail endpoint.
+ * Unlike createMessageInFolder (direct folder insert), this goes through Exchange transport,
+ * which triggers inbox rules on the recipient side.
+ * Requires Mail.Send (Application) permission on the Azure AD app.
+ */
+async function sendMailAs(senderEmail, toEmail, subject, textBody) {
+  const token = await getAccessToken(senderEmail);
+  const uid = graphUserPath(senderEmail);
+  await retryWithBackoff(
+    () => axios.post(
+      `${GRAPH_BASE}/users/${uid}/sendMail`,
+      {
+        message: {
+          subject,
+          body: { contentType: 'Text', content: textBody },
+          toRecipients: [{ emailAddress: { address: toEmail } }],
+        },
+        saveToSentItems: false,
+      },
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 20000,
+      }
+    ),
+    { label: `Graph sendMail (${senderEmail} → ${toEmail})`, maxRetries: 1 }
+  );
+}
+
+/**
+ * Create a chain of nested mail folders (parent → child → grandchild … ).
+ * folderNames is an ordered array of display names, outermost first.
+ * Returns an array of folder IDs, one per level (same order as input).
+ * If a folder at a given level already exists it is reused.
+ */
+async function createNestedFolderChain(userId, folderNames) {
+  const token = await getAccessToken(userId);
+  const uid   = graphUserPath(userId);
+  let parentId = null;
+  const folderIds = [];
+
+  for (const displayName of folderNames) {
+    const baseUrl = parentId
+      ? `${GRAPH_BASE}/users/${uid}/mailFolders/${parentId}/childFolders`
+      : `${GRAPH_BASE}/users/${uid}/mailFolders`;
+    let folderId;
+    try {
+      const res = await axios.post(
+        baseUrl, { displayName },
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+      );
+      folderId = res.data.id;
+    } catch (err) {
+      if (err.response?.status === 409) {
+        const listRes = await axios.get(
+          `${baseUrl}?$filter=${encodeURIComponent(`displayName eq '${displayName}'`)}&$select=id,displayName`,
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+        );
+        folderId = (listRes.data.value || [])[0]?.id;
+        if (!folderId) throw new Error(`Folder "${displayName}" already exists but could not be located`);
+      } else {
+        throw err;
+      }
+    }
+    folderIds.push(folderId);
+    parentId = folderId;
+  }
+  return folderIds;
+}
+
+/**
+ * Create a properly threaded 3-message email exchange that shares one ConversationId.
+ *
+ *  Msg 1: senderEmail → recipientEmail   (sendMail → in recipient's Inbox)
+ *  Msg 2: recipientEmail → senderEmail   (createReply + send → in recipient's Sent Items)
+ *  Msg 3: senderEmail → recipientEmail   (createReply on msg2 + send → in recipient's Inbox)
+ *
+ * All 3 carry the same ConversationId and appear as a single conversation in Outlook.
+ * senderEmail must be a real tenant user (needs Mail.Send.All + Mail.ReadWrite.All on the app).
+ *
+ * @param {string}   senderEmail      Tenant user who starts the thread
+ * @param {string}   recipientEmail   Source mailbox (the migration source)
+ * @param {string}   subject          Thread subject (no "Re:" prefix)
+ * @param {string[]} bodies           [originalBody, reply1Body, reply2Body]
+ * @returns {Promise<number>}         Messages created (3 on full success)
+ */
+async function createEmailThread(senderEmail, recipientEmail, subject, bodies) {
+  const sndUid   = graphUserPath(senderEmail);
+  const rcpUid   = graphUserPath(recipientEmail);
+  const sndToken = await getAppAccessToken(getMsTenant(senderEmail));
+  const rcpToken = await getAppAccessToken(getMsTenant(recipientEmail));
+
+  // ── Msg 1: sender → recipient ─────────────────────────────────────────────
+  await sendMailAsUser(senderEmail, {
+    subject,
+    body:         { contentType: 'text', content: bodies[0] },
+    toRecipients: [{ emailAddress: { address: recipientEmail, name: recipientEmail.split('@')[0] } }],
+  }, false);
+  const msg1Id = await findDeliveredInboxMessage(recipientEmail, subject, senderEmail);
+  if (!msg1Id) throw new Error(`Thread: msg1 "${subject}" not found in ${recipientEmail} inbox`);
+
+  // ── Msg 2: recipient createReply → send to sender ─────────────────────────
+  const draft2 = await axios.post(
+    `${GRAPH_BASE}/users/${rcpUid}/messages/${msg1Id}/createReply`,
+    { comment: bodies[1] },
+    { headers: { Authorization: `Bearer ${rcpToken}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  await axios.post(
+    `${GRAPH_BASE}/users/${rcpUid}/messages/${draft2.data.id}/send`,
+    {},
+    { headers: { Authorization: `Bearer ${rcpToken}` }, timeout: 15000 }
+  );
+  // Find reply in sender's inbox (delivered from recipient)
+  const replySubject  = `Re: ${subject}`;
+  const msg2InSender  = await findDeliveredInboxMessage(senderEmail, replySubject, recipientEmail);
+  if (!msg2InSender) throw new Error(`Thread: msg2 "${replySubject}" not found in ${senderEmail} inbox`);
+
+  // ── Msg 3: sender createReply → send back to recipient ────────────────────
+  const draft3 = await axios.post(
+    `${GRAPH_BASE}/users/${sndUid}/messages/${msg2InSender}/createReply`,
+    { comment: bodies[2] },
+    { headers: { Authorization: `Bearer ${sndToken}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  await axios.post(
+    `${GRAPH_BASE}/users/${sndUid}/messages/${draft3.data.id}/send`,
+    {},
+    { headers: { Authorization: `Bearer ${sndToken}` }, timeout: 15000 }
+  );
+
+  return 3;
+}
+
+/**
+ * Create an Outlook inbox rule on userId's mailbox.
+ * Requires MailboxSettings.ReadWrite application permission on the Azure AD app.
+ *
+ * Minimal rule shape:
+ *   {
+ *     displayName: 'QA - …',
+ *     sequence: 100,
+ *     isEnabled: true,
+ *     conditions: { from: [{ emailAddress: { address: '…', name: '…' } }] },
+ *     actions:    { moveToFolder: '<folderId>', stopProcessingRules: true }
+ *   }
+ */
+async function createInboxRule(userId, rule) {
+  const token = await getAppAccessToken(getMsTenant(userId));
+  const uid   = graphUserPath(userId);
+  const res   = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules`,
+    rule,
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return res.data;
+}
+
+/**
+ * Create a child folder under parentFolderId. Returns the child folder ID.
+ * Reuses the folder if it already exists (409).
+ */
+async function moveMessageToFolder(userId, messageId, destinationFolderId) {
+  const token = await getAccessToken(userId);
+  const uid = encodeURIComponent(String(userId).trim());
+  const axios = require('axios');
+  const res = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/messages/${encodeURIComponent(messageId)}/move`,
+    { destinationId: destinationFolderId },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return res.data;
+}
+
+async function createChildFolder(userId, parentFolderId, displayName) {
+  const token  = await getAccessToken(userId);
+  const uid    = graphUserPath(userId);
+  const url    = `${GRAPH_BASE}/users/${uid}/mailFolders/${parentFolderId}/childFolders`;
+  try {
+    const res = await axios.post(
+      url, { displayName },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+    );
+    return res.data.id;
+  } catch (err) {
+    if (err.response?.status === 409) {
+      const listRes = await axios.get(
+        `${url}?$filter=${encodeURIComponent(`displayName eq '${displayName}'`)}&$select=id,displayName`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const found = (listRes.data.value || [])[0];
+      if (found) return found.id;
+    }
+    throw err;
+  }
+}
+
 /**
  * Create a top-level mail folder if it doesn't already exist. Returns the folder ID.
  */
@@ -1393,6 +2402,76 @@ async function getOrCreateMailFolder(userId, displayName) {
     }
   );
   return res.data.id;
+}
+
+async function getContactsWithDetails(userId) {
+  const uid = graphUserPath(userId);
+  try {
+    const token = await getAccessToken(userId);
+    const select = 'id,displayName,givenName,surname,emailAddresses,businessPhones,mobilePhone,companyName,jobTitle,personalNotes';
+    let url = `${GRAPH_BASE}/users/${uid}/contacts?$top=100&$select=${select}`;
+    const contacts = [];
+    for (let page = 0; page < 10; page++) {
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` }, timeout: 20000 });
+      contacts.push(...(res.data.value || []));
+      url = res.data['@odata.nextLink'];
+      if (!url) break;
+    }
+    return { contacts, available: true };
+  } catch (e) {
+    return { contacts: [], available: false, note: `getContactsWithDetails failed: ${String(e.message).substring(0, 160)}` };
+  }
+}
+
+async function setContactPhoto(userId, contactId, photoBase64) {
+  const uid = graphUserPath(userId);
+  const token = await getAccessToken(userId);
+  const buf = Buffer.from(photoBase64, 'base64');
+  await axios.put(
+    `${GRAPH_BASE}/users/${uid}/contacts/${contactId}/photo/$value`,
+    buf,
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' }, timeout: 15000 }
+  );
+}
+
+async function getInboxRules(userId) {
+  const uid = graphUserPath(userId);
+  try {
+    const token = await getAccessToken(userId);
+    const res = await axios.get(
+      `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules`,
+      { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+    );
+    return { rules: res.data.value || [], available: true };
+  } catch (e) {
+    return { rules: [], available: false, note: `Inbox rules fetch failed: ${String(e.message).substring(0, 120)}` };
+  }
+}
+
+async function addEventAttachment(userId, eventId, attachment) {
+  const uid = graphUserPath(userId);
+  const res = await graphPost(`${GRAPH_BASE}/users/${uid}/events/${eventId}/attachments`, attachment, userId);
+  return res.data;
+}
+
+/**
+ * Sum all message sizes in a mailbox via paginated GET /messages?$select=size.
+ * Returns { sizeBytes, messageCount, method }.
+ */
+async function getMailboxSizeBytes(userId) {
+  const uid = graphUserPath(userId);
+  let url = `${GRAPH_BASE}/users/${uid}/messages?$select=size&$top=999`;
+  let totalBytes = 0;
+  let messageCount = 0;
+  while (url) {
+    const res = await graphGet(url, userId);
+    for (const msg of (res.data.value || [])) {
+      totalBytes += Number(msg.size) || 0;
+      messageCount++;
+    }
+    url = res.data['@odata.nextLink'] || null;
+  }
+  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size' };
 }
 
 module.exports = {
@@ -1419,7 +2498,12 @@ module.exports = {
   hasMailbox,
   filterMailboxEnabled,
   DEFAULT_FOLDER_NAMES,
+  sendMailAsUser,
+  createEmailThread,
+  createInboxRule,
   createMessageInFolder,
+  createNestedFolderChain,
+  createChildFolder,
   getOrCreateMailFolder,
   getContactsCount,
   emptyFolderViaApi,
@@ -1433,4 +2517,20 @@ module.exports = {
   cleanOutlookEmailsOnly,
   cleanOutlookFoldersOnly,
   cleanOutlookEventsOnly,
+  createContact,
+  createCalendarEvent,
+  getOrCreateCalendar,
+  shareCalendar,
+  createGroup,
+  getGroupsCount,
+  createMessageWithLargeAttachment,
+  deleteMessageRule,
+  moveMessageToFolder,
+  getGraphIdByInternetMessageId,
+  clearFolderCache,
+  getContactsWithDetails,
+  setContactPhoto,
+  getInboxRules,
+  addEventAttachment,
+  getMailboxSizeBytes,
 };

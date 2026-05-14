@@ -6,11 +6,25 @@ const calendarClient = require('../../clients/calendarClient');
 const env = require('../../config/env');
 const logger = require('../../utils/logger');
 const executionService = require('../../services/executionService');
+const XLSX = require('xlsx');
 const {
   tryLoadMailCasesFromExcel,
   tryLoadDraftCasesFromExcel,
   defaultGmailTestCasesXlsxPath,
 } = require('../../utils/gmailTestCasesExcel');
+
+/**
+ * When domain users are unavailable (empty GOOGLE_ACCOUNTS, tenant3 with no Admin SDK results, etc.),
+ * fall back to these external addresses so inbound/outbound mail is NOT self-addressed.
+ * Inbox mail should appear to come FROM another person; Sent mail should go TO another person.
+ */
+const FALLBACK_EXTERNAL_CORRESPONDENTS = [
+  'alice.johnson@external-qa.com',
+  'bob.smith@testdomain.net',
+  'carol.white@external-test.com',
+  'david.lee@qamail.io',
+  'eve.chen@sample-domain.org',
+];
 
 const SAMPLE_ATTACHMENT_DATA = Buffer.from('Sample attachment content for QA testing').toString('base64');
 const SAMPLE_ATTACHMENT_SECOND = Buffer.from('Second file for multi-attachment E2E').toString('base64');
@@ -363,31 +377,64 @@ class GmailTestDataAgent extends BaseAgent {
     // For tenant 3 (migrationn.com DWD), fetch domain users via Admin SDK
     // and use them as correspondent/cc/bcc/inbound senders instead of GOOGLE_ACCOUNTS.
     const sourceDomain = (sourceEmail || '').split('@')[1]?.toLowerCase() || '';
+    const isTenant2 = Array.isArray(env.GOOGLE_TENANT_2_DOMAINS) && env.GOOGLE_TENANT_2_DOMAINS.includes(sourceDomain);
     const isTenant3 = Array.isArray(env.GOOGLE_TENANT_3_DOMAINS) && env.GOOGLE_TENANT_3_DOMAINS.includes(sourceDomain);
+    const isDWDTenant = (isTenant2 && gmailClient.hasServiceAccount('2')) || isTenant3;
 
     let correspondentEmail, ccEmail, bccEmail, effectiveInboundSenders;
 
-    if (isTenant3) {
+    if (isDWDTenant) {
+      const tenantLabel = isTenant2 ? 'Tenant 2' : 'Tenant 3';
+      const knownUsersEnvKey = isTenant2 ? 'GOOGLE_TENANT_2_KNOWN_USERS' : 'GOOGLE_TENANT_3_KNOWN_USERS';
       let domainUserEmails = [];
-      try {
-        const domainUsers = await gmailClient.listDomainUsers(sourceEmail);
-        domainUserEmails = domainUsers
-          .map((u) => u.email)
-          .filter((e) => e.toLowerCase() !== sourceEmail.toLowerCase());
-        log.info(`Tenant 3: fetched ${domainUserEmails.length} domain user(s) for correspondent rotation: [${domainUserEmails.join(', ')}]`);
-      } catch (e) {
-        log.warn(`Tenant 3: failed to fetch domain users for correspondents: ${e.message}`);
+
+      // Prefer explicitly configured known users over Admin SDK.
+      const knownUsers = (env[knownUsersEnvKey] || [])
+        .filter((e) => e.toLowerCase() !== sourceEmail.toLowerCase());
+
+      if (knownUsers.length > 0) {
+        domainUserEmails = knownUsers;
+        log.info(`${tenantLabel}: using ${domainUserEmails.length} configured known user(s): [${domainUserEmails.join(', ')}]`);
+      } else {
+        try {
+          const domainUsers = await gmailClient.listDomainUsers(sourceEmail);
+          domainUserEmails = domainUsers
+            .map((u) => u.email)
+            .filter((e) => e.toLowerCase() !== sourceEmail.toLowerCase());
+          log.info(`${tenantLabel}: fetched ${domainUserEmails.length} domain user(s) via Admin SDK: [${domainUserEmails.join(', ')}]`);
+        } catch (e) {
+          log.warn(`${tenantLabel}: failed to fetch domain users via Admin SDK: ${e.message}`);
+        }
       }
-      correspondentEmail = domainUserEmails[0] || sourceEmail;
-      ccEmail           = domainUserEmails[1] || correspondentEmail;
-      bccEmail          = domainUserEmails[2] || correspondentEmail;
-      effectiveInboundSenders = domainUserEmails.length > 0 ? domainUserEmails : [correspondentEmail];
+
+      if (domainUserEmails.length === 0) {
+        log.warn(`${tenantLabel}: no domain users found — using external fallback correspondents so mail is not self-addressed`);
+        correspondentEmail      = FALLBACK_EXTERNAL_CORRESPONDENTS[0];
+        ccEmail                 = FALLBACK_EXTERNAL_CORRESPONDENTS[1];
+        bccEmail                = FALLBACK_EXTERNAL_CORRESPONDENTS[2];
+        effectiveInboundSenders = FALLBACK_EXTERNAL_CORRESPONDENTS;
+      } else {
+        correspondentEmail      = domainUserEmails[0];
+        ccEmail                 = domainUserEmails[1] || FALLBACK_EXTERNAL_CORRESPONDENTS[1];
+        bccEmail                = domainUserEmails[2] || FALLBACK_EXTERNAL_CORRESPONDENTS[2];
+        effectiveInboundSenders = domainUserEmails;
+      }
     } else {
       correspondentEmail = env.pickCorrespondentEmail(sourceEmail);
       ccEmail = env.pickCcEmail(sourceEmail, correspondentEmail);
       bccEmail = env.pickBccEmail(sourceEmail, correspondentEmail, ccEmail);
       const inboundSenders = env.buildGoogleInboundSenders(sourceEmail);
       effectiveInboundSenders = inboundSenders.length > 0 ? inboundSenders : [correspondentEmail];
+
+      // If GOOGLE_ACCOUNTS has only one entry the pickers fall back to sourceEmail.
+      // Replace with external fallback addresses so mail is never self-addressed.
+      if (correspondentEmail.toLowerCase() === sourceEmail.toLowerCase()) {
+        log.warn('No distinct correspondent in GOOGLE_ACCOUNTS — using external fallback addresses so mail is not self-addressed');
+        correspondentEmail      = FALLBACK_EXTERNAL_CORRESPONDENTS[0];
+        ccEmail                 = FALLBACK_EXTERNAL_CORRESPONDENTS[1];
+        bccEmail                = FALLBACK_EXTERNAL_CORRESPONDENTS[2];
+        effectiveInboundSenders = FALLBACK_EXTERNAL_CORRESPONDENTS;
+      }
     }
 
     summary.correspondentEmail = correspondentEmail;
@@ -395,7 +442,7 @@ class GmailTestDataAgent extends BaseAgent {
     summary.bccEmail = bccEmail;
     summary.inboundSenders = effectiveInboundSenders;
     log.info(
-      `Creating test data in Gmail for: ${sourceEmail} [${testType}] — To: ${correspondentEmail}, Cc: ${ccEmail}, Bcc: ${bccEmail}, Inbound senders: [${effectiveInboundSenders.join(', ')}] (${isTenant3 ? 'Admin SDK DWD' : 'GOOGLE_ACCOUNTS'})`
+      `Creating test data in Gmail for: ${sourceEmail} [${testType}] — To: ${correspondentEmail}, Cc: ${ccEmail}, Bcc: ${bccEmail}, Inbound senders: [${effectiveInboundSenders.join(', ')}] (${isDWDTenant ? 'Admin SDK DWD' : 'GOOGLE_ACCOUNTS'})`
     );
 
     if (context.includeMail) {
@@ -626,7 +673,7 @@ class GmailTestDataAgent extends BaseAgent {
         textBody: 'Compose PDF scenario: formatting + signature plain fallback.',
         labelIds: ['SENT'],
         cc: ccEmail,
-        bcc: sourceEmail,
+        bcc: bccEmail,
       },
       {
         subject: 'QA E2E - PDF 3.14 Email formatting',

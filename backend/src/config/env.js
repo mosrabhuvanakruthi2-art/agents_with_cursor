@@ -73,33 +73,77 @@ const {
   buildInboundSenderRotation,
 } = require('../utils/googleAccountsPicker');
 
-/** Another GOOGLE_ACCOUNTS address for To: / attendees (falls back to source if sole account). */
-function pickCorrespondentEmail(sourceEmail) {
-  return pickCorrespondentFromMap(googleAccounts, sourceEmail);
-}
-
-/** Distinct Cc address from GOOGLE_ACCOUNTS when possible. */
-function pickCcEmail(sourceEmail, toEmail) {
-  return pickCcFromMap(googleAccounts, sourceEmail, toEmail);
-}
-
-/** Distinct Bcc address from GOOGLE_ACCOUNTS (never source/to/cc) when possible. */
-function pickBccEmail(sourceEmail, toEmail, ccEmail) {
-  return pickBccFromMap(googleAccounts, sourceEmail, toEmail, ccEmail);
+/** Extract the domain portion of an email address (lowercase). */
+function domainOf(email) {
+  const at = String(email || '').lastIndexOf('@');
+  return at === -1 ? '' : String(email).slice(at + 1).toLowerCase();
 }
 
 /**
- * Sorted GOOGLE_ACCOUNTS addresses (excluding source) to rotate as inbound senders when we
- * seed test mails INTO the Gmail source's Inbox. Returns [] when only the source is configured;
- * callers should fall back to a single correspondent address in that case.
+ * Return only those accounts that share the same domain as sourceEmail.
+ * Works with both Map<email, *> and string[].
+ * If no same-domain accounts exist after filtering, returns an empty collection
+ * (callers fall back to FALLBACK_EXTERNAL_SENDERS / fallback logic).
  */
-function buildGoogleInboundSenders(sourceEmail) {
-  return buildInboundSenderRotation(googleAccounts, sourceEmail);
+function filterAccountsByDomain(accounts, sourceEmail) {
+  const srcDomain = domainOf(sourceEmail);
+  if (!srcDomain) return accounts;
+  if (accounts instanceof Map) {
+    const filtered = new Map();
+    for (const [k, v] of accounts) {
+      if (domainOf(k) === srcDomain) filtered.set(k, v);
+    }
+    return filtered;
+  }
+  return accounts.filter((e) => domainOf(e) === srcDomain);
 }
 
-/** Same idea for Outlook source mailbox — rotate inbound senders from OUTLOOK_ACCOUNTS. */
+/** Convert an array of emails to a Map<email, true> for use with picker functions. */
+function emailArrayToMap(emails) {
+  return new Map(emails.map((e) => [e, true]));
+}
+
+/** Another GOOGLE_ACCOUNTS address for To: / attendees — same domain as source. */
+function pickCorrespondentEmail(sourceEmail) {
+  return pickCorrespondentFromMap(filterAccountsByDomain(googleAccounts, sourceEmail), sourceEmail);
+}
+
+/** Distinct Cc address from GOOGLE_ACCOUNTS — same domain as source. */
+function pickCcEmail(sourceEmail, toEmail) {
+  return pickCcFromMap(filterAccountsByDomain(googleAccounts, sourceEmail), sourceEmail, toEmail);
+}
+
+/** Distinct Bcc address from GOOGLE_ACCOUNTS — same domain, never source/to/cc. */
+function pickBccEmail(sourceEmail, toEmail, ccEmail) {
+  return pickBccFromMap(filterAccountsByDomain(googleAccounts, sourceEmail), sourceEmail, toEmail, ccEmail);
+}
+
+/**
+ * Sorted GOOGLE_ACCOUNTS addresses (same domain, excluding source) to rotate as inbound senders.
+ * Returns [] when no same-domain accounts are configured; callers fall back to a correspondent address.
+ */
+function buildGoogleInboundSenders(sourceEmail) {
+  return buildInboundSenderRotation(filterAccountsByDomain(googleAccounts, sourceEmail), sourceEmail);
+}
+
+/** Same idea for Outlook — rotate inbound senders from the same domain as source. */
 function buildOutlookInboundSenders(sourceEmail) {
-  return buildInboundSenderRotation(outlookAccounts, sourceEmail);
+  return buildInboundSenderRotation(filterAccountsByDomain(outlookAccounts, sourceEmail), sourceEmail);
+}
+
+/** Another OUTLOOK_ACCOUNTS address for To: — same domain as source. */
+function pickOutlookCorrespondentEmail(sourceEmail) {
+  return pickCorrespondentFromMap(emailArrayToMap(filterAccountsByDomain(outlookAccounts, sourceEmail)), sourceEmail);
+}
+
+/** Distinct Cc address from OUTLOOK_ACCOUNTS — same domain as source. */
+function pickOutlookCcEmail(sourceEmail, toEmail) {
+  return pickCcFromMap(emailArrayToMap(filterAccountsByDomain(outlookAccounts, sourceEmail)), sourceEmail, toEmail);
+}
+
+/** Distinct Bcc address from OUTLOOK_ACCOUNTS — same domain, never source/to/cc. */
+function pickOutlookBccEmail(sourceEmail, toEmail, ccEmail) {
+  return pickBccFromMap(emailArrayToMap(filterAccountsByDomain(outlookAccounts, sourceEmail)), sourceEmail, toEmail, ccEmail);
 }
 
 function parseOutlookAccounts() {
@@ -110,7 +154,30 @@ function parseOutlookAccounts() {
   return emails;
 }
 
+/**
+ * Parse USER_EMAIL_MAPPINGS from env.
+ * Format: "source1@dom:dest1@dom,source2@dom:dest2@dom"
+ * Returns [{sourceEmail, destinationEmail}]
+ */
+function parseUserEmailMappings() {
+  const raw = process.env.USER_EMAIL_MAPPINGS || '';
+  if (!raw) return [];
+  const pairs = raw.split(',').map((s) => s.trim()).filter(Boolean).map((pair) => {
+    const colonIdx = pair.lastIndexOf(':');
+    if (colonIdx === -1) return null;
+    return {
+      sourceEmail: pair.substring(0, colonIdx).trim().toLowerCase(),
+      destinationEmail: pair.substring(colonIdx + 1).trim().toLowerCase(),
+    };
+  }).filter((p) => p && p.sourceEmail && p.destinationEmail);
+  if (pairs.length > 0) {
+    console.log(`[env] Loaded ${pairs.length} USER_EMAIL_MAPPINGS pair(s)`);
+  }
+  return pairs;
+}
+
 const outlookAccounts = parseOutlookAccounts();
+const userEmailMappings = parseUserEmailMappings();
 
 module.exports = {
   PORT: process.env.PORT || 5000,
@@ -139,10 +206,29 @@ module.exports = {
   GOOGLE_CLIENT_ID_2: process.env.GOOGLE_CLIENT_ID_2,
   GOOGLE_CLIENT_SECRET_2: process.env.GOOGLE_CLIENT_SECRET_2,
   GOOGLE_TENANT_2_DOMAINS: (process.env.GOOGLE_TENANT_2_DOMAINS || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  /**
+   * Known user emails for tenant 2 (storefuze.com). When set, GmailTestDataAgent uses these
+   * directly as correspondent/cc/bcc/inbound-senders instead of calling Admin SDK listDomainUsers.
+   * Format: comma-separated emails. Include admin + all users; the agent filters out the source.
+   */
+  GOOGLE_TENANT_2_KNOWN_USERS: (process.env.GOOGLE_TENANT_2_KNOWN_USERS || '').toLowerCase().split(',').map(s => s.trim()).filter(s => s.includes('@')),
+  /** Absolute or relative-to-cwd path to the service account JSON key for tenant 2 (storefuze.com DWD). */
+  GOOGLE_SERVICE_ACCOUNT_KEY_2: (() => {
+    const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_2 || '').trim();
+    if (!raw) return '';
+    if (path.isAbsolute(raw)) return raw;
+    return path.resolve(__dirname, '../../', raw);
+  })(),
   // Third Google tenant (migrationn.com)
   GOOGLE_CLIENT_ID_3: process.env.GOOGLE_CLIENT_ID_3,
   GOOGLE_CLIENT_SECRET_3: process.env.GOOGLE_CLIENT_SECRET_3,
   GOOGLE_TENANT_3_DOMAINS: (process.env.GOOGLE_TENANT_3_DOMAINS || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean),
+  /**
+   * Known user emails for tenant 3 (migrationn.com). When set, GmailTestDataAgent uses these
+   * directly as correspondent/cc/bcc/inbound-senders instead of calling Admin SDK listDomainUsers.
+   * Format: comma-separated emails. Include admin + all users; the agent filters out the source.
+   */
+  GOOGLE_TENANT_3_KNOWN_USERS: (process.env.GOOGLE_TENANT_3_KNOWN_USERS || '').toLowerCase().split(',').map(s => s.trim()).filter(s => s.includes('@')),
   /** Absolute or relative-to-cwd path to the service account JSON key for tenant 3 (migrationn.com DWD). */
   GOOGLE_SERVICE_ACCOUNT_KEY_3: (() => {
     const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_3 || '').trim();
@@ -155,8 +241,12 @@ module.exports = {
   pickCcEmail,
   pickBccEmail,
   buildGoogleInboundSenders,
+  pickOutlookCorrespondentEmail,
+  pickOutlookCcEmail,
+  pickOutlookBccEmail,
   buildOutlookInboundSenders,
   outlookAccounts,
+  userEmailMappings,
   GRAPH_CLIENT_ID: process.env.GRAPH_CLIENT_ID,
   GRAPH_CLIENT_SECRET: process.env.GRAPH_CLIENT_SECRET,
   GRAPH_TENANT_ID: process.env.GRAPH_TENANT_ID,
@@ -199,6 +289,13 @@ module.exports = {
   CLOUDFUZE_SOURCE_CLOUD_ID: (process.env.CLOUDFUZE_SOURCE_CLOUD_ID || '').trim(),
   /** Direct cloud ID for destination — bypasses GET /mail/clouds entirely. */
   CLOUDFUZE_DEST_CLOUD_ID: (process.env.CLOUDFUZE_DEST_CLOUD_ID || '').trim(),
+  /**
+   * Direction-aware cloud IDs — preferred over SOURCE/DEST when set.
+   * MigrationAgent picks source/dest automatically based on sourceProvider/destinationProvider,
+   * so the same IDs work for both Gmail→Outlook AND Outlook→Gmail without any env change.
+   */
+  CLOUDFUZE_GMAIL_CLOUD_ID:   (process.env.CLOUDFUZE_GMAIL_CLOUD_ID   || '').trim(),
+  CLOUDFUZE_OUTLOOK_CLOUD_ID: (process.env.CLOUDFUZE_OUTLOOK_CLOUD_ID || '').trim(),
   SCHEDULER_ENABLED: process.env.SCHEDULER_ENABLED === 'true',
   DEFAULT_SOURCE_EMAIL: process.env.DEFAULT_SOURCE_EMAIL || '',
   DEFAULT_DEST_EMAIL: process.env.DEFAULT_DEST_EMAIL || '',
@@ -275,7 +372,7 @@ module.exports = {
    * (issue id is taken from the saved snapshot row when the request is key-only).
    */
   TEST_REPOSITORY_TEST_DETAIL_LIVE_FALLBACK:
-    String(process.env.TEST_REPOSITORY_TEST_DETAIL_LIVE_FALLBACK ?? 'true').trim().toLowerCase() !== 'false',
+    String(process.env.TEST_REPOSITORY_TEST_DETAIL_LIVE_FALLBACK ?? 'false').trim().toLowerCase() === 'true',
   /** Number of tests per batched GraphQL request during backfill. Default 5 (Xray limit: 25 ops/request). */
   BACKFILL_BATCH_SIZE: Math.max(1, Math.min(20, parseInt(process.env.BACKFILL_BATCH_SIZE || '5', 10) || 5)),
   /** Minimum ms between batch requests during backfill to avoid 429 rate limits. Default 1500. */

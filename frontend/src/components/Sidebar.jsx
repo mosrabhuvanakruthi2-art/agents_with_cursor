@@ -8,9 +8,8 @@ const navItems = [
   { to: '/logs', label: 'Execution Logs', icon: LogsIcon },
   { to: '/validation', label: 'Validation Results', icon: CheckIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
-  { to: '/create-test-data', label: 'Create Test Data', icon: DatabaseIcon },
-  { to: '/clean', label: 'Clean Destination', icon: TrashIcon },
-  { to: '/clean-source', label: 'Clean Source', icon: TrashIcon },
+  { to: '/clean', label: 'Outlook Clean Up', icon: TrashIcon },
+  { to: '/clean-source', label: 'Gmail Clean Up', icon: TrashIcon },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {

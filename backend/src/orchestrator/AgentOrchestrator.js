@@ -2,6 +2,8 @@ const GmailTestDataAgent = require('../agents/gmail/GmailTestDataAgent');
 const OutlookTestDataAgent = require('../agents/outlook/OutlookTestDataAgent');
 const MigrationAgent = require('../agents/migration/MigrationAgent');
 const OutlookValidationAgent = require('../agents/outlook/OutlookValidationAgent');
+const GmailValidationAgent = require('../agents/gmail/GmailValidationAgent');
+const CleanupAgent = require('../agents/cleanup/CleanupAgent');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
@@ -27,11 +29,12 @@ class AgentOrchestrator {
         executionService.create(context);
       }
       const isOutlookSource = context.sourceProvider === 'microsoft';
+      const isGmailDest     = context.destinationProvider === 'google';
       return {
         context,
         dataAgent: isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent(),
         migrationAgent: new MigrationAgent(),
-        outlookAgent: new OutlookValidationAgent(),
+        outlookAgent: isGmailDest ? new GmailValidationAgent() : new OutlookValidationAgent(),
         removeExecLogger,
         startTime: Date.now(),
         sourceData: null,
@@ -40,6 +43,23 @@ class AgentOrchestrator {
         error: null,
       };
     });
+
+    // ── Phase 0: Cleanup QA data from source + destination ───────────────────
+    log.info('Bulk Phase 0/3: cleaning previous QA test data from all pairs in parallel');
+    await Promise.all(pairs.map(async (pair) => {
+      const { context } = pair;
+      if (context.skipCleanup === true) return;
+      executionService.update(context.executionId, {
+        currentAgent: 'CleanupAgent',
+        progress: '[0/3] CleanupAgent: removing previous QA test data…',
+      });
+      try {
+        const cleanupAgent = new CleanupAgent();
+        await cleanupAgent.run(context);
+      } catch (err) {
+        log.warn(`Pair ${context.sourceEmail}: cleanup warning (non-blocking): ${err.message}`);
+      }
+    }));
 
     // ── Phase 1: Create test data for all pairs in parallel ──────────────────
     log.info('Bulk Phase 1/3: creating test data for all pairs in parallel');
@@ -113,7 +133,7 @@ class AgentOrchestrator {
       }
       executionService.update(context.executionId, {
         currentAgent: outlookAgent.getName(),
-        progress: '[3/3] OutlookValidationAgent: comparing Gmail vs Outlook…',
+        progress: `[3/3] ${outlookAgent.getName()}: comparing source vs destination…`,
       });
       try {
         pair.validationResult = await outlookAgent.run(context);
@@ -193,11 +213,28 @@ class AgentOrchestrator {
     log.info('Starting full migration QA flow');
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
+    const isGmailDest     = context.destinationProvider === 'google';
     const dataAgent = isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent();
     const migrationAgent = new MigrationAgent();
-    const outlookAgent = new OutlookValidationAgent();
+    const outlookAgent = isGmailDest ? new GmailValidationAgent() : new OutlookValidationAgent();
 
     try {
+      // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure)
+      if (context.skipCleanup !== true) {
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          currentAgent: 'CleanupAgent',
+          progress: 'CleanupAgent: removing previous QA test data…',
+        });
+        log.info('Step 0: Running CleanupAgent');
+        try {
+          const cleanupAgent = new CleanupAgent();
+          await cleanupAgent.run(context);
+        } catch (err) {
+          log.warn(`CleanupAgent warning (non-blocking): ${err.message}`);
+        }
+      }
+
       // Step 1: Generate test data (Gmail or Outlook depending on source provider)
       executionService.update(context.executionId, {
         status: 'RUNNING',
@@ -228,9 +265,9 @@ class AgentOrchestrator {
       // Step 3: Validate in Outlook
       executionService.update(context.executionId, {
         currentAgent: outlookAgent.getName(),
-        progress: 'OutlookValidationAgent: comparing Gmail vs Outlook and running checks…',
+        progress: `${outlookAgent.getName()}: comparing source vs destination…`,
       });
-      log.info('Step 3: Running OutlookValidationAgent');
+      log.info(`Step 3: Running ${outlookAgent.getName()}`);
       const validationResult = await outlookAgent.run(context);
 
       const duration = Date.now() - startTime;

@@ -32,6 +32,10 @@ function buildStructuredDiffRowsFromDiffs(diffs, fallbackNote) {
     attachments: 'Attachments',
     starred: 'Starred → red flag',
     important: 'Important → high',
+    readState: 'Read / Unread',
+    flag: 'Flag status',
+    importance: 'Importance',
+    sentDateTime: 'Sent Date/Time',
   };
   const RECIPIENT_FIELDS = new Set(['from', 'to', 'cc', 'bcc']);
   const rows = [];
@@ -156,6 +160,7 @@ class ValidationResult {
       primaryCalendar: null,
       secondaryCalendars: [],
       eventDetails: [],
+      attachmentMismatches: [],
     };
     /**
      * Contacts totals (Google People API vs Graph /me/contacts). Defaults to 0 when the run
@@ -167,7 +172,11 @@ class ValidationResult {
       destinationCount: 0,
       countMatch: false,
       available: false,
+      fieldMismatches: [],
+      photoMismatches: [],
     };
+    this.rulesAdvisory = null;
+    this.mailboxSizeValidation = null;
     this.sourceData = {
       defaultLabels: [],
       customLabels: [],
@@ -276,6 +285,8 @@ class ValidationResult {
       mailValidation: this.mailValidation,
       calendarValidation: this.calendarValidation,
       contactsValidation: this.contactsValidation,
+      rulesAdvisory: this.rulesAdvisory,
+      mailboxSizeValidation: this.mailboxSizeValidation,
       sourceData: this.sourceData,
       destinationData: this.destinationData,
       comparison: this.comparison,

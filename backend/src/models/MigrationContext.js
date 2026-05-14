@@ -55,7 +55,7 @@ class MigrationContext {
     }
 
     const tt = String(testType || '').toUpperCase();
-    this.deepValidation = process.env.DISABLE_DEEP_MAIL_VALIDATION === 'true' ? false : true;
+    this.deepValidation = true;
 
     this.testType =
       tt === 'DEEP_E2E'
@@ -105,6 +105,8 @@ class MigrationContext {
       destAdminEmail: this.destAdminEmail,
       migrationServerUrl: this.migrationServerUrl || undefined,
       migrationServerEmail: this.migrationServerEmail || undefined,
+      preMigrationSnapshot: this.preMigrationSnapshot || undefined,
+      preMigrationDestSnapshot: this.preMigrationDestSnapshot || undefined,
     };
   }
 }

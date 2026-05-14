@@ -465,7 +465,7 @@ function DeleteConfirmModal({ open, type, name, onClose, onConfirm, deleting }) 
 
 // ─── Test Detail helpers ─────────────────────────────────────────────────────
 
-function jiraDescriptionToText(desc) {
+function parseDescriptionText(desc) {
   if (desc == null || desc === '') return null;
   if (typeof desc === 'string') return desc.trim() || null;
   if (typeof desc === 'object' && desc.type === 'doc' && Array.isArray(desc.content)) {
@@ -492,27 +492,9 @@ function MetaRow({ label, value }) {
   );
 }
 
-function SidebarRow({ label, value }) {
-  const empty = value == null || value === '' || (Array.isArray(value) && !value.length);
-  return (
-    <div className="py-2 border-b border-slate-100 last:border-0 text-sm">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</p>
-      <p className={`mt-0.5 break-words ${empty ? 'text-slate-400' : 'text-slate-800'}`}>{empty ? 'None' : String(value)}</p>
-    </div>
-  );
-}
-
-function formatJiraExtraValue(v) {
-  if (v == null) return 'None';
-  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
-  if (Array.isArray(v)) return v.map(x => formatJiraExtraValue(x)).join(', ') || 'None';
-  if (typeof v === 'object') { if (v.name != null) return String(v.name); try { return JSON.stringify(v); } catch { return String(v); } }
-  return String(v);
-}
-
 // ─── Test Detail Modal ───────────────────────────────────────────────────────
 
-function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBrowseBaseUrl }) {
+function TestDetailModal({ open, onClose, issueId, jiraKey, initialData }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -525,7 +507,6 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
       setDetail({
         ...initialData,
         steps: Array.isArray(initialData.steps) ? initialData.steps.map((s, i) => ({ ...s, stepNumber: i + 1 })) : [],
-        hideJiraSidebar: true,
         source: 'local',
       });
       setLoading(false);
@@ -562,14 +543,9 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
   if (!open) return null;
 
   const display = detail ?? initialData ?? {};
-  const displayKey = display.jiraKey || jiraKey || '…';
   const isLocal = !!display._local;
 
-  const browse = !isLocal && jiraBrowseBaseUrl && displayKey && displayKey !== '…'
-    ? `${String(jiraBrowseBaseUrl).replace(/\/+$/, '')}/browse/${encodeURIComponent(displayKey)}`
-    : null;
-
-  const descText = detail ? jiraDescriptionToText(detail.description) : null;
+  const descText = detail ? parseDescriptionText(detail.description) : null;
   const folderBreadcrumb =
     detail?.folder?.path != null
       ? ['Test Repository', ...String(detail.folder.path).split('/').filter(Boolean)].join(' / ')
@@ -584,12 +560,10 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
         onClick={e => e.stopPropagation()}>
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-5 py-4 bg-[#FAFBFC]">
           <div className="min-w-0">
-            {isLocal ? (
+            {isLocal && (
               <p className="text-xs font-bold text-emerald-600 flex items-center gap-1">
                 <span className="bg-emerald-100 px-1.5 py-0.5 rounded">LOCAL TEST CASE</span>
               </p>
-            ) : (
-              <p className="font-mono text-sm font-bold text-[#0052CC]">{displayKey}</p>
             )}
             <h2 id="test-detail-title" className="text-lg font-semibold text-slate-900 mt-1 leading-snug">
               {display.summary || '—'}
@@ -602,10 +576,6 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            {browse && (
-              <a href={browse} target="_blank" rel="noreferrer"
-                className="text-sm text-[#0052CC] font-medium hover:underline">Open in Jira ↗</a>
-            )}
             <button type="button" onClick={onClose}
               className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
               Close
@@ -622,19 +592,18 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
             </div>
           )}
           {!error && detail && (
-            <div className={`grid grid-cols-1 gap-0 ${detail.hideJiraSidebar === false ? 'lg:grid-cols-3' : ''}`}>
-              <div className={`p-5 space-y-5 border-b border-slate-100 ${detail.hideJiraSidebar === false ? 'lg:col-span-2 lg:border-r' : ''}`}>
+            <div className="grid grid-cols-1 gap-0">
+              <div className="p-5 space-y-5 border-b border-slate-100">
                 {detail.partial && (
                   <p className="text-sm rounded-md border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2">
                     Summary-only view — steps not cached yet.
                   </p>
                 )}
                 {folderBreadcrumb && <nav className="text-xs text-slate-500">{folderBreadcrumb}</nav>}
-                {(detail.testType || detail.status || detail.xrayTestStatus) && (
+                {detail.testType && (
                   <p className="text-sm flex flex-wrap items-center gap-2">
-                    {detail.testType && <><span className="font-semibold text-slate-600">Test type:</span><Badge tone="primary">{String(detail.testType)}</Badge></>}
-                    {detail.status && <Badge tone="muted">Jira: {String(detail.status)}</Badge>}
-                    {detail.xrayTestStatus && <Badge tone="neutral">Xray status: {String(detail.xrayTestStatus)}</Badge>}
+                    <span className="font-semibold text-slate-600">Test type:</span>
+                    <Badge tone="primary">{String(detail.testType)}</Badge>
                   </p>
                 )}
                 {descText && (
@@ -695,31 +664,6 @@ function TestDetailModal({ open, onClose, issueId, jiraKey, initialData, jiraBro
                   </section>
                 )}
               </div>
-              {detail.hideJiraSidebar === false && (
-                <aside className="p-5 bg-slate-50/80 lg:bg-white lg:border-l border-slate-100">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Details</h3>
-                  <SidebarRow label="Status" value={detail.status} />
-                  <SidebarRow label="Assignee" value={detail.assignee} />
-                  <SidebarRow label="Reporter" value={detail.reporter} />
-                  <SidebarRow label="Labels" value={detail.labels} />
-                  <SidebarRow label="Priority" value={detail.priority} />
-                  <SidebarRow label="Test status" value={detail.xrayTestStatus} />
-                  <SidebarRow label="Issue type" value={detail.issueType} />
-                  <SidebarRow label="Components" value={detail.components} />
-                  <SidebarRow label="Fix versions" value={detail.fixVersions} />
-                  <SidebarRow label="Creator" value={detail.creator} />
-                  <SidebarRow label="Created" value={detail.created} />
-                  <SidebarRow label="Updated" value={detail.updated} />
-                  {detail.jiraExtras && typeof detail.jiraExtras === 'object' && (
-                    <div className="pt-2 mt-2 border-t border-slate-200">
-                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Additional Jira fields</p>
-                      {Object.entries(detail.jiraExtras).map(([k, v]) => (
-                        <SidebarRow key={k} label={k} value={formatJiraExtraValue(v)} />
-                      ))}
-                    </div>
-                  )}
-                </aside>
-              )}
             </div>
           )}
         </div>
@@ -952,11 +896,6 @@ export default function TestRepository() {
 
   const titleProject = data?.projectName || data?.projectKey || 'QA Projects';
   const crumbs = useMemo(() => breadcrumbFromPath(selectedFolderMeta?.path, titleProject), [selectedFolderMeta?.path, titleProject]);
-  const jiraBase = (data?.jiraBrowseBaseUrl || '').replace(/\/+$/, '');
-  const jiraTestRepoUrl = jiraBase && data?.projectKey
-    ? `${jiraBase}/projects/${encodeURIComponent(data.projectKey)}?selectedItem=com.atlassian.plugins.atlassian-connect-plugin%3Acom.xpandit.plugins.xray__testing-board`
-    : null;
-
   const rootFolderPath = useMemo(() => normPath(data?.folderTreeRoot?.path), [data?.folderTreeRoot]);
 
   // ── render ──
@@ -973,16 +912,11 @@ export default function TestRepository() {
           </h1>
           {data?.importedAt && (
             <p className="text-xs text-slate-400 mt-1">
-              Last import {new Date(data.importedAt).toLocaleString()} · {data.apiKind}
-              {data.projectResolveVia && ` · ${data.projectResolveVia}`}
+              Last synced {new Date(data.importedAt).toLocaleString()}
               {data.importRootPath && data.importRootPath !== '/' && <> · folder {data.importRootPath}</>}
             </p>
           )}
         </div>
-        {data?.projectKey && jiraTestRepoUrl && (
-          <a href={jiraTestRepoUrl} target="_blank" rel="noreferrer"
-            className="text-sm text-sky-700 hover:underline whitespace-nowrap">Open in Jira ↗</a>
-        )}
       </div>
 
       {actionError && (
@@ -1099,11 +1033,7 @@ export default function TestRepository() {
                           </span>
                           <div className="flex-1 min-w-0">
                             <div className="flex flex-wrap items-center gap-2 gap-y-1">
-                              {t.jiraKey ? (
-                                <span className="font-mono text-sm font-semibold text-[#0052CC]">{t.jiraKey}</span>
-                              ) : (
-                                <Badge tone="green">LOCAL</Badge>
-                              )}
+                              {t._local && <Badge tone="green">LOCAL</Badge>}
                               {t.testType && <Badge tone="primary">{String(t.testType)}</Badge>}
                               {t.status && <Badge tone="muted">{String(t.status)}</Badge>}
                             </div>
@@ -1183,7 +1113,6 @@ export default function TestRepository() {
         issueId={detailTarget?.issueId}
         jiraKey={detailTarget?.jiraKey}
         initialData={detailTarget}
-        jiraBrowseBaseUrl={data?.jiraBrowseBaseUrl}
       />
     </div>
   );

@@ -39,6 +39,7 @@ async function listEvents(sourceEmail, calendarId, maxResults = 250) {
         calendarId,
         maxResults,
         singleEvents: false,
+        supportsAttachments: true,
       }),
     { label: `Calendar listEvents for ${sourceEmail}` }
   );
@@ -54,9 +55,19 @@ async function listCalendars(sourceEmail) {
   return res.data.items || [];
 }
 
+async function getEvent(sourceEmail, calendarId, eventId) {
+  const calendar = getCalendar(sourceEmail);
+  const res = await retryWithBackoff(
+    () => calendar.events.get({ calendarId, eventId, supportsAttachments: true }),
+    { label: `Calendar getEvent ${eventId} for ${sourceEmail}` }
+  );
+  return res.data;
+}
+
 module.exports = {
   createCalendar,
   createEvent,
   listEvents,
   listCalendars,
+  getEvent,
 };

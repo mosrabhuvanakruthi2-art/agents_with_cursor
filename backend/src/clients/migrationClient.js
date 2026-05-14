@@ -8,6 +8,8 @@ const logger = require('../utils/logger');
 let bearerToken = null;
 // JWT from MIGRATION_API_BEARER_TOKEN or POST /mail/login — for all UI-flow endpoints
 let loginToken = null;
+// Last observed job details from /email/user/jobs polling — cleared on each new run
+let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
 
 // ── Runtime config: set by MigrationAgent when context provides a server URL ──
 // { baseUrl: string, email: string, password: string }
@@ -28,6 +30,11 @@ function clearRuntimeConfig() {
   runtimeConfig = null;
   bearerToken = null;
   loginToken = null;
+  lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+}
+
+function getLastJobDetails() {
+  return { ...lastJobDetails };
 }
 
 /** Returns the active API base URL (runtime override takes priority over env) */
@@ -493,8 +500,8 @@ async function triggerMigration(context) {
   let payload;
   if (isNewServer()) {
     // New server payload (newtestemail5 API)
-    // fromFolderId / toFolderId intentionally omitted when null —
-    // passing null causes a server-side NullPointerException in EmailFolderInfo.getSourceId()
+    // fromFolderId / toFolderId must always be "/" — omitting them causes
+    // EmailFolderInfo.getSourceId() to return null and the server throws HTTP 500.
     const newItem = {
       fromCloud: context.sourceCloudName || 'GMAIL',
       toCloud: context.destCloudName || 'OUTLOOK',
@@ -504,7 +511,7 @@ async function triggerMigration(context) {
       deltaMigration: context.migrationType === 'DELTA',
       calendar: Boolean(context.includeCalendar),
       contacts: Boolean(context.includeContacts),
-      archive: false,
+      archive: context.sourceProvider === 'microsoft',
       gmailNoUserLabel: false,
       mailRules: false,
       folder: true,
@@ -513,9 +520,9 @@ async function triggerMigration(context) {
       pickEmailsFromDate: null,
       pickEmailsBeforeDate: null,
       metadata: true,
+      fromFolderId: context.fromFolderId || '/',
+      toFolderId: context.toFolderId || '/',
     };
-    if (context.fromFolderId) newItem.fromFolderId = context.fromFolderId;
-    if (context.toFolderId) newItem.toFolderId = context.toFolderId;
     payload = [newItem];
   } else {
     // Legacy devemail payload
@@ -554,7 +561,7 @@ async function triggerMigration(context) {
     try {
       const res = await retryWithBackoff(
         () => client.post(path, payload),
-        { label: `CloudFuze POST ${path}`, maxRetries: 3 }
+        { label: `CloudFuze POST ${path}`, maxRetries: 1 }
       );
 
       logger.info(`Migration initiated via ${base}/${path}`, {
@@ -595,13 +602,17 @@ async function triggerMigration(context) {
 //   New server → GET /email/user/jobs?deltaMigration=&pageNo=0&pageSize=50
 //   Legacy     → GET /mail/reports
 // Terminal statuses: PROCESSED | PROCESSED_WITH_CONFLICTS | CONFLICT | PAUSE
-// ─────────────────────────────────────────────────────────────
+// New server may return "PROCESS" (without D) — include both forms.
 const TERMINAL_STATUSES = new Set([
   'PROCESSED',
+  'PROCESS',
   'PROCESSED_WITH_CONFLICTS',
+  'PROCESS_WITH_CONFLICTS',
   'PROCESSED_WITH_CONFLICT_AND_PAUSE',
   'CONFLICT',
   'PAUSE',
+  'FAILED',
+  'ERROR',
 ]);
 
 async function pollReports(deltaMigration, fromMailId, {
@@ -701,14 +712,43 @@ async function pollReports(deltaMigration, fromMailId, {
       noMatchStreak = 0;
 
       const status = String(
-        matchedDetail?.syncStatus || matchedDetail?.status ||
-        matchedJob.syncStatus || matchedJob.status || ''
+        matchedDetail?.syncStatus   || matchedDetail?.status         ||
+        matchedDetail?.processStatus || matchedDetail?.migrationStatus ||
+        matchedJob.syncStatus       || matchedJob.status              ||
+        matchedJob.processStatus    || matchedJob.migrationStatus      || ''
       ).toUpperCase().trim();
-      logger.info(`CloudFuze reports poll ${attempt}/${maxPolls}: ${fromMailId} → ${status}`);
-      if (onProgress) onProgress(attempt, maxPolls, status);
+
+      // Count-based completion detection: totalCount === processedCount and > 0
+      const totalCount     = Number(matchedDetail?.totalCount     || matchedJob.totalCount     || 0);
+      const processedCount = Number(matchedDetail?.processedCount || matchedJob.processedCount || 0);
+      const countsDone     = totalCount > 0 && processedCount >= totalCount;
+
+      // Track latest job details so MigrationAgent can surface them in the report
+      lastJobDetails = {
+        workspaceId: matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || matchedDetail?.workspaceId || null,
+        totalCount: totalCount || null,
+        processedCount: processedCount || null,
+      };
+
+      if (!status && attempt === 1) {
+        // Log field names once on first match so we can identify the correct key
+        logger.info(`CloudFuze reports job keys: ${Object.keys(matchedJob).join(', ')}`);
+        if (matchedDetail) logger.info(`CloudFuze reports detail keys: ${Object.keys(matchedDetail).join(', ')}`);
+      }
+
+      logger.info(
+        `CloudFuze reports poll ${attempt}/${maxPolls}: ${fromMailId} → ` +
+        `status="${status}" counts=${processedCount}/${totalCount}`
+      );
+      if (onProgress) onProgress(attempt, maxPolls, status || (countsDone ? 'PROCESSED' : null));
 
       if (TERMINAL_STATUSES.has(status)) {
         return status;
+      }
+
+      if (countsDone) {
+        logger.info(`CloudFuze reports: processedCount (${processedCount}) === totalCount (${totalCount}) — treating as PROCESSED`);
+        return 'PROCESSED';
       }
     } catch (err) {
       logger.warn(`CloudFuze reports poll ${attempt} error: ${err.message}`);
@@ -756,5 +796,6 @@ module.exports = {
   clearToken,
   setRuntimeConfig,
   clearRuntimeConfig,
+  getLastJobDetails,
   migrationAxiosConfig,
 };

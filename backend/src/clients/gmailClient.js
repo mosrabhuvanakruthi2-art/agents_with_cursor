@@ -20,6 +20,8 @@ const SERVICE_ACCOUNT_SCOPES = [
   'https://www.googleapis.com/auth/contacts',
   'https://www.googleapis.com/auth/directory.readonly',
   'https://www.googleapis.com/auth/admin.directory.user.readonly',
+  'https://www.googleapis.com/auth/contacts.readonly',
+  'https://www.googleapis.com/auth/admin.directory.group.readonly',
 ];
 
 // Superset scopes required for permanent delete (batchDelete/messages.delete).
@@ -29,13 +31,21 @@ const SERVICE_ACCOUNT_SCOPES_WRITE = [
   ...SERVICE_ACCOUNT_SCOPES,
 ];
 
+/** Returns true when the tenant for this email has a service account key configured (DWD). */
+function hasServiceAccount(tenant) {
+  if (tenant === '3') return !!env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
+  if (tenant === '2') return !!env.GOOGLE_SERVICE_ACCOUNT_KEY_2;
+  return false;
+}
+
 /**
  * Returns a service-account JWT auth client impersonating the given user.
- * Used for tenant 3 (migrationn.com) — no per-user OAuth needed.
+ * Used for tenants with Domain-Wide Delegation configured — no per-user OAuth needed.
  */
 function getServiceAccountAuth(email, write = false) {
-  const keyPath = env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
-  if (!keyPath) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_3 not set in .env');
+  const tenant = getGoogleTenant(email);
+  const keyPath = tenant === '2' ? env.GOOGLE_SERVICE_ACCOUNT_KEY_2 : env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
+  if (!keyPath) throw new Error(`GOOGLE_SERVICE_ACCOUNT_KEY_${tenant} not set in .env`);
   const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
   return new google.auth.JWT({
     email: key.client_email,
@@ -102,7 +112,7 @@ function getRefreshTokenForEmail(email) {
 }
 
 function getGmailForEmail(email) {
-  if (getGoogleTenant(email) === '3') {
+  if (hasServiceAccount(getGoogleTenant(email))) {
     return google.gmail({ version: 'v1', auth: getServiceAccountAuth(email, false) });
   }
   const refreshToken = getRefreshTokenForEmail(email);
@@ -110,7 +120,7 @@ function getGmailForEmail(email) {
 }
 
 function getGmailForWrite(email) {
-  if (getGoogleTenant(email) === '3') {
+  if (hasServiceAccount(getGoogleTenant(email))) {
     return google.gmail({ version: 'v1', auth: getServiceAccountAuth(email, true) });
   }
   const refreshToken = getRefreshTokenForEmail(email);
@@ -118,7 +128,7 @@ function getGmailForWrite(email) {
 }
 
 function getCalendarAuthForEmail(email) {
-  if (getGoogleTenant(email) === '3') {
+  if (hasServiceAccount(getGoogleTenant(email))) {
     return getServiceAccountAuth(email);
   }
   const refreshToken = getRefreshTokenForEmail(email);
@@ -588,6 +598,39 @@ async function getAttachmentData(sourceEmail, messageId, attachmentId) {
   return Buffer.from(b64, 'base64');
 }
 
+/**
+ * Find Gmail messages matching an RFC 2822 Message-ID header (internetMessageId).
+ * Returns [{id, threadId}] or [] when nothing found.
+ */
+async function findMessagesByInternetMessageId(email, internetMessageId) {
+  const rawId = String(internetMessageId || '').replace(/^<+|>+$/g, '').trim();
+  if (!rawId) return [];
+  const gmail = getGmailForEmail(email);
+  const res = await retryWithBackoff(
+    () => gmail.users.messages.list({ userId: 'me', q: `rfc822msgid:${rawId}`, maxResults: 5 }),
+    { label: `Gmail findByMID (${email})` }
+  );
+  return res.data.messages || [];
+}
+
+/**
+ * Find Gmail messages by subject within a time window around anchorMs.
+ * Returns [{id, threadId}] or [].
+ */
+async function findMessagesBySubjectAndTime(email, subject, anchorMs, windowMinutes = 120) {
+  const gmail = getGmailForEmail(email);
+  const windowSec = windowMinutes * 60;
+  const afterSec = Math.floor(anchorMs / 1000) - windowSec;
+  const beforeSec = Math.floor(anchorMs / 1000) + windowSec;
+  const safeSubject = String(subject || '').replace(/"/g, '').slice(0, 100);
+  const q = `subject:"${safeSubject}" after:${afterSec} before:${beforeSec}`;
+  const res = await retryWithBackoff(
+    () => gmail.users.messages.list({ userId: 'me', q, maxResults: 10 }),
+    { label: `Gmail findBySubjectTime (${email})` }
+  );
+  return res.data.messages || [];
+}
+
 async function listMessageIdsForLabelUpTo(sourceEmail, labelId, maxIds, options = {}) {
   const cap = Math.min(Math.max(maxIds || 500, 1), 5000);
   const collected = [];
@@ -623,8 +666,8 @@ async function listDomainUsers(adminEmail) {
   const tenant = getGoogleTenant(adminEmail);
   const domain = adminEmail.split('@')[1];
 
-  // Tenant 3 (migrationn.com): use Admin SDK Directory API via service account DWD
-  if (tenant === '3') {
+  // Tenants with DWD service account: use Admin SDK Directory API
+  if (hasServiceAccount(tenant)) {
     try {
       const auth = getServiceAccountAuth(adminEmail);
       const adminSdk = google.admin({ version: 'directory_v1', auth });
@@ -731,12 +774,22 @@ async function getGmailMailboxStats(sourceEmail) {
   try {
     const profile = await gmail.users.getProfile({ userId: 'me' });
     totalMessages = profile.data.messagesTotal || 0;
-  } catch {
-    // Fallback if profile scope is missing
+  } catch (profileErr) {
+    // Re-throw auth errors (DWD not configured, token invalid) so the controller surfaces them.
+    const msg = String(profileErr?.message || '');
+    if (/unauthorized|forbidden|invalid_grant|access_denied|insufficientPermissions|403|401/i.test(msg)) {
+      throw profileErr;
+    }
+    // Fallback for scope-only issues
     try {
       const msgList = await gmail.users.messages.list({ userId: 'me', maxResults: 1, includeSpamTrash: true });
       totalMessages = msgList.data.resultSizeEstimate || 0;
-    } catch {}
+    } catch (listErr) {
+      const lmsg = String(listErr?.message || '');
+      if (/unauthorized|forbidden|invalid_grant|access_denied|insufficientPermissions|403|401/i.test(lmsg)) {
+        throw listErr;
+      }
+    }
   }
 
   // Count custom labels only (no per-label message count to avoid slowness)
@@ -803,7 +856,7 @@ async function getGmailMailboxStats(sourceEmail) {
  */
 async function getGmailContactsCount(sourceEmail) {
   try {
-    const auth = getGoogleTenant(sourceEmail) === '3'
+    const auth = hasServiceAccount(getGoogleTenant(sourceEmail))
       ? getServiceAccountAuth(sourceEmail)
       : getAuthForToken(getRefreshTokenForEmail(sourceEmail), sourceEmail);
     const people = google.people({ version: 'v1', auth });
@@ -837,6 +890,81 @@ async function getGmailContactsCount(sourceEmail) {
   }
 }
 
+async function getGmailContactsWithDetails(sourceEmail) {
+  try {
+    const auth = hasServiceAccount(getGoogleTenant(sourceEmail))
+      ? getServiceAccountAuth(sourceEmail)
+      : getAuthForToken(getRefreshTokenForEmail(sourceEmail), sourceEmail);
+    const people = google.people({ version: 'v1', auth });
+    const personFields = 'names,emailAddresses,phoneNumbers,organizations,photos';
+    const contacts = [];
+    let pageToken;
+    for (let i = 0; i < 10; i++) {
+      const res = await people.people.connections.list({
+        resourceName: 'people/me',
+        personFields,
+        pageSize: 200,
+        pageToken,
+      });
+      for (const p of res.data.connections || []) {
+        contacts.push({
+          resourceName: p.resourceName,
+          displayName: (p.names?.[0]?.displayName) || '',
+          givenName:   (p.names?.[0]?.givenName)   || '',
+          familyName:  (p.names?.[0]?.familyName)  || '',
+          emailAddresses: (p.emailAddresses || []).map(e => e.value).filter(Boolean),
+          phoneNumbers:   (p.phoneNumbers  || []).map(p => p.value).filter(Boolean),
+          organization:   (p.organizations?.[0]?.name) || '',
+          jobTitle:       (p.organizations?.[0]?.title) || '',
+          photoUrl:       (p.photos?.[0]?.url) || null,
+          hasPhoto:       (p.photos || []).some(ph => !ph.default),
+        });
+      }
+      pageToken = res.data.nextPageToken;
+      if (!pageToken) break;
+    }
+    return { contacts, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    return { contacts: [], available: false, note: `getGmailContactsWithDetails failed: ${msg.substring(0, 160)}` };
+  }
+}
+
+/**
+ * Count Google Workspace groups in a domain using the Admin SDK.
+ * Requires admin.directory.group.readonly DWD scope.
+ * @param {string} adminEmail — a domain admin to impersonate (for DWD)
+ * @returns {Promise<{ count: number, available: boolean, note?: string }>}
+ */
+async function getGoogleGroupsCount(adminEmail) {
+  try {
+    const auth = hasServiceAccount(getGoogleTenant(adminEmail))
+      ? getServiceAccountAuth(adminEmail)
+      : getAuthForToken(getRefreshTokenForEmail(adminEmail), adminEmail);
+    const admin = google.admin({ version: 'directory_v1', auth });
+    const domain = (adminEmail || '').split('@')[1] || '';
+    let count = 0;
+    let pageToken = undefined;
+    for (let i = 0; i < 20; i++) {
+      const res = await admin.groups.list({ domain, maxResults: 200, pageToken });
+      count += (res.data.groups || []).length;
+      pageToken = res.data.nextPageToken;
+      if (!pageToken) break;
+    }
+    return { count, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    const scope = /scope|permission|invalid_grant|403|401/i.test(msg);
+    return {
+      count: 0,
+      available: false,
+      note: scope
+        ? 'admin.directory.group.readonly scope not granted — enable in DWD to include group count.'
+        : `Groups fetch failed: ${msg.substring(0, 160)}`,
+    };
+  }
+}
+
 async function cleanGmailMailbox(sourceEmail) {
   const log = require('../utils/logger');
   const gmail = getGmailForWrite(sourceEmail);
@@ -865,7 +993,11 @@ async function cleanGmailMailbox(sourceEmail) {
       const messages = res.data.messages || [];
       if (messages.length === 0) { hasMore = false; break; }
       const ids = messages.map(function(m) { return m.id; });
-      await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids: ids } }).catch(function(e) { log.error('[clean-gmail ' + sourceEmail + ']   batchDelete failed: ' + e.message); throw e; });
+      await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids: ids } }).catch(function(e) {
+        const hint = /insufficient.*scope|scope.*insufficient|403/i.test(e.message) ? ' — reconnect the account to grant https://mail.google.com/ scope' : '';
+        log.error('[clean-gmail ' + sourceEmail + ']   batchDelete failed: ' + e.message + hint);
+        throw e;
+      });
       summary.messagesDeleted += ids.length;
       log.info('[clean-gmail ' + sourceEmail + ']   Deleted ' + ids.length + ' emails (total: ' + summary.messagesDeleted + ')');
     }
@@ -940,6 +1072,88 @@ async function cleanGmailMailbox(sourceEmail) {
 
   log.info('[clean-gmail ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs, ' + summary.foldersDeleted + ' labels, ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' calendars');
   return summary;
+}
+
+/**
+ * Delete only QA-tagged messages (subject contains "QA") and QA custom labels.
+ * Pass { emptyTrash: true } to also purge every message in the Trash folder
+ * (used for destination mailbox cleanup — safe before a fresh migration run).
+ */
+async function deleteGmailQaMessages(email, { emptyTrash = false } = {}) {
+  const log = require('../utils/logger');
+  const gmail = getGmailForWrite(email);
+  let messagesDeleted = 0;
+  let labelsDeleted = 0;
+  let trashDeleted = 0;
+  const errors = [];
+
+  // 1. Delete messages with "QA" in subject (all folders including spam/trash)
+  try {
+    let pageToken;
+    do {
+      const res = await gmail.users.messages.list({
+        userId: 'me', q: 'subject:QA', maxResults: 100, includeSpamTrash: true, pageToken,
+      });
+      const messages = res.data.messages || [];
+      if (messages.length === 0) break;
+      const ids = messages.map((m) => m.id);
+      await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids } });
+      messagesDeleted += ids.length;
+      log.info(`[deleteGmailQaMessages ${email}] Deleted ${ids.length} QA messages (total: ${messagesDeleted})`);
+      pageToken = res.data.nextPageToken;
+    } while (pageToken);
+  } catch (err) {
+    errors.push(`messages: ${err.message}`);
+    log.warn(`[deleteGmailQaMessages ${email}] Message delete error: ${err.message}`);
+  }
+
+  // 2. Delete custom labels starting with "QA" (or "/QA" for nested path prefixes)
+  //    and the Archive[Gmail] label created by Outlook→Gmail migration.
+  try {
+    const labelsRes = await gmail.users.labels.list({ userId: 'me' });
+    const qaLabels = (labelsRes.data.labels || []).filter((l) => {
+      if (l.type !== 'user') return false;
+      const n = l.name;
+      return n.startsWith('QA') || n.startsWith('/QA') || /^archive\[gmail\]$/i.test(n);
+    });
+    for (const label of qaLabels) {
+      try {
+        await gmail.users.labels.delete({ userId: 'me', id: label.id });
+        labelsDeleted++;
+        log.info(`[deleteGmailQaMessages ${email}] Deleted label "${label.name}"`);
+      } catch (err) {
+        errors.push(`label "${label.name}": ${err.message}`);
+      }
+    }
+  } catch (err) {
+    errors.push(`labels: ${err.message}`);
+    log.warn(`[deleteGmailQaMessages ${email}] Label delete error: ${err.message}`);
+  }
+
+  // 3. Empty entire Trash (destination-only cleanup — removes accumulated migration leftovers)
+  if (emptyTrash) {
+    try {
+      let pageToken;
+      do {
+        const res = await gmail.users.messages.list({
+          userId: 'me', q: 'in:trash', maxResults: 100, includeSpamTrash: true, pageToken,
+        });
+        const messages = res.data.messages || [];
+        if (messages.length === 0) break;
+        const ids = messages.map((m) => m.id);
+        await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids } });
+        trashDeleted += ids.length;
+        log.info(`[deleteGmailQaMessages ${email}] Emptied ${ids.length} trash messages (total: ${trashDeleted})`);
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
+    } catch (err) {
+      errors.push(`trash: ${err.message}`);
+      log.warn(`[deleteGmailQaMessages ${email}] Trash empty error: ${err.message}`);
+    }
+  }
+
+  log.info(`[deleteGmailQaMessages ${email}] Done: ${messagesDeleted} QA msgs, ${labelsDeleted} labels, ${trashDeleted} trash msgs deleted`);
+  return { messagesDeleted, labelsDeleted, trashDeleted, errors };
 }
 
 async function cleanGmailEmailsOnly(sourceEmail) {
@@ -1027,7 +1241,47 @@ async function cleanGmailCalendarsOnly(sourceEmail) {
   return summary;
 }
 
+/**
+ * Sum sizeEstimate for every message in the mailbox.
+ * Paginates messages.list to collect all IDs, then fetches sizeEstimate in parallel chunks.
+ * Caps at 5000 messages (sets partial:true beyond that).
+ * Returns { sizeBytes, messageCount, partial, method }.
+ */
+async function getGmailMailboxSizeBytes(userEmail) {
+  const gmail = getGmailForEmail(userEmail);
+  const MAX_MESSAGES = 5000;
+  const allIds = [];
+  let pageToken;
+  while (allIds.length < MAX_MESSAGES) {
+    const res = await gmail.users.messages.list({
+      userId: 'me',
+      maxResults: 500,
+      includeSpamTrash: true,
+      pageToken,
+      fields: 'messages/id,nextPageToken',
+    });
+    for (const m of (res.data.messages || [])) allIds.push(m.id);
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
+  const partial = allIds.length >= MAX_MESSAGES;
+  let totalBytes = 0;
+  const CHUNK = 50;
+  for (let i = 0; i < allIds.length; i += CHUNK) {
+    const results = await Promise.allSettled(
+      allIds.slice(i, i + CHUNK).map((id) =>
+        gmail.users.messages.get({ userId: 'me', id, format: 'minimal', fields: 'sizeEstimate' })
+      )
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled') totalBytes += Number(r.value.data.sizeEstimate) || 0;
+    }
+  }
+  return { sizeBytes: totalBytes, messageCount: allIds.length, partial, method: 'gmail_size_estimate' };
+}
+
 module.exports = {
+  hasServiceAccount,
   buildRawMessage,
   insertEmail,
   modifyMessageLabels,
@@ -1037,6 +1291,8 @@ module.exports = {
   getMessageCount,
   listMessageIdsForLabel,
   listMessageIdsForLabelUpTo,
+  findMessagesByInternetMessageId,
+  findMessagesBySubjectAndTime,
   getMessageMetadata,
   getMessageFullForValidation,
   getAttachmentData,
@@ -1050,10 +1306,14 @@ module.exports = {
   getConfiguredAccounts,
   listDomainUsers,
   getGmailMailboxStats,
+  getGmailMailboxSizeBytes,
   getGmailContactsCount,
+  getGmailContactsWithDetails,
+  getGoogleGroupsCount,
   cleanGmailMailbox,
   cleanGmailEmailsOnly,
   cleanGmailFoldersOnly,
   cleanGmailCalendarsOnly,
+  deleteGmailQaMessages,
   GMAIL_SYSTEM_LABEL_IDS,
 };

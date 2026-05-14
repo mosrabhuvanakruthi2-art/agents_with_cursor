@@ -430,7 +430,10 @@ async function getSourceMailboxStats(req, res) {
     if (!email) return res.status(400).json({ error: 'email query param is required' });
     const envCheck = require('../config/env');
     const emailDomain = email.toLowerCase().split('@')[1] || '';
-    const isDwdUser = Array.isArray(envCheck.GOOGLE_TENANT_3_DOMAINS) && envCheck.GOOGLE_TENANT_3_DOMAINS.includes(emailDomain);
+    const gmailClientCheck = require('../clients/gmailClient');
+    const tenant2Dwd = Array.isArray(envCheck.GOOGLE_TENANT_2_DOMAINS) && envCheck.GOOGLE_TENANT_2_DOMAINS.includes(emailDomain) && gmailClientCheck.hasServiceAccount('2');
+    const tenant3Dwd = Array.isArray(envCheck.GOOGLE_TENANT_3_DOMAINS) && envCheck.GOOGLE_TENANT_3_DOMAINS.includes(emailDomain);
+    const isDwdUser = tenant2Dwd || tenant3Dwd;
     if (!isDwdUser && !envCheck.googleAccounts.has(email.toLowerCase())) {
       return res.json({ email, mailCount: 0, folderCount: 0, calendarCount: 0, eventCount: 0, noToken: true });
     }
@@ -627,38 +630,31 @@ async function deleteCalendarEvents(req, res) {
 
 /**
  * GET /source-calendar-stats?email=...
- * Dry-run primary + secondary Google Calendar delete to get event counts from bulk API.
+ * Returns calendar + event counts directly from the Google Calendar API.
  */
 async function getSourceCalendarStats(req, res) {
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ error: 'email is required' });
-    const axios = require('axios');
-    const env = require('../config/env');
-    const base = env.BULK_CALENDAR_API_URL;
-    const [primaryRes, secondaryRes] = await Promise.allSettled([
-      axios.post(`${base}/calendar/delete-primary`, null, {
-        params: { userEmail: email, dryRun: true },
-        timeout: 30000,
-      }),
-      axios.post(`${base}/calendar/delete-secondary`, null, {
-        params: { userEmail: email, dryRun: true },
-        timeout: 30000,
-      }),
-    ]);
-    const primaryData = primaryRes.status === 'fulfilled' ? primaryRes.value.data : null;
-    const secondaryData = secondaryRes.status === 'fulfilled' ? secondaryRes.value.data : null;
-    const primaryCount = primaryData?.totalEventsFound ?? 0;
-    const secondaryCount = secondaryData?.totalEventsFound ?? 0;
-    res.json({
-      email,
-      primaryEventCount: primaryCount,
-      secondaryEventCount: secondaryCount,
-      eventCount: primaryCount + secondaryCount,
-    });
+    const gmailClient = require('../clients/gmailClient');
+    const { google } = require('googleapis');
+    const calAuth = gmailClient.getCalendarAuthForEmail(email);
+    const cal = google.calendar({ version: 'v3', auth: calAuth });
+    let eventCount = 0;
+    let calendarCount = 0;
+    const calList = await cal.calendarList.list({ maxResults: 250 });
+    for (const c of calList.data.items || []) {
+      if (c.accessRole === 'reader') continue;
+      if (!c.primary) calendarCount++;
+      try {
+        const ev = await cal.events.list({ calendarId: c.id, maxResults: 250, singleEvents: false });
+        eventCount += (ev.data.items || []).length;
+      } catch { /* skip */ }
+    }
+    res.json({ email, eventCount, calendarCount });
   } catch (err) {
     logger.error(`getSourceCalendarStats error for ${req.query.email}: ${err.message}`);
-    res.status(500).json({ error: err.message });
+    res.json({ email: req.query.email, eventCount: 0, calendarCount: 0, error: err.message });
   }
 }
 

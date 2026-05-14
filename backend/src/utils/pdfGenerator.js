@@ -236,7 +236,7 @@ function drawDataTable(doc, headers, rows, colWidths) {
       if (i === statusIdx) {
         if (text === 'Mismatch' || text === 'No' || text === 'NOT FOUND') color = '#b91c1c';
         else if (text === 'Match' || text === 'Yes') color = '#15803d';
-        else if (text === 'Not measured') color = '#64748b';
+        else if (text === 'Not measured' || text === 'Accumulated') color = '#64748b';
       }
       doc.fillColor(color);
       doc.text(text, x + 5, y + padY, { width: colWidths[i] - 10, lineGap: 2 });
@@ -279,8 +279,8 @@ function drawFieldComparisonTable(doc, structuredRows) {
   doc.restore();
   doc.font(F_BOLD).fontSize(9).fillColor('#334155');
   doc.text('Field', left + 5, y + 6, { width: fieldW - 10 });
-  doc.text('Source (Gmail)', left + fieldW + 5, y + 6, { width: srcW - 10 });
-  doc.text('Destination (Outlook)', left + fieldW + srcW + 5, y + 6, { width: dstW - 10 });
+  doc.text('Source', left + fieldW + 5, y + 6, { width: srcW - 10 });
+  doc.text('Destination', left + fieldW + srcW + 5, y + 6, { width: dstW - 10 });
   doc.strokeColor('#94a3b8').lineWidth(0.5);
   doc.moveTo(left, y + headerH).lineTo(left + CONTENT_W, y + headerH).stroke();
   y += headerH;
@@ -343,14 +343,16 @@ function drawDeepMailPerMessageSection(doc, validation) {
       deep.summary ||
       (mmDeep > 0
         ? `Deep-mail findings were recorded (${mmDeep}) but detailed per-message rows were not stored on this execution. Re-download the PDF after updating the server, or re-run validation.`
-        : 'No per-message rows were recorded. Deep validation may have been skipped (destination not Microsoft, DISABLE_DEEP_MAIL_VALIDATION), or no QA-tagged messages were found in scanned Gmail labels (INBOX/SENT).');
+        : 'No per-message rows were recorded. Deep validation may have been disabled (DISABLE_DEEP_MAIL_VALIDATION=true) or no QA-tagged source messages were found across scanned folders/labels.');
     doc.fontSize(10).font(F_REGULAR).fillColor('#64748b').text(body, { width: CONTENT_W, lineGap: 2 });
     doc.moveDown(0.35);
     return;
   }
 
   const failed = results.filter((r) => !r.pass);
+  const warned = results.filter((r) => r.pass && (r.diffs || []).some((d) => d.ok === false));
   const failN = failed.length;
+  const warnN = warned.length;
   const totalN = results.length;
 
   const title =
@@ -358,23 +360,33 @@ function drawDeepMailPerMessageSection(doc, validation) {
       ? failN === totalN
         ? `Per-message migration validation (${failN} failed)`
         : `Per-message migration validation (${failN} failed of ${totalN})`
-      : `Per-message migration validation (all ${totalN} passed)`;
+      : warnN > 0
+        ? `Per-message migration validation (all ${totalN} passed — ${warnN} with advisories)`
+        : `Per-message migration validation (all ${totalN} passed)`;
 
   drawSectionHeader(doc, title);
   doc.x = contentLeft(doc);
   doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
-    'Each row compares the same field on the Gmail source mailbox vs the Outlook destination mailbox. Red indicates a mismatch (amber for warnings). Recipient fields are compared after applying your permission mappings.',
+    'Each row compares source vs destination for the same message. Red = mismatch (error); amber = advisory difference (warning). Recipient fields are compared after applying your permission mappings.',
     { width: CONTENT_W, lineGap: 2 }
   );
   doc.moveDown(0.35);
 
-  if (failN === 0) {
+  if (failN === 0 && warnN === 0) {
     doc.fontSize(10).font(F_REGULAR).fillColor('#15803d').text(
       'All scanned and paired messages passed deep field comparison.',
       { width: CONTENT_W }
     );
     doc.moveDown(0.35);
     return;
+  }
+
+  if (failN === 0 && warnN > 0) {
+    doc.fontSize(10).font(F_REGULAR).fillColor('#15803d').text(
+      'All scanned and paired messages passed deep field comparison (no errors).',
+      { width: CONTENT_W }
+    );
+    doc.moveDown(0.25);
   }
 
   for (const r of failed) {
@@ -394,6 +406,35 @@ function drawDeepMailPerMessageSection(doc, validation) {
       drawFieldComparisonTable(doc, rows);
     }
     doc.moveDown(0.45);
+  }
+
+  if (warnN > 0) {
+    doc.x = contentLeft(doc);
+    doc.fontSize(10).font(F_BOLD).fillColor('#92400e').text(
+      `Advisory warnings (${warnN} message${warnN > 1 ? 's' : ''})`,
+      { width: CONTENT_W }
+    );
+    doc.moveDown(0.15);
+    doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
+      'These messages passed core validation checks. The amber rows show informational differences (read state, flag, importance, sent time, folder placement) that do not affect the overall pass/fail result.',
+      { width: CONTENT_W, lineGap: 2 }
+    );
+    doc.moveDown(0.35);
+
+    for (const r of warned) {
+      const subj = String(r.subject || '(no subject)').trim() || '(no subject)';
+      const ref = truncateRef(r.internetMessageId || r.sourceMessageId || '—', 72);
+      doc.x = contentLeft(doc);
+      doc.fontSize(10).font(F_BOLD).fillColor('#0f172a').text(subj, { width: CONTENT_W });
+      doc.fontSize(8).font(F_REGULAR).fillColor('#64748b').text(ref, { width: CONTENT_W });
+      doc.moveDown(0.15);
+
+      const rows = structuredRowsForDeepPdfRow(r);
+      if (rows.length > 0) {
+        drawFieldComparisonTable(doc, rows);
+      }
+      doc.moveDown(0.45);
+    }
   }
 }
 
@@ -783,7 +824,8 @@ function generateValidationPdf(execution, stream) {
   doc.moveDown(1.2);
 
   drawSectionHeader(doc, 'Execution details');
-  const mapN = Array.isArray(context?.userEmailMappings) ? context.userEmailMappings.length : 0;
+  const mapN = context?.csvPairsUploaded
+    || (Array.isArray(context?.userEmailMappings) ? context.userEmailMappings.length : 0);
   drawMetadataTable(doc, [
     ['Execution ID', execution.executionId],
     ['Source email', context?.sourceEmail || 'N/A'],
@@ -797,6 +839,46 @@ function generateValidationPdf(execution, stream) {
     ['Duration', result?.duration != null ? formatDurationMs(result.duration) : 'N/A'],
     ['Started', formatTimestamp(execution.createdAt)],
   ]);
+
+  // ── CloudFuze migration job details (shown right after Execution details) ──
+  const migJob = context?.migrationJobDetails;
+  if (migJob) {
+    drawSectionHeader(doc, 'CloudFuze migration job');
+    const cfStatusRaw = String(migJob.cfStatus || '—');
+    const cfStatusDisplay = cfStatusRaw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const totalCount = migJob.totalCount != null ? Number(migJob.totalCount) : null;
+    const processedCount = migJob.processedCount != null ? Number(migJob.processedCount) : null;
+    const pct = totalCount > 0 && processedCount != null
+      ? `${processedCount}/${totalCount} (${Math.round((processedCount / totalCount) * 100)}%)`
+      : '—';
+    const unprocessed = totalCount != null && processedCount != null && totalCount > processedCount
+      ? String(totalCount - processedCount) : '—';
+    const jobRows = [
+      ['Workspace ID',              migJob.workspaceId    || '—'],
+      ['Job ID',                    migJob.jobId          || context?.jobId || '—'],
+      ['CloudFuze status',          cfStatusDisplay],
+      ['Source email',              context?.sourceEmail  || '—'],
+      ['Destination email',         context?.destinationEmail || '—'],
+      ['Total count (server)',       totalCount     != null ? String(totalCount)     : '—'],
+      ['Processed count (server)',   processedCount != null ? String(processedCount) : '—'],
+      ['Migration progress',         pct],
+      ['Unprocessed / conflicts',    unprocessed],
+    ];
+    if (migJob.deltaRetry) {
+      const dr = migJob.deltaRetry;
+      if (dr.error) {
+        jobRows.push(['Delta retry', `Failed: ${dr.error}`]);
+      } else {
+        const drPct = dr.totalCount > 0 && dr.processedCount != null
+          ? `${dr.processedCount}/${dr.totalCount} (${Math.round((dr.processedCount / dr.totalCount) * 100)}%)`
+          : '—';
+        jobRows.push(['Delta retry status',   String(dr.status || '—').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())]);
+        jobRows.push(['Delta retry progress', drPct]);
+      }
+    }
+    drawDataTable(doc, ['Metric', 'Value'], jobRows, [200, CONTENT_W - 200]);
+    doc.moveDown(0.2);
+  }
 
   drawSectionHeader(doc, 'Overall status');
   doc.x = contentLeft(doc);
@@ -815,6 +897,26 @@ function generateValidationPdf(execution, stream) {
     doc.moveDown(0.45);
   } else if (validation) {
     doc.moveDown(0.35);
+  }
+
+  // ── Pre-migration source snapshot ───────────────────────────────
+  const snapshot = context?.preMigrationSnapshot;
+  if (snapshot?.folders?.length > 0) {
+    drawSectionHeader(doc, 'Pre-migration source snapshot');
+    doc.x = contentLeft(doc);
+    doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
+      `Captured at ${formatTimestamp(snapshot.timestamp)} — ${snapshot.totalFolders} folders, ` +
+      `${snapshot.totalMessages} total messages before migration started.`,
+      { width: CONTENT_W, lineGap: 2 }
+    );
+    doc.moveDown(0.3);
+    const snapRows = snapshot.folders.map((f) => [
+      f.name,
+      String(f.messageCount),
+      f.childFolderCount > 0 ? String(f.childFolderCount) : '—',
+    ]);
+    drawDataTable(doc, ['Folder', 'Messages', 'Sub-folders'], snapRows, [260, 80, 80 + (CONTENT_W - 420)]);
+    doc.moveDown(0.2);
   }
 
   if (validation) {
@@ -888,9 +990,11 @@ function generateValidationPdf(execution, stream) {
     const dstDefaults = validation.destinationData?.defaultFolders || [];
     const dstCustoms  = validation.destinationData?.customFolders  || [];
 
+    const MAPPED_GMAIL_IDS = new Set(['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM']);
     const isMappedSrcDefault = (l) =>
       MAPPED_DEFAULTS.includes(String(l.id ?? l.name ?? '').toUpperCase());
-    const isMappedDstDefault = (f) => MAPPED_OUTLOOK.has(String(f.name ?? ''));
+    const isMappedDstDefault = (f) =>
+      MAPPED_OUTLOOK.has(String(f.name ?? '')) || MAPPED_GMAIL_IDS.has(String(f.name ?? ''));
 
     const srcDefaultCount = srcDefaults.filter(isMappedSrcDefault)
       .reduce((s, l) => s + (l.messageCount || 0), 0);
@@ -947,6 +1051,17 @@ function generateValidationPdf(execution, stream) {
       String(dstContacts),
       contactsStatus,
     ]);
+
+    const msv = validation.mailboxSizeValidation;
+    if (msv && msv.available !== false) {
+      summaryRows.push([
+        'Mailbox size',
+        msv.sourceSizeHuman ?? '—',
+        msv.destSizeHuman ?? '—',
+        msv.statusLabel ?? '—',
+      ]);
+    }
+
     drawDataTable(
       doc,
       ['Metric', 'Source', 'Destination', 'Status'],
@@ -957,12 +1072,21 @@ function generateValidationPdf(execution, stream) {
     const mailboxSrc = Number(mail.sourceCount ?? 0);
     const mailboxDst = Number(mail.destinationCount ?? 0);
     if (mailboxSrc || mailboxDst) {
+      const isOtgDir = context?.sourceProvider === 'microsoft';
+      const srcDesc = isOtgDir
+        ? 'sum of source Outlook folders (including system folders like Archive)'
+        : 'Gmail getProfile.messagesTotal — unique message count after label overlap';
+      const dstDesc = isOtgDir
+        ? 'Gmail getProfile.messagesTotal — unique message count after label overlap'
+        : 'sum of every Outlook folder, including Archive/Conversation History/Scheduled';
+      const diffNote = isOtgDir
+        ? 'A difference is expected when emails land in Gmail All Mail without the INBOX label, or when Outlook carries extra system folders not included in the compared scope.'
+        : 'A difference is expected: Gmail messages with multiple labels count once in messagesTotal but once per folder after migration; Outlook carries extra system folders (e.g. Archive) that Gmail does not.';
       doc.x = contentLeft(doc);
       doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
         `Note: "Mail count" above is the sum across compared folders (Inbox/Sent Items/Drafts/Deleted Items/Junk Email + custom). ` +
-        `Mailbox-wide totals (for reference): source=${mailboxSrc} (Gmail getProfile.messagesTotal — unique message count after label overlap), ` +
-        `destination=${mailboxDst} (sum of every Outlook folder, including Archive/Conversation History/Scheduled). ` +
-        `A difference between these mailbox-wide numbers and the per-folder sum is expected: Gmail messages with multiple labels count once in messagesTotal but once per folder after migration; Outlook carries extra system folders (e.g. Archive) that Gmail does not.`,
+        `Mailbox-wide totals (for reference): source=${mailboxSrc} (${srcDesc}), ` +
+        `destination=${mailboxDst} (${dstDesc}). ${diffNote}`,
         { width: CONTENT_W, lineGap: 1 }
       );
       doc.moveDown(0.15);
@@ -972,6 +1096,26 @@ function generateValidationPdf(execution, stream) {
       doc.x = contentLeft(doc);
       doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
         'Contacts count shown as 0 because the source OAuth token lacks the contacts.readonly scope, or the Graph /me/contacts endpoint is inaccessible. Grant the scope to include this row.',
+        { width: CONTENT_W, lineGap: 1 }
+      );
+      doc.moveDown(0.2);
+    }
+
+    if (msv && msv.available !== false && msv.note) {
+      doc.x = contentLeft(doc);
+      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
+        `Mailbox size note: ${msv.note}` +
+        (msv.srcMethod ? ` Source method: ${msv.srcMethod}.` : '') +
+        (msv.dstMethod ? ` Destination method: ${msv.dstMethod}.` : '') +
+        ((msv.sourceMessageCount != null && msv.destMessageCount != null)
+          ? ` Messages measured: src=${msv.sourceMessageCount}, dst=${msv.destMessageCount}.` : ''),
+        { width: CONTENT_W, lineGap: 1 }
+      );
+      doc.moveDown(0.2);
+    } else if (msv && msv.available === false) {
+      doc.x = contentLeft(doc);
+      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
+        `Mailbox size could not be measured: ${msv.error || 'unknown error'}.`,
         { width: CONTENT_W, lineGap: 1 }
       );
       doc.moveDown(0.2);
@@ -1015,11 +1159,15 @@ function buildComparisonRows(sourceLabels, destFolders, mapping) {
   const rows = [];
   for (const [gmailId, outlookName] of Object.entries(mapping)) {
     const src = sourceLabels.find((l) => l.id === gmailId || l.name === gmailId);
-    const dest = destFolders.find((f) => f.name === outlookName);
+    const dest = destFolders.find((f) => f.name === outlookName || f.name === gmailId);
     const srcCount = src?.messageCount ?? 0;
     const destCount = dest?.messageCount ?? 0;
     const match = srcCount === destCount;
-    rows.push([`${gmailId} → ${outlookName}`, String(srcCount), String(destCount), statusLabel(match)]);
+    // TRASH accumulates deleted items over time — destCount > srcCount is expected, not a bug
+    const statusText = (!match && gmailId === 'TRASH' && destCount > srcCount)
+      ? 'Accumulated'
+      : statusLabel(match);
+    rows.push([`${gmailId} → ${outlookName}`, String(srcCount), String(destCount), statusText]);
   }
   return rows;
 }
