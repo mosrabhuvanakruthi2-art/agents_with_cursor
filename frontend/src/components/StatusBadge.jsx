@@ -6,6 +6,7 @@ const statusConfig = {
   PENDING: { bg: 'bg-gray-100', text: 'text-gray-600', dot: 'bg-gray-400' },
   FAILED: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
   FAIL: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
+  CANCELLED: { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
 };
 
 export default function StatusBadge({ status }) {

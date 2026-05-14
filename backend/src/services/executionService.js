@@ -28,6 +28,9 @@ function saveExecutions(executions) {
 
 const executions = loadExecutions();
 
+// In-memory only — not persisted (if server restarts, running jobs are already dead)
+const cancelledIds = new Set();
+
 const executionService = {
   create(context) {
     const execution = {
@@ -61,6 +64,23 @@ const executionService = {
     return Array.from(executions.values()).sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
+  },
+
+  cancel(executionId) {
+    cancelledIds.add(executionId);
+    const execution = executions.get(executionId);
+    if (execution && execution.status === 'RUNNING') {
+      Object.assign(execution, {
+        status: 'CANCELLED',
+        progress: 'Cancelled by user',
+        completedAt: new Date().toISOString(),
+      });
+      saveExecutions(executions);
+    }
+  },
+
+  isCancelled(executionId) {
+    return cancelledIds.has(executionId);
   },
 
   getStats() {

@@ -7,6 +7,7 @@ const agentRoutes = require('./routes/agentRoutes');
 const testRepositoryRoutes = require('./routes/testRepositoryRoutes');
 const testCaseRoutes = require('./routes/testCaseRoutes');
 const authRoutes = require('./routes/authRoutes');
+const scopeRoutes = require('./routes/scopeRoutes');
 const { initScheduler } = require('./config/scheduler');
 
 process.on('unhandledRejection', (reason) => {
@@ -21,11 +22,13 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.text({ type: ['text/plain', 'text/markdown'] }));
 
 app.use('/api/agents', agentRoutes);
 app.use('/api/test-repository', testRepositoryRoutes);
 app.use('/api/test-cases', testCaseRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/scope', scopeRoutes);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -1,0 +1,1012 @@
+'use strict';
+/**
+ * Generates the complete e2e test case list for Outlook → Gmail.
+ *
+ * source: "json"      → created by the base loadTestCases loop (buildGraphMessage)
+ * source: "extended"  → created by _createExtendedTestData (full Graph API call with
+ *                        special fields like flag, importance, categories, attachments).
+ *                        These are stored for documentation/Agent Repo visibility only;
+ *                        the base loop skips them to avoid plain-text duplicates.
+ */
+const fs   = require('fs');
+const path = require('path');
+
+const filePath = path.resolve(__dirname, '../data/custom-test-cases.json');
+const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+const now  = new Date().toISOString();
+
+const e2eCases = [
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  BASE CASES  (source: "json") — created by the loadTestCases base loop
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ── Inbox ─────────────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B01', testCaseId:'E2E-OTG-B01', testType:'e2e', source:'json', addedAt:now,
+    summary:'Plain text inbox email — basic migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Plain Text Inbox Migration',
+    textBody:'This is a plain text email created for E2E migration testing. It should migrate to Gmail INBOX.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Email is in Gmail INBOX with correct subject, body, and sender' },
+
+  { id:'E2E-OTG-B02', testCaseId:'E2E-OTG-B02', testType:'e2e', source:'json', addedAt:now,
+    summary:'Unread inbox email — read state preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Unread State Migration',
+    textBody:'This unread email validates that the unread state is preserved after migration to Gmail.',
+    labelIds:['INBOX'], isRead:false, hasAttachment:false,
+    expectedResult:'Email is in Gmail INBOX and is marked unread (UNREAD label present)' },
+
+  { id:'E2E-OTG-B03', testCaseId:'E2E-OTG-B03', testType:'e2e', source:'json', addedAt:now,
+    summary:'Read inbox email — read state preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Read State Migration',
+    textBody:'This read email validates that the read state is correctly preserved after Outlook to Gmail migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Email is in Gmail INBOX and marked as read (no UNREAD label)' },
+
+  { id:'E2E-OTG-B04', testCaseId:'E2E-OTG-B04', testType:'e2e', source:'json', addedAt:now,
+    summary:'FROM address domain remapping via user mapping CSV',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - FROM Address Domain Remapping',
+    textBody:'This email tests FROM address remapping. The sender should be remapped from source domain to destination domain after migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'FROM address in Gmail shows the destination-domain equivalent (e.g. dan@migrationn.com)' },
+
+  { id:'E2E-OTG-B05', testCaseId:'E2E-OTG-B05', testType:'e2e', source:'json', addedAt:now,
+    summary:'Long subject line — no truncation',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Long Subject Line Validation This subject line is intentionally long to test subject field truncation behavior during Outlook to Gmail migration process',
+    textBody:'Testing long subject lines for migration integrity.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Email in Gmail INBOX has the complete subject line without truncation' },
+
+  { id:'E2E-OTG-B06', testCaseId:'E2E-OTG-B06', testType:'e2e', source:'json', addedAt:now,
+    summary:'Special characters in subject',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Special Chars !@#$ Subject Test',
+    textBody:'Testing special character preservation in subject lines during migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Special characters in subject are preserved exactly' },
+
+  { id:'E2E-OTG-B07', testCaseId:'E2E-OTG-B07', testType:'e2e', source:'json', addedAt:now,
+    summary:'Plain text body content integrity',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Body Content Integrity Plain Text',
+    textBody:'Line 1: Introduction paragraph for body integrity testing.\nLine 2: Numbers 1234567890.\nLine 3: Special characters: <>&\nLine 4: Email: test@example.com\nLine 5: URL: https://www.example.com\nLine 6: Final line to confirm body preservation.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Body text is identical on source and destination (no truncation, no encoding issues)' },
+
+  { id:'E2E-OTG-B08', testCaseId:'E2E-OTG-B08', testType:'e2e', source:'json', addedAt:now,
+    summary:'No duplicate emails after migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - No Duplicates Verification',
+    textBody:'This message is part of the duplicate-prevention test. Each message must appear exactly once in Gmail after migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Each email appears exactly once in Gmail; total count matches Outlook count' },
+
+  { id:'E2E-OTG-B09', testCaseId:'E2E-OTG-B09', testType:'e2e', source:'json', addedAt:now,
+    summary:'Timestamp (sentDateTime) preservation',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - Timestamp Preservation Check',
+    textBody:'This email validates that the sentDateTime is preserved accurately during Outlook to Gmail migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'Email sentDateTime in Gmail matches Outlook sentDateTime within allowed tolerance (±240 min)' },
+
+  { id:'E2E-OTG-B10', testCaseId:'E2E-OTG-B10', testType:'e2e', source:'json', addedAt:now,
+    summary:'All default folders count match validation',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E - All Folders Count Match',
+    textBody:'This message is part of the all-folders count verification. Every default folder count must match after migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'All per-folder counts match: Inbox→INBOX, Sent Items→SENT, Drafts→DRAFT, Junk Email→SPAM, Deleted Items→TRASH, Archive→Archive[Gmail]' },
+
+  // ── Sent Items ────────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B11', testCaseId:'E2E-OTG-B11', testType:'e2e', source:'json', addedAt:now,
+    summary:'Sent Items → Gmail SENT label mapping',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E - Sent Items Folder Migration',
+    textBody:'This sent email validates that Outlook Sent Items maps correctly to Gmail SENT label after migration.',
+    labelIds:['SENT'], isRead:false, hasAttachment:false,
+    expectedResult:'Email appears in Gmail with SENT label and correct TO address' },
+
+  { id:'E2E-OTG-B12', testCaseId:'E2E-OTG-B12', testType:'e2e', source:'json', addedAt:now,
+    summary:'Sent TO address remapped to destination domain',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E - Sent TO Address Remapping',
+    textBody:'This email validates that the TO address in sent items is correctly remapped to the destination domain during migration.',
+    labelIds:['SENT'], isRead:true, hasAttachment:false,
+    expectedResult:'TO address in Gmail SENT is remapped from source domain to destination domain' },
+
+  // ── Drafts ────────────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B13', testCaseId:'E2E-OTG-B13', testType:'e2e', source:'json', addedAt:now,
+    summary:'Drafts → Gmail DRAFT label mapping',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E - Draft Folder Migration',
+    textBody:'This draft email tests that Outlook Drafts folder correctly maps to Gmail DRAFT label after migration.',
+    labelIds:['DRAFT'], isRead:false, hasAttachment:false,
+    expectedResult:'Email appears in Gmail with DRAFT label and intact subject and body' },
+
+  { id:'E2E-OTG-B14', testCaseId:'E2E-OTG-B14', testType:'e2e', source:'json', addedAt:now,
+    summary:'Draft body content integrity — multi-paragraph',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E - Draft Body Content Integrity',
+    textBody:'Paragraph 1: This is the first paragraph of the draft email body used to test body content integrity.\n\nParagraph 2: This second paragraph validates that multi-paragraph content is preserved after migration.\n\nParagraph 3: Final paragraph confirms line break and formatting preservation.',
+    labelIds:['DRAFT'], isRead:true, hasAttachment:false,
+    expectedResult:'Draft body content is preserved exactly including paragraphs and line breaks' },
+
+  // ── Junk Email ────────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B15', testCaseId:'E2E-OTG-B15', testType:'e2e', source:'json', addedAt:now,
+    summary:'Junk Email → Gmail SPAM label mapping',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E - Junk Email Folder Migration',
+    textBody:'This email in Junk Email folder validates that Outlook Junk Email maps correctly to Gmail SPAM label.',
+    labelIds:['SPAM'], isRead:false, hasAttachment:false,
+    expectedResult:'Email appears in Gmail with SPAM label and intact content' },
+
+  { id:'E2E-OTG-B16', testCaseId:'E2E-OTG-B16', testType:'e2e', source:'json', addedAt:now,
+    summary:'Junk Email count verification — 2nd message',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E - Junk Email Count Verification',
+    textBody:'Second junk email to ensure the spam folder count matches between Outlook and Gmail after migration.',
+    labelIds:['SPAM'], isRead:true, hasAttachment:false,
+    expectedResult:'Both junk emails appear in Gmail SPAM with matching count' },
+
+  // ── Deleted Items ─────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B17', testCaseId:'E2E-OTG-B17', testType:'e2e', source:'json', addedAt:now,
+    summary:'Deleted Items → Gmail TRASH label mapping',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E - Deleted Items Folder Migration',
+    textBody:'This deleted email validates that Outlook Deleted Items maps correctly to Gmail TRASH after migration.',
+    labelIds:['TRASH'], isRead:false, hasAttachment:false,
+    expectedResult:'Email appears in Gmail TRASH with intact subject and body' },
+
+  { id:'E2E-OTG-B18', testCaseId:'E2E-OTG-B18', testType:'e2e', source:'json', addedAt:now,
+    summary:'Deleted Items count — accumulated TRASH behavior',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E - Deleted Items Count Accuracy',
+    textBody:'Second email in Deleted Items to validate TRASH count behavior including accumulated-delete expectation in Gmail.',
+    labelIds:['TRASH'], isRead:true, hasAttachment:false,
+    expectedResult:'Deleted Items emails are in Gmail TRASH; destination TRASH excess flagged as accumulated (expected)' },
+
+  // ── Archive ───────────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B19', testCaseId:'E2E-OTG-B19', testType:'e2e', source:'json', addedAt:now,
+    summary:'Archive folder → Gmail Archive[Gmail] mapping',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E - Archive Folder To Gmail Archive',
+    textBody:'This archived email validates that Outlook Archive folder maps correctly to Gmail Archive[Gmail] label after migration.',
+    labelIds:[], isRead:false, hasAttachment:false,
+    expectedResult:'Email appears in Gmail Archive[Gmail] label with intact subject and body' },
+
+  { id:'E2E-OTG-B20', testCaseId:'E2E-OTG-B20', testType:'e2e', source:'json', addedAt:now,
+    summary:'Archive count verification — 2nd message',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E - Archive Count Verification',
+    textBody:'Second archive email to verify that the archive folder count matches between Outlook and Gmail after migration.',
+    labelIds:[], isRead:true, hasAttachment:false,
+    expectedResult:'Archive[Gmail] label count equals Outlook Archive folder count' },
+
+  // ── Custom Folders ────────────────────────────────────────────────────────
+  { id:'E2E-OTG-B21', testCaseId:'E2E-OTG-B21', testType:'e2e', source:'json', addedAt:now,
+    summary:'Custom folder QA-Migration-Folder → Gmail custom label',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Migration-Folder', subject:'QA E2E - Custom Folder QA-Migration-Folder',
+    textBody:'This email tests that custom Outlook folder QA-Migration-Folder maps to a Gmail custom label of the same name after migration.',
+    labelIds:[], isRead:false, hasAttachment:false,
+    expectedResult:'Custom Gmail label QA-Migration-Folder is created and email is labeled correctly' },
+
+  { id:'E2E-OTG-B22', testCaseId:'E2E-OTG-B22', testType:'e2e', source:'json', addedAt:now,
+    summary:'Custom folder QA-Work-Projects → Gmail custom label',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Work-Projects', subject:'QA E2E - Custom Folder QA-Work-Projects',
+    textBody:'Testing migration of custom folder QA-Work-Projects to a custom Gmail label.',
+    labelIds:[], isRead:false, hasAttachment:false,
+    expectedResult:'Custom Gmail label QA-Work-Projects contains the migrated email' },
+
+  { id:'E2E-OTG-B23', testCaseId:'E2E-OTG-B23', testType:'e2e', source:'json', addedAt:now,
+    summary:'Custom folder QA-Client-Emails → Gmail custom label',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Client-Emails', subject:'QA E2E - Custom Folder QA-Client-Emails',
+    textBody:'Testing migration of custom folder QA-Client-Emails to a matching Gmail custom label.',
+    labelIds:[], isRead:false, hasAttachment:false,
+    expectedResult:'Custom Gmail label QA-Client-Emails is created and contains the migrated email' },
+
+  // ── Link / Zoom meeting emails ─────────────────────────────────────────────
+  { id:'E2E-OTG-L01', testCaseId:'E2E-OTG-L01', testType:'e2e', source:'json', addedAt:now,
+    summary:'Inbox email with Zoom meeting link + hyperlinks',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox',
+    subject:'QA E2E - Links and Zoom Meeting - Inbox',
+    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/j/98765432100?pwd=QATestMeeting2026\n\nMeeting agenda: https://docs.example.com/agenda/inbox-qa\nSupport ticket: https://support.example.com/ticket/10001\n\nThis email validates that hyperlinks including Zoom meeting links are preserved during Outlook to Gmail migration.',
+    labelIds:['INBOX'], isRead:true, hasAttachment:false,
+    expectedResult:'All links including the Zoom URL are present verbatim in the Gmail message body; Zoom link resolves to zoom.us' },
+
+  { id:'E2E-OTG-L02', testCaseId:'E2E-OTG-L02', testType:'e2e', source:'json', addedAt:now,
+    summary:'Sent Items email with Zoom meeting link + hyperlinks',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items',
+    subject:'QA E2E - Links and Zoom Meeting - Sent Items',
+    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/j/98765432101?pwd=QATestMeeting2026\n\nMeeting agenda: https://docs.example.com/agenda/sent-qa\nSupport ticket: https://support.example.com/ticket/10002\n\nThis email validates link migration for Sent Items.',
+    labelIds:['SENT'], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link and all hyperlinks are intact in Gmail SENT email; Zoom link is accessible' },
+
+  { id:'E2E-OTG-L03', testCaseId:'E2E-OTG-L03', testType:'e2e', source:'json', addedAt:now,
+    summary:'Drafts email with Zoom meeting link + hyperlinks',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts',
+    subject:'QA E2E - Links and Zoom Meeting - Drafts',
+    textBody:'Draft meeting invite:\nhttps://zoom.us/j/98765432102?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/draft-qa\n\nThis draft validates link migration for the Drafts folder.',
+    labelIds:['DRAFT'], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link and hyperlinks preserved in Gmail DRAFT; link accessible' },
+
+  { id:'E2E-OTG-L04', testCaseId:'E2E-OTG-L04', testType:'e2e', source:'json', addedAt:now,
+    summary:'Junk Email with Zoom meeting link (phishing simulation)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email',
+    subject:'QA E2E - Links and Zoom Meeting - Junk Email',
+    textBody:'Phishing simulation with Zoom link:\nhttps://zoom.us/j/98765432103?pwd=QATestMeeting2026\n\nFake support: https://support.example.com/ticket/10004\n\nThis junk email validates link migration in the SPAM folder.',
+    labelIds:['SPAM'], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail SPAM email; link format intact' },
+
+  { id:'E2E-OTG-L05', testCaseId:'E2E-OTG-L05', testType:'e2e', source:'json', addedAt:now,
+    summary:'Deleted Items email with Zoom meeting link',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items',
+    subject:'QA E2E - Links and Zoom Meeting - Deleted Items',
+    textBody:'Deleted meeting invite:\nhttps://zoom.us/j/98765432104?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/deleted-qa\n\nThis deleted email validates link migration in the TRASH folder.',
+    labelIds:['TRASH'], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail TRASH email; link format intact' },
+
+  { id:'E2E-OTG-L06', testCaseId:'E2E-OTG-L06', testType:'e2e', source:'json', addedAt:now,
+    summary:'Archive email with Zoom meeting link',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive',
+    subject:'QA E2E - Links and Zoom Meeting - Archive',
+    textBody:'Archived meeting invite:\nhttps://zoom.us/j/98765432105?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/archive-qa\n\nThis archived email validates link migration in Archive[Gmail].',
+    labelIds:[], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail Archive[Gmail] email; link format intact' },
+
+  { id:'E2E-OTG-L07', testCaseId:'E2E-OTG-L07', testType:'e2e', source:'json', addedAt:now,
+    summary:'QA-Migration-Folder email with Zoom meeting link',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Migration-Folder',
+    subject:'QA E2E - Links and Zoom Meeting - QA-Migration-Folder',
+    textBody:'Custom folder meeting:\nhttps://zoom.us/j/98765432106?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/custom-qa\n\nThis email validates link migration in a custom Outlook folder.',
+    labelIds:[], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail custom label QA-Migration-Folder; link format intact' },
+
+  { id:'E2E-OTG-L08', testCaseId:'E2E-OTG-L08', testType:'e2e', source:'json', addedAt:now,
+    summary:'QA-Work-Projects email with Zoom meeting link',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Work-Projects',
+    subject:'QA E2E - Links and Zoom Meeting - QA-Work-Projects',
+    textBody:'Work project meeting:\nhttps://zoom.us/j/98765432107?pwd=QATestMeeting2026\n\nProject docs: https://docs.example.com/projects/work-qa\n\nThis email validates link migration in QA-Work-Projects folder.',
+    labelIds:[], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail custom label QA-Work-Projects' },
+
+  { id:'E2E-OTG-L09', testCaseId:'E2E-OTG-L09', testType:'e2e', source:'json', addedAt:now,
+    summary:'QA-Client-Emails email with Zoom meeting link',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Client-Emails',
+    subject:'QA E2E - Links and Zoom Meeting - QA-Client-Emails',
+    textBody:'Client meeting:\nhttps://zoom.us/j/98765432108?pwd=QATestMeeting2026\n\nClient portal: https://docs.example.com/clients/client-qa\n\nThis email validates link migration in QA-Client-Emails folder.',
+    labelIds:[], isRead:true, hasAttachment:false,
+    expectedResult:'Zoom link preserved in Gmail custom label QA-Client-Emails' },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  EXTENDED SECTION CASES  (source: "extended")
+  //  Hardcoded in _createExtendedTestData — stored here for documentation and
+  //  Agent Repo visibility. The base loop SKIPS these to avoid plain duplicates.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Section 1 — Archive
+  { id:'E2E-OTG-EX-01a', testCaseId:'E2E-OTG-EX-01a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Archive Folder Test 1 — migrates to Archive[Gmail]',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E 1 - Archive Folder Test 1',
+    textBody:'Archived email for migration QA — first test.',
+    expectedResult:'Email in Gmail Archive[Gmail] label' },
+
+  { id:'E2E-OTG-EX-01b', testCaseId:'E2E-OTG-EX-01b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Archive Folder Test 2 — migrates to Archive[Gmail]',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E 1 - Archive Folder Test 2',
+    textBody:'Archived email for migration QA — second test.',
+    expectedResult:'Email in Gmail Archive[Gmail] label' },
+
+  // Section 2 — Flag / Importance
+  { id:'E2E-OTG-EX-02a', testCaseId:'E2E-OTG-EX-02a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Flagged email — Outlook flag:flagged maps to Gmail STARRED',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 2 - Flagged Email Test',
+    textBody:'This email is flagged for follow-up — migration QA.',
+    flag:{ flagStatus:'flagged' },
+    expectedResult:'Email in Gmail INBOX has STARRED label' },
+
+  { id:'E2E-OTG-EX-02b', testCaseId:'E2E-OTG-EX-02b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'High importance email — maps to Gmail IMPORTANT',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 2 - High Importance Email Test',
+    textBody:'High importance email — should appear as STARRED in Gmail.',
+    importance:'high',
+    expectedResult:'Email in Gmail INBOX has IMPORTANT label' },
+
+  // Section 3 — Attachment size tests
+  { id:'E2E-OTG-EX-03a', testCaseId:'E2E-OTG-EX-03a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Attachment size test — 20 MB (below Graph API limit)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 3 - Attachment Size Test (20 MB)',
+    textBody:'Email with 20 MB attachment for migration QA.',
+    hasAttachment:true,
+    expectedResult:'20 MB attachment migrates to Gmail with correct file name and size' },
+
+  { id:'E2E-OTG-EX-03b', testCaseId:'E2E-OTG-EX-03b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Attachment size test — 26 MB (above 25 MB Graph limit, requires upload session)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 3 - Attachment Size Test (26 MB)',
+    textBody:'Email with 26 MB attachment for migration QA.',
+    hasAttachment:true,
+    expectedResult:'26 MB attachment migrates to Gmail via upload session; file name and size match' },
+
+  // Section 4 — Thread chain
+  { id:'E2E-OTG-EX-04', testCaseId:'E2E-OTG-EX-04', testType:'e2e', source:'extended', addedAt:now,
+    summary:'3-message email thread (shared ConversationId)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 4 - Thread Chain Test',
+    textBody:'Thread chain — 3 messages sharing one ConversationId; tests thread grouping migration.',
+    expectedResult:'3 thread messages migrated to Gmail INBOX, grouped as a conversation' },
+
+  // Section 5 — Category
+  { id:'E2E-OTG-EX-05', testCaseId:'E2E-OTG-EX-05', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Outlook category (Red Category) → Gmail custom label',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 5 - Categorized Email Test',
+    textBody:'Email with category — migration QA.',
+    categories:['Red Category'],
+    expectedResult:'Gmail has a custom label matching "Red Category" and the email has it applied' },
+
+  // Section 6 — System folders
+  { id:'E2E-OTG-EX-06a', testCaseId:'E2E-OTG-EX-06a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent Items → Gmail SENT (system folder mapping)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 6 - Sent Items Email',
+    textBody:'Email in Sent Items — should migrate to Gmail SENT label.',
+    expectedResult:'Email in Gmail SENT label' },
+
+  { id:'E2E-OTG-EX-06b', testCaseId:'E2E-OTG-EX-06b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Drafts → Gmail DRAFT (system folder mapping)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 6 - Draft Email',
+    textBody:'Unsent draft — should migrate to Gmail DRAFT label.',
+    expectedResult:'Email in Gmail DRAFT label' },
+
+  { id:'E2E-OTG-EX-06c', testCaseId:'E2E-OTG-EX-06c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk Email → Gmail SPAM (system folder mapping)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 6 - Junk Email Test',
+    textBody:'Junk email — should migrate to Gmail SPAM label.',
+    expectedResult:'Email in Gmail SPAM label' },
+
+  { id:'E2E-OTG-EX-06d', testCaseId:'E2E-OTG-EX-06d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted Items → Gmail TRASH (system folder mapping)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 6 - Deleted Items Email',
+    textBody:'Deleted email — should migrate to Gmail TRASH label.',
+    expectedResult:'Email in Gmail TRASH label' },
+
+  // Section 7 — HTML rich content
+  { id:'E2E-OTG-EX-07', testCaseId:'E2E-OTG-EX-07', testType:'e2e', source:'extended', addedAt:now,
+    summary:'HTML rich content — bold, italic, lists, links, colored text',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 7 - HTML Rich Content Email',
+    textBody:'HTML with h1, bold, italic, underline, colored spans, unordered list, and anchor link.',
+    htmlBody:true,
+    expectedResult:'HTML body is preserved in Gmail (Tier C body comparison passes)' },
+
+  // Section 8 — Single PDF attachment
+  { id:'E2E-OTG-EX-08', testCaseId:'E2E-OTG-EX-08', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Single PDF attachment — name and size match',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 8 - Single Attachment (PDF)',
+    textBody:'Email with one PDF attachment — tests attachment migration.',
+    hasAttachment:true,
+    expectedResult:'qa-migration-report.pdf is present in Gmail with correct size (Tier A pass)' },
+
+  // Section 9 — Multiple attachments
+  { id:'E2E-OTG-EX-09', testCaseId:'E2E-OTG-EX-09', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Multiple attachments (2 text files) — all migrate',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 9 - Multiple Attachments Email',
+    textBody:'Email with two attachments — tests multi-attachment migration.',
+    hasAttachment:true,
+    expectedResult:'Both qa-data-file-1.txt and qa-data-file-2.txt present in Gmail with correct sizes' },
+
+  // Section 10 — CC recipients
+  { id:'E2E-OTG-EX-10', testCaseId:'E2E-OTG-EX-10', testType:'e2e', source:'extended', addedAt:now,
+    summary:'CC recipients — remapped to destination domain',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 10 - CC Recipients Email',
+    textBody:'Email with CC recipients — tests CC field migration to Gmail.',
+    expectedResult:'CC field in Gmail has correct destination-domain addresses after permission mapping' },
+
+  // Section 11 — Custom folder
+  { id:'E2E-OTG-EX-11', testCaseId:'E2E-OTG-EX-11', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Custom folder QA-Migration-Folder → Gmail custom label',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Migration-Folder', subject:'QA E2E 11 - Custom Folder Email',
+    textBody:'Email in a custom Outlook folder — should become a custom Gmail label.',
+    expectedResult:'Gmail custom label QA-Migration-Folder exists and email count matches' },
+
+  // Section 12 — Low importance + multiple categories
+  { id:'E2E-OTG-EX-12a', testCaseId:'E2E-OTG-EX-12a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Low importance email — importance level preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 12 - Low Importance Email',
+    textBody:'Low importance email — tests importance level migration.',
+    importance:'low',
+    expectedResult:'Importance field is preserved in Gmail (no IMPORTANT label; advisory warning only)' },
+
+  { id:'E2E-OTG-EX-12b', testCaseId:'E2E-OTG-EX-12b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Multiple Outlook categories (Red + Blue) → multiple Gmail labels',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 12 - Multiple Categories Email',
+    textBody:'Email with multiple Outlook categories — tests multi-category migration.',
+    categories:['Red Category','Blue Category'],
+    expectedResult:'Gmail has custom labels for both Red Category and Blue Category applied to this email' },
+
+  // Section 13 — Unicode subject
+  { id:'E2E-OTG-EX-13', testCaseId:'E2E-OTG-EX-13', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Unicode + emoji subject — CJK, Greek, emoji characters',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 13 - Unicode Subject: こんにちは αβγ 🎉',
+    textBody:'Email with unicode characters and emoji in subject — tests encoding migration.',
+    expectedResult:'Subject is preserved exactly with CJK, Greek, and emoji characters in Gmail' },
+
+  // Section 14 — Inline image
+  { id:'E2E-OTG-EX-14', testCaseId:'E2E-OTG-EX-14', testType:'e2e', source:'extended', addedAt:now,
+    summary:'HTML email with inline image (CID attachment)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 14 - Inline Image Email',
+    textBody:'Email with inline image — tests inline attachment migration.',
+    hasAttachment:true, htmlBody:true,
+    expectedResult:'Inline image (qa-inline.png) is present in Gmail as inline attachment' },
+
+  // Section 15 — Additional inbox scenarios
+  { id:'E2E-OTG-EX-15a', testCaseId:'E2E-OTG-EX-15a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'BCC recipients — best-effort migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - BCC Recipients Email',
+    textBody:'Email with BCC — tests BCC field migration.',
+    expectedResult:'Email in Gmail INBOX; BCC preserved best-effort' },
+
+  { id:'E2E-OTG-EX-15b', testCaseId:'E2E-OTG-EX-15b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Forwarded email (FW: prefix) — subject and body preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - FW: Forwarded Email Test',
+    textBody:'Forwarded message — migration QA.',
+    expectedResult:'FW: subject prefix is preserved; quoted original message body is present in Gmail' },
+
+  { id:'E2E-OTG-EX-15c', testCaseId:'E2E-OTG-EX-15c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Multiple TO recipients — all addresses remapped',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - Multiple TO Recipients',
+    textBody:'Email sent to multiple recipients — tests TO field migration.',
+    expectedResult:'All TO addresses in Gmail are remapped to destination domain' },
+
+  { id:'E2E-OTG-EX-15d', testCaseId:'E2E-OTG-EX-15d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Special chars in subject (<>&"\') — MIME encoding preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:"QA E2E 15 - Special Chars: <>&\"' Subject — Test/Check",
+    textBody:'Email with special characters in subject — tests encoding.',
+    expectedResult:'Subject with special chars is preserved in Gmail without corruption' },
+
+  { id:'E2E-OTG-EX-15e', testCaseId:'E2E-OTG-EX-15e', testType:'e2e', source:'extended', addedAt:now,
+    summary:'HTML table content — table structure preserved in body',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - HTML Table Content',
+    textBody:'Email with HTML table — tests table rendering preservation.',
+    htmlBody:true,
+    expectedResult:'HTML table structure is preserved in Gmail body (Tier C)' },
+
+  { id:'E2E-OTG-EX-15f', testCaseId:'E2E-OTG-EX-15f', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Emoji in body — Unicode emoji preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - Emoji Body Content',
+    textBody:'Email body with emojis: 🎉 ✅ 📧 🔔 ⭐ 📎 🗂️ — tests emoji content migration.',
+    expectedResult:'Emoji characters are preserved in Gmail body' },
+
+  { id:'E2E-OTG-EX-15g', testCaseId:'E2E-OTG-EX-15g', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Starred + flagged + high importance combined',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - Starred High-Importance Flagged',
+    textBody:'Email that is both flagged and high importance — should appear STARRED in Gmail.',
+    flag:{ flagStatus:'flagged' }, importance:'high',
+    expectedResult:'Email has both STARRED and IMPORTANT labels in Gmail' },
+
+  { id:'E2E-OTG-EX-15h', testCaseId:'E2E-OTG-EX-15h', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Long subject line (100+ chars) — no truncation',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - Long Subject: Migration QA Test for Long Subject Lines That Exceed Normal Email Subject Length Limits',
+    textBody:'Email with a very long subject — tests truncation handling.',
+    expectedResult:'Full subject preserved in Gmail without truncation' },
+
+  { id:'E2E-OTG-EX-15i', testCaseId:'E2E-OTG-EX-15i', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Multiline plain text body — line breaks preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 15 - Multiline Plain Text Body',
+    textBody:'Line 1: Introduction to migration QA test.\nLine 2: This email spans multiple lines.\nLine 3: Each line should be preserved after migration.\nLine 4: Final verification line.',
+    expectedResult:'All 4 lines are present in Gmail body with correct line breaks' },
+
+  // Section 16 — Additional Sent Items
+  { id:'E2E-OTG-EX-16a', testCaseId:'E2E-OTG-EX-16a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent HTML formatted email — bold and italic preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 16 - Sent HTML Formatted Email',
+    textBody:'Sent email with bold and italic formatting.',
+    htmlBody:true,
+    expectedResult:'HTML formatting is preserved in Gmail SENT label' },
+
+  { id:'E2E-OTG-EX-16b', testCaseId:'E2E-OTG-EX-16b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent email with attachment — attachment migrates with SENT',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 16 - Sent Email With Attachment',
+    textBody:'Sent email with attached file — tests sent + attachment migration.',
+    hasAttachment:true,
+    expectedResult:'qa-sent-attachment.txt is present in Gmail SENT email' },
+
+  { id:'E2E-OTG-EX-16c', testCaseId:'E2E-OTG-EX-16c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent email with CC — CC remapped to destination domain',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 16 - Sent Email With CC',
+    textBody:'Sent email with CC — tests CC field in sent items.',
+    expectedResult:'CC field in Gmail SENT email has correct destination-domain address' },
+
+  { id:'E2E-OTG-EX-16d', testCaseId:'E2E-OTG-EX-16d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent to multiple recipients — all TO addresses preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 16 - Sent To Multiple Recipients',
+    textBody:'Sent to multiple recipients — tests bulk sent migration.',
+    expectedResult:'All TO addresses in Gmail SENT email are correct and remapped' },
+
+  { id:'E2E-OTG-EX-16e', testCaseId:'E2E-OTG-EX-16e', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent reply (Re: prefix) — subject prefix preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 16 - Re: Sent Reply Email',
+    textBody:'Reply to original — tests reply sent items migration.',
+    expectedResult:'Re: prefix is preserved in Gmail SENT subject' },
+
+  // Section 17 — Additional Drafts
+  { id:'E2E-OTG-EX-17a', testCaseId:'E2E-OTG-EX-17a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Draft with HTML signature — signature preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 17 - Draft With HTML Signature',
+    textBody:'Draft body with HTML signature block.',
+    htmlBody:true,
+    expectedResult:'HTML signature is present in Gmail DRAFT body' },
+
+  { id:'E2E-OTG-EX-17b', testCaseId:'E2E-OTG-EX-17b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Draft with text formatting — bold, italic, underline, strikethrough',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 17 - Draft Formatted Text',
+    textBody:'Draft with bold, italic, underline, strikethrough, large and small text.',
+    htmlBody:true,
+    expectedResult:'Text formatting is preserved in Gmail DRAFT body (Tier C)' },
+
+  { id:'E2E-OTG-EX-17c', testCaseId:'E2E-OTG-EX-17c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Draft with attachment — attachment present after migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 17 - Draft With Attachment',
+    textBody:'Draft email with attachment — tests draft + attachment migration.',
+    hasAttachment:true,
+    expectedResult:'qa-draft-file.txt is present in Gmail DRAFT email' },
+
+  { id:'E2E-OTG-EX-17d', testCaseId:'E2E-OTG-EX-17d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Draft with BCC — BCC best-effort in DRAFT',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 17 - Draft With BCC',
+    textBody:'Draft with BCC recipient — tests BCC in drafts.',
+    expectedResult:'Draft email migrates to Gmail DRAFT; BCC handled best-effort' },
+
+  // Section 18 — Additional Junk/Spam
+  { id:'E2E-OTG-EX-18a', testCaseId:'E2E-OTG-EX-18a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk HTML spam-style email — HTML body preserved in SPAM',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 18 - Junk HTML Spam Content',
+    textBody:'HTML spam-style email in Junk — tests HTML body preservation in SPAM.',
+    htmlBody:true,
+    expectedResult:'HTML spam email is in Gmail SPAM with intact body' },
+
+  { id:'E2E-OTG-EX-18b', testCaseId:'E2E-OTG-EX-18b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk email with attachment — attachment migrates to SPAM',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 18 - Junk Email With Attachment',
+    textBody:'Spam email with attachment — tests junk + attachment migration.',
+    hasAttachment:true,
+    expectedResult:'qa-junk-file.txt is present in Gmail SPAM email' },
+
+  { id:'E2E-OTG-EX-18c', testCaseId:'E2E-OTG-EX-18c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk bulk newsletter HTML — table layout preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 18 - Junk Newsletter/Bulk Email',
+    textBody:'Bulk newsletter email in Junk — tests newsletter HTML structure migration.',
+    htmlBody:true,
+    expectedResult:'Newsletter HTML is preserved in Gmail SPAM' },
+
+  { id:'E2E-OTG-EX-18d', testCaseId:'E2E-OTG-EX-18d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk email with inline image — CID attachment in SPAM',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 18 - Junk Email With Inline Image',
+    textBody:'Spam with inline image.',
+    hasAttachment:true, htmlBody:true,
+    expectedResult:'Inline image is present in Gmail SPAM email' },
+
+  // Section 19 — Additional Deleted Items
+  { id:'E2E-OTG-EX-19a', testCaseId:'E2E-OTG-EX-19a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted flagged email — flag preserved in TRASH',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 19 - Deleted Flagged Email',
+    textBody:'Flagged email in Deleted Items — tests starred+deleted migration.',
+    flag:{ flagStatus:'flagged' },
+    expectedResult:'Email in Gmail TRASH with STARRED label' },
+
+  { id:'E2E-OTG-EX-19b', testCaseId:'E2E-OTG-EX-19b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted email with attachment — attachment migrates to TRASH',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 19 - Deleted Email With Attachment',
+    textBody:'Deleted email with attachment — tests trash + attachment migration.',
+    hasAttachment:true,
+    expectedResult:'qa-deleted-file.txt is present in Gmail TRASH email' },
+
+  { id:'E2E-OTG-EX-19c', testCaseId:'E2E-OTG-EX-19c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted HTML email — HTML body preserved in TRASH',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 19 - Deleted HTML Email',
+    textBody:'Deleted HTML email — tests HTML in trash.',
+    htmlBody:true,
+    expectedResult:'HTML body is preserved in Gmail TRASH email' },
+
+  { id:'E2E-OTG-EX-19d', testCaseId:'E2E-OTG-EX-19d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted forwarded email — FW: prefix preserved in TRASH',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 19 - Deleted FW: Forwarded Message',
+    textBody:'FW: Original content — deleted forwarded email migration QA.',
+    expectedResult:'FW: prefix is preserved in Gmail TRASH subject' },
+
+  // Section 20 — Additional custom folders
+  { id:'E2E-OTG-EX-20a', testCaseId:'E2E-OTG-EX-20a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Work-Projects custom folder — email 1 (plain text)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Work-Projects', subject:'QA E2E 20 - Work Projects Folder Email 1',
+    textBody:'Custom folder email — QA-Work-Projects label in Gmail.',
+    expectedResult:'Email in Gmail custom label QA-Work-Projects' },
+
+  { id:'E2E-OTG-EX-20b', testCaseId:'E2E-OTG-EX-20b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Work-Projects custom folder — email 2 (HTML)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Work-Projects', subject:'QA E2E 20 - Work Projects Folder Email 2',
+    textBody:'Second email in custom Work Projects folder.',
+    htmlBody:true,
+    expectedResult:'HTML email in Gmail custom label QA-Work-Projects' },
+
+  { id:'E2E-OTG-EX-20c', testCaseId:'E2E-OTG-EX-20c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Client-Emails custom folder — email (plain text)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Client-Emails', subject:'QA E2E 20 - Client Emails Folder Email',
+    textBody:'Custom folder for client emails — tests nested label hierarchy in Gmail.',
+    expectedResult:'Email in Gmail custom label QA-Client-Emails' },
+
+  // Section 21 — M365 Groups
+  { id:'E2E-OTG-EX-21a', testCaseId:'E2E-OTG-EX-21a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Microsoft 365 Public Group — group created and counts migrated',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Groups', subject:'QA Public Group (dynamic timestamp)',
+    textBody:'Public M365 group for migration QA',
+    expectedResult:'Group count in Google Workspace matches M365 group count' },
+
+  { id:'E2E-OTG-EX-21b', testCaseId:'E2E-OTG-EX-21b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Microsoft 365 Private Group — group created and counts migrated',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Groups', subject:'QA Private Group (dynamic timestamp)',
+    textBody:'Private M365 group for migration QA',
+    expectedResult:'Private group count in Google Workspace matches M365 private group count' },
+
+  // Section 22 — 15-level nested folders
+  { id:'E2E-OTG-EX-22', testCaseId:'E2E-OTG-EX-22', testType:'e2e', source:'extended', addedAt:now,
+    summary:'15-level nested folder structure — 2 emails per level (inbox + sent, moved)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Nested-Level-01 … QA-Nested-Level-15', subject:'QA E2E 22 - Nested Folder Depth N Inbox/Sent Email',
+    textBody:'Inbox and Sent emails moved to 15 nested folder depths — tests deep folder hierarchy migration.',
+    expectedResult:'All 30 emails (2 per level) are in their respective Gmail nested custom labels' },
+
+  // Section 23 — Sub-level folder structure
+  { id:'E2E-OTG-EX-23', testCaseId:'E2E-OTG-EX-23', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sub-level folder structure — root with 5 children + 2 grandchildren under Q1',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-SubLevel-Root / QA-Sub-Q1 … Q5 / QA-Sub-Q1-Sub1 / QA-Sub-Q1-Sub2', subject:'QA E2E 23 - SubLevel Folder Emails',
+    textBody:'Emails moved to sub-folders: QA-Sub-Q1 through Q5, plus Q1-Sub1 and Q1-Sub2.',
+    expectedResult:'All sibling and grandchild sub-folder emails are in their respective Gmail custom labels' },
+
+  // Section 24 — Inbox forwarding rule
+  { id:'E2E-OTG-EX-24', testCaseId:'E2E-OTG-EX-24', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Inbox forwarding rule — Outlook rule routes emails to QA-Forwarding-Rule-Folder',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Forwarding-Rule-Folder', subject:'QA E2E 24 - Forwarding Rule Email 1/2/3 + HTML',
+    textBody:'4 emails automatically routed by Outlook inbox rule into QA-Forwarding-Rule-Folder before migration.',
+    expectedResult:'All 4 forwarding-rule-routed emails are in Gmail custom label QA-Forwarding-Rule-Folder' },
+
+  // Section 25 — Moved-to-folder
+  { id:'E2E-OTG-EX-25', testCaseId:'E2E-OTG-EX-25', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Moved-to-folder — 2 Inbox + 2 Sent moved to QA-Moved-From-Inbox-Sent',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Moved-From-Inbox-Sent', subject:'QA E2E 25 - Moved From Inbox/Sent Email 1/2',
+    textBody:'Emails originally in Inbox and Sent Items, manually moved to QA-Moved-From-Inbox-Sent before migration.',
+    expectedResult:'All 4 moved emails are in Gmail custom label QA-Moved-From-Inbox-Sent' },
+
+  // Section 26 — Historical / old date
+  { id:'E2E-OTG-EX-26a', testCaseId:'E2E-OTG-EX-26a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Historical inbox email (sentDateTime: 2019-03-15) — old timestamp preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 26 - Historical Inbox Email (2019)',
+    textBody:'Email with old sentDateTime (2019-03-15) — tests timestamp preservation during migration.',
+    sentDateTime:'2019-03-15T09:00:00Z',
+    expectedResult:'Email in Gmail INBOX with sentDateTime preserved as 2019-03-15' },
+
+  { id:'E2E-OTG-EX-26b', testCaseId:'E2E-OTG-EX-26b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Historical sent email (sentDateTime: 2019-03-15) — old timestamp preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 26 - Historical Sent Email (2019)',
+    textBody:'Sent email with old sentDateTime (2019-03-15) — tests sent timestamp preservation.',
+    sentDateTime:'2019-03-15T09:00:00Z',
+    expectedResult:'Email in Gmail SENT with sentDateTime preserved as 2019-03-15' },
+
+  // Section 27 — Sensitivity labels
+  { id:'E2E-OTG-EX-27a', testCaseId:'E2E-OTG-EX-27a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Confidential sensitivity label — sensitivity metadata preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 27 - Confidential Sensitivity Email',
+    textBody:'Email marked as Confidential — tests Outlook sensitivity label migration.',
+    sensitivity:'confidential',
+    expectedResult:'Email in Gmail INBOX; sensitivity metadata best-effort preserved' },
+
+  { id:'E2E-OTG-EX-27b', testCaseId:'E2E-OTG-EX-27b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Private sensitivity label — sensitivity metadata preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 27 - Private Sensitivity Email',
+    textBody:'Email marked as Private — tests Outlook private sensitivity migration.',
+    sensitivity:'private',
+    expectedResult:'Email in Gmail INBOX; private sensitivity best-effort preserved' },
+
+  // Section 28 — Reply-To header
+  { id:'E2E-OTG-EX-28', testCaseId:'E2E-OTG-EX-28', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Reply-To header — different from From address',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 28 - Reply-To Header Email',
+    textBody:'Email with replyTo address different from sender — tests Reply-To header preservation.',
+    replyTo:'replyto-qa@external-replytest.com',
+    expectedResult:'Reply-To header (replyto-qa@external-replytest.com) is preserved in Gmail' },
+
+  // Section 29 — Empty subject
+  { id:'E2E-OTG-EX-29', testCaseId:'E2E-OTG-EX-29', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Empty subject email — null/empty subject handled',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'',
+    textBody:'Email with empty subject line — tests null/empty subject handling in migration.',
+    expectedResult:'Email migrates to Gmail INBOX with empty or (no subject) subject' },
+
+  // Section 30 — Completed flag
+  { id:'E2E-OTG-EX-30', testCaseId:'E2E-OTG-EX-30', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Completed flag (third Outlook flag state) — flag:complete migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 30 - Completed Flag Email',
+    textBody:'Email with completed flag state — tests Outlook three-state flag (notFlagged / flagged / complete) migration.',
+    flag:{ flagStatus:'complete' },
+    expectedResult:'Email in Gmail INBOX; completed flag state best-effort preserved' },
+
+  // Section 31 — Sent email moved to custom folder
+  { id:'E2E-OTG-EX-31', testCaseId:'E2E-OTG-EX-31', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent email moved to custom folder QA-Sent-To-Custom (2 messages)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Sent-To-Custom', subject:'QA E2E 31 - Sent Email Moved To Custom Folder 1/2',
+    textBody:'Sent emails reorganised into a custom folder — tests sent items in custom folders.',
+    expectedResult:'Both emails in Gmail custom label QA-Sent-To-Custom' },
+
+  // Section 32 — Parent + child folder
+  { id:'E2E-OTG-EX-32', testCaseId:'E2E-OTG-EX-32', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Parent folder with child — emails at both parent and child level (4 total)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Parent-With-Sub / QA-Child-Under-Parent',
+    subject:'QA E2E 32 - Parent/Child Folder Emails',
+    textBody:'2 emails at parent level (QA-Parent-With-Sub) and 2 at child level (QA-Child-Under-Parent).',
+    expectedResult:'Parent label has 2 emails; child label has 2 emails; counts match in Gmail' },
+
+  // Section 33 — Large body
+  { id:'E2E-OTG-EX-33', testCaseId:'E2E-OTG-EX-33', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Large body email (~50 KB) — body not truncated',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 33 - Large Body Email (~50KB)',
+    textBody:'~50 KB plain text body (Lorem ipsum x400) — tests large body migration without truncation.',
+    expectedResult:'Full body is preserved in Gmail (no truncation at 25 KB or similar limits)' },
+
+  // Section 34 — Many TO recipients
+  { id:'E2E-OTG-EX-34', testCaseId:'E2E-OTG-EX-34', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Many TO recipients (10+) — all addresses preserved',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 34 - Many TO Recipients (10+)',
+    textBody:'Email addressed to 10+ recipients — tests bulk TO field migration.',
+    expectedResult:'All 11 TO recipients are present in Gmail email' },
+
+  // Section 35 — Mixed-language body
+  { id:'E2E-OTG-EX-35', testCaseId:'E2E-OTG-EX-35', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Mixed-language body — Latin, Cyrillic, CJK, Arabic, Hebrew',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 35 - Mixed Language Body',
+    textBody:'Multi-language body: English, Cyrillic (Быстрая), Chinese (快速), Japanese (素早い), Arabic (السريع), Hebrew (המהיר).',
+    expectedResult:'All language characters are preserved in Gmail body without encoding corruption' },
+
+  // Section 36 — Draft with no recipients
+  { id:'E2E-OTG-EX-36', testCaseId:'E2E-OTG-EX-36', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Draft with no recipients — incomplete draft migration',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 36 - Draft With No Recipients',
+    textBody:'Draft email with empty toRecipients — tests incomplete draft migration.',
+    expectedResult:'Email migrates to Gmail DRAFT even with no TO recipients; body is preserved' },
+
+  // Section 37 — ICS attachment
+  { id:'E2E-OTG-EX-37', testCaseId:'E2E-OTG-EX-37', testType:'e2e', source:'extended', addedAt:now,
+    summary:'ICS attachment email (meeting invite as mail item)',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 37 - ICS Attachment Email (Meeting Invite)',
+    textBody:'Email with .ics calendar attachment — tests ICS attachment type migration.',
+    hasAttachment:true,
+    expectedResult:'qa-meeting-invite.ics attachment is present in Gmail email with correct name and size' },
+
+  // Section 38 — Attachment emails per folder (medium 512KB + small 1KB for missing folders)
+  { id:'E2E-OTG-EX-38a', testCaseId:'E2E-OTG-EX-38a', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Archive — small 1KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E 38 - Archive Small Attachment (1KB)',
+    textBody:'Email with small (1KB) attachment in Archive folder — tests attachment in Archive.',
+    hasAttachment:true, attachmentSize:'1KB',
+    expectedResult:'Small 1KB attachment is present in Gmail Archive[Gmail] email' },
+
+  { id:'E2E-OTG-EX-38b', testCaseId:'E2E-OTG-EX-38b', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Archive — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Archive', subject:'QA E2E 38 - Archive Medium Attachment (512KB)',
+    textBody:'Email with 512KB attachment in Archive — medium size test.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail Archive[Gmail] email with correct name and size' },
+
+  { id:'E2E-OTG-EX-38c', testCaseId:'E2E-OTG-EX-38c', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Sent Items — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Sent Items', subject:'QA E2E 38 - Sent Items Medium Attachment (512KB)',
+    textBody:'Sent email with 512KB attachment — medium size test for Sent Items.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail SENT email with correct name and size' },
+
+  { id:'E2E-OTG-EX-38d', testCaseId:'E2E-OTG-EX-38d', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Drafts — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Drafts', subject:'QA E2E 38 - Drafts Medium Attachment (512KB)',
+    textBody:'Draft with 512KB attachment — medium size test for Drafts.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail DRAFT email with correct name and size' },
+
+  { id:'E2E-OTG-EX-38e', testCaseId:'E2E-OTG-EX-38e', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Junk Email — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Junk Email', subject:'QA E2E 38 - Junk Email Medium Attachment (512KB)',
+    textBody:'Junk email with 512KB attachment — medium size test for Spam.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail SPAM email with correct name and size' },
+
+  { id:'E2E-OTG-EX-38f', testCaseId:'E2E-OTG-EX-38f', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Deleted Items — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Deleted Items', subject:'QA E2E 38 - Deleted Items Medium Attachment (512KB)',
+    textBody:'Deleted email with 512KB attachment — medium size test for Trash.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail TRASH email with correct name and size' },
+
+  { id:'E2E-OTG-EX-38g', testCaseId:'E2E-OTG-EX-38g', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Migration-Folder — small 1KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Migration-Folder', subject:'QA E2E 38 - QA-Migration-Folder Small Attachment (1KB)',
+    textBody:'Email with small 1KB attachment in custom folder QA-Migration-Folder.',
+    hasAttachment:true, attachmentSize:'1KB',
+    expectedResult:'Small 1KB attachment is present in Gmail custom label QA-Migration-Folder' },
+
+  { id:'E2E-OTG-EX-38h', testCaseId:'E2E-OTG-EX-38h', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Work-Projects — small 1KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Work-Projects', subject:'QA E2E 38 - QA-Work-Projects Small Attachment (1KB)',
+    textBody:'Email with small 1KB attachment in custom folder QA-Work-Projects.',
+    hasAttachment:true, attachmentSize:'1KB',
+    expectedResult:'Small 1KB attachment is present in Gmail custom label QA-Work-Projects' },
+
+  { id:'E2E-OTG-EX-38i', testCaseId:'E2E-OTG-EX-38i', testType:'e2e', source:'extended', addedAt:now,
+    summary:'QA-Client-Emails — small 1KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'QA-Client-Emails', subject:'QA E2E 38 - QA-Client-Emails Small Attachment (1KB)',
+    textBody:'Email with small 1KB attachment in custom folder QA-Client-Emails.',
+    hasAttachment:true, attachmentSize:'1KB',
+    expectedResult:'Small 1KB attachment is present in Gmail custom label QA-Client-Emails' },
+
+  { id:'E2E-OTG-EX-38j', testCaseId:'E2E-OTG-EX-38j', testType:'e2e', source:'extended', addedAt:now,
+    summary:'Inbox — medium 512KB attachment email',
+    combination:'Outlook → Gmail', productType:'Mail',
+    folder:'Inbox', subject:'QA E2E 38 - Inbox Medium Attachment (512KB)',
+    textBody:'Email with 512KB attachment in Inbox — medium size attachment migration test.',
+    hasAttachment:true, attachmentSize:'512KB',
+    expectedResult:'512KB attachment is present in Gmail INBOX email with correct name and size' },
+
+  // ── DELTA-only scenarios ─────────────────────────────────────────────────
+  { id:'E2E-OTG-EX-CAL1', testCaseId:'E2E-OTG-EX-CAL1', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Past calendar event — Google Calendar event count matches',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Past Calendar Event',
+    textBody:'Past calendar event (7 days ago) for migration QA.',
+    expectedResult:'Event count in Google Calendar matches Outlook calendar event count' },
+
+  { id:'E2E-OTG-EX-CAL2', testCaseId:'E2E-OTG-EX-CAL2', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] All-day event today — event migrates as all-day in Google Calendar',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Present All-Day Event',
+    textBody:'All-day event (today) for migration QA.',
+    expectedResult:'All-day event is in Google Calendar with correct date and no time component' },
+
+  { id:'E2E-OTG-EX-CAL3', testCaseId:'E2E-OTG-EX-CAL3', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Future calendar event — event migrates correctly',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Future Calendar Event',
+    textBody:'Future calendar event (+7 days) for migration QA.',
+    expectedResult:'Future event is in Google Calendar with correct start/end time' },
+
+  { id:'E2E-OTG-EX-CAL4', testCaseId:'E2E-OTG-EX-CAL4', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Weekly recurring event (4 occurrences) — recurrence pattern migrates',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Weekly Recurring Event',
+    textBody:'Recurring weekly event (4 occurrences) for migration QA.',
+    expectedResult:'Recurring event pattern is preserved in Google Calendar' },
+
+  { id:'E2E-OTG-EX-CAL5', testCaseId:'E2E-OTG-EX-CAL5', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Multi-day event (2 days) — spans multiple days in Google Calendar',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Multi-Day Calendar Event',
+    textBody:'Multi-day event spanning 2 days — migration QA.',
+    expectedResult:'Multi-day event is in Google Calendar with correct start and end dates' },
+
+  { id:'E2E-OTG-EX-CAL6', testCaseId:'E2E-OTG-EX-CAL6', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Meeting with attendees — attendee list preserved',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Meeting With Attendees',
+    textBody:'Meeting event with external attendees — migration QA.',
+    expectedResult:'Attendee list is preserved in Google Calendar event' },
+
+  { id:'E2E-OTG-EX-CAL7', testCaseId:'E2E-OTG-EX-CAL7', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Event with long HTML description — body preserved',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Calendar', subject:'QA E2E - Event With Long Description',
+    textBody:'Meeting event with HTML agenda description — migration QA.',
+    expectedResult:'Event description/body is preserved in Google Calendar' },
+
+  { id:'E2E-OTG-EX-SCAL', testCaseId:'E2E-OTG-EX-SCAL', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Shared calendar (QA Shared Calendar) — events shared correctly',
+    combination:'Outlook → Gmail', productType:'Calendar',
+    folder:'Shared Calendar', subject:'QA E2E - Shared Calendar Event',
+    textBody:'Event in secondary shared calendar — tests shared calendar migration.',
+    expectedResult:'Shared calendar events are in Google Calendar secondary calendar' },
+
+  { id:'E2E-OTG-EX-CON', testCaseId:'E2E-OTG-EX-CON', testType:'e2e', source:'extended', addedAt:now,
+    summary:'[DELTA] Contacts migration — Outlook contacts count matches Google People',
+    combination:'Outlook → Gmail', productType:'Contacts',
+    folder:'Contacts', subject:'QA E2E - Contacts Migration',
+    textBody:'6 one-time-equivalent + 3 new delta contacts created in Outlook.',
+    expectedResult:'Google People API contact count matches Outlook contacts count' },
+];
+
+data.e2e = e2eCases;
+fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+console.log(`Written ${e2eCases.length} E2E test cases (${e2eCases.filter(c=>c.source==='json').length} json + ${e2eCases.filter(c=>c.source==='extended').length} extended) to custom-test-cases.json`);

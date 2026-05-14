@@ -26,8 +26,17 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
 const BACKEND_BASE = `http://localhost:${env.PORT || 5000}`;
 
 function googleOAuthClient(tenant) {
-  const clientId = tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
-  const clientSecret = tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
+  let clientId, clientSecret;
+  if (tenant === '3') {
+    clientId = env.GOOGLE_CLIENT_ID_3;
+    clientSecret = env.GOOGLE_CLIENT_SECRET_3;
+  } else if (tenant === '2') {
+    clientId = env.GOOGLE_CLIENT_ID_2;
+    clientSecret = env.GOOGLE_CLIENT_SECRET_2;
+  } else {
+    clientId = env.GOOGLE_CLIENT_ID;
+    clientSecret = env.GOOGLE_CLIENT_SECRET;
+  }
   return new google.auth.OAuth2(
     clientId,
     clientSecret,
@@ -80,11 +89,11 @@ router.get('/accounts', (_req, res) => {
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
 
 router.get('/google/url', (req, res) => {
-  const tenant = req.query.tenant === '2' ? '2' : '1';
-  const clientId = tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
-  const clientSecret = tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
+  const tenant = ['2', '3'].includes(req.query.tenant) ? req.query.tenant : '1';
+  const clientId = tenant === '3' ? env.GOOGLE_CLIENT_ID_3 : tenant === '2' ? env.GOOGLE_CLIENT_ID_2 : env.GOOGLE_CLIENT_ID;
+  const clientSecret = tenant === '3' ? env.GOOGLE_CLIENT_SECRET_3 : tenant === '2' ? env.GOOGLE_CLIENT_SECRET_2 : env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
-    return res.status(400).json({ error: `Google OAuth not configured for tenant ${tenant} (GOOGLE_CLIENT_ID${tenant === '2' ? '_2' : ''} / GOOGLE_CLIENT_SECRET${tenant === '2' ? '_2' : ''} missing)` });
+    return res.status(400).json({ error: `Google OAuth not configured for tenant ${tenant} (GOOGLE_CLIENT_ID_${tenant} / GOOGLE_CLIENT_SECRET_${tenant} missing)` });
   }
   const isPopup = req.query.source === 'popup';
   // Encode both source and tenant in state so the callback can reconstruct the right client
@@ -93,6 +102,7 @@ router.get('/google/url', (req, res) => {
   const url = oAuth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: [
+      'https://mail.google.com/',
       'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/calendar',
       'https://www.googleapis.com/auth/userinfo.email',
@@ -149,6 +159,21 @@ router.post('/google/signout', (req, res) => {
     tokenStore.removeGoogleToken(email);
     logger.info(`[auth] Google account disconnected: ${email}`);
   }
+  res.json({ success: true });
+});
+
+router.post('/dwd', (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'email required' });
+  tokenStore.setDwdAccount(email.trim().toLowerCase());
+  logger.info(`[auth] DWD account registered: ${email}`);
+  res.json({ success: true });
+});
+
+router.delete('/dwd/:email', (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  tokenStore.removeGoogleToken(email);
+  logger.info(`[auth] DWD account removed: ${email}`);
   res.json({ success: true });
 });
 

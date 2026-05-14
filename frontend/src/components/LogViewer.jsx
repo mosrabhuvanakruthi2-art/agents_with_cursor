@@ -17,11 +17,11 @@ export default function LogViewer({ logs }) {
         </div>
         <span className="text-xs text-gray-400 ml-2">Execution Logs</span>
       </div>
-      <div className="p-4 max-h-96 overflow-y-auto font-mono text-xs space-y-0.5">
+      <div className="p-4 max-h-96 overflow-y-auto overflow-x-auto font-mono text-xs space-y-0.5">
         {logs.map((log, idx) => (
-          <div key={idx} className="flex gap-3">
+          <div key={idx} className="flex gap-3 min-w-0">
             <span className="text-gray-600 select-none flex-shrink-0">{String(idx + 1).padStart(3, ' ')}</span>
-            <span className={getLogColor(log.level)}>
+            <span className={`${getLogColor(log.level)} break-all whitespace-pre-wrap min-w-0`}>
               {log.timestamp && (
                 <span className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()} </span>
               )}

@@ -97,7 +97,11 @@ async function loadFromMongo() {
       const { _id, provider, email, ...rest } = doc;
       if (!provider || !email) continue;
       if (provider === 'google') {
-        data.google.accounts[email.toLowerCase()] = { refreshToken: rest.refreshToken, connectedAt: rest.connectedAt };
+        if (rest.isDwd) {
+          data.google.accounts[email.toLowerCase()] = { isDwd: true, connectedAt: rest.connectedAt };
+        } else {
+          data.google.accounts[email.toLowerCase()] = { refreshToken: rest.refreshToken, connectedAt: rest.connectedAt };
+        }
         loaded++;
       } else if (provider === 'microsoft') {
         data.microsoft.accounts[email.toLowerCase()] = {
@@ -138,6 +142,15 @@ function removeGoogleToken(email) {
   delete data.google.accounts[key];
   write(data);
   removeFromMongo('google', key);
+}
+
+function setDwdAccount(email) {
+  const data = read();
+  const key = email.toLowerCase();
+  const entry = { isDwd: true, connectedAt: data.google.accounts[key]?.connectedAt || new Date().toISOString() };
+  data.google.accounts[key] = entry;
+  write(data);
+  syncToMongo('google', key, { isDwd: true, connectedAt: entry.connectedAt });
 }
 
 function getGoogleStatus() {
@@ -215,7 +228,7 @@ function getAllConnectedAccounts() {
   const data = read();
   const accounts = [];
   for (const [email, entry] of Object.entries(data.google.accounts)) {
-    accounts.push({ provider: 'google', email, connectedAt: entry.connectedAt });
+    accounts.push({ provider: 'google', email, connectedAt: entry.connectedAt, isDwd: !!entry.isDwd });
   }
   for (const [email, entry] of Object.entries(data.microsoft.accounts)) {
     accounts.push({ provider: 'microsoft', email, connectedAt: entry.connectedAt });
@@ -229,6 +242,7 @@ module.exports = {
   getGoogleToken,
   setGoogleToken,
   removeGoogleToken,
+  setDwdAccount,
   getGoogleStatus,
   getGoogleAccountsMap,
   // Microsoft

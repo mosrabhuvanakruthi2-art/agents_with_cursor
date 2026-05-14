@@ -59,9 +59,12 @@ function buildPdfValidationView(validation) {
   const nonComp = (validation.mismatches || []).filter((m) => m.category !== 'comparison');
   const compMis = filteredIssues.map((i) => ({
     category: 'comparison',
+    kind: 'comparison',
+    kindLabel: 'Folder/label counts',
     field: i.label,
-    expected: `${i.sourceCount} (source)`,
-    actual: `${i.destCount} (destination)`,
+    expected: `${i.sourceCount} (source messages)`,
+    actual: `${i.destCount} (destination messages)`,
+    summaryLine: `${i.label}: expected ${i.sourceCount} vs destination ${i.destCount}`,
   }));
   view.mismatches = [...nonComp, ...compMis];
   view.overallStatus = view.mismatches.length === 0 ? 'PASS' : 'FAIL';

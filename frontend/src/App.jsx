@@ -12,6 +12,7 @@ import TestRepository from './pages/TestRepository';
 import AgentRepo from './pages/AgentRepo';
 import ConnectAccounts from './pages/ConnectAccounts';
 import OAuthCallback from './pages/OAuthCallback';
+import CreateTestData from './pages/CreateTestData';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
         <Route path="test-repository" element={<TestRepository />} />
         <Route path="agent-repo" element={<AgentRepo />} />
         <Route path="connect" element={<ConnectAccounts />} />
+        <Route path="create-test-data" element={<CreateTestData />} />
       </Route>
     </Routes>
     </ToastProvider>

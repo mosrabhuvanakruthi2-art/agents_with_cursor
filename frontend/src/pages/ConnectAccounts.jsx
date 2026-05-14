@@ -55,6 +55,11 @@ export default function ConnectAccounts() {
   }, [loadStatus]);
 
   async function handleConnect(provider) {
+    // migrationn.com uses DWD — no OAuth needed
+    if (provider === 'google' && googleTenant === '3') {
+      showToast('migrationn.com uses service account (DWD) — no OAuth required. Enter admin@migrationn.com as the source email when running agents.', 'success');
+      return;
+    }
     try {
       let res;
       if (provider === 'google') {
@@ -128,6 +133,7 @@ export default function ConnectAccounts() {
               >
                 <option value="1">cloudfuze.us</option>
                 <option value="2">storefuze.com</option>
+                <option value="3">migrationn.com (DWD)</option>
               </select>
             </div>
             <ProviderCard

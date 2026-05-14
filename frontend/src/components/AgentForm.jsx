@@ -1,38 +1,86 @@
 import { useState } from 'react';
 import UserMapping from './UserMapping';
+import usePersistedState from '../hooks/usePersistedState';
+
+/** Aligns with backend MigrationContext defaults: FULL = mail + labels only; DELTA adds calendar + contacts. Deep validation is server-side always on. */
+function scopesForMigrationType(migrationType) {
+  if (migrationType === 'DELTA') {
+    return {
+      includeMail: true,
+      includeCalendar: true,
+      includeContacts: true,
+    };
+  }
+  return {
+    includeMail: true,
+    includeCalendar: false,
+    includeContacts: false,
+  };
+}
 
 export default function AgentForm({ onSubmit, loading }) {
   const [form, setForm] = useState({
-    testType: 'SANITY',
+    testType: 'E2E',
     migrationType: 'FULL',
-    includeMail: true,
-    includeCalendar: true,
   });
+  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('migration-server-url', 'https://newtestemail5.cloudfuze.com');
+  const [migrationServerEmail, setMigrationServerEmail] = usePersistedState('migration-server-email', '');
+  const [migrationServerPassword, setMigrationServerPassword] = useState('');
   const [mappedPairs, setMappedPairs] = useState(null);
+  const [userEmailMappings, setUserEmailMappings] = useState(null);
+  const [sourceAdminEmail, setSourceAdminEmail] = useState('');
+  const [destAdminEmail, setDestAdminEmail] = useState('');
 
   function handleChange(e) {
-    const { name, value, type, checked } = e.target;
+    const { name, value } = e.target;
     setForm((prev) => ({
       ...prev,
-      [name]: type === 'checkbox' ? checked : value,
+      [name]: value,
     }));
   }
 
-  function handleMappingComplete(pairs) {
-    setMappedPairs(pairs);
+  function handleMappingComplete(selectedPairs, allMappedForRecipients, directory = null) {
+    setMappedPairs(selectedPairs);
+    const all = Array.isArray(allMappedForRecipients)
+      ? allMappedForRecipients
+      : selectedPairs.map((p) => ({
+          sourceEmail: p.sourceEmail,
+          destinationEmail: p.destinationEmail,
+        }));
+    setUserEmailMappings(all);
+    if (directory?.sourceAdminEmail) setSourceAdminEmail(directory.sourceAdminEmail);
+    if (directory?.destAdminEmail) setDestAdminEmail(directory.destAdminEmail);
   }
 
   function clearMapping() {
     setMappedPairs(null);
+    setUserEmailMappings(null);
   }
 
   function handleSubmit(e) {
     e.preventDefault();
     if (!mappedPairs || mappedPairs.length === 0) return;
+    const mappingPayload = userEmailMappings && userEmailMappings.length > 0
+      ? userEmailMappings
+      : mappedPairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail }));
+    const scope = scopesForMigrationType(form.migrationType);
+    const serverFields = {
+      ...(migrationServerUrl ? { migrationServerUrl } : {}),
+      ...(migrationServerEmail ? { migrationServerEmail } : {}),
+      ...(migrationServerPassword ? { migrationServerPassword } : {}),
+    };
+    const payloadBase = { ...form, ...scope, sourceAdminEmail, destAdminEmail, ...serverFields };
     if (mappedPairs.length === 1) {
-      onSubmit({ ...form, sourceEmail: mappedPairs[0].sourceEmail, destinationEmail: mappedPairs[0].destinationEmail });
+      onSubmit({
+        ...payloadBase,
+        sourceEmail: mappedPairs[0].sourceEmail,
+        destinationEmail: mappedPairs[0].destinationEmail,
+        sourceProvider: mappedPairs[0].sourceProvider || 'google',
+        destinationProvider: mappedPairs[0].destinationProvider || 'microsoft',
+        userEmailMappings: mappingPayload,
+      });
     } else {
-      onSubmit({ ...form, mappedPairs });
+      onSubmit({ ...payloadBase, mappedPairs, userEmailMappings: mappingPayload });
     }
   }
 
@@ -62,12 +110,52 @@ export default function AgentForm({ onSubmit, loading }) {
         )}
       </div>
 
+      <div className="border border-gray-200 rounded-xl p-5 space-y-4 bg-gray-50/50">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-900">Migration Server</h3>
+          <p className="text-xs text-gray-500 mt-0.5">CloudFuze server credentials used by the migration agent</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Server URL</label>
+          <input
+            type="url"
+            value={migrationServerUrl}
+            onChange={(e) => setMigrationServerUrl(e.target.value)}
+            placeholder="https://newtestemail5.cloudfuze.com"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white font-mono"
+          />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+            <input
+              type="email"
+              value={migrationServerEmail}
+              onChange={(e) => setMigrationServerEmail(e.target.value)}
+              placeholder="admin@company.com"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
+            <input
+              type="password"
+              value={migrationServerPassword}
+              onChange={(e) => setMigrationServerPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+            />
+          </div>
+        </div>
+      </div>
+
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Test Type</label>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
             { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
+            { value: 'E2E', label: 'E2E', desc: 'Full Gmail seed + calendar (slow)' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -89,14 +177,10 @@ export default function AgentForm({ onSubmit, loading }) {
             </button>
           ))}
         </div>
-        <div className="mt-2 text-xs text-gray-500">
-          {form.testType === 'SMOKE' && 'Creates 1 plain text email. Validates inbox accessibility and message count. Fastest.'}
-          {form.testType === 'SANITY' && 'Creates plain text, HTML, attachment emails + labels + drafts. Validates folders, subjects, and attachments.'}
-        </div>
       </div>
 
-      <div>
-        <label htmlFor="migrationType" className="block text-sm font-medium text-gray-700 mb-1">
+      <div className="space-y-2">
+        <label htmlFor="migrationType" className="block text-sm font-medium text-gray-700">
           Migration Type
         </label>
         <select
@@ -109,29 +193,19 @@ export default function AgentForm({ onSubmit, loading }) {
           <option value="FULL">One Time Migration</option>
           <option value="DELTA">Delta Migration</option>
         </select>
-      </div>
-
-      <div className="flex gap-8">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            name="includeMail"
-            checked={form.includeMail}
-            onChange={handleChange}
-            className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-          />
-          <span className="text-sm text-gray-700">Include Mail</span>
-        </label>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            name="includeCalendar"
-            checked={form.includeCalendar}
-            onChange={handleChange}
-            className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-          />
-          <span className="text-sm text-gray-700">Include Calendar</span>
-        </label>
+        <p className="text-xs text-gray-500 leading-relaxed">
+          {form.migrationType === 'FULL' ? (
+            <>
+              <strong>One Time</strong> — initial transfer: email, folders/labels, threads, and metadata (mail scope). Calendar and
+              contacts are not part of this run.
+            </>
+          ) : (
+            <>
+              <strong>Delta</strong> — incremental email and folder/label changes after the initial migration, plus contacts and
+              calendars.
+            </>
+          )}
+        </p>
       </div>
 
       <button
@@ -148,9 +222,9 @@ export default function AgentForm({ onSubmit, loading }) {
             Running...
           </span>
         ) : hasBulkMapping ? (
-          `Run Migration Agent (${mappedPairs.length} pairs)`
+          `Run Migration Agent · ${form.testType} (${mappedPairs.length} pairs)`
         ) : (
-          'Run Migration Agent'
+          `Run Migration Agent · ${form.testType}`
         )}
       </button>
     </form>

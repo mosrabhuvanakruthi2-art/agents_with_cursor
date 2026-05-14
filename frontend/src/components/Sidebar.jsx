@@ -8,8 +8,8 @@ const navItems = [
   { to: '/logs', label: 'Execution Logs', icon: LogsIcon },
   { to: '/validation', label: 'Validation Results', icon: CheckIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
-  { to: '/clean', label: 'Clean Destination', icon: TrashIcon },
-  { to: '/clean-source', label: 'Clean Source', icon: TrashIcon },
+  { to: '/clean', label: 'Outlook Clean Up', icon: TrashIcon },
+  { to: '/clean-source', label: 'Gmail Clean Up', icon: TrashIcon },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
@@ -154,6 +154,14 @@ function ConnectIcon(props) {
   return (
     <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
+    </svg>
+  );
+}
+
+function DatabaseIcon(props) {
+  return (
+    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 5.625c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
     </svg>
   );
 }

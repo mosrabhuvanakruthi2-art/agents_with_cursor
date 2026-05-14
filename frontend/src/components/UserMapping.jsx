@@ -3,6 +3,7 @@ import {
   getSourceUsers, getDestinationUsers,
   getGoogleOAuthUrl, getMicrosoftOAuthUrl,
   getConnectedAccounts, signOutGoogle, signOutMicrosoft,
+  addDwdAccount,
 } from '../services/api';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -52,6 +53,7 @@ export default function UserMapping({ onMappingComplete }) {
   const [oauthError, setOauthError] = useState(null);
   const [googleTenant, setGoogleTenant] = useState('1');
   const [msTenant, setMsTenant] = useState('1');
+  const [dwdEmail, setDwdEmail] = useState('admin@migrationn.com');
   const pollRef = useRef(null);
   const popupRef = useRef(null);
 
@@ -103,12 +105,31 @@ export default function UserMapping({ onMappingComplete }) {
     try {
       if (provider === 'google') await signOutGoogle(email);
       else await signOutMicrosoft(email);
+      if (srcEmail === email) setSrcEmail('');
+      if (dstEmail === email) setDstEmail('');
       await loadAccounts();
     } catch { /* ignore */ }
   }
 
   async function handleLogin(target) {
     const providerKey = target === 'source' ? srcProvider : dstProvider;
+
+    // migrationn.com uses DWD — store in DB and select
+    if (providerKey === 'google' && googleTenant === '3') {
+      const email = dwdEmail.trim().toLowerCase();
+      if (!email) return;
+      try {
+        await addDwdAccount(email);
+        await loadAccounts();
+      } catch (err) {
+        setOauthError(err.response?.data?.error || err.message);
+      }
+      if (target === 'source') setSrcEmail(email);
+      else setDstEmail(email);
+      setLoginTarget(null);
+      return;
+    }
+
     setOauthError(null);
     setOauthLoading(true);
     try {
@@ -206,11 +227,24 @@ export default function UserMapping({ onMappingComplete }) {
 
   function handleConfirm() {
     const selected = mappings.filter((_, i) => selectedIndices.has(i));
-    onMappingComplete(selected.map((m) => ({
-      sourceEmail: m.source.email, destinationEmail: m.destination.email,
-      sourceName: m.source.displayName, destinationName: m.destination.displayName,
-      autoMatched: m.autoMatched,
-    })));
+    /** All mapped rows — used server-side for deep validation To/Cc/Bcc expectations */
+    const allMappedPairs = mappings.map((m) => ({
+      sourceEmail: m.source.email,
+      destinationEmail: m.destination.email,
+    }));
+    onMappingComplete(
+      selected.map((m) => ({
+        sourceEmail: m.source.email,
+        destinationEmail: m.destination.email,
+        sourceName: m.source.displayName,
+        destinationName: m.destination.displayName,
+        autoMatched: m.autoMatched,
+        sourceProvider: srcProvider,
+        destinationProvider: dstProvider,
+      })),
+      allMappedPairs,
+      { sourceUsers, destUsers, sourceAdminEmail: srcEmail, destAdminEmail: dstEmail }
+    );
   }
 
   // Accounts for each provider
@@ -363,6 +397,8 @@ export default function UserMapping({ onMappingComplete }) {
           onGoogleTenantChange={setGoogleTenant}
           msTenant={msTenant}
           onMsTenantChange={setMsTenant}
+          dwdEmail={dwdEmail}
+          onDwdEmailChange={setDwdEmail}
           onConnect={() => handleLogin(loginTarget)}
           onClose={() => { setLoginTarget(null); setOauthError(null); stopPolling(); popupRef.current?.close(); }}
         />
@@ -430,6 +466,7 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
               >
                 <Icon className="w-3.5 h-3.5 flex-shrink-0" />
                 <span className="truncate">{a.email}</span>
+                {a.isDwd && <span className="ml-1 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full flex-shrink-0">DWD</span>}
                 {email === a.email && (
                   <span className="ml-auto w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
                 )}
@@ -496,9 +533,11 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
 
 // ─── Login Modal ──────────────────────────────────────────────────────────────
 
-function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant, onGoogleTenantChange, msTenant, onMsTenantChange }) {
+function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant, onGoogleTenantChange, msTenant, onMsTenantChange, dwdEmail, onDwdEmailChange }) {
   const p = PROVIDERS[provider];
   const Icon = p.icon;
+  const isDwd = provider === 'google' && googleTenant === '3';
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
@@ -516,17 +555,39 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
             </div>
             <div>
               <p className="text-sm font-semibold text-gray-900">{p.label}</p>
-              <p className="text-xs text-gray-500 mt-0.5">Sign in as an admin to fetch and auto-map users</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {isDwd ? 'Domain-Wide Delegation — no sign-in required' : 'Sign in as an admin to fetch and auto-map users'}
+              </p>
             </div>
           </div>
-          <ol className="space-y-2 text-xs text-gray-600">
-            {['A sign-in window will open', `Select your ${p.short} admin account`, 'Grant the requested permissions', 'Your admin email is auto-filled'].map((t, i) => (
-              <li key={i} className="flex items-start gap-2.5 list-none">
-                <span className="w-4 h-4 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
-                <span>{t}</span>
-              </li>
-            ))}
-          </ol>
+
+          {isDwd ? (
+            <>
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
+                <strong>migrationn.com</strong> is configured with a service account (DWD). No OAuth needed — enter any admin email to proceed.
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-600">Admin email (migrationn.com)</label>
+                <input
+                  type="email"
+                  value={dwdEmail}
+                  onChange={(e) => onDwdEmailChange(e.target.value)}
+                  className="w-full text-sm rounded-lg border border-gray-200 px-3 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  placeholder="admin@migrationn.com"
+                />
+              </div>
+            </>
+          ) : (
+            <ol className="space-y-2 text-xs text-gray-600">
+              {['A sign-in window will open', `Select your ${p.short} admin account`, 'Grant the requested permissions', 'Your admin email is auto-filled'].map((t, i) => (
+                <li key={i} className="flex items-start gap-2.5 list-none">
+                  <span className="w-4 h-4 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
+                  <span>{t}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+
           {provider === 'google' && (
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-gray-500 flex-shrink-0">Google tenant:</span>
@@ -537,6 +598,7 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
               >
                 <option value="1">cloudfuze.us</option>
                 <option value="2">storefuze.com</option>
+                <option value="3">migrationn.com (DWD)</option>
               </select>
             </div>
           )}
@@ -561,7 +623,7 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
             className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 transition-colors ${provider === 'google' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
             {loading
               ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Waiting…</>
-              : <><Icon className="w-3.5 h-3.5" />Sign in</>}
+              : isDwd ? <><Icon className="w-3.5 h-3.5" />Use this account</> : <><Icon className="w-3.5 h-3.5" />Sign in</>}
           </button>
         </div>
       </div>

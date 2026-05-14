@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getSourceUsers, getSourceMailboxStats, getSourceCalendarStats } from '../services/api';
+import {
+  getSourceUsers, getSourceMailboxStats, getSourceCalendarStats,
+  cleanSourceEmails, cleanSourceFolders, cleanSourceCalendars,
+} from '../services/api';
 import { startClean, startCleanAll, subscribe, getActiveCleans, getAllResults, clearResults } from '../services/cleanSourceManager';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -12,6 +15,12 @@ export default function CleanSourcePage() {
   const [fetched, setFetched] = usePersistedState('clean-src-fetched', false);
   const [activeCleans, setActiveCleans] = useState(getActiveCleans());
   const [cleanResults, setCleanResults] = useState(getAllResults);
+  // { [email]: { emails?: 'running'|'done'|'error', folders?: ..., calendars?: ... } }
+  const [partialState, setPartialState] = useState({});
+  // { email, field } — which cell is awaiting inline confirmation
+  const [confirmTarget, setConfirmTarget] = useState(null);
+  // toast: { msg, type: 'success'|'error' } | null
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     const unsubscribe = subscribe(() => {
@@ -90,6 +99,53 @@ export default function CleanSourcePage() {
     startCleanAll(toClean.map((u) => u.email));
   }, [users]);
 
+  const showToast = useCallback((msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const refreshUserStats = useCallback(async (email) => {
+    try {
+      const [mailRes, calRes] = await Promise.allSettled([
+        getSourceMailboxStats(email),
+        getSourceCalendarStats(email),
+      ]);
+      setUsers((prev) => prev.map((u) => {
+        if (u.email !== email) return u;
+        const baseStats = mailRes.status === 'fulfilled' ? mailRes.value.data : u.stats;
+        const bulkEventCount = calRes.status === 'fulfilled' ? (calRes.value.data?.eventCount ?? null) : null;
+        return { ...u, stats: bulkEventCount !== null ? { ...baseStats, eventCount: bulkEventCount } : baseStats };
+      }));
+    } catch { /* ignore */ }
+  }, [setUsers]);
+
+  const handlePartialClean = useCallback(async (email, field) => {
+    setConfirmTarget(null);
+    setPartialState((p) => ({ ...p, [email]: { ...(p[email] || {}), [field]: 'running' } }));
+    try {
+      const apiFn = field === 'emails' ? cleanSourceEmails : field === 'folders' ? cleanSourceFolders : cleanSourceCalendars;
+      const { data } = await apiFn(email);
+      const deleted = data.deleted || {};
+      const countMap = { emails: deleted.messagesDeleted ?? 0, folders: deleted.foldersDeleted ?? 0, calendars: (deleted.eventsDeleted ?? 0) + (deleted.calendarsDeleted ?? 0) };
+      const labelMap = { emails: 'email(s)', folders: 'folder(s)', calendars: 'event(s)' };
+      const errors = deleted.errors || [];
+      if (countMap[field] === 0 && errors.length > 0) {
+        showToast(`Delete failed: ${errors[0]}`, 'error');
+      } else {
+        showToast(`Deleted ${countMap[field]} ${labelMap[field]} from ${email}`);
+      }
+      setPartialState((p) => ({ ...p, [email]: { ...(p[email] || {}), [field]: 'done' } }));
+      // apply immediate stats from backend response, then re-fetch after propagation delay
+      if (data.after) {
+        setUsers((prev) => prev.map((u) => u.email === email ? { ...u, stats: data.after } : u));
+      }
+      setTimeout(() => refreshUserStats(email), 3000);
+    } catch (err) {
+      setPartialState((p) => ({ ...p, [email]: { ...(p[email] || {}), [field]: 'error' } }));
+      showToast(`Delete failed: ${err.response?.data?.error || err.message}`, 'error');
+    }
+  }, [setUsers, showToast, refreshUserStats]);
+
   const [refreshing, setRefreshing] = useState(false);
 
   async function handleRefreshStats() {
@@ -132,10 +188,16 @@ export default function CleanSourcePage() {
 
   return (
     <div className="space-y-8">
+      {toast && (
+        <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium text-white transition-all ${toast.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
+          {toast.msg}
+        </div>
+      )}
+
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Clean Source</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Gmail Clean Up</h1>
         <p className="text-sm text-gray-500 mt-1">
-          View mailbox stats and Clean Source Outlook accounts before migration
+          View mailbox stats and clean Gmail source accounts before migration
         </p>
       </div>
 
@@ -240,24 +302,33 @@ export default function CleanSourcePage() {
                           {s?.tokenError && <p className="text-xs text-orange-500 mt-0.5">⚠ Token expired — update in .env</p>}
                           {s?.noToken && <p className="text-xs text-gray-400 mt-0.5">No token configured</p>}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">loading...</span>
-                          ) : (
-                            <span className={'font-semibold ' + (hasTokenError ? 'text-orange-400' : (s.mailCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-900')}>
-                              {(s.mailCount ?? 0).toLocaleString()}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">...</span>
-                          ) : (
-                            <span className={hasTokenError ? 'text-orange-400' : (s.folderCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
-                              {s.folderCount ?? 0}
-                            </span>
-                          )}
-                        </td>
+                        <PartialCell
+                          stats={s}
+                          count={s?.mailCount ?? 0}
+                          hasTokenError={hasTokenError}
+                          field="emails"
+                          email={user.email}
+                          partialField={partialState[user.email]?.emails}
+                          isConfirming={confirmTarget?.email === user.email && confirmTarget?.field === 'emails'}
+                          onRequestConfirm={setConfirmTarget}
+                          onConfirm={handlePartialClean}
+                          onCancelConfirm={() => setConfirmTarget(null)}
+                          isRunning={isCleaning}
+                          boldZero
+                        />
+                        <PartialCell
+                          stats={s}
+                          count={s?.folderCount ?? 0}
+                          hasTokenError={hasTokenError}
+                          field="folders"
+                          email={user.email}
+                          partialField={partialState[user.email]?.folders}
+                          isConfirming={confirmTarget?.email === user.email && confirmTarget?.field === 'folders'}
+                          onRequestConfirm={setConfirmTarget}
+                          onConfirm={handlePartialClean}
+                          onCancelConfirm={() => setConfirmTarget(null)}
+                          isRunning={isCleaning}
+                        />
                         <td className="px-5 py-3 text-right">
                           {!s ? (
                             <span className="text-gray-400 text-xs">...</span>
@@ -267,15 +338,19 @@ export default function CleanSourcePage() {
                             </span>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">...</span>
-                          ) : (
-                            <span className={hasTokenError ? 'text-orange-400' : (s.eventCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
-                              {(s.eventCount ?? 0).toLocaleString()}
-                            </span>
-                          )}
-                        </td>
+                        <PartialCell
+                          stats={s}
+                          count={s?.eventCount ?? 0}
+                          hasTokenError={hasTokenError}
+                          field="calendars"
+                          email={user.email}
+                          partialField={partialState[user.email]?.calendars}
+                          isConfirming={confirmTarget?.email === user.email && confirmTarget?.field === 'calendars'}
+                          onRequestConfirm={setConfirmTarget}
+                          onConfirm={handlePartialClean}
+                          onCancelConfirm={() => setConfirmTarget(null)}
+                          isRunning={isCleaning}
+                        />
                         <td className="px-5 py-3 text-right">
                           <div className="flex flex-col items-end gap-1">
                             {result && !result.error && result.deleted && (
@@ -328,6 +403,74 @@ export default function CleanSourcePage() {
         </>
       )}
     </div>
+  );
+}
+
+function PartialCell({ stats, count, hasTokenError, field, email, partialField, isConfirming, onRequestConfirm, onConfirm, onCancelConfirm, isRunning, boldZero }) {
+  const isZero = count === 0;
+  const isDeleting = partialField === 'running';
+  const isDone = partialField === 'done';
+  const isError = partialField === 'error';
+
+  if (!stats) return <td className="px-5 py-3 text-right"><span className="text-gray-400 text-xs">...</span></td>;
+
+  if (isDeleting) {
+    return (
+      <td className="px-5 py-3 text-right">
+        <span className="inline-flex items-center gap-1 text-xs text-yellow-600">
+          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+          deleting...
+        </span>
+      </td>
+    );
+  }
+
+  if (isConfirming) {
+    return (
+      <td className="px-5 py-3 text-right">
+        <div className="inline-flex items-center gap-1">
+          <span className="text-xs text-gray-500 mr-1">Delete?</span>
+          <button
+            type="button"
+            onClick={() => onConfirm(email, field)}
+            className="px-2 py-0.5 rounded bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition-colors"
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            onClick={onCancelConfirm}
+            className="px-2 py-0.5 rounded bg-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-300 transition-colors"
+          >
+            No
+          </button>
+        </div>
+      </td>
+    );
+  }
+
+  return (
+    <td className="px-5 py-3 text-right">
+      {isZero || hasTokenError ? (
+        <span className={(boldZero ? 'font-semibold ' : '') + (hasTokenError ? 'text-orange-400' : 'text-green-600')}>
+          {count.toLocaleString()}
+        </span>
+      ) : (
+        <button
+          type="button"
+          title={`Click to delete ${field}`}
+          disabled={isRunning}
+          onClick={() => onRequestConfirm({ email, field })}
+          className={
+            (boldZero ? 'font-semibold ' : '') +
+            'underline decoration-dotted cursor-pointer transition-colors ' +
+            (isDone ? 'text-green-600' : isError ? 'text-red-500' : 'text-gray-900 hover:text-red-600')
+          }
+        >
+          {count.toLocaleString()}
+        </button>
+      )}
+    </td>
   );
 }
 
