@@ -50,6 +50,16 @@ const MIGRATION_TYPES = [
   { value: 'DELTA', label: 'Delta Migration',    desc: 'Pick up changes since the last run' },
 ];
 
+const BASE_DOWNLOADS = 'C:\\Users\\NagaLakshmiMangina\\Downloads';
+const COMBINATION_DEFAULT_CSV = {
+  'Slack → Microsoft Teams':         `${BASE_DOWNLOADS}\\Slack to teams mapping (1).csv`,
+  'Slack → Google Chat':             `${BASE_DOWNLOADS}\\slack to chat mapping.csv`,
+  'Slack → Slack':                   `${BASE_DOWNLOADS}\\Slack to Slack mapping.csv`,
+  'Microsoft Teams → Microsoft Teams': `${BASE_DOWNLOADS}\\Teams to Teams mapping.csv`,
+  'Microsoft Teams → Google Chat':   `${BASE_DOWNLOADS}\\Teams to chat mapping.csv`,
+  'Google Chat → Microsoft Teams':   `${BASE_DOWNLOADS}\\chat to teams Mapping.csv`,
+};
+
 export default function MessageAgentForm({
   onSubmit,
   onSeed,
@@ -65,7 +75,7 @@ export default function MessageAgentForm({
     messageCombination: MESSAGE_MIGRATION_COMBINATIONS[0],
     channelIdsRaw: '',
     dmIdsRaw: '',
-    userMappingCsvPath: 'C:\\Users\\NagaLakshmiMangina\\Downloads\\Slack to teams mapping (1).csv',
+    userMappingCsvPath: COMBINATION_DEFAULT_CSV[MESSAGE_MIGRATION_COMBINATIONS[0]] || '',
     recordingPath: '',
   });
 
@@ -179,6 +189,16 @@ export default function MessageAgentForm({
     setCfCacheFetchedAt(null);
     setCfSrcCloudId('');
     setCfDstCloudId('');
+    // Auto-set the CSV path to the correct default for this combination.
+    // Only overwrite if the current value is one of the known defaults (i.e. not manually edited).
+    const knownDefaults = new Set(Object.values(COMBINATION_DEFAULT_CSV));
+    setForm(prev => {
+      const currentPath = (prev.userMappingCsvPath || '').trim();
+      if (!currentPath || knownDefaults.has(currentPath)) {
+        return { ...prev, userMappingCsvPath: COMBINATION_DEFAULT_CSV[prev.messageCombination] || '' };
+      }
+      return prev;
+    });
   }, [form.messageCombination]);
 
   const normCh = useCallback((arr, type) => (Array.isArray(arr) ? arr : []).map(ch => {
