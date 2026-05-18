@@ -4,14 +4,13 @@ import { getCustomTestCases, updateCustomTestCase } from '../services/api';
 import { useToast } from '../context/ToastContext';
 
 /* ── Table style constants (identical to TestCaseGenerator) ── */
-const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
-const TD = 'px-3 py-2.5 text-xs text-black border-b border-r border-[#c5cef5] align-top';
+const TH = 'px-4 py-3 text-left text-sm font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
+const TD = 'px-4 py-3 text-sm text-black border-b border-r border-[#c5cef5] align-top';
 
 const COLS = {
   id:       'min-w-[120px] w-[120px]',
   summary:  'min-w-[200px] w-[200px]',
   action:   'min-w-[180px] w-[180px]',
-  testType: 'min-w-[90px]  w-[90px]',
   testData: 'min-w-[170px] w-[170px]',
   steps:    'min-w-[230px] w-[230px]',
   expected: 'min-w-[200px] w-[200px]',
@@ -40,11 +39,10 @@ function StepsCell({ steps }) {
 }
 
 /* ── Editable row ── */
-function EditableRow({ tc, testType, onSave, onCancel, saving }) {
+function EditableRow({ tc, onSave, onCancel, saving }) {
   const [vals, setVals] = useState({
     summary:        tc.summary || '',
     action:         tc.action || '',
-    testType:       tc.testType || testType,
     testData:       tc.testData || '',
     testSteps:      (tc.testSteps || []).join('\n'),
     expectedResult: tc.expectedResult || '',
@@ -76,12 +74,6 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
       </td>
       <td className={`${TD} ${COLS.action}`}>
         <textarea rows={3} className={INPUT_CLS} value={vals.action} onChange={set('action')} />
-      </td>
-      <td className={`${TD} ${COLS.testType}`}>
-        <select className={SELECT_CLS} value={vals.testType} onChange={set('testType')}>
-          <option value="smoke">Smoke</option>
-          <option value="sanity">Sanity</option>
-        </select>
       </td>
       <td className={`${TD} ${COLS.testData}`}>
         <textarea rows={3} className={INPUT_CLS} value={vals.testData} onChange={set('testData')} />
@@ -145,7 +137,7 @@ function EditableRow({ tc, testType, onSave, onCancel, saving }) {
 }
 
 /* ── Read-only row ── */
-function ReadRow({ tc, testType, onEdit }) {
+function ReadRow({ tc, onEdit }) {
   return (
     <tr className="hover:bg-[#eef1fb]/40 transition-colors group">
       <td className={`${TD} ${COLS.id}`}>
@@ -155,13 +147,6 @@ function ReadRow({ tc, testType, onEdit }) {
       </td>
       <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || <span className="text-gray-400">—</span>}</td>
       <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
-      <td className={`${TD} ${COLS.testType}`}>
-        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
-          'bg-[#eef1fb] text-[#0129ac]'
-        }`}>
-          {((tc.testType || testType).charAt(0).toUpperCase() + (tc.testType || testType).slice(1))}
-        </span>
-      </td>
       <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
       <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
       <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
@@ -185,7 +170,7 @@ function ReadRow({ tc, testType, onEdit }) {
 }
 
 /* ── Table wrapper ── */
-function RepoTable({ cases, testType, editingId, savingId, onEdit, onSave, onCancel }) {
+function RepoTable({ cases, editingId, savingId, onEdit, onSave, onCancel }) {
   return (
     <div className="overflow-x-auto">
       <table className="border-collapse w-max min-w-full">
@@ -194,7 +179,6 @@ function RepoTable({ cases, testType, editingId, savingId, onEdit, onSave, onCan
             <th className={`${TH} ${COLS.id}`}>Test Case ID</th>
             <th className={`${TH} ${COLS.summary}`}>Summary</th>
             <th className={`${TH} ${COLS.action}`}>Action</th>
-            <th className={`${TH} ${COLS.testType}`}>Test Type</th>
             <th className={`${TH} ${COLS.testData}`}>Test Data</th>
             <th className={`${TH} ${COLS.steps}`}>Test Steps</th>
             <th className={`${TH} ${COLS.expected}`}>Expected Result</th>
@@ -210,16 +194,14 @@ function RepoTable({ cases, testType, editingId, savingId, onEdit, onSave, onCan
               <EditableRow
                 key={tc.id}
                 tc={tc}
-                testType={testType}
                 saving={savingId === tc.id}
-                onSave={(updates) => onSave(tc.id, tc.testType || testType, updates)}
+                onSave={(updates) => onSave(tc.id, updates)}
                 onCancel={onCancel}
               />
             ) : (
               <ReadRow
                 key={tc.id}
                 tc={tc}
-                testType={testType}
                 onEdit={onEdit}
               />
             )
@@ -262,7 +244,6 @@ function exportToExcel(cases, label) {
     'Test Case ID':    tc.testCaseId || tc.id || '',
     'Summary':         tc.summary || '',
     'Action':          tc.action || '',
-    'Test Type':       tc.testType ? tc.testType.charAt(0).toUpperCase() + tc.testType.slice(1) : '',
     'Test Data':       tc.testData || '',
     'Test Steps':      Array.isArray(tc.testSteps) ? tc.testSteps.map((s, i) => `${i + 1}. ${s}`).join('\n') : '',
     'Expected Result': tc.expectedResult || '',
@@ -273,9 +254,8 @@ function exportToExcel(cases, label) {
 
   const ws = XLSX.utils.json_to_sheet(rows);
 
-  // Column widths
   ws['!cols'] = [
-    { wch: 16 }, { wch: 36 }, { wch: 36 }, { wch: 10 },
+    { wch: 16 }, { wch: 36 }, { wch: 36 },
     { wch: 28 }, { wch: 48 }, { wch: 36 },
     { wch: 22 }, { wch: 14 }, { wch: 16 },
   ];
@@ -288,9 +268,8 @@ function exportToExcel(cases, label) {
 /* ── main page ── */
 export default function AgentRepo() {
   const toast = useToast();
-  const [allCases, setAllCases]             = useState({ smoke: [], sanity: [] });
+  const [allCases, setAllCases]             = useState([]);
   const [loading, setLoading]               = useState(true);
-  const [testType, setTestType]             = useState('smoke');
   const [expandedPT, setExpandedPT]         = useState(new Set());
   const [expandedCombos, setExpandedCombos] = useState(new Set());
   const [selected, setSelected]             = useState(null);
@@ -299,14 +278,18 @@ export default function AgentRepo() {
 
   function load() {
     return getCustomTestCases()
-      .then(({ data }) => setAllCases(data))
-      .catch(() => {});
+      .then(({ data }) => {
+        const cases = Array.isArray(data?.scenarios) ? data.scenarios : [];
+        setAllCases(cases);
+        return cases;
+      })
+      .catch(() => { setAllCases([]); return []; });
   }
 
   useEffect(() => {
     load()
-      .then(() => {
-        const t = buildTree(allCases.smoke || []);
+      .then((cases) => {
+        const t = buildTree(cases);
         const firstPT = Object.keys(t)[0];
         if (firstPT) {
           setExpandedPT(new Set([firstPT]));
@@ -317,13 +300,7 @@ export default function AgentRepo() {
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line
 
-  const activeCases = allCases[testType] || [];
-  const tree = useMemo(() => buildTree(activeCases), [activeCases]);
-
-  useEffect(() => {
-    setSelected(null);
-    setEditingId(null);
-  }, [testType]);
+  const tree = useMemo(() => buildTree(allCases), [allCases]);
 
   function togglePT(pt) {
     setExpandedPT((prev) => {
@@ -360,10 +337,10 @@ export default function AgentRepo() {
     return Object.values(tree[pt]?.[combo] || {}).flat().length;
   }
 
-  async function handleSave(id, type, updates) {
+  async function handleSave(id, updates) {
     setSavingId(id);
     try {
-      await updateCustomTestCase(id, type, updates);
+      await updateCustomTestCase(id, updates);
       await load();
       setEditingId(null);
       toast.success('Test case updated', 'Changes saved successfully.');
@@ -384,41 +361,27 @@ export default function AgentRepo() {
     <div className="-mx-6 -my-8 flex flex-col h-screen overflow-hidden">
 
       {/* ── Top bar ── */}
-      <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-[#c5cef5] flex-shrink-0">
+      <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-[#c5cef5] flex-shrink-0">
         <div>
-          <h1 className="text-lg font-bold text-black">Agent Repository</h1>
-          <p className="text-xs text-black">Browse and edit saved test cases by product, combination and folder</p>
+          <h1 className="text-xl font-bold" style={{ color: '#0129ac' }}>Agent Repository</h1>
+          <p className="text-sm" style={{ color: '#6b7280', marginTop: 2 }}>Browse and edit saved test scenarios by product, combination and folder</p>
         </div>
-        <div className="flex rounded-lg border border-[#c5cef5] overflow-hidden text-sm">
-          {['smoke', 'sanity'].map((type) => {
-            const count = (allCases[type] || []).length;
-            const isActive = testType === type;
-            return (
-              <button key={type} onClick={() => setTestType(type)}
-                className={`px-5 py-2 font-medium capitalize transition-colors ${
-                  isActive
-                    ? 'bg-[#0129ac] text-white'
-                    : 'text-black hover:bg-[#eef1fb]'
-                }`}>
-                {type}
-                <span className={`ml-1.5 text-xs ${isActive ? 'text-white/70' : 'text-black'}`}>({count})</span>
-              </button>
-            );
-          })}
-        </div>
+        <span className="px-4 py-2 rounded-lg bg-[#eef1fb] text-sm font-semibold" style={{ color: '#0129ac', border: '1px solid #c5cef5' }}>
+          {allCases.length} scenario{allCases.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
       {/* ── Body ── */}
       <div className="flex flex-1 overflow-hidden">
 
         {/* Left 3-level tree */}
-        <aside className="w-64 flex-shrink-0 bg-white border-r border-[#c5cef5] overflow-y-auto">
-          <p className="px-4 pt-4 pb-2 text-[10px] font-bold tracking-widest text-black uppercase select-none">
+        <aside className="w-72 flex-shrink-0 bg-white border-r border-[#c5cef5] overflow-y-auto">
+          <p className="px-4 pt-4 pb-2 text-xs font-bold tracking-widest text-black uppercase select-none">
             Product Types
           </p>
-          {loading && <p className="px-4 py-3 text-xs text-black">Loading…</p>}
+          {loading && <p className="px-4 py-3 text-sm text-black">Loading…</p>}
           {!loading && Object.keys(tree).length === 0 && (
-            <p className="px-4 py-3 text-xs text-black">No {testType} test cases saved yet.</p>
+            <p className="px-4 py-3 text-sm text-black">No test scenarios saved yet.</p>
           )}
 
           {Object.keys(tree).sort().map((pt) => {
@@ -428,8 +391,8 @@ export default function AgentRepo() {
               <div key={pt}>
                 {/* Level 1 — Product Type */}
                 <button onClick={() => togglePT(pt)}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm font-semibold text-black hover:bg-[#eef1fb] transition-colors">
-                  <Icon className="w-4 h-4 text-[#0129ac] flex-shrink-0" />
+                  className="w-full flex items-center gap-2.5 px-4 py-3 text-sm font-bold text-black hover:bg-[#eef1fb] transition-colors">
+                  <Icon className="w-5 h-5 text-[#0129ac] flex-shrink-0" />
                   <span className="flex-1 text-left">{pt}</span>
                   <svg className={`w-3.5 h-3.5 text-black transition-transform ${ptExpanded ? 'rotate-180' : ''}`}
                     fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
@@ -505,13 +468,13 @@ export default function AgentRepo() {
           ) : (
             <div>
               {/* Panel header */}
-              <div className="px-6 py-4 border-b border-[#c5cef5] flex items-center justify-between flex-shrink-0 bg-white sticky top-0 z-20">
+              <div className="px-6 py-5 border-b border-[#c5cef5] flex items-center justify-between flex-shrink-0 bg-white sticky top-0 z-20">
                 <div>
-                  <p className="text-xs text-black mb-0.5">
+                  <p className="text-sm mb-1" style={{ color: '#6b7280' }}>
                     {selected.productType} / {selected.combination}
-                    {selected.folder && <> / <span className="font-medium text-black">{selected.folder}</span></>}
+                    {selected.folder && <> / <span className="font-medium" style={{ color: '#0129ac' }}>{selected.folder}</span></>}
                   </p>
-                  <h2 className="text-base font-semibold text-black">{panelTitle}</h2>
+                  <h2 className="text-lg font-bold" style={{ color: '#0129ac' }}>{panelTitle}</h2>
                 </div>
                 <div className="flex items-center gap-3">
                   {editingId && (
@@ -525,7 +488,7 @@ export default function AgentRepo() {
                   {rightCases.length > 0 && (
                     <button
                       type="button"
-                      onClick={() => exportToExcel(rightCases, panelTitle || testType)}
+                      onClick={() => exportToExcel(rightCases, panelTitle || 'scenarios')}
                       className="flex items-center gap-1.5 px-3 py-1.5 border border-[#c5cef5] text-black hover:border-[#0129ac] hover:text-[#0129ac] hover:bg-[#eef1fb] text-xs font-medium rounded-lg transition-colors"
                       title="Download as Excel"
                     >
@@ -540,12 +503,11 @@ export default function AgentRepo() {
 
               {rightCases.length === 0 ? (
                 <div className="px-6 py-16 text-center text-sm text-black">
-                  No {testType} test cases found here.
+                  No test scenarios found here.
                 </div>
               ) : (
                 <RepoTable
                   cases={rightCases}
-                  testType={testType}
                   editingId={editingId}
                   savingId={savingId}
                   onEdit={setEditingId}

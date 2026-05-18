@@ -24,6 +24,17 @@ export function migrateMessageAgent(payload) {
 }
 
 /**
+ * Upload a user-mapping CSV to the server as text.
+ * Backend saves it to a temp file and returns the absolute path used by Playwright.
+ * @param {string} content  Raw CSV text
+ * @param {string} filename Original filename (used only for temp file naming)
+ * @returns `{ filePath: string, rows: number }`
+ */
+export function uploadMappingCsv(content, filename) {
+  return api.post('/agents/upload-mapping-csv', { content, filename });
+}
+
+/**
  * Fetch source channels + DMs by name for the Message Agent picker.
  *
  * @param {'slack'|'microsoft'|'google'} provider
@@ -97,6 +108,14 @@ export function cleanSource(email) {
   return api.post('/agents/clean-source', { email }, { timeout: 0 });
 }
 
+export function closeCFChatMigration(jobIds) {
+  return api.post('/agents/cf-close-migration', { jobIds }, { timeout: 60000 });
+}
+
+export function validateCFChatMigration(payload) {
+  return api.post('/agents/cf-validate-migration', payload, { timeout: 30000 });
+}
+
 export function getTestRepositoryData() {
   return api.get('/test-repository/data');
 }
@@ -159,20 +178,20 @@ export function getCustomTestCases() {
   return api.get('/test-cases/custom');
 }
 
-export function addCustomTestCase(payload) {
-  return api.post('/test-cases/custom', payload);
+export function addCustomTestCase(testCase) {
+  return api.post('/test-cases/custom', { testCase });
 }
 
-export function addBulkTestCases(testType, testCases) {
-  return api.post('/test-cases/custom/bulk', { testType, testCases });
+export function addBulkTestCases(testCases) {
+  return api.post('/test-cases/custom/bulk', { testCases });
 }
 
-export function updateCustomTestCase(id, testType, updates) {
-  return api.put(`/test-cases/custom/${id}`, { testType, updates });
+export function updateCustomTestCase(id, updates) {
+  return api.put(`/test-cases/custom/${id}`, { updates });
 }
 
-export function deleteCustomTestCase(id, testType) {
-  return api.delete(`/test-cases/custom/${id}?testType=${encodeURIComponent(testType)}`);
+export function deleteCustomTestCase(id) {
+  return api.delete(`/test-cases/custom/${id}`);
 }
 
 // ─── OAuth / Connect Accounts ────────────────────────────────────────────────

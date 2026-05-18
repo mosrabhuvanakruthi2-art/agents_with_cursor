@@ -7,10 +7,16 @@ const CUSTOM_CASES_FILE = path.resolve(__dirname, '../../data/custom-test-cases.
 
 function readCustomCases() {
   try {
-    if (!fs.existsSync(CUSTOM_CASES_FILE)) return { smoke: [], sanity: [] };
-    return JSON.parse(fs.readFileSync(CUSTOM_CASES_FILE, 'utf8'));
+    if (!fs.existsSync(CUSTOM_CASES_FILE)) return { scenarios: [] };
+    const raw = JSON.parse(fs.readFileSync(CUSTOM_CASES_FILE, 'utf8'));
+    // Migrate old smoke/sanity format to flat scenarios array
+    if (raw.smoke !== undefined || raw.sanity !== undefined) {
+      const all = [...(raw.smoke || []), ...(raw.sanity || [])];
+      return { scenarios: all };
+    }
+    return { scenarios: raw.scenarios || [] };
   } catch {
-    return { smoke: [], sanity: [] };
+    return { scenarios: [] };
   }
 }
 
@@ -458,34 +464,30 @@ function getCustomTestCases(req, res) {
 }
 
 function addCustomTestCase(req, res) {
-  const { testType, testCase } = req.body || {};
+  const { testCase } = req.body || {};
 
-  if (!testType || !['smoke', 'sanity'].includes(testType)) {
-    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
-  }
-  if (!testCase || !testCase.subject) {
-    return res.status(400).json({ error: 'testCase with subject is required' });
+  const summary = testCase?.summary || testCase?.subject;
+  if (!testCase || !summary) {
+    return res.status(400).json({ error: 'testCase with summary is required' });
   }
 
   const data = readCustomCases();
 
-  if (isDuplicate(data[testType], testCase)) {
+  if (isDuplicate(data.scenarios, testCase)) {
     return res.status(409).json({
       error: 'duplicate',
-      message: `"${testCase.summary || testCase.subject}" already exists in ${testType} test cases.`,
+      message: `"${summary}" already exists in test scenarios.`,
     });
   }
 
-  const nextNum = data[testType].length + 1;
-  const idPrefix = testType === 'smoke' ? 'Testsmoke' : 'Testsanity';
-  const testCaseId = `${idPrefix}${nextNum}`;
+  const nextNum = data.scenarios.length + 1;
+  const testCaseId = `Testscenario${nextNum}`;
 
   const entry = {
     id: testCaseId,
     testCaseId,
-    testType,
     addedAt: new Date().toISOString(),
-    summary: testCase.summary || testCase.subject,
+    summary,
     action: testCase.action || '',
     messageCount: parseInt(testCase.messageCount, 10) || 0,
     testData: testCase.testData || '',
@@ -493,8 +495,8 @@ function addCustomTestCase(req, res) {
     expectedResult: testCase.expectedResult || '',
     combination: testCase.combination || '',
     productType: testCase.productType || 'Mail',
-    folder: testCase.folder || (testType === 'smoke' ? '/Smoke Cases' : '/Sanity Cases'),
-    subject: testCase.subject,
+    folder: testCase.folder || '',
+    subject: summary,
     textBody: testCase.textBody || '',
     htmlBody: testCase.htmlBody || undefined,
     labelIds: testCase.labelIds || ['INBOX'],
@@ -502,41 +504,37 @@ function addCustomTestCase(req, res) {
   };
   if (!entry.htmlBody) delete entry.htmlBody;
 
-  data[testType].push(entry);
+  data.scenarios.push(entry);
   writeCustomCases(data);
   res.json({ success: true, entry });
 }
 
-// Add multiple test cases at once (used by Select All)
+// Add multiple test cases at once
 function addBulkTestCases(req, res) {
-  const { testType, testCases } = req.body || {};
+  const { testCases } = req.body || {};
 
-  if (!testType || !['smoke', 'sanity'].includes(testType)) {
-    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
-  }
   if (!Array.isArray(testCases) || testCases.length === 0) {
     return res.status(400).json({ error: 'testCases array is required' });
   }
 
   const data = readCustomCases();
-  const idPrefix = testType === 'smoke' ? 'Testsmoke' : 'Testsanity';
   const added = [];
   const skipped = [];
 
   for (const testCase of testCases) {
-    if (!testCase || !testCase.subject) continue;
-    if (isDuplicate(data[testType], testCase)) {
-      skipped.push(testCase.summary || testCase.subject);
+    const tcSummary = testCase?.summary || testCase?.subject;
+    if (!testCase || !tcSummary) continue;
+    if (isDuplicate(data.scenarios, testCase)) {
+      skipped.push(tcSummary);
       continue;
     }
-    const nextNum = data[testType].length + 1;
-    const testCaseId = `${idPrefix}${nextNum}`;
+    const nextNum = data.scenarios.length + 1;
+    const testCaseId = `Testscenario${nextNum}`;
     const entry = {
       id: testCaseId,
       testCaseId,
-      testType,
       addedAt: new Date().toISOString(),
-      summary: testCase.summary || testCase.subject,
+      summary: tcSummary,
       action: testCase.action || '',
       messageCount: parseInt(testCase.messageCount, 10) || 0,
       testData: testCase.testData || '',
@@ -544,15 +542,15 @@ function addBulkTestCases(req, res) {
       expectedResult: testCase.expectedResult || '',
       combination: testCase.combination || '',
       productType: testCase.productType || 'Mail',
-      folder: testCase.folder || (testType === 'smoke' ? '/Smoke Cases' : '/Sanity Cases'),
-      subject: testCase.subject,
+      folder: testCase.folder || '',
+      subject: tcSummary,
       textBody: testCase.textBody || '',
       htmlBody: testCase.htmlBody || undefined,
       labelIds: testCase.labelIds || ['INBOX'],
       hasAttachment: !!testCase.hasAttachment,
     };
     if (!entry.htmlBody) delete entry.htmlBody;
-    data[testType].push(entry);
+    data.scenarios.push(entry);
     added.push(entry);
   }
 
@@ -562,17 +560,12 @@ function addBulkTestCases(req, res) {
 
 function deleteCustomTestCase(req, res) {
   const { id } = req.params;
-  const { testType } = req.query;
-
-  if (!testType || !['smoke', 'sanity'].includes(testType)) {
-    return res.status(400).json({ error: 'testType query param must be "smoke" or "sanity"' });
-  }
 
   const data = readCustomCases();
-  const before = data[testType].length;
-  data[testType] = data[testType].filter((tc) => tc.id !== id);
+  const before = data.scenarios.length;
+  data.scenarios = data.scenarios.filter((tc) => tc.id !== id);
 
-  if (data[testType].length === before) {
+  if (data.scenarios.length === before) {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
@@ -588,30 +581,27 @@ const UPDATABLE_FIELDS = [
 
 function updateCustomTestCase(req, res) {
   const { id } = req.params;
-  const { testType, updates } = req.body || {};
+  const { updates } = req.body || {};
 
-  if (!testType || !['smoke', 'sanity'].includes(testType)) {
-    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
-  }
   if (!updates || typeof updates !== 'object') {
     return res.status(400).json({ error: 'updates object is required' });
   }
 
   const data = readCustomCases();
-  const idx = data[testType].findIndex((tc) => tc.id === id);
+  const idx = data.scenarios.findIndex((tc) => tc.id === id);
   if (idx === -1) {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
   for (const key of UPDATABLE_FIELDS) {
     if (updates[key] !== undefined) {
-      data[testType][idx][key] = updates[key];
+      data.scenarios[idx][key] = updates[key];
     }
   }
-  data[testType][idx].updatedAt = new Date().toISOString();
+  data.scenarios[idx].updatedAt = new Date().toISOString();
 
   writeCustomCases(data);
-  res.json({ success: true, entry: data[testType][idx] });
+  res.json({ success: true, entry: data.scenarios[idx] });
 }
 
 module.exports = {

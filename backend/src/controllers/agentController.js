@@ -397,6 +397,142 @@ async function getCFReports(req, res) {
 }
 
 /**
+ * POST /api/agents/cf-close-migration
+ * Body: { jobIds: string[], combination?: string }
+ * Calls the CloudFuze API to close (archive) the specified migration jobs.
+ */
+async function closeCFChatJobs(req, res) {
+  try {
+    const { jobIds = [] } = req.body;
+    if (!jobIds.length) return res.status(400).json({ error: 'jobIds array is required' });
+    const result = await migrationClient.closeChatMigrationJobs(jobIds);
+    res.json({ success: true, closed: jobIds.length, result });
+  } catch (err) {
+    const cfBody = err.response?.data;
+    const detail = (typeof cfBody === 'string' ? cfBody : cfBody?.message || cfBody?.error || JSON.stringify(cfBody)) || err.message;
+    logger.error(`closeCFChatJobs error: ${detail}`);
+    res.status(500).json({ error: detail });
+  }
+}
+
+/**
+ * POST /api/agents/cf-validate-migration
+ * Body: { combination?: string, migrationStatus?: string, sourceLabel?: string, destLabel?: string }
+ *
+ * Fetches all jobs from CloudFuze, builds a validation summary by comparing
+ * totalMessages vs processedMessages for each job, stores the result as a new
+ * execution (so it appears in Validation Results), and returns the executionId.
+ */
+async function validateCFChatMigration(req, res) {
+  try {
+    const {
+      combination = 'S2T',
+      migrationStatus = 'All',
+      sourceLabel = '',
+      destLabel = '',
+    } = req.body;
+
+    const jobs = await migrationClient.getMigrationReports({ combination, migrationStatus });
+
+    const channelDetails = [];
+    const mismatches = [];
+
+    for (const job of jobs) {
+      const total     = Number(job.totalMessages)     || 0;
+      const processed = Number(job.processedMessages) || 0;
+      const inProg    = Number(job.inProgressMessages) || 0;
+      const status    = (job.migrationStatus || '').toLowerCase();
+      const isCompleted = status === 'completed';
+      const match = isCompleted && total === processed;
+
+      channelDetails.push({
+        name:             job.teamName || String(job.id || ''),
+        totalChannels:    Number(job.totalChannels) || 0,
+        totalMessages:    total,
+        processedMessages: processed,
+        inProgressMessages: inProg,
+        migrationStatus:  job.migrationStatus || '',
+        teamStatus:       job.teamStatus || '',
+        initiatedOn:      job.initiatedOn || '',
+        match,
+      });
+
+      if (!match) {
+        mismatches.push({
+          category: 'Message Count',
+          field: job.teamName || String(job.id || ''),
+          expected: total,
+          actual: processed,
+          migrationStatus: job.migrationStatus || '',
+        });
+      }
+    }
+
+    const totalJobs     = jobs.length;
+    const completedJobs = channelDetails.filter(j => j.migrationStatus.toLowerCase() === 'completed').length;
+    const partialJobs   = channelDetails.filter(j => j.migrationStatus.toLowerCase().includes('partial')).length;
+    const inProgressJobs = channelDetails.filter(j => j.migrationStatus.toLowerCase().includes('progress')).length;
+    const totalMessages   = channelDetails.reduce((s, j) => s + j.totalMessages, 0);
+    const processedMessages = channelDetails.reduce((s, j) => s + j.processedMessages, 0);
+
+    const overallStatus = mismatches.length === 0 ? 'MATCHED' : 'MISMATCH';
+
+    const executionId = `msg-val-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const now = new Date().toISOString();
+
+    try {
+      executionService.createRaw({
+        executionId,
+        kind: 'message-validation',
+        context: {
+          kind: 'message-validation',
+          combination,
+          sourceLabel: sourceLabel || combination.split('2')[0] || 'Source',
+          destLabel:   destLabel   || combination.split('2')[1] || 'Destination',
+          validatedAt: now,
+        },
+        status: 'COMPLETED',
+        currentAgent: null,
+        error: null,
+        createdAt: now,
+        completedAt: now,
+        result: {
+          validationSummary: {
+            overallStatus,
+            kind: 'message',
+            combination,
+            mismatches,
+            messageValidation: {
+              totalJobs,
+              completedJobs,
+              partialJobs,
+              inProgressJobs,
+              totalMessages,
+              processedMessages,
+              matchRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0,
+              channelDetails,
+            },
+          },
+        },
+      });
+    } catch (saveErr) {
+      logger.error(`validateCFChatMigration: failed to save execution: ${saveErr.message}`);
+    }
+
+    res.json({
+      executionId,
+      overallStatus,
+      summary: { totalJobs, completedJobs, partialJobs, inProgressJobs, totalMessages, processedMessages, mismatches: mismatches.length },
+    });
+  } catch (err) {
+    const cfBody = err.response?.data;
+    const detail = (typeof cfBody === 'string' ? cfBody : cfBody?.message || cfBody?.error || JSON.stringify(cfBody)) || err.message;
+    logger.error(`validateCFChatMigration error: ${detail}`);
+    res.status(500).json({ error: detail });
+  }
+}
+
+/**
  * Stage 1 — post Agent Repo test cases into source channels / DMs.
  * Runs MessageTestDataAgent only. Supports single pair or bulk mappedPairs.
  */
@@ -571,6 +707,33 @@ async function migrateMessageAgent(req, res) {
     });
   } catch (err) {
     logger.error(`migrateMessageAgent error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /api/agents/upload-mapping-csv
+ * Body: { filename?: string, content: string }   (content = raw CSV text)
+ * Saves the CSV to a server temp file and returns the absolute path.
+ * The path is then passed back in the CF-browser-migrate payload as userMappingCsvPath
+ * so Playwright can upload the exact file to the CloudFuze UI.
+ */
+async function uploadMappingCsv(req, res) {
+  try {
+    const { content, filename } = req.body;
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ error: 'content (CSV text) is required' });
+    }
+
+    const os = require('os');
+    const safe = (filename || 'mapping').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+    const filePath = path.join(os.tmpdir(), `cf_user_mapping_${Date.now()}_${safe}`);
+    fs.writeFileSync(filePath, content, 'utf8');
+
+    logger.info(`[uploadMappingCsv] Saved ${content.split('\n').length - 1} row(s) to ${filePath}`);
+    res.json({ filePath, rows: content.split('\n').filter(Boolean).length - 1 });
+  } catch (err) {
+    logger.error(`uploadMappingCsv error: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 }
@@ -1355,8 +1518,10 @@ async function startCFBrowserMigration(req, res) {
       userMappingCsvPath = null,
     } = req.body;
 
-    if (!sourceEmail || !destinationEmail) {
-      return res.status(400).json({ error: 'sourceEmail and destinationEmail are required' });
+    const hasCloudsById = !!(cfSrcCloudId && cfDstCloudId);
+    const hasCsvPath    = typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim().length > 0;
+    if ((!sourceEmail || !destinationEmail) && !hasCloudsById && !hasCsvPath) {
+      return res.status(400).json({ error: 'sourceEmail and destinationEmail are required (or provide cfSrcCloudId + cfDstCloudId, or userMappingCsvPath)' });
     }
     if (!sourcePlatform || !destinationPlatform) {
       return res.status(400).json({ error: 'sourcePlatform and destinationPlatform are required' });
@@ -1433,6 +1598,7 @@ module.exports = {
   runMessageAgent,
   seedMessageAgent,
   migrateMessageAgent,
+  uploadMappingCsv,
   getMessageTargets,
   getMessageUserStatus,
   debugGoogleChat,
@@ -1443,6 +1609,8 @@ module.exports = {
   getCFChannelsAll,
   getCFChannelsCache,
   getCFReports,
+  closeCFChatJobs,
+  validateCFChatMigration,
   getCFBrowserEvents,
   startCFBrowserMigration,
   abortCFBrowserMigration,

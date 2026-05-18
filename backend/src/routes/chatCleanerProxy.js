@@ -580,7 +580,7 @@ async function slackEnrichAndFilter(token, channels, startDate, endDate) {
   return results;
 }
 
-// Error messages Slack returns when archive is not applicable to a DM/group-DM
+// Errors that mean archive doesn't apply — use conversations.close for DMs instead
 const SLACK_ARCHIVE_DM_ERRORS = new Set([
   'cant_archive_dm_channel',
   'method_not_supported_for_channel_type',
@@ -589,15 +589,56 @@ const SLACK_ARCHIVE_DM_ERRORS = new Set([
 ]);
 
 async function slackArchiveOrClose(token, channelId) {
-  try {
+  const tryArchive = async () => {
     await slackPost(token, 'conversations.archive', { channel: channelId });
-  } catch (archErr) {
-    if (SLACK_ARCHIVE_DM_ERRORS.has(archErr.message)) {
-      // DM / group-DM — use close instead
-      await slackPost(token, 'conversations.close', { channel: channelId });
-    } else {
-      throw archErr;
+  };
+
+  const tryClose = async () => {
+    await slackPost(token, 'conversations.close', { channel: channelId });
+  };
+
+  const tryJoinThenArchive = async () => {
+    // Join the channel first (works for public channels; no-op if already member)
+    await slackPost(token, 'conversations.join', { channel: channelId }).catch(() => {});
+    await tryArchive();
+  };
+
+  try {
+    await tryArchive();
+  } catch (err1) {
+    const code = err1.message;
+
+    // Already done — treat as success
+    if (code === 'already_archived') return;
+
+    // DM / group-DM can't be archived — close it instead
+    if (SLACK_ARCHIVE_DM_ERRORS.has(code)) {
+      await tryClose();
+      return;
     }
+
+    // channel_not_found or not_in_channel: bot/user is not a member.
+    // Join first (public channels only), then retry archive.
+    if (code === 'channel_not_found' || code === 'not_in_channel') {
+      try {
+        await tryJoinThenArchive();
+        return;
+      } catch (err2) {
+        // If join + archive also fails, fall back to close (DM-like scenarios)
+        if (SLACK_ARCHIVE_DM_ERRORS.has(err2.message) || err2.message === 'cant_archive_dm_channel') {
+          await tryClose();
+          return;
+        }
+        // Private channel — we can't join; log as "already inaccessible" and skip
+        if (err2.message === 'channel_not_found' || err2.message === 'not_in_channel' ||
+            err2.message === 'is_private') {
+          throw new Error(`channel_not_found — channel may be private or already deleted (${channelId})`);
+        }
+        throw err2;
+      }
+    }
+
+    throw err1;
   }
 }
 

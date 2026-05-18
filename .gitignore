@@ -29,6 +29,13 @@ backend/data/test-repository.json
 chat-cleaner/service-account.json
 # Spring Boot local secrets override (client secrets, tokens)
 chat-cleaner/src/main/resources/application-local.properties
+chat-cleaner/application-local.properties
+
+# Extra env files with real credentials — keep local only
+backend/message_migration.env
+
+# Java build output
+chat-cleaner/target/
 
 # Claude IDE local config
 .claude/settings.local.json

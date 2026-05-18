@@ -37,7 +37,7 @@ function markSeeded(log, channelId, testCaseId, ts) {
 
 // ── Test case loader ──────────────────────────────────────────────────────────
 
-function loadMatchingCases({ testType, messageCombination, selectedTestCaseIds }, log) {
+function loadMatchingCases({ messageCombination, selectedTestCaseIds }, log) {
   let data;
   try {
     if (!fs.existsSync(CUSTOM_CASES_FILE)) {
@@ -50,8 +50,14 @@ function loadMatchingCases({ testType, messageCombination, selectedTestCaseIds }
     return [];
   }
 
-  const bucket = (testType || 'SANITY').toLowerCase();
-  const all = Array.isArray(data[bucket]) ? data[bucket] : [];
+  // Support both old { smoke, sanity } format and new flat { scenarios } format
+  let all;
+  if (Array.isArray(data.scenarios)) {
+    all = data.scenarios;
+  } else {
+    all = [...(Array.isArray(data.smoke) ? data.smoke : []), ...(Array.isArray(data.sanity) ? data.sanity : [])];
+  }
+
   const selectedIds = Array.isArray(selectedTestCaseIds) && selectedTestCaseIds.length > 0
     ? new Set(selectedTestCaseIds.map(String))
     : null;
@@ -69,7 +75,7 @@ function loadMatchingCases({ testType, messageCombination, selectedTestCaseIds }
   });
 
   if (filtered.length === 0 && messageCombination) {
-    log.warn(`No test cases for combination "${messageCombination}" in bucket "${bucket}". Falling back to all Message cases.`);
+    log.warn(`No test cases for combination "${messageCombination}". Falling back to all Message cases.`);
     const fallback = all.filter((tc) => {
       if ((tc.productType || '').toLowerCase() !== 'message') return false;
       if (selectedIds) {
@@ -78,11 +84,11 @@ function loadMatchingCases({ testType, messageCombination, selectedTestCaseIds }
       }
       return true;
     });
-    log.info(`Fallback lookup — bucket=${bucket} → ${fallback.length} case(s)`);
+    log.info(`Fallback lookup → ${fallback.length} case(s)`);
     return fallback;
   }
 
-  log.info(`Agent Repo lookup — bucket=${bucket}, combination=${messageCombination || 'any'} → ${filtered.length} case(s)`);
+  log.info(`Scenario lookup — combination=${messageCombination || 'any'} → ${filtered.length} case(s)`);
   return filtered;
 }
 
@@ -439,7 +445,6 @@ class MessageTestDataAgent extends BaseAgent {
       sourcePlatform,
       destinationPlatform,
       messageCombination,
-      testType,
       channelIds = [],
       dmIds = [],
       selectedTestCaseIds = [],
@@ -466,15 +471,15 @@ class MessageTestDataAgent extends BaseAgent {
 
     log.info(
       `Seeding — combination="${messageCombination}" src=${sourcePlatform} dst=${destinationPlatform} ` +
-      `testType=${testType} effectiveEmail=${effectiveSourceEmail}${usingAdmin ? ' (admin fallback)' : ''} ` +
+      `effectiveEmail=${effectiveSourceEmail}${usingAdmin ? ' (admin fallback)' : ''} ` +
       `channels=${channelIds.length} dms=${dmIds.length}`
     );
 
-    const cases = loadMatchingCases({ testType, messageCombination, selectedTestCaseIds }, log);
+    const cases = loadMatchingCases({ messageCombination, selectedTestCaseIds }, log);
 
     const rc = Math.max(1, parseInt(repeatCount, 10) || 1);
     const summary = {
-      testType, combination: messageCombination, sourcePlatform, destinationPlatform,
+      combination: messageCombination, sourcePlatform, destinationPlatform,
       sourceEmail, effectiveSourceEmail, usingAdminFallback: usingAdmin,
       totalTargets: channelIds.length + dmIds.length, totalCases: cases.length,
       repeatCount: rc,

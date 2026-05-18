@@ -15,6 +15,7 @@ import AgentRepo from './pages/AgentRepo';
 import ConnectAccounts from './pages/ConnectAccounts';
 import OAuthCallback from './pages/OAuthCallback';
 import MigrationReports from './pages/MigrationReports';
+import MsgMigrationStatus from './pages/MsgMigrationStatus';
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
         <Route path="run" element={<RunAgent />} />
         <Route path="message-agent" element={<MessageAgent />} />
         <Route path="migration-reports" element={<MigrationReports />} />
+        <Route path="msg-migration" element={<MsgMigrationStatus />} />
         <Route path="logs" element={<ExecutionLogs />} />
         <Route path="validation" element={<ValidationResults />} />
         <Route path="clean" element={<CleanDestination />} />

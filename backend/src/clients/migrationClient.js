@@ -401,7 +401,8 @@ async function triggerChatMigration(context) {
         channelName,
         workSpaceName: t.workSpaceName || srcAcct?.metadataUrl || '',
         destChannelName: t.destChannelName || channelName,
-        destTeamName: t.destTeamName || channelName || '/',
+        // Never send '/' — CF uses this literally as the destination team name in reports
+        destTeamName: t.destTeamName || t.workSpaceName || channelName || '',
         specialCharacter: '-',
         migrateAsSubChannel: false,
         toSplit: false,
@@ -579,6 +580,28 @@ async function getMigrationReports({ combination = '', migrationStatus = 'All' }
   return Array.isArray(res.data) ? res.data : [];
 }
 
+/**
+ * Close completed migration jobs (teams) in CloudFuze.
+ * POST /messagemove/close  (configurable via CHAT_MIGRATION_CLOSE_PATH env)
+ * Body: array of job objects with { id }
+ */
+async function closeChatMigrationJobs(jobIds) {
+  const { auth } = await login();
+  const client = getAuthClient(auth);
+  const closePath = (env.CHAT_MIGRATION_CLOSE_PATH || 'messagemove/close')
+    .trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  const payload = jobIds.map((id) => {
+    const num = Number(id);
+    return { id: Number.isFinite(num) ? num : id };
+  });
+  const res = await retryWithBackoff(
+    () => client.post(closePath, payload),
+    { label: 'CF closeChatMigrationJobs', maxRetries: 2 }
+  );
+  logger.info(`CF closeChatMigrationJobs: closed ${jobIds.length} job(s) via ${closePath}`);
+  return Array.isArray(res.data) ? res.data : [res.data];
+}
+
 function clearToken() {
   cfAuth = null;
 }
@@ -592,6 +615,7 @@ module.exports = {
   getCloudChannels,
   getCloudDMs,
   getMigrationReports,
+  closeChatMigrationJobs,
   clearToken,
   migrationAxiosConfig,
 };

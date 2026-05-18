@@ -6,10 +6,18 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="flex h-screen bg-white">
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((p) => !p)} />
-      <main className="flex-1 overflow-y-auto min-w-0">
-        <div className="max-w-7xl mx-auto px-6 py-8">
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: '#ffffff' }}>
+      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(p => !p)} />
+      <main style={{
+        flex: 1,
+        overflowY: 'auto',
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: '#ffffff',
+        borderLeft: '1px solid #e8edf8',
+      }}>
+        <div style={{ flex: 1, padding: '28px 32px 32px', width: '100%', maxWidth: '100%' }}>
           <Outlet />
         </div>
       </main>

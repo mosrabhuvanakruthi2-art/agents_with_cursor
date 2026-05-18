@@ -53,20 +53,18 @@ export default function ValidationResults() {
   const destData = validation?.destinationData;
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="page-wrap">
+      <div className="page-header">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Validation Results</h1>
-          <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>Review migration validation details</p>
+          <h1 className="page-title">Validation Results</h1>
+          <p className="page-subtitle">Review migration validation details</p>
         </div>
         {selectedId && (
           <button
             onClick={handleDownloadPdf}
             disabled={downloading}
-            className="px-5 py-2.5 text-white text-sm font-semibold rounded-lg disabled:opacity-50 transition-all flex items-center gap-2"
-            style={{ backgroundColor: '#0129ac' }}
-            onMouseEnter={e => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#011e8a'; }}
-            onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0129ac'}
+            className="btn btn-primary disabled:opacity-50 flex items-center gap-2"
+            style={{ padding: '10px 20px', fontSize: 14 }}
           >
             {downloading ? (
               <>
@@ -88,43 +86,49 @@ export default function ValidationResults() {
         )}
       </div>
 
-      <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
-        <label className="block text-sm font-medium mb-2" style={{ color: '#0129ac' }}>Select Execution</label>
+      <div className="card">
+        <div className="card-body" style={{ padding: '20px 24px' }}>
+        <label className="block font-bold mb-3" style={{ color: '#0129ac', fontSize: 14 }}>Select Execution</label>
         {loading ? (
-          <p className="text-sm" style={{ color: '#7a8fd4' }}>Loading...</p>
+          <p style={{ fontSize: 14, color: '#7a8fd4' }}>Loading...</p>
         ) : executions.length === 0 ? (
-          <p className="text-sm" style={{ color: '#4a65c0' }}>No completed executions with validation data</p>
+          <p style={{ fontSize: 14, color: '#4a65c0' }}>No completed executions with validation data</p>
         ) : (
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
-            className="w-full max-w-lg px-4 py-2.5 rounded-lg text-sm outline-none bg-white"
-            style={{ border: '1px solid #c5cef5', color: '#0129ac' }}
+            className="w-full rounded-lg outline-none bg-white"
+            style={{ border: '1px solid #c5cef5', color: '#0129ac', padding: '12px 16px', fontSize: 14 }}
           >
-            {executions.map((exec) => (
-              <option key={exec.executionId} value={exec.executionId}>
-                {exec.executionId.slice(0, 8)}... | {exec.context?.sourceEmail} → {exec.context?.destinationEmail} | {new Date(exec.createdAt).toLocaleString()}
-              </option>
-            ))}
+            {executions.map((exec) => {
+              const isMsg = exec.context?.kind === 'message-validation';
+              const label = isMsg
+                ? `${exec.executionId.slice(0, 8)}... | Msg Migration (${exec.context?.combination || ''}) | ${new Date(exec.createdAt).toLocaleString()}`
+                : `${exec.executionId.slice(0, 8)}... | ${exec.context?.sourceEmail} → ${exec.context?.destinationEmail} | ${new Date(exec.createdAt).toLocaleString()}`;
+              return <option key={exec.executionId} value={exec.executionId}>{label}</option>;
+            })}
           </select>
         )}
+        </div>
       </div>
 
       {validation && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
-            <div className="flex items-center gap-4 mb-4">
-              <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Overall Status</h2>
+        <div className="page-wrap">
+          <div className="card">
+            <div className="card-header">
+              <div className="card-title">Overall Status</div>
               <StatusBadge status={validation.overallStatus} />
             </div>
             {validation.mismatches?.length === 0 && (
-              <p className="text-sm" style={{ color: '#0129ac' }}>All validations passed — source and destination data match.</p>
+              <div className="card-body" style={{ padding: '16px 24px' }}>
+                <p style={{ fontSize: 14, color: '#0129ac' }}>All validations passed — source and destination data match.</p>
+              </div>
             )}
           </div>
 
           {sourceData && destData && (
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Source vs Destination Comparison</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: '#0129ac' }}>Source vs Destination Comparison</h2>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="rounded-xl border p-4" style={{
@@ -186,8 +190,8 @@ export default function ValidationResults() {
           )}
 
           {validation.mailValidation && (
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Mail Validation</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: '#0129ac' }}>Mail Validation</h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <ResultCard label="Total Messages" value={validation.mailValidation.destinationCount} />
                 <ResultCard label="Folders Found" value={validation.mailValidation.folderMapping?.length || 0} />
@@ -235,9 +239,54 @@ export default function ValidationResults() {
             </div>
           )}
 
+          {validation.kind === 'message' && validation.messageValidation && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: '#0129ac' }}>
+                Message Migration Validation — {validation.combination}
+              </h2>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+                <ResultCard label="Total Jobs" value={validation.messageValidation.totalJobs} />
+                <ResultCard label="Completed Jobs" value={validation.messageValidation.completedJobs} />
+                <ResultCard label="Total Messages" value={(validation.messageValidation.totalMessages || 0).toLocaleString()} />
+                <ResultCard label="Processed" value={(validation.messageValidation.processedMessages || 0).toLocaleString()} />
+              </div>
+              {validation.messageValidation.channelDetails?.length > 0 && (
+                <ValidationTable
+                  title="Channel / Team Details"
+                  rows={validation.messageValidation.channelDetails}
+                  columns={[
+                    { key: 'name', label: 'Team / Channel' },
+                    { key: 'totalMessages', label: 'Total Messages', render: (val) => (val || 0).toLocaleString() },
+                    { key: 'processedMessages', label: 'Processed', render: (val) => (val || 0).toLocaleString() },
+                    { key: 'migrationStatus', label: 'Migration Status' },
+                    { key: 'teamStatus', label: 'Team Status' },
+                    { key: 'match', label: 'Match', render: (val) => (
+                      <span style={{ fontSize: 12, fontWeight: 700, color: val ? '#059669' : '#dc2626' }}>
+                        {val ? 'Match' : 'Mismatch'}
+                      </span>
+                    )},
+                  ]}
+                />
+              )}
+              {validation.mismatches?.length > 0 && (
+                <div style={{ borderRadius: 12, padding: '16px 20px', backgroundColor: '#fff0f0', border: '1px solid #fca5a5' }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 700, color: '#dc2626', marginBottom: 10 }}>
+                    Mismatches ({validation.mismatches.length})
+                  </h3>
+                  {validation.mismatches.map((m, idx) => (
+                    <div key={idx} style={{ fontSize: 13, color: '#991b1b', padding: '6px 0', borderTop: idx > 0 ? '1px solid #fecdd3' : 'none' }}>
+                      <strong>{m.field}</strong>: expected {(m.expected || 0).toLocaleString()} msgs — got {(m.actual || 0).toLocaleString()} msgs
+                      {m.migrationStatus && <span style={{ marginLeft: 8, fontSize: 11, color: '#7f1d1d' }}>({m.migrationStatus})</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {validation.calendarValidation && validation.calendarValidation.destinationEventCount > 0 && (
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold" style={{ color: '#0129ac' }}>Calendar Validation</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700, color: '#0129ac' }}>Calendar Validation</h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <ResultCard label="Total Events" value={validation.calendarValidation.destinationEventCount} />
                 <ResultCard label="Recurring Events" value={validation.calendarValidation.recurringEvents?.length || 0} />
@@ -273,27 +322,27 @@ function ComparisonTable({ title, sourceItems, destItems, mapping }) {
   });
 
   return (
-    <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
-      <div className="px-5 py-3" style={{ borderBottom: '1px solid #eef1fb' }}>
-        <h3 className="text-sm font-semibold" style={{ color: '#0129ac' }}>{title}</h3>
+    <div className="card overflow-hidden">
+      <div className="card-header">
+        <div className="card-title">{title}</div>
       </div>
-      <table className="w-full text-sm">
+      <table className="data-table">
         <thead>
-          <tr style={{ backgroundColor: '#eef1fb' }}>
-            <th className="px-5 py-2.5 text-left text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Label / Folder</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Source</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Destination</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Status</th>
+          <tr>
+            <th>Label / Folder</th>
+            <th style={{ textAlign: 'right' }}>Source</th>
+            <th style={{ textAlign: 'right' }}>Destination</th>
+            <th style={{ textAlign: 'right' }}>Status</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, idx) => (
-            <tr key={idx} className="border-t" style={{ borderColor: '#eef1fb', backgroundColor: r.match ? '#f5f7fd' : '#eef1fb' }}>
-              <td className="px-5 py-2.5 font-medium" style={{ color: '#0129ac' }}>{r.label}</td>
-              <td className="px-5 py-2.5 text-right" style={{ color: '#2a40a8' }}>{r.srcCount}</td>
-              <td className="px-5 py-2.5 text-right" style={{ color: '#2a40a8' }}>{r.destCount}</td>
-              <td className="px-5 py-2.5 text-right">
-                <span className="text-xs font-semibold" style={{ color: r.match ? '#0129ac' : '#011e8a', fontWeight: 700 }}>
+            <tr key={idx} style={{ backgroundColor: r.match ? '#f5f7fd' : '#fff9eb' }}>
+              <td style={{ fontWeight: 600, color: '#0129ac' }}>{r.label}</td>
+              <td style={{ textAlign: 'right', color: '#2a40a8' }}>{r.srcCount}</td>
+              <td style={{ textAlign: 'right', color: '#2a40a8' }}>{r.destCount}</td>
+              <td style={{ textAlign: 'right' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: r.match ? '#059669' : '#dc2626' }}>
                   {r.match ? 'Match' : 'Mismatch'}
                 </span>
               </td>
@@ -308,9 +357,11 @@ function ComparisonTable({ title, sourceItems, destItems, mapping }) {
 function CustomComparisonTable({ title, sourceItems, destItems }) {
   if (sourceItems.length === 0 && destItems.length === 0) {
     return (
-      <div className="bg-white rounded-xl p-5" style={{ border: '1px solid #c5cef5' }}>
-        <h3 className="text-sm font-semibold" style={{ color: '#0129ac' }}>{title}</h3>
-        <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>No custom labels/folders found.</p>
+      <div className="card">
+        <div className="card-body" style={{ padding: '16px 24px' }}>
+          <p style={{ fontSize: 14, fontWeight: 600, color: '#0129ac', marginBottom: 6 }}>{title}</p>
+          <p style={{ fontSize: 14, color: '#4a65c0' }}>No custom labels/folders found.</p>
+        </div>
       </div>
     );
   }
@@ -327,29 +378,29 @@ function CustomComparisonTable({ title, sourceItems, destItems }) {
   });
 
   return (
-    <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
-      <div className="px-5 py-3" style={{ borderBottom: '1px solid #eef1fb' }}>
-        <h3 className="text-sm font-semibold" style={{ color: '#0129ac' }}>{title} ({sourceItems.length} source, {destItems.length} destination)</h3>
+    <div className="card overflow-hidden">
+      <div className="card-header">
+        <div className="card-title">{title} ({sourceItems.length} source, {destItems.length} destination)</div>
       </div>
-      <table className="w-full text-sm">
+      <table className="data-table">
         <thead>
-          <tr style={{ backgroundColor: '#eef1fb' }}>
-            <th className="px-5 py-2.5 text-left text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Label / Folder</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Source</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Destination</th>
-            <th className="px-5 py-2.5 text-right text-xs font-medium uppercase" style={{ color: '#4a65c0' }}>Status</th>
+          <tr>
+            <th>Label / Folder</th>
+            <th style={{ textAlign: 'right' }}>Source</th>
+            <th style={{ textAlign: 'right' }}>Destination</th>
+            <th style={{ textAlign: 'right' }}>Status</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, idx) => (
-            <tr key={idx} className="border-t" style={{ borderColor: '#eef1fb', backgroundColor: r.match ? '#f5f7fd' : '#eef1fb' }}>
-              <td className="px-5 py-2.5 font-medium" style={{ color: '#0129ac' }}>{r.name}</td>
-              <td className="px-5 py-2.5 text-right" style={{ color: '#2a40a8' }}>{r.srcCount}</td>
-              <td className="px-5 py-2.5 text-right" style={{ color: '#2a40a8' }}>
-                {r.found ? r.destCount : <span style={{ color: '#011e8a', fontWeight: 600 }}>NOT FOUND</span>}
+            <tr key={idx} style={{ backgroundColor: r.match ? '#f5f7fd' : '#fff9eb' }}>
+              <td style={{ fontWeight: 600, color: '#0129ac' }}>{r.name}</td>
+              <td style={{ textAlign: 'right', color: '#2a40a8' }}>{r.srcCount}</td>
+              <td style={{ textAlign: 'right', color: '#2a40a8' }}>
+                {r.found ? r.destCount : <span style={{ color: '#dc2626', fontWeight: 600 }}>NOT FOUND</span>}
               </td>
-              <td className="px-5 py-2.5 text-right">
-                <span className="text-xs font-semibold" style={{ color: r.match ? '#0129ac' : '#011e8a' }}>
+              <td style={{ textAlign: 'right' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: r.match ? '#059669' : '#dc2626' }}>
                   {r.match ? 'Match' : r.found ? 'Mismatch' : 'Missing'}
                 </span>
               </td>
@@ -363,9 +414,9 @@ function CustomComparisonTable({ title, sourceItems, destItems }) {
 
 function ResultCard({ label, value }) {
   return (
-    <div className="bg-white rounded-xl p-4" style={{ border: '1px solid #c5cef5' }}>
-      <p className="text-xs font-medium uppercase tracking-wider" style={{ color: '#4a65c0' }}>{label}</p>
-      <p className="text-2xl font-bold mt-1" style={{ color: '#0129ac' }}>{value}</p>
+    <div className="stat-card blue">
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{label}</div>
+      <div style={{ fontSize: 32, fontWeight: 800, color: '#0129ac' }}>{value}</div>
     </div>
   );
 }

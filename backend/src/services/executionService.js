@@ -63,6 +63,12 @@ const executionService = {
     );
   },
 
+  createRaw(data) {
+    executions.set(data.executionId, data);
+    saveExecutions(executions);
+    return data;
+  },
+
   getStats() {
     const all = this.getAll();
     const completed = all.filter((e) => e.status === 'COMPLETED').length;

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import MessageAgentForm from '../components/MessageAgentForm';
 import StatusBadge from '../components/StatusBadge';
 import useMessageAgentExecution from '../hooks/useMessageAgentExecution';
-import { startCFBrowserMigration, abortCFBrowserMigration, getCFBrowserEvents } from '../services/api';
+import { startCFBrowserMigration, abortCFBrowserMigration, getCFBrowserEvents, validateCFChatMigration } from '../services/api';
 
 function normalizeRunResult(exec) {
   if (!exec || exec.bulk) return exec;
@@ -19,9 +19,7 @@ function normalizeRunResult(exec) {
 
 export default function MessageAgent() {
   const {
-    // legacy full-flow (kept for any bulk pair runs that still use /message-run)
     execution, loading, error, run,
-    // split flow
     seed, seedExecution, seedLoading, seedError,
     migrate, migrateExecution, migrateLoading, migrateError,
   } = useMessageAgentExecution();
@@ -33,6 +31,15 @@ export default function MessageAgent() {
   const [browserEvents, setBrowserEvents]       = useState([]);    // live step log
   const [browserRunning, setBrowserRunning]     = useState(false);
   const eventsIntervalRef = useRef(null);
+
+  // Post-migration close & validate state (One Time Migration only)
+  const [lastMigPayload, setLastMigPayload]       = useState(null);
+  const [closeState, setCloseState]               = useState('idle');  // idle | loading | done | error
+  const [closeLogs, setCloseLogs]                 = useState([]);
+  const [closeError, setCloseError]               = useState(null);
+  const [validateState, setValidateState]         = useState('idle');  // idle | loading | done | error
+  const [validationResult, setValidationResult]   = useState(null);
+  const [validateError, setValidateError]         = useState(null);
 
   // Start polling for browser step events as soon as automation begins
   function startEventPolling() {
@@ -60,9 +67,16 @@ export default function MessageAgent() {
   }, []);
 
   async function handleCFBrowserMigrate(payload) {
+    setLastMigPayload(payload);
     setCfBrowserLoading(true);
     setCfBrowserError(null);
     setCfBrowserStatus(null);
+    setCloseState('idle');
+    setCloseLogs([]);
+    setCloseError(null);
+    setValidateState('idle');
+    setValidationResult(null);
+    setValidateError(null);
     try {
       const { data } = await startCFBrowserMigration(payload);
       setCfBrowserStatus(data);
@@ -83,6 +97,116 @@ export default function MessageAgent() {
     } catch { /* ignore */ }
   }
 
+  // ── Post-migration helpers ────────────────────────────────────────────────
+
+  function getPlatformKey(platform) {
+    const p = (platform || '').toLowerCase();
+    if (p.includes('google') || p.includes('chat')) return 'gchat';
+    if (p.includes('microsoft') || p.includes('team')) return 'teams';
+    if (p.includes('slack')) return 'slack';
+    return 'gchat';
+  }
+
+  function buildCloseIds(payload) {
+    const { channelIds = [], dmIds = [], sourcePlatform } = payload;
+    const pk = getPlatformKey(sourcePlatform);
+    if (pk === 'gchat') {
+      return [...channelIds, ...dmIds].map(id => id.startsWith('spaces/') ? id : `spaces/${id}`);
+    }
+    if (pk === 'teams') {
+      const ch = channelIds.map(id => id.startsWith('groups/') ? id : `groups/${id}`);
+      const dm = dmIds.map(id => id.startsWith('chats/') ? id : `chats/${id}`);
+      return [...ch, ...dm];
+    }
+    return [...channelIds, ...dmIds]; // Slack: use as-is
+  }
+
+  async function handleCloseSource() {
+    if (!lastMigPayload) return;
+    setCloseState('loading');
+    setCloseLogs([]);
+    setCloseError(null);
+
+    const pk = getPlatformKey(lastMigPayload.sourcePlatform);
+    const endpoint = pk === 'teams' ? '/api/chat-cleaner/teams/delete-selected'
+      : pk === 'slack' ? '/api/chat-cleaner/slack/delete-selected'
+      : '/api/chat-cleaner/delete-selected';
+
+    const ids = buildCloseIds(lastMigPayload);
+    if (ids.length === 0) {
+      setCloseState('error');
+      setCloseError('No channels or DMs to close.');
+      return;
+    }
+
+    let closeFailed = false;
+
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ids),
+      });
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let currentEvent = 'message';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6).trim();
+            let parsed;
+            try { parsed = JSON.parse(raw); } catch { parsed = raw; }
+            const msg = typeof parsed === 'string' ? parsed : (parsed.msg || JSON.stringify(parsed));
+            setCloseLogs(prev => [...prev, { type: currentEvent, msg }]);
+            if (currentEvent === 'done') setCloseState('done');
+            if (currentEvent === 'fail') { setCloseState('error'); setCloseError(msg); closeFailed = true; }
+            currentEvent = 'message';
+          }
+        }
+      }
+      setCloseState(prev => prev === 'loading' ? 'done' : prev);
+    } catch (err) {
+      setCloseState('error');
+      setCloseError(err.message || 'Close operation failed');
+      closeFailed = true;
+    }
+
+    // Auto-trigger validation once close completes successfully
+    if (!closeFailed) {
+      await handleValidate();
+    }
+  }
+
+  async function handleValidate() {
+    if (!lastMigPayload) return;
+    setValidateState('loading');
+    setValidationResult(null);
+    setValidateError(null);
+    try {
+      const { data } = await validateCFChatMigration({
+        combination:  lastMigPayload.combination || '',
+        sourceLabel:  lastMigPayload.sourcePlatform || '',
+        destLabel:    lastMigPayload.destinationPlatform || '',
+      });
+      setValidationResult(data);
+      setValidateState('done');
+    } catch (err) {
+      setValidateState('error');
+      setValidateError(err?.response?.data?.error || err.message || 'Validation failed');
+    }
+  }
+
   // The Initiate Migration button now calls the split /message-migrate endpoint.
   // Keep `execution` for compatibility, but prefer the new split-phase state.
   const activeExecution = migrateExecution || execution;
@@ -93,15 +217,46 @@ export default function MessageAgent() {
   const runView = normalizeRunResult(activeExecution);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold" style={{ color: '#000000' }}>Message Agent</h1>
-        <p className="text-sm mt-1" style={{ color: '#555555' }}>
-          Select test cases from Agent Repo, post them to source channels & DMs, then initiate migration.
-        </p>
+    <div className="animate-fade-up" style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+
+      {/* ── Page Header ── */}
+      <div style={{
+        borderRadius: 16, overflow: 'hidden',
+        background: 'linear-gradient(135deg, #020c6b 0%, #0129ac 60%, #1845d4 100%)',
+        boxShadow: '0 6px 32px rgba(1,41,172,0.22)',
+      }}>
+        <div style={{ padding: '28px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.12)', border: '1.5px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <div>
+              <h1 style={{ fontSize: 22, fontWeight: 800, color: '#fff', margin: 0, letterSpacing: '-0.4px' }}>Message Agent</h1>
+              <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)', margin: '4px 0 0' }}>
+                Map users · Select channels · Seed test data · Migrate · Close source · Validate
+              </p>
+            </div>
+          </div>
+          {/* Workflow pill steps */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {['Map Users', 'Select Channels', 'Seed Data', 'Migrate', 'Close & Validate'].map((step, i, arr) => (
+              <div key={step} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.85)', backgroundColor: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 20, padding: '3px 12px', whiteSpace: 'nowrap' }}>
+                  {step}
+                </span>
+                {i < arr.length - 1 && (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
-      <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
+      {/* ── Configuration Form ── */}
+      <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid #c5cef5', boxShadow: '0 2px 12px rgba(1,41,172,0.06)' }}>
         <MessageAgentForm
           onSubmit={migrate}
           onSeed={seed}
@@ -114,80 +269,81 @@ export default function MessageAgent() {
         />
       </div>
 
-      {/* CF Browser automation — live step log */}
+      {/* ── CF Browser Automation — Live Log ── */}
       {(cfBrowserStatus || cfBrowserError || browserEvents.length > 0) && (
-        <div className="rounded-xl overflow-hidden"
-          style={{ border: `1px solid ${cfBrowserError ? '#cc0000' : '#0129ac'}` }}>
-
-          {/* Header */}
-          <div className="px-5 py-3 flex items-center justify-between gap-4 flex-wrap"
-            style={{ backgroundColor: cfBrowserError ? '#fff0f0' : '#0129ac' }}>
-            <div className="flex items-center gap-2">
-              {browserRunning && !cfBrowserError && (
-                <span className="inline-flex items-center gap-1.5">
-                  <svg className="animate-spin h-3.5 w-3.5 text-white" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        <div style={{ borderRadius: 16, overflow: 'hidden', border: `2px solid ${cfBrowserError ? '#fca5a5' : '#0129ac'}`, boxShadow: '0 4px 20px rgba(1,41,172,0.12)' }}>
+          {/* Header bar */}
+          <div style={{
+            padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+            background: cfBrowserError ? 'linear-gradient(135deg, #7f1d1d, #991b1b)' : 'linear-gradient(135deg, #020c6b 0%, #0129ac 100%)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {browserRunning && !cfBrowserError ? (
+                  <svg style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="4" fill="none" opacity="0.3"/>
+                    <path fill="white" opacity="0.8" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                   </svg>
-                </span>
-              )}
-              {!browserRunning && !cfBrowserError && browserEvents.length > 0 && (
-                <span className="text-white text-xs font-bold">✓</span>
-              )}
-              <h3 className="text-sm font-semibold" style={{ color: cfBrowserError ? '#cc0000' : '#fff' }}>
-                {cfBrowserError ? 'Browser Launch Failed' : browserRunning ? 'Browser Running — Migration in Progress' : 'Browser Session Complete'}
-              </h3>
+                ) : cfBrowserError ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                )}
+              </div>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 700, color: '#fff', margin: 0 }}>
+                  {cfBrowserError ? 'Browser Launch Failed' : browserRunning ? 'Browser Running — Migration in Progress' : 'Migration Submitted to CloudFuze'}
+                </p>
+                <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', margin: 0 }}>
+                  {cfBrowserError ? 'Check the error below and retry' : browserRunning ? `${browserEvents.length} steps completed` : 'Track real-time progress in CloudFuze Reports'}
+                </p>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {cfBrowserStatus?.reportsUrl && !cfBrowserError && (
                 <a href={cfBrowserStatus.reportsUrl} target="_blank" rel="noreferrer"
-                  className="text-xs font-semibold px-3 py-1 rounded-lg"
-                  style={{ backgroundColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none' }}>
+                  style={{ fontSize: 12, fontWeight: 700, padding: '6px 16px', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.15)', color: '#fff', textDecoration: 'none', border: '1px solid rgba(255,255,255,0.25)' }}>
                   Open Reports ↗
                 </a>
               )}
               {browserRunning && (
                 <button onClick={handleAbortCFBrowser}
-                  className="text-xs font-semibold px-3 py-1 rounded-lg"
-                  style={{ backgroundColor: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+                  style={{ fontSize: 12, fontWeight: 700, padding: '6px 14px', borderRadius: 8, backgroundColor: 'rgba(220,38,38,0.25)', color: '#fca5a5', border: '1px solid rgba(252,165,165,0.3)', cursor: 'pointer' }}>
                   Stop
                 </button>
               )}
               <button onClick={() => { setCfBrowserStatus(null); setCfBrowserError(null); setBrowserEvents([]); setBrowserRunning(false); if (eventsIntervalRef.current) clearInterval(eventsIntervalRef.current); }}
-                className="text-xs"
-                style={{ color: cfBrowserError ? '#cc0000' : 'rgba(255,255,255,0.7)' }}>
-                Dismiss
+                style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px' }}>
+                ✕
               </button>
             </div>
           </div>
 
-          {/* Error */}
+          {/* Error state */}
           {cfBrowserError && (
-            <div className="px-5 py-4">
-              <p className="text-sm" style={{ color: '#cc0000' }}>{cfBrowserError}</p>
+            <div style={{ padding: '16px 20px', backgroundColor: '#fff5f5' }}>
+              <p style={{ fontSize: 13, color: '#dc2626', margin: 0, fontWeight: 500 }}>{cfBrowserError}</p>
             </div>
           )}
 
-          {/* Live step log */}
+          {/* Live terminal log */}
           {!cfBrowserError && (
-            <div className="px-5 py-4 space-y-1 max-h-72 overflow-y-auto font-mono text-xs"
-              style={{ backgroundColor: '#0a0e2e', color: '#c5d0ff' }}>
-              {browserEvents.length === 0 && (
-                <p style={{ color: '#6070b0' }}>Launching CloudFuze browser — steps will appear here…</p>
-              )}
-              {browserEvents.map((evt, i) => {
-                const isError  = evt.type === 'error-step' || evt.type === 'failed';
-                const isDone   = evt.type === 'done';
-                const label    = evt.step || evt.type || '';
-                const detail   = evt.detail || evt.error || evt.message || '';
-                const color    = isError ? '#ff6b6b' : isDone ? '#69db7c' : '#c5d0ff';
-                const prefix   = isError ? '✗' : isDone ? '✓' : '›';
+            <div style={{ padding: '16px 20px', maxHeight: 300, overflowY: 'auto', backgroundColor: '#060d1a', fontFamily: 'monospace', fontSize: 11, lineHeight: 1.7 }}>
+              {browserEvents.length === 0 ? (
+                <p style={{ color: '#4a5568', margin: 0 }}>Launching CloudFuze browser — steps will appear here…</p>
+              ) : browserEvents.map((evt, i) => {
+                const isError = evt.type === 'error-step' || evt.type === 'failed';
+                const isDone  = evt.type === 'done';
+                const label   = evt.step || evt.type || '';
+                const detail  = evt.detail || evt.error || evt.message || '';
                 return (
-                  <div key={i} className="flex gap-2" style={{ color }}>
-                    <span className="flex-shrink-0 w-3">{prefix}</span>
+                  <div key={i} style={{ display: 'flex', gap: 8, color: isError ? '#f87171' : isDone ? '#6ee7b7' : '#c9d1d9', marginBottom: 2 }}>
+                    <span style={{ flexShrink: 0, width: 14, color: isError ? '#f87171' : isDone ? '#6ee7b7' : '#4a5568' }}>
+                      {isError ? '✗' : isDone ? '✓' : '›'}
+                    </span>
                     <span>
-                      <strong>{label}</strong>
-                      {detail && <span style={{ color: isDone ? '#69db7c' : isError ? '#ff9898' : '#8899cc' }}> — {detail}</span>}
+                      <strong style={{ color: isError ? '#f87171' : isDone ? '#6ee7b7' : '#7dd3fc' }}>{label}</strong>
+                      {detail && <span style={{ color: isError ? '#fca5a5' : isDone ? '#a7f3d0' : '#6b7280' }}> — {detail}</span>}
                     </span>
                   </div>
                 );
@@ -195,20 +351,183 @@ export default function MessageAgent() {
             </div>
           )}
 
-          {/* Footer — reports link when done */}
+          {/* Footer — reports CTA when done */}
           {!cfBrowserError && !browserRunning && cfBrowserStatus?.reportsUrl && (
-            <div className="px-5 py-3 flex items-center gap-3"
-              style={{ backgroundColor: '#f0f4ff', borderTop: '1px solid #c5cef5' }}>
-              <span className="text-xs font-semibold" style={{ color: '#155724' }}>
-                Migration submitted to CloudFuze — track progress in Reports
+            <div style={{ padding: '12px 20px', backgroundColor: '#f0f4ff', borderTop: '1px solid #c5cef5', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#155724' }}>
+                Migration jobs running in CloudFuze — check Reports for real-time status
               </span>
               <a href={cfBrowserStatus.reportsUrl} target="_blank" rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold flex-shrink-0"
-                style={{ backgroundColor: '#0129ac', color: '#fff', textDecoration: 'none' }}>
+                style={{ fontSize: 12, fontWeight: 700, padding: '7px 18px', borderRadius: 8, backgroundColor: '#0129ac', color: '#fff', textDecoration: 'none' }}>
                 Open CloudFuze Reports ↗
               </a>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Post-Migration Actions — One Time Migration only ── */}
+      {lastMigPayload?.migrationType === 'FULL' && !browserRunning && !cfBrowserError && cfBrowserStatus && (
+        <div style={{ borderRadius: 16, overflow: 'hidden', border: '2px solid #c5cef5', boxShadow: '0 4px 20px rgba(1,41,172,0.08)' }}>
+          {/* Section header */}
+          <div style={{ padding: '16px 24px', background: 'linear-gradient(135deg, #020c6b 0%, #0129ac 100%)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                </svg>
+              </div>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 800, color: '#fff', margin: 0 }}>Post-Migration Actions</p>
+                <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', margin: 0 }}>One Time Migration · Click Close to archive source, then validation runs automatically</p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span style={{ fontSize: 11, padding: '4px 12px', borderRadius: 20, backgroundColor: closeState === 'done' ? 'rgba(110,231,183,0.2)' : 'rgba(255,255,255,0.1)', color: closeState === 'done' ? '#6ee7b7' : 'rgba(255,255,255,0.6)', border: `1px solid ${closeState === 'done' ? 'rgba(110,231,183,0.3)' : 'rgba(255,255,255,0.15)'}`, fontWeight: 700 }}>
+                {closeState === 'done' ? '✓ Closed' : closeState === 'loading' ? 'Closing…' : 'Step 1: Close'}
+              </span>
+              <span style={{ fontSize: 11, padding: '4px 12px', borderRadius: 20, backgroundColor: validateState === 'done' ? 'rgba(110,231,183,0.2)' : 'rgba(255,255,255,0.1)', color: validateState === 'done' ? '#6ee7b7' : 'rgba(255,255,255,0.6)', border: `1px solid ${validateState === 'done' ? 'rgba(110,231,183,0.3)' : 'rgba(255,255,255,0.15)'}`, fontWeight: 700 }}>
+                {validateState === 'done' ? '✓ Validated' : validateState === 'loading' ? 'Validating…' : 'Step 2: Validate'}
+              </span>
+            </div>
+          </div>
+
+          <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, backgroundColor: '#fff' }}>
+            {/* Step 1 — Close */}
+            <div style={{ borderRadius: 12, border: `2px solid ${closeState === 'done' ? '#86efac' : closeState === 'error' ? '#fca5a5' : '#e4e9f5'}`, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', backgroundColor: closeState === 'done' ? '#f0fdf4' : '#fafbff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: closeState === 'done' ? '#059669' : '#e4e9f5', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {closeState === 'done' ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    ) : (
+                      <span style={{ fontSize: 12, fontWeight: 800, color: '#0129ac' }}>1</span>
+                    )}
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: closeState === 'done' ? '#065f46' : '#111', margin: 0 }}>
+                      Close Source Channels &amp; DMs
+                    </p>
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>
+                      Archive / delete migrated source on {lastMigPayload.sourcePlatform}
+                      {' '}· {(lastMigPayload.channelIds?.length || 0) + (lastMigPayload.dmIds?.length || 0)} item{((lastMigPayload.channelIds?.length || 0) + (lastMigPayload.dmIds?.length || 0)) !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={handleCloseSource} disabled={closeState === 'loading' || closeState === 'done'}
+                  style={{
+                    flexShrink: 0, padding: '9px 22px', borderRadius: 9, fontSize: 13, fontWeight: 700, border: 'none',
+                    cursor: closeState === 'loading' || closeState === 'done' ? 'not-allowed' : 'pointer',
+                    backgroundColor: closeState === 'done' ? '#059669' : closeState === 'loading' ? '#e0e4f5' : '#0129ac',
+                    color: closeState === 'loading' ? '#555' : '#fff',
+                    boxShadow: closeState === 'idle' ? '0 2px 8px rgba(1,41,172,0.3)' : 'none',
+                  }}>
+                  {closeState === 'done' ? '✓ Closed' : closeState === 'loading' ? 'Closing…' : 'Close Source'}
+                </button>
+              </div>
+
+              {(closeLogs.length > 0 || closeState === 'loading') && (
+                <div style={{ backgroundColor: '#060d1a', padding: '12px 16px', maxHeight: 160, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6 }}>
+                  {closeState === 'loading' && closeLogs.length === 0 && (
+                    <p style={{ color: '#4a5568', margin: 0 }}>Connecting…</p>
+                  )}
+                  {closeLogs.map((l, i) => (
+                    <div key={i} style={{ color: l.type === 'fail' || l.type === 'failed' ? '#f87171' : l.type === 'done' ? '#6ee7b7' : '#c9d1d9', marginBottom: 2 }}>
+                      <span style={{ marginRight: 8 }}>{l.type === 'fail' || l.type === 'failed' ? '✗' : l.type === 'done' ? '✓' : '›'}</span>
+                      {l.msg}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {closeError && (
+                <div style={{ padding: '10px 18px', backgroundColor: '#fff5f5', borderTop: '1px solid #fca5a5' }}>
+                  <p style={{ fontSize: 12, color: '#dc2626', margin: 0 }}>{closeError}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Arrow between steps */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ flex: 1, height: 1, backgroundColor: '#e4e9f5' }} />
+              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, whiteSpace: 'nowrap' }}>Auto-triggers after Close completes</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+              <div style={{ flex: 1, height: 1, backgroundColor: '#e4e9f5' }} />
+            </div>
+
+            {/* Step 2 — Validate */}
+            <div style={{ borderRadius: 12, border: `2px solid ${validateState === 'done' ? '#86efac' : validateState === 'loading' ? '#c5cef5' : validateState === 'error' ? '#fca5a5' : '#e4e9f5'}`, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', backgroundColor: validateState === 'done' ? '#f0fdf4' : validateState === 'loading' ? '#f0f4ff' : '#fafbff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: validateState === 'done' ? '#059669' : validateState === 'loading' ? '#0129ac' : '#e4e9f5', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    {validateState === 'done' ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    ) : validateState === 'loading' ? (
+                      <svg style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="4" fill="none" opacity="0.3"/>
+                        <path fill="white" opacity="0.8" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                    ) : (
+                      <span style={{ fontSize: 12, fontWeight: 800, color: '#0129ac' }}>2</span>
+                    )}
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: validateState === 'done' ? '#065f46' : '#111', margin: 0 }}>Validate Migration</p>
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '2px 0 0' }}>
+                      Fetches CF jobs · Compares total vs processed messages · Saves to Validation Results
+                    </p>
+                  </div>
+                </div>
+                <button onClick={handleValidate} disabled={validateState === 'loading'}
+                  style={{
+                    flexShrink: 0, padding: '9px 22px', borderRadius: 9, fontSize: 13, fontWeight: 700, border: 'none',
+                    cursor: validateState === 'loading' ? 'not-allowed' : 'pointer',
+                    backgroundColor: validateState === 'done' ? '#059669' : validateState === 'loading' ? '#e0e4f5' : '#0129ac',
+                    color: validateState === 'loading' ? '#555' : '#fff',
+                  }}>
+                  {validateState === 'done' ? '✓ Validated' : validateState === 'loading' ? 'Validating…' : 'Re-Validate'}
+                </button>
+              </div>
+
+              {validateError && (
+                <div style={{ padding: '10px 18px', backgroundColor: '#fff5f5', borderTop: '1px solid #fca5a5' }}>
+                  <p style={{ fontSize: 12, color: '#dc2626', margin: 0 }}>{validateError}</p>
+                </div>
+              )}
+
+              {validationResult && (
+                <div style={{ padding: '16px 18px', backgroundColor: '#f0f4ff', borderTop: '1px solid #c5cef5' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                    <span style={{
+                      fontSize: 12, fontWeight: 800, padding: '4px 14px', borderRadius: 20,
+                      backgroundColor: validationResult.overallStatus === 'MATCHED' ? '#d1fae5' : '#fee2e2',
+                      color: validationResult.overallStatus === 'MATCHED' ? '#065f46' : '#dc2626',
+                      border: `1px solid ${validationResult.overallStatus === 'MATCHED' ? '#a7f3d0' : '#fca5a5'}`,
+                    }}>
+                      {validationResult.overallStatus}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#374151' }}>
+                      {validationResult.summary?.completedJobs ?? 0}/{validationResult.summary?.totalJobs ?? 0} jobs completed
+                      &nbsp;·&nbsp;{validationResult.summary?.totalMessages ?? 0} messages
+                      &nbsp;·&nbsp;{validationResult.summary?.mismatches ?? 0} mismatch{(validationResult.summary?.mismatches ?? 0) !== 1 ? 'es' : ''}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    <Link to="/validation-results"
+                      style={{ fontSize: 12, fontWeight: 700, padding: '7px 16px', borderRadius: 8, backgroundColor: '#0129ac', color: '#fff', textDecoration: 'none' }}>
+                      View Validation Results
+                    </Link>
+                    {validationResult.executionId && (
+                      <a href={`/api/agents/executions/${validationResult.executionId}/pdf`} target="_blank" rel="noreferrer"
+                        style={{ fontSize: 12, fontWeight: 700, padding: '7px 16px', borderRadius: 8, border: '1.5px solid #0129ac', color: '#0129ac', textDecoration: 'none' }}>
+                        Download PDF Report
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

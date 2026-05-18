@@ -131,186 +131,139 @@ export default function CleanDestinationPage() {
   const anyCleanRunning = activeCleans.size > 0;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Clean Destination</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          View mailbox stats and clean destination Outlook accounts before migration
-        </p>
+    <div className="page-wrap">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Clean Destination</h1>
+          <p className="page-subtitle">View mailbox stats and clean destination Outlook accounts before migration</p>
+        </div>
       </div>
 
       {anyCleanRunning && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-center gap-3">
-          <svg className="animate-spin h-5 w-5 text-yellow-600" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-yellow-800">
-              Cleaning in progress ({activeCleans.size} mailbox{activeCleans.size > 1 ? 'es' : ''})
-            </p>
-            <p className="text-xs text-yellow-600">You can navigate to other pages - cleaning continues in the background.</p>
+        <div className="card" style={{ border: '1px solid #fcd34d' }}>
+          <div className="card-body" style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 12, backgroundColor: '#fffbeb' }}>
+            <svg className="animate-spin h-5 w-5" style={{ color: '#b45309' }} viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <div>
+              <p style={{ fontSize: 14, fontWeight: 700, color: '#92400e' }}>Cleaning in progress ({activeCleans.size} mailbox{activeCleans.size > 1 ? 'es' : ''})</p>
+              <p style={{ fontSize: 13, color: '#b45309', marginTop: 2 }}>You can navigate to other pages — cleaning continues in the background.</p>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Destination Admin Email (Outlook)
-        </label>
-        <div className="flex items-end gap-4">
-          <input
-            type="email"
-            value={adminEmail}
-            onChange={(e) => setAdminEmail(e.target.value)}
-            placeholder="granger@gajha.com"
-            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-          />
-          <button
-            onClick={fetchUsers}
-            disabled={loading || !adminEmail}
-            className="px-6 py-2.5 bg-gray-900 text-white text-sm font-semibold rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {loading ? 'Fetching...' : 'Fetch Users'}
-          </button>
+      <div className="card">
+        <div className="card-body" style={{ padding: '28px 32px' }}>
+          <label className="block" style={{ fontSize: 14, fontWeight: 700, color: '#0129ac', marginBottom: 10 }}>
+            Destination Admin Email (Outlook)
+          </label>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="granger@gajha.com"
+              className="input" style={{ flex: 1, fontSize: 14, padding: '12px 16px' }} />
+            <button onClick={fetchUsers} disabled={loading || !adminEmail}
+              className="btn btn-primary" style={{ padding: '12px 24px', fontSize: 14, flexShrink: 0 }}>
+              {loading ? 'Fetching…' : 'Fetch Users'}
+            </button>
+          </div>
+          {error && <div style={{ marginTop: 12, padding: '12px 16px', borderRadius: 8, backgroundColor: '#fee2e2', border: '1px solid #fca5a5', fontSize: 13, color: '#dc2626' }}>{error}</div>}
         </div>
-        {error && (
-          <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">{error}</div>
-        )}
       </div>
 
       {fetched && (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <StatCard label="Mailbox Users" value={users.length} color="indigo" />
-            <StatCard label="Total Emails" value={statsLoading ? '...' : totalMails} color="blue" />
-            <StatCard label="Custom Folders" value={statsLoading ? '...' : totalFolders} color="purple" />
-            <StatCard label="Total Events" value={statsLoading ? '...' : totalEvents} color="green" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
+            {[
+              { label: 'Mailbox Users', value: users.length, cls: 'blue', accent: '#0129ac' },
+              { label: 'Total Emails', value: statsLoading ? '…' : totalMails.toLocaleString(), cls: 'green', accent: '#10b981' },
+              { label: 'Custom Folders', value: statsLoading ? '…' : totalFolders, cls: 'amber', accent: '#f59e0b' },
+              { label: 'Total Events', value: statsLoading ? '…' : totalEvents.toLocaleString(), cls: 'red', accent: '#ef4444' },
+            ].map(c => (
+              <div key={c.label} className={`stat-card ${c.cls}`}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>{c.label}</div>
+                <div style={{ fontSize: 32, fontWeight: 800, color: c.accent }}>{c.value}</div>
+              </div>
+            ))}
           </div>
 
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={handleRefreshStats}
-              disabled={refreshing}
-              className="px-5 py-2.5 bg-white border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
-            >
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+            <button onClick={handleRefreshStats} disabled={refreshing} className="btn btn-ghost" style={{ gap: 8 }}>
               <svg className={'w-4 h-4' + (refreshing ? ' animate-spin' : '')} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
               </svg>
-              {refreshing ? 'Refreshing...' : 'Refresh Stats'}
+              {refreshing ? 'Refreshing…' : 'Refresh Stats'}
             </button>
             {usersWithData.length > 0 && (
-              <button
-                onClick={handleCleanAll}
-                disabled={anyCleanRunning}
-                className="px-6 py-2.5 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
-              >
+              <button onClick={handleCleanAll} disabled={anyCleanRunning}
+                className="btn" style={{ backgroundColor: '#dc2626', color: '#fff', border: '1px solid #dc2626', gap: 8 }}>
                 <TrashIcon />
                 Clean All {usersWithData.length} Mailboxes
               </button>
             )}
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="card" style={{ overflow: 'hidden' }}>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="data-table">
                 <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 uppercase">Emails</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 uppercase">Custom Folders</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 uppercase">Calendars</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 uppercase">Events</th>
-                    <th className="px-5 py-3 text-right text-xs font-medium text-gray-500 uppercase">Action</th>
+                  <tr>
+                    <th>User</th>
+                    <th style={{ textAlign: 'right' }}>Emails</th>
+                    <th style={{ textAlign: 'right' }}>Custom Folders</th>
+                    <th style={{ textAlign: 'right' }}>Calendars</th>
+                    <th style={{ textAlign: 'right' }}>Events</th>
+                    <th style={{ textAlign: 'right' }}>Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody>
                   {users.map((user) => {
                     const s = user.stats;
                     const isClean = s && !s.error && (s.mailCount ?? 0) === 0 && (s.folderCount ?? 0) === 0 && (s.eventCount ?? 0) === 0 && (s.calendarCount ?? 0) === 0;
                     const result = cleanResults[user.email];
                     const isCleaning = activeCleans.has(user.email);
-
                     return (
-                      <tr key={user.email} className={'hover:bg-gray-50' + (isClean ? ' bg-green-50/50' : '') + (isCleaning ? ' bg-yellow-50/50' : '')}>
-                        <td className="px-5 py-3">
-                          <p className="font-medium text-gray-900">{user.email}</p>
-                          <p className="text-xs text-gray-500">{user.displayName}</p>
+                      <tr key={user.email} style={{ backgroundColor: isClean ? '#f0fdf4' : isCleaning ? '#fffbeb' : undefined }}>
+                        <td>
+                          <p style={{ fontWeight: 600, color: '#0f172a', fontSize: 14 }}>{user.email}</p>
+                          <p style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{user.displayName}</p>
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">loading...</span>
-                          ) : (
-                            <span className={'font-semibold ' + (s.error ? 'text-red-400' : (s.mailCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-900')}>
-                              {(s.mailCount ?? 0).toLocaleString()}
-                            </span>
-                          )}
+                        <td style={{ textAlign: 'right' }}>
+                          {!s ? <span style={{ color: '#9ca3af', fontSize: 12 }}>loading…</span>
+                            : <span style={{ fontWeight: 700, color: s.error ? '#ef4444' : (s.mailCount ?? 0) === 0 ? '#10b981' : '#0f172a', fontSize: 14 }}>{(s.mailCount ?? 0).toLocaleString()}</span>}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">...</span>
-                          ) : (
-                            <span className={s.error ? 'text-red-400' : (s.folderCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
-                              {s.folderCount ?? 0}
-                            </span>
-                          )}
+                        <td style={{ textAlign: 'right', fontSize: 14, color: !s ? '#9ca3af' : s.error ? '#ef4444' : (s.folderCount ?? 0) === 0 ? '#10b981' : '#374151' }}>
+                          {!s ? '…' : s.folderCount ?? 0}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">...</span>
-                          ) : (
-                            <span className={s.error ? 'text-red-400' : 'text-gray-700'}>
-                              {s.calendarCount ?? 0}
-                            </span>
-                          )}
+                        <td style={{ textAlign: 'right', fontSize: 14, color: !s ? '#9ca3af' : s.error ? '#ef4444' : '#374151' }}>
+                          {!s ? '…' : s.calendarCount ?? 0}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          {!s ? (
-                            <span className="text-gray-400 text-xs">...</span>
-                          ) : (
-                            <span className={s.error ? 'text-red-400' : (s.eventCount ?? 0) === 0 ? 'text-green-600' : 'text-gray-700'}>
-                              {(s.eventCount ?? 0).toLocaleString()}
-                            </span>
-                          )}
+                        <td style={{ textAlign: 'right', fontSize: 14, color: !s ? '#9ca3af' : s.error ? '#ef4444' : (s.eventCount ?? 0) === 0 ? '#10b981' : '#374151' }}>
+                          {!s ? '…' : (s.eventCount ?? 0).toLocaleString()}
                         </td>
-                        <td className="px-5 py-3 text-right">
-                          <div className="flex flex-col items-end gap-1">
+                        <td style={{ textAlign: 'right' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                             {result && !result.error && result.deleted && (
-                              <span className="text-xs text-green-600 font-medium">
+                              <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>
                                 Deleted {result.deleted.messagesDeleted} msgs, {result.deleted.foldersDeleted} folders
-                                {result.calendarDeleteResult
-                                  ? `, ${result.calendarDeleteResult.deletedCount ?? 0} calendar events`
-                                  : result.deleted.eventsDeleted
-                                  ? `, ${result.deleted.eventsDeleted} events`
-                                  : ''}
+                                {result.calendarDeleteResult ? `, ${result.calendarDeleteResult.deletedCount ?? 0} events` : ''}
                               </span>
                             )}
-                            {result?.error && (
-                              <span className="text-xs text-red-500">{result.error}</span>
-                            )}
+                            {result?.error && <span style={{ fontSize: 12, color: '#ef4444' }}>{result.error}</span>}
                             {isCleaning ? (
-                              <span className="inline-flex items-center gap-1.5 text-xs text-yellow-700 font-medium">
-                                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                                </svg>
-                                Cleaning...
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#b45309', fontWeight: 600 }}>
+                                <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                                Cleaning…
                               </span>
                             ) : isClean ? (
-                              <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                </svg>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, color: '#10b981', fontWeight: 700 }}>
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
                                 Clean
                               </span>
                             ) : (
-                              <button
-                                onClick={() => handleCleanUser(user.email)}
-                                disabled={!s || s.error || isCleaning}
-                                className="px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-1"
-                              >
-                                <TrashIcon size={12} />
-                                Clean
+                              <button onClick={() => handleCleanUser(user.email)} disabled={!s || s.error || isCleaning}
+                                className="btn" style={{ padding: '6px 14px', fontSize: 12, backgroundColor: '#dc2626', color: '#fff', border: '1px solid #dc2626', gap: 6 }}>
+                                <TrashIcon size={13} /> Clean
                               </button>
                             )}
                           </div>
@@ -328,20 +281,7 @@ export default function CleanDestinationPage() {
   );
 }
 
-function StatCard({ label, value, color }) {
-  const colors = {
-    indigo: 'bg-indigo-50 text-indigo-700 border-indigo-100',
-    blue: 'bg-blue-50 text-blue-700 border-blue-100',
-    purple: 'bg-purple-50 text-purple-700 border-purple-100',
-    green: 'bg-green-50 text-green-700 border-green-100',
-  };
-  return (
-    <div className={'rounded-xl border p-4 ' + colors[color]}>
-      <p className="text-xs font-medium opacity-75 uppercase tracking-wider">{label}</p>
-      <p className="text-2xl font-bold mt-1">{value}</p>
-    </div>
-  );
-}
+function StatCard({ label, value, color }) { return null; }
 
 function TrashIcon({ size = 16 }) {
   return (

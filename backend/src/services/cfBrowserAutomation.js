@@ -174,27 +174,33 @@ class CFBrowserAutomation extends EventEmitter {
       await this._skipPreMigration();
       if (this.aborted) return;
 
-      // 7 — Step 3 Users tab: upload CSV (provided path or generated from pairs); fallback Auto Map
+      // 7 — Step 3, Users tab: upload CSV / complete user mapping
       await this._handleUserMapping(mappingType, userMappings, userMappingCsvPath);
       if (this.aborted) return;
 
-      // 8 — Step 3 Public/Private Channels tabs: select channels, then click Next → Step 4
+      // 8 — Step 3, Public + Private Channels tabs: select channels, then click Next → Step 4
       await this._selectChannels(channelIds, channelObjects, dmIds, dmObjects);
       if (this.aborted) return;
 
-      // 9 — Step 4: click "Start Migration >" in the browser
-      await this._startMigration();
+      // 9 — Step 4, Direct Messages: click "Start Migration >" button
+      const browserMigrated = await this._startMigration();
       if (this.aborted) return;
 
-      // 9.5 — Also initiate via CF API directly (ensures migration is recorded even if browser click fails)
-      await this._initiateMigrationViaAPI();
+      // 9.5 — API fallback: only call if the browser Start Migration button was NOT found.
+      // Calling the API when the browser already initiated the same channels creates a
+      // duplicate job that CloudFuze marks as "Conflict".
+      if (!browserMigrated) {
+        await this._initiateMigrationViaAPI();
+      }
       if (this.aborted) return;
 
       // 10 — Reports page
       await this._openReports();
-
-      this.log('DONE', 'Migration started — Reports page open. Picking and moving data.');
+      this.log('DONE', 'Migration started — Reports page open.');
       this.emit('done', { reportsUrl: CF_REPORTS_URL });
+
+      // 11 — Wait for completion, close completed jobs, validate via CF API
+      await this._waitCloseAndValidate();
     } catch (e) {
       logger.error(`[CFBrowser] Automation failed: ${e.message}`);
       this.err('FAILED', e.message);
@@ -220,6 +226,71 @@ class CFBrowserAutomation extends EventEmitter {
       const pass  = await this.page.$('input[type="password"]');
       return !!(email && pass);
     } catch { return false; }
+  }
+
+  /* ── Page recovery helpers ───────────────────────────────────────────────── */
+
+  /**
+   * Check if the current page reference is still alive.
+   * Returns true if alive, false if the page/context has been closed.
+   */
+  async _isPageAlive() {
+    try {
+      await this.page.url();
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * After a navigation or redirect that may have closed `this.page`,
+   * find the most recently opened page in the browser context and
+   * update `this.page` to point at it.
+   *
+   * Called automatically by `_safeWait` and `_selectDestinationCloud`.
+   */
+  async _recoverPage() {
+    if (await this._isPageAlive()) return; // nothing to do
+
+    this.log('RECOVER', 'Current page closed — scanning context for active page');
+    try {
+      const pages = this.page.context().pages();
+      if (pages.length === 0) {
+        throw new Error('All pages in context are closed — cannot recover');
+      }
+      // Use the last opened page (most likely the new destination)
+      this.page = pages[pages.length - 1];
+      this.page.setDefaultTimeout(ACTION_TIMEOUT);
+      this.page.setDefaultNavigationTimeout(NAV_TIMEOUT);
+      const url = await this.page.url().catch(() => 'unknown');
+      this.log('RECOVER', `Recovered to page: ${url}`);
+      // Give the recovered page a moment to settle
+      await this.page.waitForTimeout(WAIT_L).catch(() => {});
+    } catch (e) {
+      this.log('RECOVER', `Recovery failed: ${e.message}`);
+      throw e;
+    }
+  }
+
+  /**
+   * Safe wrapper around page.waitForTimeout.
+   * If the page closes mid-wait, attempt to recover before continuing.
+   */
+  async _safeWait(ms) {
+    try {
+      await this.page.waitForTimeout(ms);
+    } catch (e) {
+      if (
+        e.message.includes('Target page') ||
+        e.message.includes('has been closed') ||
+        e.message.includes('Target closed') ||
+        e.message.includes('context or browser')
+      ) {
+        this.log('RECOVER', `Page closed during wait(${ms}ms) — attempting recovery`);
+        await this._recoverPage();
+      } else {
+        throw e;
+      }
+    }
   }
 
   /* ── 1: Login ────────────────────────────────────────────────────────────── */
@@ -261,6 +332,10 @@ class CFBrowserAutomation extends EventEmitter {
   /* ── 2: Ensure clouds are connected — add if missing ─────────────────────── */
 
   async _ensureCloudsConnected(srcPlatform, srcEmail, dstPlatform, dstEmail) {
+    if (!srcEmail && !dstEmail) {
+      this.log('CLOUDS', 'No emails provided — skipping cloud connection check (cloud IDs used for selection)');
+      return;
+    }
     this.log('CLOUDS', `Verifying: ${srcPlatform}(${srcEmail}) → ${dstPlatform}(${dstEmail})`);
 
     // CF internal platform names
@@ -551,20 +626,23 @@ class CFBrowserAutomation extends EventEmitter {
 
   async _selectSourceCloud(platform, email, cfCloudId) {
     this.log('SOURCE_CLOUD', `${platform} / ${email} (cfId: ${cfCloudId || 'n/a'})`);
-    await this.page.waitForTimeout(3000);
+    await this._safeWait(3000);
     const ok = await this._pickCloud('source', platform, email, cfCloudId);
     if (ok) this.log('SOURCE_CLOUD', 'Selected ✓');
     else     this.err('SOURCE_CLOUD', 'Could not select — check CLOUD_PICK debug lines above');
-    await this.page.waitForTimeout(WAIT_M);
+    await this._safeWait(WAIT_M);
   }
 
   async _selectDestinationCloud(platform, email, cfCloudId) {
     this.log('DEST_CLOUD', `${platform} / ${email} (cfId: ${cfCloudId || 'n/a'})`);
-    await this.page.waitForTimeout(3000);
+    await this._safeWait(3000);
     const ok = await this._pickCloud('destination', platform, email, cfCloudId);
     if (ok) this.log('DEST_CLOUD', 'Selected ✓');
     else     this.err('DEST_CLOUD', 'Could not select — check CLOUD_PICK debug lines above');
-    await this.page.waitForTimeout(WAIT_M);
+    // CloudFuze may navigate after destination selection (e.g. T2T flow).
+    // _safeWait catches the "page closed" error and recovers to the new page.
+    await this._safeWait(WAIT_M);
+    await this._recoverPage();   // no-op if page is still alive; re-attaches if navigated
   }
 
   /**
@@ -768,21 +846,33 @@ class CFBrowserAutomation extends EventEmitter {
 
     const lower = combo.toLowerCase();
     const comboLabels = [];
-    if      (lower.includes('slack') && (lower.includes('team') || lower.includes('microsoft')))
-      comboLabels.push('Slack to Teams', 'S2T', 'Slack to Microsoft Teams', 'Slack → Teams');
-    else if (lower.includes('slack') && lower.includes('google'))
-      comboLabels.push('Slack to Google Chat', 'S2GC', 'Slack → Google Chat');
-    else if ((lower.includes('team') || lower.includes('microsoft')) && lower.includes('slack'))
-      comboLabels.push('Teams to Slack', 'T2S', 'Microsoft Teams to Slack');
-    else if ((lower.includes('team') || lower.includes('microsoft')) && lower.includes('google'))
-      comboLabels.push('Teams to Google Chat', 'T2GC');
-    else if (lower.includes('google') && lower.includes('slack'))
-      comboLabels.push('Google Chat to Slack', 'GC2S');
-    else if (lower.includes('google') && (lower.includes('team') || lower.includes('microsoft')))
-      comboLabels.push('Google Chat to Teams', 'GC2T');
+
+    const hasSlack     = lower.includes('slack');
+    const hasTeams     = lower.includes('team') || lower.includes('microsoft');
+    const hasGoogle    = lower.includes('google') || lower.includes('chat');
+
+    // Count occurrences to detect same-platform combos (T2T, S2S, GC2GC)
+    const teamsCount   = (lower.match(/team|microsoft/g) || []).length;
+    const slackCount   = (lower.match(/slack/g) || []).length;
+    const googleCount  = (lower.match(/google|chat/g) || []).length;
+
+    if      (hasTeams && teamsCount >= 2 && !hasSlack && !hasGoogle)
+      comboLabels.push('Microsoft Teams to Microsoft Teams', 'Teams to Teams', 'T2T', 'MICROSOFT TEAMS TO MICROSOFT TEAMS');
+    else if (hasSlack && slackCount >= 2 && !hasTeams && !hasGoogle)
+      comboLabels.push('Slack to Slack', 'S2S');
+    else if (hasGoogle && googleCount >= 2 && !hasSlack && !hasTeams)
+      comboLabels.push('Google Chat to Google Chat', 'GC2GC');
+    else if (hasSlack && hasTeams)
+      comboLabels.push('Slack to Teams', 'S2T', 'Slack to Microsoft Teams', 'Slack → Teams',
+        'Teams to Slack', 'T2S', 'Microsoft Teams to Slack');
+    else if (hasSlack && hasGoogle)
+      comboLabels.push('Slack to Google Chat', 'S2GC', 'Slack → Google Chat',
+        'Google Chat to Slack', 'GC2S');
+    else if (hasTeams && hasGoogle)
+      comboLabels.push('Teams to Google Chat', 'T2GC', 'Google Chat to Teams', 'GC2T');
 
     if (comboLabels.length === 0) {
-      this.log('COMBO', 'No labels derived — skipping');
+      this.log('COMBO', `No labels derived for "${combo}" — skipping`);
       return;
     }
 
@@ -796,7 +886,7 @@ class CFBrowserAutomation extends EventEmitter {
         const el = await this.page.$(sel).catch(() => null);
         if (el && await el.isVisible().catch(() => false)) {
           await el.click().catch(() => {});
-          await this.page.waitForTimeout(WAIT_M);
+          await this._safeWait(WAIT_M);
           this.log('COMBO', `Selected: ${lbl}`);
           return;
         }
@@ -816,7 +906,7 @@ class CFBrowserAutomation extends EventEmitter {
     }, { labels: comboLabels }).catch(() => null);
 
     if (found) {
-      await this.page.waitForTimeout(WAIT_M);
+      await this._safeWait(WAIT_M);
       this.log('COMBO', `Selected via evaluate: ${found}`);
     } else {
       this.log('COMBO', 'Combination may already be selected or not required on this page');
@@ -904,18 +994,38 @@ class CFBrowserAutomation extends EventEmitter {
   /* ── Wizard "Next >" helper — advances one step in the CF wizard ─────────── */
 
   async _clickWizardNext(ctx = 'WIZARD') {
-    await this.page.waitForTimeout(WAIT_M);
-    for (const sel of [
+    const NEXT_SELS = [
       'button:has-text("Next >")', 'button:has-text("Next")',
-      'a:has-text("Next >")', 'a:has-text("Next")',
+      'a:has-text("Next >")',      'a:has-text("Next")',
+      'a.btn:has-text("Next")', 'button.btn-primary:has-text("Next")',
+      'a.btn-primary:has-text("Next")',
+      '.pull-right a:has-text("Next")', '.pull-right button:has-text("Next")',
       'input[type="button"][value*="Next" i]',
-    ]) {
-      const btn = await this.page.$(sel).catch(() => null);
-      if (!btn || !(await btn.isVisible().catch(() => false))) continue;
-      await btn.click();
-      await this.page.waitForTimeout(WAIT_L);
-      this.log(ctx, `"Next >" clicked → advancing wizard step`);
-      return true;
+      'input[type="submit"][value*="Next" i]',
+    ];
+
+    // Up to 3 attempts with increasing wait, scrolling to top each time so the
+    // navigation bar (which sits at the very top of the CF wizard pages) is visible.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await this._safeWait(attempt === 1 ? WAIT_M : WAIT_L);
+      // Scroll to top — CF Previous/Next buttons live in the top nav bar
+      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await this.page.waitForTimeout(300);
+
+      for (const sel of NEXT_SELS) {
+        const btn = await this.page.$(sel).catch(() => null);
+        if (!btn) continue;
+        if (!(await btn.isVisible().catch(() => false))) continue;
+        // Skip disabled buttons
+        const disabled = await btn.evaluate(el =>
+          el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'
+        ).catch(() => false);
+        if (disabled) { this.log(ctx, `Next button disabled (attempt ${attempt}) — waiting`); break; }
+        await btn.click();
+        await this._safeWait(WAIT_L);
+        this.log(ctx, `"Next >" clicked → advancing wizard step`);
+        return true;
+      }
     }
     this.log(ctx, 'No "Next >" button found on this step');
     return false;
@@ -925,7 +1035,7 @@ class CFBrowserAutomation extends EventEmitter {
 
   async _skipPreMigration() {
     this.log('PREMIG', 'Checking for pre-migration step');
-    await this.page.waitForTimeout(WAIT_M);
+    await this._safeWait(WAIT_M);
 
     // Look for an explicit Skip Pre-Migration button first
     for (const sel of [
@@ -936,7 +1046,7 @@ class CFBrowserAutomation extends EventEmitter {
       const btn = await this.page.$(sel).catch(() => null);
       if (!btn || !(await btn.isVisible().catch(() => false))) continue;
       await btn.click();
-      await this.page.waitForTimeout(WAIT_L);
+      await this._safeWait(WAIT_L);
       this.log('PREMIG', `Skipped pre-migration via: ${sel}`);
       return;
     }
@@ -950,7 +1060,13 @@ class CFBrowserAutomation extends EventEmitter {
 
   async _handleUserMapping(mappingType = 'auto', userMappings = [], csvPath = null) {
     const csvPathExists = csvPath && fs.existsSync(csvPath);
-    this.log('MAPPING', `Starting user mapping: ${csvPathExists ? `CSV path: ${csvPath}` : `${userMappings.length} pair(s) from dashboard`}`);
+    if (csvPathExists) {
+      this.log('MAPPING', `Using user-provided CSV — path: ${csvPath}`);
+    } else if (csvPath && !csvPathExists) {
+      this.log('MAPPING', `CSV path provided but file not found: ${csvPath} — will generate from ${userMappings.length} pair(s)`);
+    } else {
+      this.log('MAPPING', `No CSV path — will generate temp CSV from ${userMappings.length} pair(s)`);
+    }
     await this.page.waitForTimeout(WAIT_L);
 
     // Ensure we are on the Users tab (the Map & Migrate wizard has tabs)
@@ -975,10 +1091,14 @@ class CFBrowserAutomation extends EventEmitter {
              (body.includes('Source User') || body.includes('Mapping Status'));
     }).catch(() => false);
 
-    if (alreadyMapped) {
-      this.log('MAPPING', 'Mapping already exists in table — skipping');
+    if (alreadyMapped && !csvPathExists && userMappings.length === 0) {
+      // Page already shows Mapped rows and caller gave us nothing to override — skip.
+      this.log('MAPPING', 'Mapping already exists in table — skipping (no override CSV provided)');
     } else if (csvPathExists || userMappings.length > 0) {
-      // Upload CSV via the "CSV ↑" button on the Users tab
+      // Explicit CSV path always wins — upload even if the table already shows Mapped rows.
+      if (alreadyMapped) {
+        this.log('MAPPING', 'Table shows existing mappings — overriding with provided CSV');
+      }
       const uploaded = await this._uploadMappingCSV(userMappings, csvPathExists ? csvPath : null);
       if (!uploaded) {
         this.log('MAPPING', 'CSV upload unavailable — falling back to Auto Map');
@@ -1028,23 +1148,31 @@ class CFBrowserAutomation extends EventEmitter {
       if (!dismissed) break;
     }
 
-    // Wait for the mapping table to show mapped status
+    // Wait for the mapping table to show mapped status OR success feedback after CSV upload
     try {
       await this.page.waitForFunction(
         () => {
           const body = document.body.textContent || '';
-          return body.includes('Mapped') || body.toLowerCase().includes('mapping complete');
+          return body.includes('Mapped') ||
+                 body.toLowerCase().includes('mapping complete') ||
+                 body.toLowerCase().includes('successfully imported') ||
+                 body.toLowerCase().includes('successfully uploaded') ||
+                 body.toLowerCase().includes('import successful');
         },
-        { timeout: 10000 }
+        { timeout: 12000 }
       );
       this.log('MAPPING', 'Mapping confirmed in UI ✓');
     } catch {
       this.log('MAPPING', 'Mapping status not visible — proceeding to channels');
     }
 
-    // Do NOT click Next here — _selectChannels handles Public/Private tabs
-    // within Step 3 before advancing to Step 4
-    this.log('MAPPING', 'User mapping done ✓');
+    // Extra pause to let the CF wizard re-enable the Next button after a CSV upload
+    await this.page.waitForTimeout(WAIT_L);
+
+    // Do NOT click Next here — Public Channels and Private Channels tabs are on the
+    // SAME Step 3 "Map & Migrate" page. _selectChannels will handle those tabs and
+    // then click Next to advance to Step 4 (Direct Messages).
+    this.log('MAPPING', 'User mapping done ✓ — ready for channel tab selection');
   }
 
   /* ── Auto Map helper (extracted so it can be called as fallback) ─────────── */
@@ -1161,7 +1289,7 @@ class CFBrowserAutomation extends EventEmitter {
 
     if (csvPath && fs.existsSync(csvPath)) {
       filePath = csvPath;
-      this.log('MAPPING', `Uploading user-provided CSV: ${csvPath}`);
+      this.log('MAPPING', `Using uploaded CSV — path: ${csvPath}`);
     } else {
       const rows = ['Source User,Destination User'];
       for (const m of userMappings) {
@@ -1176,43 +1304,45 @@ class CFBrowserAutomation extends EventEmitter {
       filePath = path.join(os.tmpdir(), `cf_user_mapping_${Date.now()}.csv`);
       fs.writeFileSync(filePath, rows.join('\n'), 'utf8');
       cleanupTemp = true;
-      this.log('MAPPING', `Generated CSV from ${rows.length - 1} pair(s): ${rows.slice(1).join(' | ')}`);
+      this.log('MAPPING', `Generated CSV — ${rows.length - 1} pair(s) — path: ${filePath}`);
+      this.log('MAPPING', `Pairs: ${rows.slice(1).join(' | ')}`);
     }
 
     let uploaded = false;
     try {
-      // Strategy A — find an existing file input directly (Playwright handles hidden inputs)
-      let fileInput = await this.page.$('input[type="file"]').catch(() => null);
-      if (fileInput) {
-        await fileInput.setInputFiles(filePath);
-        await this.page.waitForTimeout(WAIT_L);
-        this.log('MAPPING', 'CSV uploaded via direct input[type="file"] ✓');
-        uploaded = true;
-      } else {
-        // Strategy B — click the "CSV ↑" upload trigger and use Playwright's filechooser event.
-        // The CF UI has TWO buttons labelled "CSV": first is download (↓), second is upload (↑).
-        // We use multiple identification strategies (icon class, aria-label, "second CSV" heuristic).
-        const fileChooserPromise = this.page.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null);
-
-        const clickedTrigger = await this._clickCSVUploadTrigger();
-        if (clickedTrigger) {
-          const fileChooser = await fileChooserPromise;
-          if (fileChooser) {
-            await fileChooser.setFiles(filePath);
+      // Strategy B first — click the "CSV ↑" upload trigger and use Playwright's filechooser event.
+      // More reliable for CF UI as it simulates real user interaction.
+      // IMPORTANT: waitForEvent must be set up BEFORE the click that triggers it.
+      const fileChooserPromise = this.page.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null);
+      const clickedTrigger = await this._clickCSVUploadTrigger();
+      if (clickedTrigger) {
+        const fileChooser = await fileChooserPromise;
+        if (fileChooser) {
+          await fileChooser.setFiles(filePath);
+          await this.page.waitForTimeout(WAIT_L);
+          this.log('MAPPING', 'CSV uploaded via filechooser ✓');
+          uploaded = true;
+        } else {
+          // Trigger may have just unhid a file input — try revealed input
+          await this.page.waitForTimeout(WAIT_M);
+          const revealedInput = await this.page.$('input[type="file"]').catch(() => null);
+          if (revealedInput) {
+            await revealedInput.setInputFiles(filePath);
             await this.page.waitForTimeout(WAIT_L);
-            this.log('MAPPING', 'CSV uploaded via filechooser ✓');
+            this.log('MAPPING', 'CSV uploaded via revealed input[type="file"] ✓');
             uploaded = true;
-          } else {
-            // Trigger may have just unhid a file input — try once more
-            await this.page.waitForTimeout(WAIT_M);
-            fileInput = await this.page.$('input[type="file"]').catch(() => null);
-            if (fileInput) {
-              await fileInput.setInputFiles(filePath);
-              await this.page.waitForTimeout(WAIT_L);
-              this.log('MAPPING', 'CSV uploaded via revealed input[type="file"] ✓');
-              uploaded = true;
-            }
           }
+        }
+      }
+
+      // Strategy A fallback — find an existing file input directly (Playwright handles hidden inputs)
+      if (!uploaded) {
+        const fileInput = await this.page.$('input[type="file"]').catch(() => null);
+        if (fileInput) {
+          await fileInput.setInputFiles(filePath);
+          await this.page.waitForTimeout(WAIT_L);
+          this.log('MAPPING', 'CSV uploaded via direct input[type="file"] ✓');
+          uploaded = true;
         }
       }
 
@@ -1235,6 +1365,23 @@ class CFBrowserAutomation extends EventEmitter {
           this.log('MAPPING', `Upload modal confirm clicked: ${sel}`);
           break;
         }
+      }
+
+      // Check for CF error notifications (e.g. "Exception while createChannelMigrationWithCSV").
+      // This happens when the upload trigger picked the wrong tab's CSV button.
+      // Dismiss the error, then check if mapping is still valid so we can continue.
+      const cfErr = await this._dismissCFErrorNotification();
+      if (cfErr) {
+        // If users are already mapped despite the error, treat as partial success
+        const stillMapped = await this.page.evaluate(() =>
+          (document.body.textContent || '').includes('Mapped')
+        ).catch(() => false);
+        if (stillMapped) {
+          this.log('MAPPING', 'CF error dismissed — mapping rows still present, continuing ✓');
+          return true; // treat as successful
+        }
+        this.log('MAPPING', 'CF error and no mapping rows — CSV upload failed');
+        return false;
       }
 
       // Wait for mapping rows to reflect the upload (Mapped status or success toast)
@@ -1261,65 +1408,132 @@ class CFBrowserAutomation extends EventEmitter {
   }
 
   /**
-   * Find and click the "CSV ↑" (upload) button on the Users tab.
-   * Tries explicit upload selectors first; falls back to selecting the LAST
-   * element whose visible text equals "CSV" (download is first, upload is second).
+   * Find and click the user-mapping "↑ CSV" upload button SCOPED to the active tab panel.
+   *
+   * Root cause of the "Exception while createChannelMigrationWithCSV" error:
+   * The CF Map & Migrate page renders ALL tab panels in the DOM simultaneously.
+   * Searching the whole page picks up the channel-migration "↑ CSV" button on a hidden
+   * panel, uploading the user-mapping CSV to CF's channel endpoint → exception.
+   *
+   * Fix: resolve the active tab panel bounding box first; only click elements inside it.
    */
   async _clickCSVUploadTrigger() {
-    // Strategy 1: explicit upload affordances (title / aria-label / icon classes)
+    // ── Resolve the active tab panel bounding box (used to scope all searches) ─
+    const panelBox = await this.page.evaluate(() => {
+      // Try aria-controls linkage
+      const activeTab = document.querySelector(
+        '[role="tab"][aria-selected="true"], ' +
+        '.nav-tabs li.active a, .nav-tabs li.active, ' +
+        '.tab-item.active, li.active > a[data-toggle="tab"]'
+      );
+      let panel = null;
+      if (activeTab) {
+        const controls = activeTab.getAttribute('aria-controls') ||
+          (activeTab.getAttribute('href') || '').replace('#', '');
+        if (controls) panel = document.getElementById(controls);
+        if (!panel) {
+          const tc = document.querySelector('.tab-content');
+          if (tc) panel = tc.querySelector('.tab-pane.active, .tab-pane.show.active');
+        }
+      }
+      if (!panel) panel = document.querySelector('.tab-pane.active, .tab-pane.show');
+      if (!panel) return null;
+      const r = panel.getBoundingClientRect();
+      // Only use the box if it has real area (not a collapsed/hidden panel)
+      if (r.width < 10 || r.height < 10) return null;
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    }).catch(() => null);
+
+    if (panelBox) {
+      this.log('MAPPING', `Active panel box: top=${Math.round(panelBox.top)} bottom=${Math.round(panelBox.bottom)}`);
+    }
+
+    /** Returns true if the element's top-left corner is inside the active panel */
+    const inPanel = async (el) => {
+      if (!panelBox) return true;
+      const box = await el.evaluate(e => {
+        const r = e.getBoundingClientRect();
+        return { top: r.top, left: r.left };
+      }).catch(() => null);
+      if (!box) return true;
+      return box.top >= panelBox.top - 20 &&
+             box.top <= panelBox.bottom + 20 &&
+             box.left >= panelBox.left - 20 &&
+             box.left <= panelBox.right + 20;
+    };
+
+    // ── Strategy 1: explicit upload selectors scoped to active panel ──────────
     const explicitSelectors = [
       'button[title*="upload" i]', 'button[aria-label*="upload" i]',
       'button[title*="import" i]', 'button[aria-label*="import" i]',
       'button:has(i.fa-upload)', 'button:has(i.fa-file-upload)',
       'button:has(i.fa-arrow-up)', 'button:has([class*="arrow-up"])',
-      'button:has([class*="upload"])', 'a:has([class*="upload"])',
+      'button:has([class*="upload"])',
       'button:has-text("Upload CSV")', 'button:has-text("Import CSV")',
+      'button:has-text("Upload")',
+      'label[for]:has(i.fa-upload)', 'label[for]:has(i.fa-arrow-up)',
+      'label[for]:has([class*="upload"])',
+      'label:has-text("Upload CSV")',
+      'label[title*="upload" i]', 'label[aria-label*="upload" i]',
+      'a:has([class*="upload"])', 'a:has(i.fa-upload)',
+      'a:has-text("Upload CSV")',
     ];
     for (const sel of explicitSelectors) {
       const btn = await this.page.$(sel).catch(() => null);
-      if (btn && await btn.isVisible().catch(() => false)) {
-        await btn.click().catch(() => {});
-        this.log('MAPPING', `Upload CSV trigger clicked: ${sel}`);
-        return true;
-      }
+      if (!btn) continue;
+      if (!(await btn.isVisible().catch(() => false))) continue;
+      if (!(await inPanel(btn))) { this.log('MAPPING', `Skipping out-of-panel: ${sel}`); continue; }
+      await btn.click().catch(() => {});
+      this.log('MAPPING', `Upload CSV trigger clicked (scoped): ${sel}`);
+      return true;
     }
 
-    // Strategy 2: Playwright element-handle heuristic.
-    // CF renders two CSV buttons side by side: "↓ CSV" (download) and "↑ CSV" (upload).
-    // We collect ALL leaf buttons/anchors/spans whose visible text contains "csv",
-    // prefer the one whose outerHTML hints "upload", else fall back to the LAST candidate
-    // (CF layout: download = first, upload = second).
-    // IMPORTANT: we use Playwright's trusted element.click() — NOT evaluate()+click() —
-    // so the browser treats it as a real user gesture and opens the native file picker.
-    const allEls = await this.page.$$('button, a, span, [role="button"]').catch(() => []);
+    // ── Strategy 2: <label for="..."> file input, scoped to active panel ─────
+    const labels = await this.page.$$('label[for]').catch(() => []);
+    for (const lbl of labels) {
+      try {
+        if (!await lbl.isVisible()) continue;
+        if (!await inPanel(lbl)) continue;
+        const forAttr = await lbl.getAttribute('for').catch(() => '');
+        if (!forAttr) continue;
+        const input = await this.page.$(`#${CSS.escape(forAttr)}`).catch(() => null);
+        if (!input) continue;
+        if ((await input.getAttribute('type').catch(() => '')) !== 'file') continue;
+        const text = (await lbl.innerText().catch(() => '')).trim();
+        this.log('MAPPING', `Upload CSV via label[for="${forAttr}"] "${text}" (scoped)`);
+        await lbl.click().catch(() => {});
+        return true;
+      } catch { continue; }
+    }
+
+    // ── Strategy 3: heuristic — CSV-labelled leaf elements in active panel ───
+    // CF renders "↓ CSV" (download) then "↑ CSV" (upload) side by side.
+    // We prefer elements whose HTML hints upload; otherwise take the LAST one in the panel.
+    const allEls = await this.page.$$('button, a, label, span, [role="button"]').catch(() => []);
     const csvCandidates = [];
     for (const el of allEls) {
       try {
         if (!await el.isVisible()) continue;
+        if (!await inPanel(el)) continue;
         const text = (await el.innerText().catch(() => '')).trim();
         if (!text || !/csv/i.test(text)) continue;
-        // Skip containers that wrap other interactive children
-        const hasInteractiveChildren = await el.evaluate(
-          n => n.querySelectorAll('button, a, [role="button"]').length > 0
+        const hasChildren = await el.evaluate(
+          n => n.querySelectorAll('button, a, label, [role="button"]').length > 0
         ).catch(() => false);
-        if (hasInteractiveChildren) continue;
+        if (hasChildren) continue;
         csvCandidates.push(el);
       } catch { continue; }
     }
 
     if (csvCandidates.length === 0) {
-      this.log('MAPPING', 'Upload CSV trigger not found — no CSV-labelled buttons visible');
+      this.log('MAPPING', 'No CSV-labelled elements found in active panel');
       return false;
     }
 
-    // Log candidates for debugging
-    const candidateTexts = [];
-    for (const el of csvCandidates) {
-      candidateTexts.push((await el.innerText().catch(() => '')).trim().slice(0, 30));
-    }
-    this.log('MAPPING', `CSV button candidates (${csvCandidates.length}): ${candidateTexts.join(' | ')}`);
+    const texts = [];
+    for (const el of csvCandidates) texts.push((await el.innerText().catch(() => '')).trim().slice(0, 30));
+    this.log('MAPPING', `CSV candidates in panel (${csvCandidates.length}): ${texts.join(' | ')}`);
 
-    // Prefer the element whose HTML hints at upload
     let target = null;
     for (const el of csvCandidates) {
       const html = await el.evaluate(n => n.outerHTML.toLowerCase()).catch(() => '');
@@ -1328,77 +1542,243 @@ class CFBrowserAutomation extends EventEmitter {
         html.includes('upload') || html.includes('import') ||
         html.includes('arrow-up') || html.includes('arrow_up') ||
         html.includes('fa-upload') || html.includes('fa-file-upload') ||
-        text.includes('↑')
-      ) {
-        target = el;
-        break;
-      }
+        text.includes('↑') // ↑
+      ) { target = el; break; }
     }
-    // Fall back to last candidate (download is first, upload is second in CF layout)
-    if (!target) target = csvCandidates[csvCandidates.length - 1];
+    if (!target) target = csvCandidates[csvCandidates.length - 1]; // last = upload in CF layout
 
     const targetText = (await target.innerText().catch(() => 'unknown')).trim().slice(0, 30);
-    // Trusted Playwright click — generates real user gesture, opens native file picker
     await target.click().catch(() => {});
-    this.log('MAPPING', `Upload CSV trigger clicked via Playwright: "${targetText}"`);
+    this.log('MAPPING', `Upload CSV trigger (heuristic, scoped): "${targetText}"`);
     await this.page.waitForTimeout(500);
     return true;
   }
 
-  /* ── 8: Select EXACTLY the right channels / DMs ──────────────────────────── */
+  /**
+   * Detect and dismiss a CF error/warning toast notification.
+   * Returns the error text if found (so callers can log it), null otherwise.
+   */
+  async _dismissCFErrorNotification() {
+    await this.page.waitForTimeout(800);
+    const errorText = await this.page.evaluate(() => {
+      const sels = [
+        '.toast-error', '.alert-danger', '.alert.alert-danger',
+        '[class*="notification"][class*="error"]', '[class*="toast"][class*="error"]',
+        '.ng-toast .ng-toast__message', '.growl-item', '.jGrowl-message',
+        '[class*="error-message"]', '.error-notification',
+      ];
+      for (const sel of sels) {
+        const el = document.querySelector(sel);
+        if (el && el.offsetParent !== null && (el.textContent || '').trim())
+          return el.textContent.trim().slice(0, 300);
+      }
+      // Fallback: visible element containing "Exception" with red-ish background
+      for (const el of Array.from(document.querySelectorAll('*'))) {
+        if (el.children.length > 4) continue;
+        const txt = (el.textContent || '').trim();
+        if (!txt || txt.length > 400) continue;
+        if (!txt.toLowerCase().includes('exception') && !txt.toLowerCase().includes('error while')) continue;
+        if (el.offsetParent !== null) return txt.slice(0, 300);
+      }
+      return null;
+    }).catch(() => null);
 
+    if (errorText) {
+      this.log('MAPPING', `CF error notification: "${errorText.slice(0, 150)}"`);
+      for (const sel of [
+        '.toast-close-button', '[class*="close"]', '.alert .close',
+        'button.close', '[aria-label="Close"]', '[title="Close"]',
+      ]) {
+        const btn = await this.page.$(sel).catch(() => null);
+        if (btn && await btn.isVisible().catch(() => false)) {
+          await btn.click().catch(() => {});
+          await this.page.waitForTimeout(300);
+          this.log('MAPPING', 'Error notification dismissed');
+          break;
+        }
+      }
+    }
+    return errorText;
+  }
+
+  /* ── 8: Navigate Channels (Step 4) + DMs (Step 5), selecting specified rows ─ */
+
+  /**
+   * Always walks the full wizard path:
+   *   Channels page (Step 4)  →  Direct Messages page (Step 5)
+   *
+   * Row selection only happens when specific channelObjects / dmObjects are
+   * provided.  Even with an empty list we must advance through both steps so
+   * _startMigration reaches the Direct Messages page where the button lives.
+   */
   async _selectChannels(channelIds, channelObjects, dmIds, dmObjects) {
     const totalChannels = channelIds.length;
     const totalDMs      = dmIds.length;
 
-    if (totalChannels === 0 && totalDMs === 0) {
-      this.log('CHANNELS', 'No channels/DMs specified — skipping');
+    this.log('CHANNELS', `Step 4 (Channels) — ${totalChannels} specific channel(s), ${totalDMs} specific DM(s)`);
+    await this.page.waitForTimeout(WAIT_L);
+
+    // Split by channelType (populated by the channel-fetch layer as 'public'/'private')
+    const publicChannels  = channelObjects.filter(c => (c.channelType || '').toLowerCase() === 'public');
+    const privateChannels = channelObjects.filter(c => (c.channelType || '').toLowerCase() === 'private');
+    this.log('CHANNELS', `public=${publicChannels.length} private=${privateChannels.length} dms=${dmObjects.length}`);
+
+    // ── Public Teams / Public Channels tab ───────────────────────────────────
+    // Click the tab regardless; only select rows when specific channels provided.
+    const pubTabClicked = await this._clickCFTab([
+      'Public Channels', 'Public Channel', 'Channels',
+      'Public Teams', 'Teams',          // Teams-to-Teams CF label
+      'Public', 'Standard Channels',
+    ]);
+    await this.page.waitForTimeout(WAIT_L);
+    // Expand collapsed team rows so their channel sub-rows become selectable.
+    await this._expandTeamRows();
+    if (publicChannels.length > 0) {
+      this.log('CHANNELS', `Selecting ${publicChannels.length} public channel(s)`);
+      await this._selectChannelRows(publicChannels);
+    } else {
+      this.log('CHANNELS', 'No specific public channels — tab visited, no rows selected');
+    }
+
+    // ── Private Teams / Private Channels tab ─────────────────────────────────
+    const prvTabClicked = await this._clickCFTab([
+      'Private Channels', 'Private Channel', 'Private Teams',
+      'Private', 'Shared Channels',
+    ]);
+    await this.page.waitForTimeout(WAIT_L);
+    // Expand collapsed team rows on this tab too.
+    await this._expandTeamRows();
+    if (privateChannels.length > 0) {
+      this.log('CHANNELS', `Selecting ${privateChannels.length} private channel(s)`);
+      await this._selectChannelRows(privateChannels);
+    } else {
+      this.log('CHANNELS', 'No specific private channels — tab visited, no rows selected');
+    }
+
+    // ── Advance Channels (Step 4) → Direct Messages (Step 5) ─────────────────
+    // This click is ALWAYS required — Start Migration button is on Step 5.
+    this.log('CHANNELS', 'Advancing from Channels → Direct Messages step');
+    await this.page.waitForTimeout(WAIT_M);
+
+    // Dismiss any stray dialog that may have appeared after channel selection
+    for (const sel of [
+      'button:has-text("OK")', 'button:has-text("Close")', 'button:has-text("Confirm")',
+      '.modal-footer button', '[role="dialog"] button', '.alert button',
+    ]) {
+      const btn = await this.page.$(sel).catch(() => null);
+      if (btn && await btn.isVisible().catch(() => false)) {
+        await btn.click().catch(() => {});
+        await this.page.waitForTimeout(WAIT_M);
+        this.log('CHANNELS', `Dismissed stray dialog before Next: ${sel}`);
+        break;
+      }
+    }
+
+    const nextClicked = await this._clickWizardNext('CHANNELS');
+
+    // Fallback: if Next button was not found, try clicking the "Direct Messages"
+    // step in the wizard breadcrumb to jump directly to Step 5.
+    if (!nextClicked) {
+      this.log('CHANNELS', 'Next not found — attempting breadcrumb jump to Direct Messages');
+      for (const sel of [
+        'a:has-text("Direct Messages")', '[data-step="5"]',
+        'li:has-text("Direct Messages") a', 'span:has-text("Direct Messages")',
+        'ol li:nth-child(5) a', 'ul li:nth-child(5) a',
+      ]) {
+        const crumb = await this.page.$(sel).catch(() => null);
+        if (crumb && await crumb.isVisible().catch(() => false)) {
+          await crumb.click().catch(() => {});
+          await this.page.waitForTimeout(WAIT_L);
+          this.log('CHANNELS', `Jumped to Direct Messages via breadcrumb: ${sel}`);
+          break;
+        }
+      }
+    }
+
+    // ── Step 5: Direct Messages ───────────────────────────────────────────────
+    await this.page.waitForTimeout(WAIT_L);
+    if (dmObjects.length > 0) {
+      this.log('CHANNELS', `Selecting ${dmObjects.length} DM(s) on Direct Messages page`);
+      await this._selectChannelRows(dmObjects);
+    } else {
+      this.log('CHANNELS', 'No specific DMs — on Direct Messages page, ready for Start Migration');
+    }
+
+    this.log('CHANNELS', 'Channels + Direct Messages steps complete ✓');
+    await this.page.waitForTimeout(WAIT_M);
+  }
+
+  /* ── Expand collapsed team rows on the Channels page ────────────────────── */
+
+  /**
+   * The CF Channels page groups channels inside collapsible team rows.
+   * Collapsed teams hide their channel sub-rows (which contain the checkboxes).
+   * This method clicks every team-level row's expand control so all channel rows
+   * become visible and selectable.
+   *
+   * A "team row" is any <tr> that has NO <input type="checkbox|radio"> of its own
+   * but is followed by channel sub-rows.  We detect the expand toggle by looking
+   * for the first <td> in those rows (the circle ○/⊙ icon lives there).
+   */
+  async _expandTeamRows() {
+    // Pass 1: click explicit expand/toggle controls (highest confidence — avoids clicking channel rows)
+    const pass1 = await this.page.evaluate(() => {
+      let count = 0;
+      const rows = Array.from(document.querySelectorAll('tbody tr'));
+      for (const row of rows) {
+        if (row.querySelector('th')) continue;
+        if (!(row.textContent || '').trim()) continue;
+
+        // Look for a dedicated expand affordance: FontAwesome chevron/caret/plus, Bootstrap
+        // collapse toggle, aria-expanded="false", or CF-specific class names.
+        const toggle = row.querySelector(
+          'i.fa-chevron-right, i.fa-angle-right, i.fa-caret-right, i.fa-plus, i.fa-arrow-right,' +
+          '.glyphicon-chevron-right, .glyphicon-plus, .glyphicon-arrow-right,' +
+          '[data-toggle="collapse"][aria-expanded="false"],' +
+          '[aria-expanded="false"],' +
+          '[class*="expand"]:not([class*="expanded"]),' +
+          '[class*="collapsed"],' +
+          'td:first-child [class*="expand"], td:first-child [class*="toggle"],' +
+          'td:first-child [class*="arrow"], td:first-child [class*="caret"]'
+        );
+        if (!toggle) continue;
+        try { toggle.click(); count++; } catch { /* ignore */ }
+      }
+      return count;
+    }).catch(() => 0);
+
+    if (pass1 > 0) {
+      await this.page.waitForTimeout(WAIT_L);
+      this.log('CHANNELS', `Expanded ${pass1} team row(s) via explicit toggle ✓`);
       return;
     }
 
-    this.log('CHANNELS', `Selecting ${totalChannels} channel(s) + ${totalDMs} DM(s)`);
-    await this.page.waitForTimeout(WAIT_L);
+    // Pass 2 (fallback): rows that have NO checkbox of any kind and look like parent team rows.
+    // We only click the first <td> (which typically holds the team name + expand arrow).
+    // Rows that use CSS-circle "checkboxes" (not real <input>) are included but we
+    // purposely click td:first-child, not the circle, to avoid selecting them.
+    const pass2 = await this.page.evaluate(() => {
+      let count = 0;
+      const rows = Array.from(document.querySelectorAll('tbody tr'));
+      for (const row of rows) {
+        if (row.querySelector('input[type="checkbox"], input[type="radio"]')) continue;
+        if (row.querySelector('th')) continue;
+        if (!(row.textContent || '').trim()) continue;
+        // Only click if the row has multiple cells (team rows usually have Name + stats + status)
+        if ((row.cells || []).length < 2) continue;
+        const firstTd = row.querySelector('td:first-child');
+        if (!firstTd) continue;
+        try { firstTd.click(); count++; } catch { /* ignore */ }
+      }
+      return count;
+    }).catch(() => 0);
 
-    // Split by the channelType set during channel fetch (normCh assigns 'public' or 'private')
-    const publicChannels  = channelObjects.filter(c => (c.channelType || '').toLowerCase() === 'public');
-    const privateChannels = channelObjects.filter(c => (c.channelType || '').toLowerCase() === 'private');
-
-    this.log('CHANNELS', `public=${publicChannels.length} private=${privateChannels.length} dms=${dmObjects.length}`);
-
-    // ── Public Channels tab ──────────────────────────────────────────────────
-    if (publicChannels.length > 0) {
-      this.log('CHANNELS', `Public Channels tab — selecting ${publicChannels.length}`);
-      const tabClicked = await this._clickCFTab(['Public Channels', 'Public Channel', 'Channels']);
+    if (pass2 > 0) {
       await this.page.waitForTimeout(WAIT_L);
-      if (tabClicked) await this._selectChannelRows(publicChannels);
+      this.log('CHANNELS', `Expanded ${pass2} team row(s) via first-td fallback`);
     } else {
-      this.log('CHANNELS', 'No public channels selected — skipping Public Channels tab');
+      this.log('CHANNELS', 'No team rows to expand (channels may already be flat)');
     }
-
-    // ── Private Channels tab ─────────────────────────────────────────────────
-    if (privateChannels.length > 0) {
-      this.log('CHANNELS', `Private Channels tab — selecting ${privateChannels.length}`);
-      const tabClicked = await this._clickCFTab(['Private Channels', 'Private Channel']);
-      await this.page.waitForTimeout(WAIT_L);
-      if (tabClicked) await this._selectChannelRows(privateChannels);
-    } else {
-      this.log('CHANNELS', 'No private channels selected — skipping Private Channels tab');
-    }
-
-    // ── Advance from Map & Migrate (Step 3) → Direct Messages (Step 4) ──────
-    await this.page.waitForTimeout(WAIT_M);
-    await this._clickWizardNext('CHANNELS');
-
-    // ── Step 5: Direct Messages ───────────────────────────────────────────────
-    if (dmObjects.length > 0) {
-      this.log('CHANNELS', `Selecting ${dmObjects.length} DM(s) on Direct Messages step`);
-      await this._selectChannelRows(dmObjects);
-    } else {
-      this.log('CHANNELS', 'No DMs to select — ready for migration initiation');
-    }
-
-    this.log('CHANNELS', 'Channel/DM selection complete ✓');
-    await this.page.waitForTimeout(WAIT_M);
   }
 
   /* ── Tab click helper for the CF Map & Migrate wizard ────────────────────── */
@@ -1430,11 +1810,13 @@ class CFBrowserAutomation extends EventEmitter {
   async _selectChannelRows(channelList) {
     if (!channelList || channelList.length === 0) return;
 
-    // Build both display-name targets and raw-ID targets for matching
-    const nameTargets = channelList
-      .map(c => (c.name || c.channelName || c.displayName || '')
-        .toLowerCase().replace(/^#/, '').trim())
-      .filter(n => n.length > 0 && !/^[a-z0-9]{8,}$/.test(n)); // skip pure IDs as names
+    // Build name targets (channel name + workspace/team name for nested Teams rows)
+    const nameTargets = [...new Set(channelList.flatMap(c => {
+      const name = (c.name || c.channelName || c.displayName || '')
+        .toLowerCase().replace(/^#/, '').trim();
+      const team = (c.workSpaceName || c.destTeamName || '').toLowerCase().trim();
+      return [name, team].filter(n => n.length > 0 && !/^[a-z0-9]{8,}$/.test(n));
+    }))];
 
     const idTargets = channelList
       .map(c => (c.id || c.channelId || c.fromRootId || '').toLowerCase().trim())
@@ -1446,7 +1828,18 @@ class CFBrowserAutomation extends EventEmitter {
       this.log('CHANNELS', 'No targets to match — nothing to select');
       return;
     }
-    this.log('CHANNELS', `Matching targets: ${allTargets.slice(0, 8).join(', ')}`);
+    this.log('CHANNELS', `Matching targets: ${allTargets.slice(0, 12).join(', ')}`);
+
+    // Log visible table contents to help debug mismatches
+    const visibleRows = await this.page.evaluate(() => {
+      return Array.from(document.querySelectorAll('tbody tr')).slice(0, 20).map(r => {
+        const cells = Array.from(r.querySelectorAll('td')).map(td => td.textContent?.trim() || '');
+        return cells.join(' | ').replace(/\s+/g, ' ').slice(0, 100);
+      }).filter(r => r.trim());
+    }).catch(() => []);
+    if (visibleRows.length > 0) {
+      this.log('CHANNELS', `Table rows visible: ${visibleRows.slice(0, 8).join(' || ')}`);
+    }
 
     const searchSels = [
       'input[type="search"]',
@@ -1472,29 +1865,43 @@ class CFBrowserAutomation extends EventEmitter {
 
       const found = await this.page.evaluate(({ target }) => {
         const norm = s => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/^#/, '').trim();
+
+        function selectRow(row) {
+          // 1. checkbox (most common — also covers CSS-circle-styled checkboxes)
+          const cb = row.querySelector('input[type="checkbox"]');
+          if (cb) {
+            if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); }
+            return 'checkbox';
+          }
+          // 2. radio button (some CF versions)
+          const rb = row.querySelector('input[type="radio"]');
+          if (rb) {
+            if (!rb.checked) { rb.click(); rb.dispatchEvent(new Event('change', { bubbles: true })); }
+            return 'radio';
+          }
+          // 3. custom circle / indicator element
+          const indicator = row.querySelector(
+            '[class*="select"]:not(select), [class*="check"]:not(input), ' +
+            '[class*="circle"], [class*="toggle"], [class*="indicator"]'
+          );
+          if (indicator) { indicator.click(); return 'indicator'; }
+          // 4. last resort — click the first cell
+          const td = row.querySelector('td');
+          if (td) { td.click(); return 'td-click'; }
+          return null;
+        }
+
         const rows = Array.from(document.querySelectorAll('tr'));
         for (const row of rows) {
-          if (!row.querySelector('input[type="checkbox"]')) continue;
-
-          // Match 1: row text content includes target
-          const txt = norm(row.textContent || '');
-          if (txt.includes(target)) {
-            const cb = row.querySelector('input[type="checkbox"]');
-            if (!cb) continue;
-            if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); }
-            const cells = Array.from(row.querySelectorAll('td'));
-            const label = cells.length > 1 ? cells[1] : cells[0];
-            return { how: 'text', label: norm((label || row).textContent || '').slice(0, 60) };
-          }
-
-          // Match 2: any attribute on the row or its cells contains the target ID
+          const txt     = norm(row.textContent || '');
           const rowHtml = row.innerHTML.toLowerCase();
-          if (rowHtml.includes(target)) {
-            const cb = row.querySelector('input[type="checkbox"]');
-            if (!cb) continue;
-            if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); }
-            return { how: 'html-attr', label: txt.slice(0, 60) };
-          }
+          if (!txt.includes(target) && !rowHtml.includes(target)) continue;
+
+          const how = selectRow(row);
+          if (!how) continue;
+          const cells = Array.from(row.querySelectorAll('td'));
+          const labelEl = cells.length > 1 ? cells[1] : (cells[0] || row);
+          return { how, label: norm(labelEl.textContent || '').slice(0, 60) };
         }
         return null;
       }, { target }).catch(() => null);
@@ -1512,23 +1919,46 @@ class CFBrowserAutomation extends EventEmitter {
       }
     }
 
-    // Pass 2: if nothing matched, select ALL visible rows on this tab as fallback
-    // (The CF table already shows channels from the correct source cloud)
+    // Pass 2: if nothing matched, try the header "Select All" checkbox first,
+    // then fall back to clicking every individual row checkbox.
     if (matched === 0 && channelList.length > 0) {
-      this.log('CHANNELS', 'No rows matched by name/ID — selecting ALL visible rows on this tab');
-      const selectCount = await this.page.evaluate(() => {
-        let n = 0;
-        document.querySelectorAll('tr').forEach(row => {
-          const cb = row.querySelector('input[type="checkbox"]');
-          if (cb && !cb.checked) {
-            cb.click();
-            cb.dispatchEvent(new Event('change', { bubbles: true }));
-            n++;
-          }
-        });
-        return n;
-      }).catch(() => 0);
-      this.log('CHANNELS', `Select-all fallback: ${selectCount} rows selected`);
+      this.log('CHANNELS', 'No rows matched by name/ID — attempting select-all on this tab');
+
+      // Try header "Select All" checkbox first (fastest, most reliable)
+      const headerChecked = await this.page.evaluate(() => {
+        const headerCb = document.querySelector(
+          'thead input[type="checkbox"], th input[type="checkbox"], ' +
+          '[class*="select-all"], [id*="selectAll"], [id*="select-all"]'
+        );
+        if (headerCb && !headerCb.checked) {
+          headerCb.click();
+          headerCb.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
+        return false;
+      }).catch(() => false);
+
+      if (headerChecked) {
+        await this.page.waitForTimeout(WAIT_M);
+        this.log('CHANNELS', 'Select-all via header checkbox ✓');
+      } else {
+        const selectCount = await this.page.evaluate(() => {
+          let n = 0;
+          document.querySelectorAll('tbody tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb && !cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); n++; return; }
+            const rb = row.querySelector('input[type="radio"]');
+            if (rb && !rb.checked) { rb.click(); rb.dispatchEvent(new Event('change', { bubbles: true })); n++; return; }
+            const ind = row.querySelector(
+              '[class*="select"]:not(select), [class*="check"]:not(input), ' +
+              '[class*="circle"], [class*="toggle"], [class*="indicator"]'
+            );
+            if (ind) { ind.click(); n++; }
+          });
+          return n;
+        }).catch(() => 0);
+        this.log('CHANNELS', `Select-all row fallback: ${selectCount} rows selected`);
+      }
     } else {
       this.log('CHANNELS', `${matched}/${allTargets.length} targets matched on this tab`);
     }
@@ -1536,51 +1966,137 @@ class CFBrowserAutomation extends EventEmitter {
 
   /* ── 9: Start Migration + dismiss dialogs ────────────────────────────────── */
 
+  /**
+   * Clicks the "Start Migration" / "Initiate Migration" button on the Direct Messages page
+   * and handles all confirmation + conflict-resolution dialogs that follow.
+   *
+   * Returns true  — button was found and clicked (browser handled the migration).
+   * Returns false — button was not found (caller should fall back to API initiation).
+   *
+   * Why conflict-first in dialog loop: CloudFuze marks a job as "Conflict" when the
+   * same channel pair is submitted twice (browser + API double-initiation) or when the
+   * destination already has messages.  Clicking "Override"/"Override All" in the conflict
+   * dialog tells CF to proceed with the migration despite existing content.
+   */
   async _startMigration() {
-    this.log('MIGRATE', 'Step 5 (Direct Messages) — looking for Initiate Migration button');
-    await this.page.waitForTimeout(WAIT_M);
+    this.log('MIGRATE', 'Step 5 (Direct Messages) — looking for Start Migration button');
+    await this.page.waitForTimeout(WAIT_L);
 
     const btnSels = [
-      'button:has-text("Initiate Migration")', 'button:has-text("Start Migration")',
-      'button:has-text("Initiate Channel Migration")', 'button:has-text("Start Migrate")',
-      'button:has-text("Migrate")',
+      // CF Teams→Teams specific labels
+      'button:has-text("Initiate Migration")', 'button:has-text("Initiate Channel Migration")',
+      'button:has-text("Start Migration")', 'button:has-text("Start Migrate")',
+      'button:has-text("Migrate Now")', 'button:has-text("Migrate")',
       'a:has-text("Initiate Migration")', 'a:has-text("Start Migration")',
-      'input[value*="Initiate" i]', 'input[value*="Start" i]', 'input[value*="Migrate" i]',
-      '[class*="start-migration"]', '[class*="startMigration"]',
-      '[id*="start-migration"]', '[id*="startMigration"]',
-      '[class*="initiate"]', '[id*="initiate"]',
+      'a:has-text("Initiate Channel Migration")',
+      // Bootstrap button class patterns
+      'button.btn-primary:has-text("Initiate")', 'button.btn-success:has-text("Initiate")',
+      'button.btn-primary:has-text("Migrate")',  'a.btn-primary:has-text("Initiate")',
+      'a.btn-primary:has-text("Migrate")',
+      // input fallbacks
+      'input[value*="Initiate" i]', 'input[value*="Start Migration" i]',
+      'input[value*="Migrate" i]',
+      // id / class patterns
+      '[id*="initiate-migration"]', '[id*="initiateMigration"]',
+      '[class*="initiate-migration"]', '[class*="initiateMigration"]',
+      '[id*="start-migration"]', '[class*="start-migration"]',
     ];
 
     let clicked = false;
-    for (const sel of btnSels) {
-      const btn = await this.page.$(sel).catch(() => null);
-      if (btn && await btn.isVisible().catch(() => false)) {
+
+    // Two passes: first try without scrolling, then scroll to bottom and retry
+    for (const scrollFirst of [false, true]) {
+      if (scrollFirst) {
+        await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+        await this.page.waitForTimeout(WAIT_M);
+        this.log('MIGRATE', 'Scrolled to bottom — retrying Start Migration button search');
+      }
+
+      for (const sel of btnSels) {
+        const btn = await this.page.$(sel).catch(() => null);
+        if (!btn) continue;
+        if (!(await btn.isVisible().catch(() => false))) continue;
+        const disabled = await btn.evaluate(el =>
+          el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'
+        ).catch(() => false);
+        if (disabled) continue;
+        await btn.scrollIntoViewIfNeeded().catch(() => {});
         await btn.click();
-        this.log('MIGRATE', `Initiate Channel Migration clicked: ${sel}`);
+        this.log('MIGRATE', `Start Migration clicked: ${sel}`);
         clicked = true;
         break;
+      }
+      if (clicked) break;
+    }
+
+    if (!clicked) {
+      this.log('MIGRATE', 'Start Migration button not found — waiting 8s then retrying once more');
+      await this.page.waitForTimeout(8_000);
+      // Final attempt after page settles
+      for (const sel of btnSels) {
+        const btn = await this.page.$(sel).catch(() => null);
+        if (btn && await btn.isVisible().catch(() => false)) {
+          await btn.scrollIntoViewIfNeeded().catch(() => {});
+          await btn.click();
+          this.log('MIGRATE', `Start Migration clicked (final attempt): ${sel}`);
+          clicked = true;
+          break;
+        }
       }
     }
 
     if (!clicked) {
-      this.log('MIGRATE', 'Initiate Migration button not found — waiting 15s for manual click');
-      await this.page.waitForTimeout(15_000);
-      return;
+      this.log('MIGRATE', 'Start Migration button not found — falling back to CF API');
+      return false;
     }
 
     await this.page.waitForTimeout(WAIT_L);
 
-    // Dismiss up to 5 dialog rounds
-    for (let round = 1; round <= 5; round++) {
+    // Up to 8 dialog rounds.  Each round tries conflict-resolution buttons FIRST,
+    // then falls back to general confirmation buttons.  This ensures CF's "Override"
+    // dialog (shown when destination already has messages) is handled before "OK/Yes".
+    for (let round = 1; round <= 8; round++) {
+      await this.page.waitForTimeout(800);
       let dismissed = false;
+
+      // ── Pass A: conflict / override resolution (highest priority) ────────────
+      for (const sel of [
+        'button:has-text("Override All")',
+        'button:has-text("Override")',
+        'button:has-text("Overwrite All")',
+        'button:has-text("Overwrite")',
+        'button:has-text("Replace All")',
+        'button:has-text("Replace")',
+        'button:has-text("Proceed Anyway")',
+        'button:has-text("Continue Anyway")',
+        'button:has-text("Force Migration")',
+        '[class*="conflict"] button:not([class*="cancel"]):not([class*="close"])',
+        '[class*="override"] button',
+        '[id*="override"] button',
+        '.modal-footer button:has-text("Override")',
+        '.modal-footer button:has-text("Overwrite")',
+      ]) {
+        const btn = await this.page.$(sel).catch(() => null);
+        if (btn && await btn.isVisible().catch(() => false)) {
+          await btn.click().catch(() => {});
+          this.log('MIGRATE', `Conflict resolved (round ${round}): ${sel}`);
+          dismissed = true;
+          await this.page.waitForTimeout(WAIT_M);
+          break;
+        }
+      }
+      if (dismissed) continue;
+
+      // ── Pass B: general confirmation buttons ──────────────────────────────────
       for (const sel of [
         'button:has-text("Confirm")', 'button:has-text("Yes")', 'button:has-text("OK")',
-        'button:has-text("Proceed")', 'button:has-text("Override")',
-        'button:has-text("Overwrite")', 'button:has-text("Replace All")',
-        'button:has-text("Continue")', 'button:has-text("Ignore")',
-        '[role="dialog"] button:has-text("OK")', '[role="dialog"] button:has-text("Yes")',
+        'button:has-text("Proceed")', 'button:has-text("Continue")', 'button:has-text("Ignore")',
+        '[role="dialog"] button:has-text("OK")',
+        '[role="dialog"] button:has-text("Yes")',
         '[role="alertdialog"] button',
-        '[class*="modal"] button:has-text("OK")', '[class*="confirm"] button',
+        '.modal-footer button:has-text("OK")',
+        '.modal-footer button:has-text("Yes")',
+        '[class*="confirm"] button',
       ]) {
         const btn = await this.page.$(sel).catch(() => null);
         if (btn && await btn.isVisible().catch(() => false)) {
@@ -1591,20 +2107,218 @@ class CFBrowserAutomation extends EventEmitter {
           break;
         }
       }
+
       if (!dismissed) break;
     }
 
     await this.page.waitForTimeout(WAIT_L);
     this.log('MIGRATE', 'Migration submitted ✓');
+    return true;
   }
 
   /* ── 10: Reports page ────────────────────────────────────────────────────── */
 
   async _openReports() {
+    const { sourcePlatform = '', destinationPlatform = '', combination = '' } = this.opts;
     this.log('REPORTS', `→ ${CF_REPORTS_URL}`);
     await this.page.goto(CF_REPORTS_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
     await this.page.waitForTimeout(WAIT_L);
-    this.log('REPORTS', 'Reports page loaded — migration running, channels/DMs visible in reports.');
+
+    // ── Map platform identifiers → CF combination label format ────────────────
+    const toCFLabel = p => {
+      const lc = (p || '').toLowerCase();
+      if (lc.includes('microsoft') || lc.includes('teams')) return 'MICROSOFT TEAMS';
+      if (lc.includes('slack'))                              return 'SLACK';
+      if (lc.includes('google') || lc.includes('chat'))     return 'GOOGLE CHAT';
+      if (lc.includes('facebook') || lc.includes('workplace')) return 'FACEBOOK WORKPLACE';
+      if (lc.includes('zoom'))                              return 'ZOOM';
+      if (lc.includes('webex') || lc.includes('cisco'))     return 'CISCO WEBEX';
+      return (p || '').toUpperCase();
+    };
+
+    const src = toCFLabel(sourcePlatform);
+    const dst = toCFLabel(destinationPlatform);
+    const targetCombo = combination || `${src} TO ${dst} MIGRATION`;
+    this.log('REPORTS', `Looking for combination: "${targetCombo}"`);
+
+    // ── Click the combination dropdown button and select the matching option ───
+    // CF reports page shows a dropdown button labeled with the active combination
+    // (e.g. "SLACK TO MICROSOFT TEAMS MIGRATION ▼"). Clicking it reveals all options.
+    const dropdownBtnSels = [
+      'button.dropdown-toggle:has-text("MIGRATION")',
+      'a.dropdown-toggle:has-text("MIGRATION")',
+      '.dropdown-toggle:has-text("MIGRATION")',
+      '[data-toggle="dropdown"]:has-text("MIGRATION")',
+      '[data-bs-toggle="dropdown"]:has-text("MIGRATION")',
+      'button[aria-haspopup="true"]',
+      'button[aria-expanded]',
+      '.combination-selector', '.migration-combo-dropdown',
+    ];
+
+    let dropdownOpened = false;
+    for (const sel of dropdownBtnSels) {
+      const btn = await this.page.$(sel).catch(() => null);
+      if (!btn || !(await btn.isVisible().catch(() => false))) continue;
+      await btn.click().catch(() => {});
+      await this.page.waitForTimeout(WAIT_M);
+      this.log('REPORTS', `Combination dropdown opened via: ${sel}`);
+      dropdownOpened = true;
+      break;
+    }
+
+    if (dropdownOpened) {
+      const optionSels = [
+        '.dropdown-menu li a', '.dropdown-menu a',
+        '[role="menu"] [role="menuitem"]', '[role="listbox"] [role="option"]',
+        '.dropdown-item', 'ul.dropdown-menu li',
+      ];
+      let matched = false;
+      for (const sel of optionSels) {
+        const items = await this.page.$$(sel).catch(() => []);
+        for (const item of items) {
+          if (!(await item.isVisible().catch(() => false))) continue;
+          const text = (await item.innerText().catch(() => '')).trim().toUpperCase();
+          if (text === targetCombo || (text.includes(src) && text.includes('TO') && text.includes(dst))) {
+            await item.click().catch(() => {});
+            await this.page.waitForTimeout(WAIT_L);
+            this.log('REPORTS', `Combination selected: "${text}"`);
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+      if (!matched) {
+        this.log('REPORTS', `Combination "${targetCombo}" not found in dropdown — staying on current view`);
+      }
+    } else {
+      // Fallback: try a native <select> element
+      for (const sel of ['select[name*="combination" i]', 'select[id*="combination" i]', 'select[name*="platform" i]']) {
+        const dropdown = await this.page.$(sel).catch(() => null);
+        if (!dropdown || !(await dropdown.isVisible().catch(() => false))) continue;
+        const matched = await dropdown.evaluate((el, combo) => {
+          const opt = Array.from(el.options || []).find(o => o.text.toUpperCase().includes(combo.slice(0, 15)));
+          if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); return opt.text; }
+          return null;
+        }, targetCombo).catch(() => null);
+        if (matched) {
+          await this.page.waitForTimeout(WAIT_L);
+          this.log('REPORTS', `Combination filter applied via select: "${matched}"`);
+          break;
+        }
+      }
+    }
+
+    this.log('REPORTS', `Reports page ready — ${targetCombo} migration visible.`);
+  }
+
+  /* ── 11: Wait for completion, close jobs, validate ───────────────────────── */
+
+  _deriveCombCode(combination) {
+    const s = (combination || '').toLowerCase();
+    if (s.includes('slack') && (s.includes('teams') || s.includes('microsoft'))) return 'S2T';
+    if (s.includes('slack') && s.includes('chat')) return 'S2C';
+    if (s.includes('slack') && s.includes('slack')) return 'S2S';
+    if ((s.includes('teams') || s.includes('microsoft')) && (s.includes('teams') || s.includes('microsoft'))) return 'T2T';
+    if ((s.includes('chat') || s.includes('google')) && (s.includes('teams') || s.includes('microsoft'))) return 'C2T';
+    return 'S2T';
+  }
+
+  async _waitCloseAndValidate() {
+    const { combination } = this.opts;
+    const migClient = require('../clients/migrationClient');
+    const comboCode = this._deriveCombCode(combination);
+    const maxWaitMs = (Number(env.CHAT_MIGRATION_MAX_WAIT_MINUTES) || 0) * 60_000;
+
+    if (maxWaitMs <= 0) {
+      this.log('FINALIZE', 'CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate');
+      return;
+    }
+
+    this.log('FINALIZE', `Polling CF API every 30s (up to ${env.CHAT_MIGRATION_MAX_WAIT_MINUTES} min) for migration to finish…`);
+
+    const startedAt = Date.now();
+    let allDone = false;
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      await new Promise(r => setTimeout(r, 30_000));
+      let jobs = [];
+      try { jobs = await migClient.getMigrationReports({ combination: comboCode, migrationStatus: 'All' }); }
+      catch (e) { this.log('FINALIZE', `Poll error: ${e.message}`); continue; }
+
+      const pending = jobs.filter(j => {
+        const s = (j.migrationStatus || '').toLowerCase();
+        return s === 'in progress' || s === 'pending' || s === 'queued' || s === 'running';
+      });
+      this.log('FINALIZE', `Poll: ${jobs.length} job(s) total, ${pending.length} still running`);
+      if (pending.length === 0 && jobs.length > 0) { allDone = true; break; }
+    }
+
+    if (!allDone) this.log('FINALIZE', 'Wait timeout — proceeding with close+validate on available jobs');
+
+    // Fetch final job state
+    let jobs = [];
+    try { jobs = await migClient.getMigrationReports({ combination: comboCode, migrationStatus: 'All' }); }
+    catch (e) { this.log('FINALIZE', `Final fetch error: ${e.message}`); return; }
+
+    // Close all completed jobs
+    const completedIds = jobs
+      .filter(j => (j.migrationStatus || '').toLowerCase() === 'completed')
+      .map(j => j.id)
+      .filter(Boolean);
+
+    if (completedIds.length > 0) {
+      this.log('FINALIZE', `Closing ${completedIds.length} completed job(s): ${completedIds.join(', ')}`);
+      try {
+        await migClient.closeChatMigrationJobs(completedIds);
+        this.log('FINALIZE', 'Jobs closed ✓');
+      } catch (e) {
+        this.log('FINALIZE', `Close error: ${e.message}`);
+      }
+    } else {
+      this.log('FINALIZE', 'No completed jobs to close');
+    }
+
+    // Build validation summary
+    const mismatches = [];
+    const channelDetails = [];
+    for (const job of jobs) {
+      const total     = Number(job.totalMessages)     || 0;
+      const processed = Number(job.processedMessages) || 0;
+      const status    = (job.migrationStatus || '').toLowerCase();
+      const match     = status === 'completed' && total > 0 && total === processed;
+      channelDetails.push({
+        name: job.teamName || String(job.id || ''),
+        totalMessages: total,
+        processedMessages: processed,
+        migrationStatus: job.migrationStatus || '',
+        match,
+      });
+      if (!match) {
+        mismatches.push({
+          field: job.teamName || String(job.id || ''),
+          expected: total,
+          actual: processed,
+          migrationStatus: job.migrationStatus || '',
+        });
+      }
+    }
+
+    const overallStatus = mismatches.length === 0 ? 'MATCHED' : 'MISMATCH';
+    this.log('FINALIZE', `Validation: ${overallStatus} — ${mismatches.length} mismatch(es)`);
+    channelDetails.forEach(d =>
+      this.log('FINALIZE', `  ${d.name}: ${d.processedMessages}/${d.totalMessages} [${d.migrationStatus}] ${d.match ? '✓' : '✗'}`)
+    );
+
+    this.emit('validation', {
+      overallStatus,
+      combination: comboCode,
+      closedJobIds: completedIds,
+      mismatches,
+      channelDetails,
+      totalJobs: jobs.length,
+      completedJobs: channelDetails.filter(d => d.migrationStatus.toLowerCase() === 'completed').length,
+    });
   }
 }
 
@@ -1670,6 +2384,13 @@ async function startSession(opts) {
     appendLog('INFO', 'Migration started — Reports page open');
     executionService.update(executionId, { status: 'COMPLETED', currentAgent: 'Done', progress: 'Migration started in CloudFuze', completedAt: new Date().toISOString() });
     _activeSession = null;
+  });
+  session.on('validation', e => {
+    push({ type: 'validation', ...e });
+    appendLog('INFO', `Validation: ${e.overallStatus} — ${e.mismatches?.length ?? 0} mismatch(es), closed ${e.closedJobIds?.length ?? 0} job(s)`);
+    executionService.update(executionId, {
+      progress: `Validation: ${e.overallStatus} — ${e.completedJobs}/${e.totalJobs} jobs completed, ${e.mismatches?.length ?? 0} mismatch(es)`,
+    });
   });
   session.on('failed', e => {
     push({ type: 'failed', ...e });

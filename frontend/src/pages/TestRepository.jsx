@@ -962,14 +962,14 @@ export default function TestRepository() {
   // ── render ──
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+    <div className="page-wrap">
+      <div className="page-header">
         <div>
           <p className="text-xs text-slate-500 uppercase tracking-wide font-semibold">
             Projects / {data?.projectKey || '…'} / Test Repository
           </p>
-          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mt-1">
-            Test Repository{data ? ` for project ${titleProject}` : ''}
+          <h1 className="page-title" style={{ marginTop: 4 }}>
+            Test Repository{data ? ` — ${titleProject}` : ''}
           </h1>
           {data?.importedAt && (
             <p className="text-xs text-slate-400 mt-1">
@@ -995,27 +995,30 @@ export default function TestRepository() {
       {loadError && <p className="text-sm text-red-600">{loadError}</p>}
 
       {!loading && !data && !loadError && (
-        <div className="rounded-lg border-2 border-dashed border-slate-200 p-10 text-center text-slate-600 text-sm bg-slate-50/50">
-          <p className="font-medium text-slate-800 mb-1">No Test Repository data found</p>
-          <p>The repository snapshot could not be loaded. Check that MongoDB is connected and the snapshot exists.</p>
+        <div className="card" style={{ borderStyle: 'dashed' }}>
+          <div className="card-body" style={{ padding: '40px', textAlign: 'center' }}>
+            <p style={{ fontSize: 15, fontWeight: 600, color: '#0129ac', marginBottom: 8 }}>No Test Repository data found</p>
+            <p style={{ fontSize: 14, color: '#6b7280' }}>The repository snapshot could not be loaded. Check that MongoDB is connected and the snapshot exists.</p>
+          </div>
         </div>
       )}
 
       {data && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 rounded-lg border border-slate-200 bg-[#FAFBFC] shadow-sm overflow-hidden min-h-[520px]">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 rounded-lg border border-slate-200 bg-[#FAFBFC] shadow-sm overflow-hidden" style={{ minHeight: 580 }}>
 
           {/* ── Folder Sidebar ── */}
           <aside className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-slate-200 bg-white flex flex-col max-h-[75vh] lg:max-h-[80vh]">
             <div className="flex border-b border-slate-200 bg-[#FAFBFC]">
-              <span className="flex-1 text-center text-[11px] font-bold text-[#0052CC] py-2.5 border-b-2 border-[#0052CC] tracking-wide">FOLDERS</span>
-              <span className="flex-1 text-center text-[11px] font-semibold text-slate-400 py-2.5 cursor-not-allowed tracking-wide">TEST SETS</span>
+              <span className="flex-1 text-center text-xs font-bold text-[#0052CC] py-3 border-b-2 border-[#0052CC] tracking-wide">FOLDERS</span>
+              <span className="flex-1 text-center text-xs font-semibold text-slate-400 py-3 cursor-not-allowed tracking-wide">TEST SETS</span>
             </div>
 
             {/* New root folder button */}
             <div className="px-3 pt-2 pb-1 border-b border-slate-100">
               <button type="button"
                 onClick={() => setCreateFolderModal({ parentPath: rootFolderPath, parentName: 'Test Repository (root)' })}
-                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-dashed border-slate-300 text-xs text-slate-500 hover:border-[#0052CC] hover:text-[#0052CC] hover:bg-blue-50 transition-colors">
+                className="w-full flex items-center justify-center gap-1.5 rounded-md border border-dashed border-slate-300 text-sm text-slate-500 hover:border-[#0052CC] hover:text-[#0052CC] hover:bg-blue-50 transition-colors"
+                style={{ padding: '8px 12px' }}>
                 <span className="text-base leading-none font-bold">+</span> New Folder
               </button>
             </div>
@@ -1066,15 +1069,17 @@ export default function TestRepository() {
               <div className="flex flex-wrap gap-2 items-center">
                 <input type="search" placeholder="Search tests in this folder…"
                   value={testSearch} onChange={e => setTestSearch(e.target.value)}
-                  className="flex-1 min-w-[180px] rounded-md border border-slate-300 px-3 py-2 text-sm" />
+                  className="flex-1 min-w-[180px] rounded-md border border-slate-300"
+                  style={{ padding: '10px 14px', fontSize: 14 }} />
                 <button type="button"
                   onClick={() => setCreateTestModal({ folderPath: getSelectedFolderPath(), folderName: getSelectedFolderName() })}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-[#0052CC] text-white text-sm font-medium hover:bg-[#0747A6]">
+                  className="flex items-center gap-1.5 rounded-md bg-[#0052CC] text-white font-semibold hover:bg-[#0747A6]"
+                  style={{ padding: '10px 16px', fontSize: 14 }}>
                   <span className="text-base leading-none">+</span> New Test
                 </button>
               </div>
-              <p className="text-xs text-slate-500">
-                Total Tests: <span className="font-semibold text-slate-700">{testsFiltered.length}</span>
+              <p style={{ fontSize: 13, color: '#6b7280' }}>
+                Total Tests: <span style={{ fontWeight: 600, color: '#374151' }}>{testsFiltered.length}</span>
                 {testsRaw.length !== testsFiltered.length && <> &middot; {testsRaw.length} in folder</>}
                 {selectedFolderId && selectedFolderId !== '/' && ' (includes subfolders)'}
               </p>
@@ -1090,25 +1095,25 @@ export default function TestRepository() {
                   {testsVisible.map((t, idx) => (
                     <li key={`${t.jiraKey || t._id || idx}-${t.folderId || idx}`}
                       className={t._local ? 'border-l-2 border-emerald-300' : ''}>
-                      <div className="w-full text-left px-4 py-3 hover:bg-slate-50/80 flex gap-3 items-start transition-colors">
+                      <div className="w-full text-left px-4 py-4 hover:bg-slate-50/80 flex gap-3 items-start transition-colors">
                         <button type="button" onClick={() => openTestDetail(t)}
                           className="flex gap-3 items-start flex-1 min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0052CC]/40">
-                          <span className={`mt-0.5 flex-shrink-0 w-7 h-7 rounded text-white text-[10px] font-bold flex items-center justify-center ${t._local ? 'bg-emerald-500' : 'bg-[#0052CC]'}`}
+                          <span className={`mt-0.5 flex-shrink-0 w-8 h-8 rounded text-white text-xs font-bold flex items-center justify-center ${t._local ? 'bg-emerald-500' : 'bg-[#0052CC]'}`}
                             title={t._local ? 'Local Test' : 'Test'} aria-hidden>
                             {t._local ? '✎' : '='}
                           </span>
                           <div className="flex-1 min-w-0">
                             <div className="flex flex-wrap items-center gap-2 gap-y-1">
                               {t.jiraKey ? (
-                                <span className="font-mono text-sm font-semibold text-[#0052CC]">{t.jiraKey}</span>
+                                <span className="font-mono text-sm font-bold text-[#0052CC]">{t.jiraKey}</span>
                               ) : (
                                 <Badge tone="green">LOCAL</Badge>
                               )}
                               {t.testType && <Badge tone="primary">{String(t.testType)}</Badge>}
                               {t.status && <Badge tone="muted">{String(t.status)}</Badge>}
                             </div>
-                            <p className="text-sm text-slate-800 mt-1 leading-snug">{t.summary || '—'}</p>
-                            <p className="text-[11px] text-slate-400 mt-1">Click to view full test details</p>
+                            <p style={{ fontSize: 14, color: '#1e293b', marginTop: 4, lineHeight: 1.4 }}>{t.summary || '—'}</p>
+                            <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>Click to view full test details</p>
                           </div>
                         </button>
                         {/* Delete button for local tests */}

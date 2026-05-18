@@ -1,26 +1,18 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
 import {
-  generateTestCases,
   getCustomTestCases,
   addCustomTestCase,
-  addBulkTestCases,
   deleteCustomTestCase,
 } from '../services/api';
 import { useToast } from '../context/ToastContext';
-import usePersistedState from '../hooks/usePersistedState';
 import { MESSAGE_MIGRATION_COMBINATIONS } from '../constants/messageCombinations';
 
-/* ─── Product / combination catalogue ─────────────────────────────────────── */
+const PRODUCT_TYPES = ['Mail', 'Message', 'Content'];
+
 const PRODUCT_COMBOS = {
-  Mail: [
-    'Gmail → Outlook',
-    'Gmail → Gmail',
-    'Outlook → Outlook',
-    'Outlook → Gmail',
-  ],
+  Mail:    ['Gmail → Outlook', 'Gmail → Gmail', 'Outlook → Outlook', 'Outlook → Gmail'],
   Message: MESSAGE_MIGRATION_COMBINATIONS,
-  Content: [], // user will supply combinations later
+  Content: [],
 };
 
 const MAIL_FOLDER_OPTIONS = [
@@ -36,427 +28,91 @@ const MESSAGE_FOLDER_OPTIONS = [
   'Negative Test Cases',
 ];
 
-/* ─── Small shared UI pieces ───────────────────────────────────────────────── */
-const LABEL_META = {
-  INBOX:               { label: 'Inbox',      color: 'bg-[#eef1fb] text-[#0129ac]' },
-  SENT:                { label: 'Sent',       color: 'bg-[#eef1fb] text-[#0129ac]' },
-  SPAM:                { label: 'Spam',       color: 'bg-[#eef1fb] text-[#0129ac]' },
-  TRASH:               { label: 'Trash',      color: 'bg-[#eef1fb] text-[#0129ac]' },
-  STARRED:             { label: 'Starred',    color: 'bg-[#eef1fb] text-[#0129ac]' },
-  IMPORTANT:           { label: 'Important',  color: 'bg-[#eef1fb] text-[#0129ac]' },
-  CATEGORY_SOCIAL:     { label: 'Social',     color: 'bg-[#eef1fb] text-[#0129ac]' },
-  CATEGORY_FORUMS:     { label: 'Forums',     color: 'bg-[#eef1fb] text-[#0129ac]' },
-  CATEGORY_PROMOTIONS: { label: 'Promotions', color: 'bg-[#eef1fb] text-[#0129ac]' },
-  CATEGORY_UPDATES:    { label: 'Updates',    color: 'bg-[#eef1fb] text-[#0129ac]' },
+const TH = 'px-4 py-3 text-left text-sm font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
+const TD = 'px-4 py-3 text-sm text-black border-b border-r border-[#c5cef5] align-top';
+
+const EMPTY_FORM = {
+  productType:  'Message',
+  combination:  MESSAGE_MIGRATION_COMBINATIONS[0] || '',
+  customCombo:  '',
+  folder:       '',
+  summary:      '',
+  testData:     '',
+  messageCount: '',
 };
 
-function LabelBadge({ labelId }) {
-  const meta = LABEL_META[labelId] || { label: labelId, color: 'bg-[#eef1fb] text-[#0129ac]' };
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${meta.color}`}>
-      {meta.label}
-    </span>
-  );
-}
-
-const TH = 'px-3 py-2.5 text-left text-xs font-semibold text-black bg-[#eef1fb] border-b border-r border-[#c5cef5] whitespace-nowrap sticky top-0 z-10';
-const TD = 'px-3 py-2.5 text-xs text-black border-b border-r border-[#c5cef5] align-top';
-
-const COLS = {
-  id:       'min-w-[120px] w-[120px]',
-  summary:  'min-w-[200px] w-[200px]',
-  action:   'min-w-[180px] w-[180px]',
-  testType: 'min-w-[90px]  w-[90px]',
-  msgCount: 'min-w-[90px]  w-[90px]',
-  testData: 'min-w-[170px] w-[170px]',
-  steps:    'min-w-[230px] w-[230px]',
-  expected: 'min-w-[200px] w-[200px]',
-  combo:    'min-w-[160px] w-[160px]',
-  product:  'min-w-[100px] w-[100px]',
-  folder:   'min-w-[130px] w-[130px]',
-};
-
-function StepsCell({ steps }) {
-  if (!Array.isArray(steps) || steps.length === 0) return <span className="text-gray-300">—</span>;
-  return (
-    <ol className="space-y-0.5 list-none m-0 p-0">
-      {steps.map((s, i) => (
-        <li key={i} className="flex gap-1">
-          <span className="text-gray-400 font-medium flex-shrink-0">{i + 1}.</span>
-          <span className="leading-snug">{s}</span>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function AddOneButton({ label, stateKey, savingState, color, onClick }) {
-  const state = savingState[stateKey];
-  const colorMap = {
-    amber: { base: 'border-[#c5cef5] text-[#0129ac] hover:bg-[#eef1fb]', loading: 'border-[#c5cef5] text-[#4a65c0]', done: 'border-[#0129ac] bg-[#eef1fb] text-[#0129ac]' },
-    blue:  { base: 'border-[#0129ac] text-[#0129ac] hover:bg-[#eef1fb]', loading: 'border-[#c5cef5] text-[#4a65c0]', done: 'border-[#0129ac] bg-[#eef1fb] text-[#0129ac]' },
-  };
-  const c = colorMap[color];
-  const cls = state === 'done' ? c.done : state === 'loading' ? c.loading : c.base;
-  return (
-    <button type="button" disabled={!!state} onClick={onClick}
-      className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border transition-colors disabled:cursor-not-allowed ${cls}`}>
-      {state === 'loading' ? (
-        <><svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving…</>
-      ) : state === 'done' ? (
-        <><svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>Added</>
-      ) : label}
-    </button>
-  );
-}
-
-function Checkbox({ checked, indeterminate, onChange, title }) {
-  return (
-    <input
-      type="checkbox"
-      title={title}
-      ref={(el) => { if (el) el.indeterminate = !!indeterminate; }}
-      checked={checked}
-      onChange={onChange}
-      className="w-4 h-4 rounded border-[#c5cef5] text-[#0129ac] cursor-pointer accent-[#0129ac]"
-    />
-  );
-}
-
-function TableHead({ showCheckbox, allChecked, someChecked, onToggleAll, extraCol }) {
-  return (
-    <thead>
-      <tr>
-        {showCheckbox && (
-          <th className={`${TH} w-10 text-center`}>
-            <Checkbox checked={allChecked} indeterminate={!allChecked && someChecked} onChange={onToggleAll} title="Select / deselect all" />
-          </th>
-        )}
-        <th className={`${TH} ${COLS.id}`}>Test Case ID</th>
-        <th className={`${TH} ${COLS.summary}`}>Summary</th>
-        <th className={`${TH} ${COLS.action}`}>Action</th>
-        <th className={`${TH} ${COLS.testType}`}>Test Type</th>
-        <th className={`${TH} ${COLS.msgCount}`}>Msg Count</th>
-        <th className={`${TH} ${COLS.testData}`}>Test Data</th>
-        <th className={`${TH} ${COLS.steps}`}>Test Steps</th>
-        <th className={`${TH} ${COLS.expected}`}>Expected Result</th>
-        <th className={`${TH} ${COLS.combo}`}>Combination</th>
-        <th className={`${TH} ${COLS.product}`}>Product Type</th>
-        <th className={`${TH} ${COLS.folder}`}>Folder</th>
-        {extraCol !== undefined && <th className={`${TH} border-r-0`}>{extraCol}</th>}
-      </tr>
-    </thead>
-  );
-}
-
-function GeneratedTable({ cases, selected, onToggle, onToggleAll, savingState, onAdd }) {
-  const allChecked  = cases.length > 0 && selected.size === cases.length;
-  const someChecked = selected.size > 0 && selected.size < cases.length;
-  return (
-    <div className="rounded-xl border border-[#c5cef5] overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="border-collapse w-max min-w-full">
-          <TableHead showCheckbox allChecked={allChecked} someChecked={someChecked} onToggleAll={onToggleAll} extraCol="Actions" />
-          <tbody>
-            {cases.map((tc, idx) => {
-              const isSelected = selected.has(idx);
-              return (
-                <tr key={idx} className={`transition-colors cursor-pointer ${isSelected ? 'bg-[#eef1fb]' : 'hover:bg-[#eef1fb]/40'}`} onClick={() => onToggle(idx)}>
-                  <td className={`${TD} w-10 text-center`} onClick={(e) => e.stopPropagation()}>
-                    <Checkbox checked={isSelected} onChange={() => onToggle(idx)} />
-                  </td>
-                  <td className={`${TD} ${COLS.id} text-gray-500 italic text-[11px]`}>On save</td>
-                  <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || tc.subject || '—'}</td>
-                  <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} ${COLS.testType} text-gray-500 italic text-[11px]`}>On save</td>
-                  <td className={`${TD} ${COLS.msgCount} text-center`}>
-                    {tc.messageCount ? (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold bg-[#0129ac] text-white">{tc.messageCount.toLocaleString()}</span>
-                    ) : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
-                  <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} ${COLS.combo}`}>{tc.combination || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} ${COLS.product}`}>
-                    {tc.productType
-                      ? <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-[#eef1fb] text-[#0129ac]">{tc.productType}</span>
-                      : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className={`${TD} ${COLS.folder}`}>{tc.folder || <span className="text-gray-300">—</span>}</td>
-                  <td className={`${TD} border-r-0 min-w-[160px]`} onClick={(e) => e.stopPropagation()}>
-                    <div className="flex flex-col gap-1.5">
-                      <AddOneButton label="Add to Smoke"  stateKey={`${idx}-smoke`}  savingState={savingState} color="amber" onClick={() => onAdd(tc, 'smoke',  idx)} />
-                      <AddOneButton label="Add to Sanity" stateKey={`${idx}-sanity`} savingState={savingState} color="blue"  onClick={() => onAdd(tc, 'sanity', idx)} />
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function SavedTable({ cases, activeTab, deletingId, onDelete }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="border-collapse w-max min-w-full">
-        <TableHead showCheckbox={false} extraCol="" />
-        <tbody>
-          {cases.map((tc) => (
-            <tr key={tc.id} className="hover:bg-[#eef1fb]/40 transition-colors">
-              <td className={`${TD} ${COLS.id}`}>
-                <span className="font-mono font-semibold text-[#0129ac] bg-[#eef1fb] px-1.5 py-0.5 rounded border border-[#c5cef5] text-[11px]">
-                  {tc.testCaseId || tc.id}
-                </span>
-              </td>
-              <td className={`${TD} ${COLS.summary} font-medium text-black`}>{tc.summary || tc.subject || '—'}</td>
-              <td className={`${TD} ${COLS.action}`}>{tc.action || <span className="text-gray-400">—</span>}</td>
-              <td className={`${TD} ${COLS.testType}`}>
-                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-[#eef1fb] text-[#0129ac]`}>
-                  {tc.testType ? tc.testType.charAt(0).toUpperCase() + tc.testType.slice(1) : activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
-                </span>
-              </td>
-              <td className={`${TD} ${COLS.msgCount} text-center`}>
-                {tc.messageCount ? (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-bold bg-[#0129ac] text-white">
-                    {tc.messageCount.toLocaleString()}
-                  </span>
-                ) : <span className="text-gray-300">—</span>}
-              </td>
-              <td className={`${TD} ${COLS.testData}`}>{tc.testData || <span className="text-gray-300">—</span>}</td>
-              <td className={`${TD} ${COLS.steps}`}><StepsCell steps={tc.testSteps} /></td>
-              <td className={`${TD} ${COLS.expected}`}>{tc.expectedResult || <span className="text-gray-300">—</span>}</td>
-              <td className={`${TD} ${COLS.combo}`}>{tc.combination || <span className="text-gray-300">—</span>}</td>
-              <td className={`${TD} ${COLS.product}`}>{tc.productType || <span className="text-gray-300">—</span>}</td>
-              <td className={`${TD} ${COLS.folder}`}>{tc.folder || <span className="text-gray-300">—</span>}</td>
-              <td className={`${TD} border-r-0 w-10 text-center`}>
-                <button type="button" disabled={deletingId === tc.id} onClick={() => onDelete(tc.id, activeTab)}
-                  className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50" title="Remove">
-                  {deletingId === tc.id
-                    ? <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                    : <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>
-                  }
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-/* ─── Main page ─────────────────────────────────────────────────────────────── */
 export default function TestCaseGenerator() {
   const toast = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [scenarioText, setScenarioText] = usePersistedState('tcg-scenario', '');
-  const [count, setCount]               = usePersistedState('tcg-count', 5);
-  const [productType, setProductType]   = usePersistedState('tcg-product', 'Mail');
-  const [combination, setCombination]   = usePersistedState('tcg-combo', 'Gmail → Outlook');
-  const [customCombo, setCustomCombo]   = usePersistedState('tcg-custom-combo', '');
-  const [folder, setFolder]             = usePersistedState('tcg-folder', '');
-  const [generatedCases, setGeneratedCases] = usePersistedState('tcg-cases', []);
-  const [savingState, setSavingState]   = usePersistedState('tcg-saving', {});
-  const [selected, setSelected]         = usePersistedState('tcg-selected', new Set());
+  const [form, setForm]         = useState(EMPTY_FORM);
+  const [saving, setSaving]     = useState(false);
+  const [savedCases, setSavedCases] = useState([]);
+  const [deletingId, setDeletingId] = useState(null);
 
-  const abortControllerRef = useRef(null);
+  const combos        = PRODUCT_COMBOS[form.productType] || [];
+  const isContent     = form.productType === 'Content';
+  const folderOptions = form.productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
+  const effectiveCombo = isContent ? form.customCombo : form.combination;
 
-  // Apply ?productType=…&combination=…&folder=…&scenario=… prefill once (e.g. from Message Agent
-  // "Generate Test Cases from these IDs"). We strip the params after applying so a refresh
-  // doesn't keep clobbering user edits.
-  const prefillAppliedRef = useRef(false);
-  useEffect(() => {
-    if (prefillAppliedRef.current) return;
-    const pt       = searchParams.get('productType');
-    const combo    = searchParams.get('combination');
-    const fld      = searchParams.get('folder');
-    const scenario = searchParams.get('scenario');
-    if (!pt && !combo && !fld && !scenario) return;
-    if (pt && PRODUCT_COMBOS[pt]) {
-      setProductType(pt);
-      const combos = PRODUCT_COMBOS[pt] || [];
-      setCombination(combos[0] || '');
-    }
-    if (combo) {
-      if (pt === 'Content') setCustomCombo(combo);
-      else setCombination(combo);
-    }
-    if (fld) setFolder(fld);
-    if (scenario) setScenarioText(scenario);
-    prefillAppliedRef.current = true;
-    setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams, setProductType, setCombination, setCustomCombo, setFolder, setScenarioText]);
-
-  const [generating, setGenerating]   = useState(false);
-  const [generateError, setGenerateError] = useState(null);
-  const [bulkSaving, setBulkSaving]   = useState({ smoke: false, sanity: false });
-  const [savedCases, setSavedCases]   = useState({ smoke: [], sanity: [] });
-  const [activeTab, setActiveTab]     = useState('smoke');
-  const [deletingId, setDeletingId]   = useState(null);
-
-  /* When product changes, reset combination to first option */
-  function handleProductChange(p) {
-    setProductType(p);
-    const combos = PRODUCT_COMBOS[p] || [];
-    setCombination(combos[0] || '');
-    setCustomCombo('');
-    setFolder('');
+  function setField(key) {
+    return (e) => setForm(p => ({ ...p, [key]: e.target.value }));
   }
 
-  const combos         = PRODUCT_COMBOS[productType] || [];
-  const folderOptions  = productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
-  const isContentType  = productType === 'Content';
-  const effectiveCombo = isContentType ? customCombo : combination;
+  function handleProductChange(pt) {
+    const combos = PRODUCT_COMBOS[pt] || [];
+    setForm(p => ({
+      ...p,
+      productType: pt,
+      combination: combos[0] || '',
+      customCombo: '',
+      folder: '',
+    }));
+  }
 
   const loadSaved = useCallback(async () => {
     try {
       const { data } = await getCustomTestCases();
-      setSavedCases(data);
+      setSavedCases(Array.isArray(data.scenarios) ? data.scenarios : []);
     } catch { /* non-fatal */ }
   }, []);
 
   useEffect(() => { loadSaved(); }, [loadSaved]);
 
-  function parseScenarios(text) {
-    return text
-      .split(/\n{2,}|\n(?=\d+[\.\)]\s)/)
-      .map((s) => s.replace(/^\d+[\.\)]\s*/, '').trim())
-      .filter(Boolean);
-  }
-
-  function handleStop() {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-  }
-
-  async function handleGenerate(e) {
+  async function handleSave(e) {
     e.preventDefault();
-    const scenarios = parseScenarios(scenarioText);
-    if (scenarios.length === 0) return;
-
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setGenerating(true);
-    setGenerateError(null);
-    setGeneratedCases([]);
-    setSelected(new Set());
-    setSavingState({});
+    const summary = form.summary.trim();
+    const testData = form.testData.trim();
+    if (!summary || !effectiveCombo.trim()) {
+      toast.warning('Missing fields', 'Summary and Migration Combination are required.');
+      return;
+    }
+    setSaving(true);
     try {
-      const { data } = await generateTestCases(
-        { scenarios, count, productType, combination: effectiveCombo, folder },
-        controller.signal,
-      );
-      const cases = data.testCases || [];
-      setGeneratedCases(cases);
-      toast.success(
-        `${cases.length} test case${cases.length !== 1 ? 's' : ''} generated`,
-        `From ${scenarios.length} scenario${scenarios.length !== 1 ? 's' : ''}. Review and add to Smoke or Sanity.`
-      );
+      const tc = {
+        summary,
+        testData,
+        productType: form.productType,
+        combination: effectiveCombo,
+        folder:      form.folder || '',
+        messageCount: form.messageCount ? parseInt(form.messageCount, 10) || 0 : 0,
+      };
+      await addCustomTestCase(tc);
+      setForm(p => ({ ...p, summary: '', testData: '', messageCount: '' }));
+      await loadSaved();
+      toast.success('Scenario saved', `"${summary}" added to library.`);
     } catch (err) {
-      if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') {
-        toast.info('Generation stopped', 'The request was cancelled.');
-        return;
-      }
-      const msg = err.response?.data?.error || err.message || 'Generation failed';
-      setGenerateError(msg);
-      toast.error('Generation failed', msg);
+      toast.error('Failed to save', err.response?.data?.error || err.message);
     } finally {
-      abortControllerRef.current = null;
-      setGenerating(false);
+      setSaving(false);
     }
   }
 
-  function removeFromGenerated(indicesToRemove) {
-    const idxSet = new Set(indicesToRemove);
-    setGeneratedCases((prev) => prev.filter((_, i) => !idxSet.has(i)));
-    setSelected((prev) => {
-      const next = new Set();
-      for (const i of prev) {
-        if (idxSet.has(i)) continue;
-        const shift = indicesToRemove.filter((r) => r < i).length;
-        next.add(i - shift);
-      }
-      return next;
-    });
-    setSavingState((prev) => {
-      const next = {};
-      for (const [key, val] of Object.entries(prev)) {
-        const [idxStr, type] = key.split('-');
-        const i = parseInt(idxStr, 10);
-        if (idxSet.has(i)) continue;
-        const shift = indicesToRemove.filter((r) => r < i).length;
-        next[`${i - shift}-${type}`] = val;
-      }
-      return next;
-    });
-  }
-
-  function handleToggleRow(idx) {
-    setSelected((prev) => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
-  }
-
-  function handleToggleAll() {
-    if (selected.size === generatedCases.length) setSelected(new Set());
-    else setSelected(new Set(generatedCases.map((_, i) => i)));
-  }
-
-  async function handleAddOne(tc, type, idx) {
-    const key = `${idx}-${type}`;
-    setSavingState((prev) => ({ ...prev, [key]: 'loading' }));
-    try {
-      await addCustomTestCase({ testType: type, testCase: tc });
-      setSavingState((prev) => ({ ...prev, [key]: 'done' }));
-      loadSaved();
-      toast.success(`Added to ${type.charAt(0).toUpperCase() + type.slice(1)}`, tc.summary || tc.subject);
-      setTimeout(() => removeFromGenerated([idx]), 800);
-    } catch (err) {
-      setSavingState((prev) => ({ ...prev, [key]: undefined }));
-      if (err.response?.status === 409) toast.warning('Duplicate skipped', err.response.data.message);
-      else toast.error('Failed to save', err.response?.data?.error || err.message);
-    }
-  }
-
-  async function handleAddSelected(type) {
-    const indices = selected.size > 0 ? [...selected] : generatedCases.map((_, i) => i);
-    const cases = indices.map((i) => generatedCases[i]);
-    if (cases.length === 0) return;
-    setBulkSaving((prev) => ({ ...prev, [type]: true }));
-    const label = type.charAt(0).toUpperCase() + type.slice(1);
-    try {
-      const { data: result } = await addBulkTestCases(type, cases);
-      loadSaved();
-      const added = result.added ?? cases.length, skipped = result.skipped ?? 0;
-      if (added > 0 && skipped === 0)      toast.success(`${added} test case${added !== 1 ? 's' : ''} added to ${label}`, `They will run in the next ${label} test execution.`);
-      else if (added > 0 && skipped > 0)   toast.success(`${added} added, ${skipped} duplicate${skipped !== 1 ? 's' : ''} skipped`, `${skipped} already exist in ${label}.`);
-      else                                 toast.warning('All duplicates — nothing added', `All selected test cases already exist in ${label}.`);
-      const savedIndices = indices.filter((i) => {
-        const tc = generatedCases[i];
-        const norm = (s) => (s || '').trim().toLowerCase();
-        return !(result.skippedNames || []).some((name) => norm(name) === norm(tc?.summary || tc?.subject));
-      });
-      if (savedIndices.length > 0) setTimeout(() => removeFromGenerated(savedIndices), 600);
-    } catch (err) {
-      toast.error(`Failed to add to ${label}`, err.response?.data?.error || err.message);
-    } finally {
-      setBulkSaving((prev) => ({ ...prev, [type]: false }));
-    }
-  }
-
-  async function handleDelete(id, type) {
+  async function handleDelete(id) {
     setDeletingId(id);
     try {
-      await deleteCustomTestCase(id, type);
+      await deleteCustomTestCase(id);
       loadSaved();
-      toast.info('Test case removed', `Removed from ${type.charAt(0).toUpperCase() + type.slice(1)} test suite.`);
+      toast.info('Scenario removed');
     } catch (err) {
       toast.error('Failed to remove', err.response?.data?.error || err.message);
     } finally {
@@ -464,268 +120,225 @@ export default function TestCaseGenerator() {
     }
   }
 
-  const currentSaved  = savedCases[activeTab] || [];
-  const scenarioCount = parseScenarios(scenarioText).length;
-  const canGenerate   = scenarioText.trim() && effectiveCombo.trim();
+  const canSave = form.summary.trim() && effectiveCombo.trim();
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-black">Test Case Generator</h1>
-        <p className="text-sm text-black mt-1">
-          Select the product type and migration combination, then describe your scenarios to generate accurate test cases.
-        </p>
+    <div className="page-wrap">
+      {/* ── Page Header ── */}
+      <div style={{ borderRadius: 16, overflow: 'hidden', background: 'linear-gradient(135deg, #020c6b 0%, #0129ac 60%, #1845d4 100%)', boxShadow: '0 6px 32px rgba(1,41,172,0.22)', marginBottom: 24 }}>
+        <div style={{ padding: '24px 28px', display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.12)', border: '1.5px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+            </svg>
+          </div>
+          <div>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: '#fff', margin: 0 }}>Test Scenarios</h1>
+            <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)', margin: '3px 0 0' }}>
+              Create and manage test scenarios · Used in Message Agent to post test data into channels &amp; DMs
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Input card */}
-      <div className="bg-white rounded-xl border border-[#c5cef5] p-6 space-y-6">
-        <form onSubmit={handleGenerate} className="space-y-6">
+      {/* ── Add Scenario Form ── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ padding: '18px 22px', backgroundColor: '#f8fafc', borderBottom: '1px solid #e4e9f5', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ width: 28, height: 28, borderRadius: '50%', backgroundColor: '#0129ac', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, flexShrink: 0 }}>+</span>
+          <div>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Add Test Scenario</p>
+            <p style={{ margin: '1px 0 0', fontSize: 12, color: '#6b7280' }}>Fill in the fields below and save to your scenario library</p>
+          </div>
+        </div>
+        <form onSubmit={handleSave} style={{ padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-          {/* ── Row 1: Product Type + Combination + Folder ── */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* Row 1: Product Type + Combination + Folder */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: 20, alignItems: 'start' }}>
 
             {/* Product Type */}
             <div>
-              <label className="block text-sm font-medium text-black mb-2">Product Type</label>
-              <div className="flex gap-2 flex-wrap">
-                {Object.keys(PRODUCT_COMBOS).map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => handleProductChange(p)}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
-                      productType === p
-                        ? 'bg-[#0129ac] text-white border-[#0129ac] shadow-sm'
-                        : 'bg-white text-black border-[#c5cef5] hover:border-[#0129ac] hover:text-[#0129ac]'
-                    }`}
-                  >
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Product Type
+              </label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {PRODUCT_TYPES.map(p => (
+                  <button key={p} type="button" onClick={() => handleProductChange(p)}
+                    style={{
+                      padding: '9px 20px', borderRadius: 9, fontSize: 13, fontWeight: 700, border: '2px solid', cursor: 'pointer',
+                      borderColor: form.productType === p ? '#0129ac' : '#e5e7eb',
+                      backgroundColor: form.productType === p ? '#0129ac' : '#fff',
+                      color: form.productType === p ? '#fff' : '#374151',
+                    }}>
                     {p}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Combination */}
+            {/* Migration Combination */}
             <div>
-              <label className="block text-sm font-medium text-black mb-2">
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Migration Combination
-                {isContentType && <span className="ml-1 text-xs font-normal text-gray-500">(type manually)</span>}
               </label>
-              {isContentType ? (
-                <input
-                  type="text"
-                  value={customCombo}
-                  onChange={(e) => setCustomCombo(e.target.value)}
+              {isContent ? (
+                <input type="text" value={form.customCombo} onChange={setField('customCombo')}
                   placeholder="e.g. SharePoint → Google Drive"
-                  className="w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
-                />
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
               ) : (
-                <select
-                  value={combination}
-                  onChange={(e) => setCombination(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none bg-white"
-                >
-                  {combos.map((c) => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
+                <select value={form.combination} onChange={setField('combination')}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', backgroundColor: '#fff', boxSizing: 'border-box' }}>
+                  {combos.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               )}
             </div>
 
             {/* Folder / Feature */}
             <div>
-              <label className="block text-sm font-medium text-black mb-2">
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Folder / Feature
-                <span className="ml-1 text-xs font-normal text-gray-500">(optional)</span>
+                <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>(optional)</span>
               </label>
-              <div className="flex gap-2">
-                <select
-                  value={folderOptions.includes(folder) ? folder : ''}
-                  onChange={(e) => setFolder(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none bg-white"
-                >
-                  <option value="">— auto-detect —</option>
-                  {folderOptions.map((f) => (
-                    <option key={f} value={f}>{f}</option>
-                  ))}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <select value={folderOptions.includes(form.folder) ? form.folder : ''}
+                  onChange={setField('folder')}
+                  style={{ flex: 1, padding: '10px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', backgroundColor: '#fff' }}>
+                  <option value="">— none —</option>
+                  {folderOptions.map(f => <option key={f} value={f}>{f}</option>)}
                 </select>
-                {folder && (
-                  <button type="button" onClick={() => setFolder('')}
-                    className="px-2 text-gray-400 hover:text-gray-600 border border-[#c5cef5] rounded-lg text-sm">
-                    ✕
-                  </button>
+                {form.folder && (
+                  <button type="button" onClick={() => setForm(p => ({ ...p, folder: '' }))}
+                    style={{ padding: '8px 12px', borderRadius: 8, border: '1.5px solid #e5e7eb', color: '#6b7280', backgroundColor: '#fff', cursor: 'pointer', fontSize: 13 }}>✕</button>
                 )}
               </div>
-              {/* Also allow free text if not in the list */}
-              {folder && !folderOptions.includes(folder) && (
-                <input
-                  type="text"
-                  value={folder}
-                  onChange={(e) => setFolder(e.target.value)}
-                  placeholder="Custom folder name"
-                  className="mt-2 w-full px-3 py-2 border border-[#c5cef5] rounded-lg text-sm focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
-                />
-              )}
             </div>
           </div>
 
-          {/* Context pill showing current selection */}
-          {effectiveCombo && (
-            <div className="flex items-center gap-2 text-xs text-black">
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#eef1fb] border border-[#c5cef5] text-[#0129ac] font-medium">
-                <span>{productType}</span>
-                <span className="text-[#0129ac]">·</span>
-                <span>{effectiveCombo}</span>
-                {folder && <><span className="text-[#0129ac]">·</span><span>{folder}</span></>}
-              </span>
-              <span className="text-black">will be applied to all generated test cases</span>
-            </div>
-          )}
-
-          {/* Scenario textarea */}
-          <div>
-            <label htmlFor="scenario" className="block text-sm font-medium text-black mb-1">
-              Test Scenarios
-              <span className="ml-1.5 text-xs font-normal text-gray-500">— one per paragraph, or numbered (1. … 2. …)</span>
-            </label>
-            <textarea
-              id="scenario"
-              rows={5}
-              value={scenarioText}
-              onChange={(e) => setScenarioText(e.target.value)}
-              placeholder={
-                productType === 'Message'
-                  ? `1. Verify direct messages migrate from ${effectiveCombo || 'source → destination'} with timestamps intact.\n\n2. Verify channel messages with attachments migrate correctly.\n\n3. Verify threaded replies are preserved after migration.`
-                  : `1. Verify plain-text emails migrate from ${effectiveCombo || 'source → destination'} with all headers intact.\n\n2. Verify HTML emails with PDF attachments migrate correctly.\n\n3. Verify starred emails appear as flagged in destination.`
-              }
-              className="w-full px-4 py-3 border border-[#c5cef5] rounded-lg text-sm text-black focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none transition-shadow resize-none font-mono"
-            />
-            {scenarioCount > 0 && (
-              <p className="text-xs text-[#0129ac] mt-1">
-                {scenarioCount} scenario{scenarioCount > 1 ? 's' : ''} detected
-              </p>
-            )}
-          </div>
-
-          {/* Count + Generate row */}
-          <div className="flex items-end gap-4">
+          {/* Row 2: Summary + Message Count */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 20, alignItems: 'start' }}>
             <div>
-              <label className="block text-sm font-medium text-black mb-1">Test cases to generate</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number" min={1} max={40} value={count}
-                  onChange={(e) => setCount(Math.min(40, Math.max(1, parseInt(e.target.value) || 1)))}
-                  className="w-20 px-3 py-2 border border-[#c5cef5] rounded-lg text-sm text-black text-center focus:ring-2 focus:ring-[#0129ac] focus:border-[#0129ac] outline-none"
-                />
-                <span className="text-xs text-black">total (max 40)</span>
-              </div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Summary
+                <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: '#dc2626', textTransform: 'none' }}>*required</span>
+              </label>
+              <input type="text" value={form.summary} onChange={setField('summary')}
+                placeholder="e.g. Verify channel messages with attachments migrate correctly"
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
             </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Message Count
+              </label>
+              <input type="number" min={1} value={form.messageCount} onChange={setField('messageCount')}
+                placeholder="e.g. 100"
+                style={{ width: 120, padding: '10px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+          </div>
 
-            <button
-              type="submit"
-              disabled={generating || !canGenerate}
-              className="flex items-center gap-2 px-6 py-2.5 bg-[#0129ac] text-white text-sm font-semibold rounded-lg hover:bg-[#011e8a] focus:ring-4 focus:ring-[#c5cef5] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              {generating ? (
-                <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Generating…</>
+          {/* Row 3: Message Content / Test Data */}
+          <div>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#0129ac', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Message Content / Test Data
+            </label>
+            <textarea rows={4} value={form.testData} onChange={setField('testData')}
+              placeholder={form.productType === 'Message'
+                ? 'Describe the message content to post — e.g. "100 plain text messages, 20 with file attachments, 10 threaded replies"'
+                : 'Describe the test data — e.g. "Plain text emails with PDF attachments, HTML emails, starred messages"'}
+              style={{ width: '100%', padding: '12px 14px', borderRadius: 8, border: '1.5px solid #e5e7eb', fontSize: 13, outline: 'none', resize: 'none', boxSizing: 'border-box', color: '#111827' }} />
+          </div>
+
+          {/* Context pill + Save button */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+            {effectiveCombo && (
+              <span style={{ padding: '4px 14px', borderRadius: 20, backgroundColor: '#eef1fd', border: '1px solid #c5cef5', color: '#0129ac', fontWeight: 600, fontSize: 12 }}>
+                {form.productType} · {effectiveCombo}{form.folder ? ` · ${form.folder}` : ''}
+              </span>
+            )}
+            <button type="submit" disabled={saving || !canSave}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '11px 28px', borderRadius: 9, fontSize: 14, fontWeight: 700, backgroundColor: '#059669', color: '#fff', border: 'none', cursor: (!canSave || saving) ? 'not-allowed' : 'pointer', opacity: (!canSave || saving) ? 0.5 : 1 }}>
+              {saving ? (
+                <><svg style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25"/><path fill="currentColor" opacity="0.75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Saving…</>
               ) : (
-                <><SparklesIcon className="w-4 h-4" />Generate Test Cases</>
+                <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>Save Scenario</>
               )}
             </button>
-
-            {generating && (
-              <button
-                type="button"
-                onClick={handleStop}
-                className="flex items-center gap-2 px-4 py-2.5 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 focus:ring-4 focus:ring-red-200 transition-all"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                  <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
-                </svg>
-                Stop
-              </button>
-            )}
-
-            {!effectiveCombo && (
-              <p className="text-xs text-[#0129ac]">Enter a migration combination to enable generation.</p>
-            )}
           </div>
         </form>
-
-        {generateError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-sm text-red-700">{generateError}</p>
-          </div>
-        )}
       </div>
 
-      {/* Generated cases */}
-      {generatedCases.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div>
-              <h2 className="text-base font-semibold text-black">
-                Generated Test Cases
-                <span className="ml-2 text-sm font-normal text-black">({generatedCases.length})</span>
-              </h2>
-              <p className="text-xs text-black mt-0.5">
-                {selected.size > 0
-                  ? <><span className="text-[#0129ac] font-medium">{selected.size} selected</span> — add them to Smoke or Sanity, or pick individual rows.</>
-                  : 'Check rows to select, or use the header checkbox to select all, then add to Smoke or Sanity.'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button type="button" disabled={bulkSaving.smoke} onClick={() => handleAddSelected('smoke')}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-[#c5cef5] bg-[#eef1fb] text-[#0129ac] hover:bg-white hover:border-[#0129ac] disabled:opacity-50 disabled:cursor-not-allowed">
-                {bulkSaving.smoke
-                  ? <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving…</>
-                  : <>{selected.size > 0 ? `Add ${selected.size} Selected` : 'Add All'} → Smoke</>}
-              </button>
-              <button type="button" disabled={bulkSaving.sanity} onClick={() => handleAddSelected('sanity')}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border transition-all border-[#0129ac] bg-white text-[#0129ac] hover:bg-[#eef1fb] disabled:opacity-50 disabled:cursor-not-allowed">
-                {bulkSaving.sanity
-                  ? <><svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Saving…</>
-                  : <>{selected.size > 0 ? `Add ${selected.size} Selected` : 'Add All'} → Sanity</>}
-              </button>
-            </div>
+      {/* ── Saved Scenarios Library ── */}
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '16px 20px', backgroundColor: '#0129ac', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h2 style={{ fontSize: 14, fontWeight: 700, color: '#fff', margin: 0 }}>Saved Test Scenarios</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', margin: '2px 0 0' }}>
+              Select a scenario in Message Agent → Section 5 to post test data into channels &amp; DMs
+            </p>
           </div>
-          <GeneratedTable cases={generatedCases} selected={selected} onToggle={handleToggleRow} onToggleAll={handleToggleAll} savingState={savingState} onAdd={handleAddOne} />
+          <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 14px', borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', color: '#fff' }}>
+            {savedCases.length} scenario{savedCases.length !== 1 ? 's' : ''}
+          </span>
         </div>
-      )}
 
-      {/* Saved cases */}
-      <div className="bg-white rounded-xl border border-[#c5cef5] overflow-hidden">
-        <div className="px-6 py-4 border-b border-[#c5cef5] flex items-center justify-between">
-          <h2 className="text-base font-semibold text-black">Saved Custom Test Cases</h2>
-          <div className="flex rounded-lg border border-[#c5cef5] overflow-hidden text-sm">
-            {['smoke', 'sanity'].map((tab) => (
-              <button key={tab} type="button" onClick={() => setActiveTab(tab)}
-                className={`px-4 py-1.5 font-medium capitalize transition-colors ${activeTab === tab ? 'bg-[#0129ac] text-white' : 'text-black hover:bg-[#eef1fb]'}`}>
-                {tab}
-                <span className={`ml-1.5 text-xs ${activeTab === tab ? 'text-white/70' : 'text-black'}`}>
-                  ({(savedCases[tab] || []).length})
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-        {currentSaved.length === 0 ? (
-          <div className="px-6 py-10 text-center text-sm text-gray-500">
-            No custom test cases saved for {activeTab} testing yet.
+        {savedCases.length === 0 ? (
+          <div style={{ padding: '40px 20px', textAlign: 'center' }}>
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c5cef5" strokeWidth="1.5" style={{ margin: '0 auto 12px' }}>
+              <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+            </svg>
+            <p style={{ fontSize: 14, color: '#6b7280', margin: 0 }}>No scenarios saved yet. Add one using the form above.</p>
           </div>
         ) : (
-          <SavedTable cases={currentSaved} activeTab={activeTab} deletingId={deletingId} onDelete={handleDelete} />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 800 }}>
+              <thead>
+                <tr>
+                  <th className={TH} style={{ minWidth: 130 }}>Scenario ID</th>
+                  <th className={TH} style={{ minWidth: 200 }}>Summary</th>
+                  <th className={TH} style={{ minWidth: 100 }}>Product</th>
+                  <th className={TH} style={{ minWidth: 160 }}>Combination</th>
+                  <th className={TH} style={{ minWidth: 110 }}>Folder</th>
+                  <th className={TH} style={{ minWidth: 80 }}>Msg Count</th>
+                  <th className={TH} style={{ minWidth: 200 }}>Test Data</th>
+                  <th className={TH} style={{ minWidth: 60, borderRight: 'none' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {savedCases.map(tc => (
+                  <tr key={tc.id} style={{ backgroundColor: '#fff' }}>
+                    <td className={TD}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: '#0129ac', backgroundColor: '#eef1fd', padding: '2px 8px', borderRadius: 6, border: '1px solid #c5cef5' }}>
+                        {tc.testCaseId || tc.id}
+                      </span>
+                    </td>
+                    <td className={TD} style={{ fontWeight: 600 }}>{tc.summary || tc.subject || '—'}</td>
+                    <td className={TD}>
+                      <span style={{ padding: '2px 10px', borderRadius: 12, backgroundColor: '#eef1fd', color: '#0129ac', fontSize: 12, fontWeight: 700 }}>
+                        {tc.productType || '—'}
+                      </span>
+                    </td>
+                    <td className={TD} style={{ fontSize: 12 }}>{tc.combination || '—'}</td>
+                    <td className={TD} style={{ fontSize: 12 }}>{tc.folder || <span style={{ color: '#ccc' }}>—</span>}</td>
+                    <td className={TD} style={{ textAlign: 'center' }}>
+                      {tc.messageCount
+                        ? <span style={{ padding: '2px 10px', borderRadius: 12, backgroundColor: '#0129ac', color: '#fff', fontSize: 12, fontWeight: 700 }}>{tc.messageCount.toLocaleString()}</span>
+                        : <span style={{ color: '#ccc' }}>—</span>}
+                    </td>
+                    <td className={TD} style={{ fontSize: 12 }}>{tc.testData || <span style={{ color: '#ccc' }}>—</span>}</td>
+                    <td className={TD} style={{ textAlign: 'center', borderRight: 'none' }}>
+                      <button type="button" disabled={deletingId === tc.id} onClick={() => handleDelete(tc.id)}
+                        title="Remove"
+                        style={{ padding: '4px 8px', borderRadius: 6, border: 'none', backgroundColor: 'transparent', cursor: 'pointer', color: '#9ca3af' }}>
+                        {deletingId === tc.id
+                          ? <svg style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25"/><path fill="currentColor" opacity="0.75" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          : <svg width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" /></svg>}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
-  );
-}
-
-function SparklesIcon(props) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
-    </svg>
   );
 }

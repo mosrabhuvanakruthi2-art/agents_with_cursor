@@ -16,20 +16,11 @@ export default function ExecutionLogs() {
 
   const selectedExec = executions.find((e) => e.executionId === selectedId);
 
-  useEffect(() => {
-    loadExecutions();
-  }, []);
-
-  useEffect(() => {
-    if (selectedId) loadLogs(selectedId);
-  }, [selectedId]);
-
+  useEffect(() => { loadExecutions(); }, []);
+  useEffect(() => { if (selectedId) loadLogs(selectedId); }, [selectedId]);
   useEffect(() => {
     if (!selectedExec || selectedExec.status !== 'RUNNING') return undefined;
-    const t = setInterval(() => {
-      loadExecutions();
-      if (selectedId) loadLogs(selectedId);
-    }, 3000);
+    const t = setInterval(() => { loadExecutions(); if (selectedId) loadLogs(selectedId); }, 3000);
     return () => clearInterval(t);
   }, [selectedExec?.status, selectedId]);
 
@@ -37,14 +28,9 @@ export default function ExecutionLogs() {
     try {
       const { data } = await getExecutions();
       setExecutions(data);
-      if (!selectedId && data.length > 0) {
-        setSelectedId(data[0].executionId);
-      }
-    } catch {
-      // API may not be running
-    } finally {
-      setLoading(false);
-    }
+      if (!selectedId && data.length > 0) setSelectedId(data[0].executionId);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
   }
 
   async function loadLogs(id) {
@@ -52,34 +38,28 @@ export default function ExecutionLogs() {
     try {
       const { data } = await getExecutionLogs(id);
       setLogs(data.logs || []);
-    } catch {
-      setLogs([]);
-    } finally {
-      setLogsLoading(false);
-    }
+    } catch { setLogs([]); }
+    finally { setLogsLoading(false); }
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-end justify-between flex-wrap gap-3">
+    <div className="page-wrap">
+      <div className="page-header">
         <div>
-          <h1 className="text-2xl font-bold" style={{ color: '#0129ac' }}>Execution Logs</h1>
-          <p className="text-sm mt-1" style={{ color: '#4a65c0' }}>View detailed logs for each agent execution</p>
+          <h1 className="page-title">Execution Logs</h1>
+          <p className="page-subtitle">View detailed logs for each agent execution</p>
         </div>
-        <div className="flex rounded-lg overflow-hidden" style={{ border: '2px solid #0129ac' }}>
+        <div style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '2px solid #0129ac' }}>
           {[
             { key: 'logs',    label: 'Execution Logs' },
             { key: 'reports', label: 'CF Migration Reports' },
           ].map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className="px-4 py-2 text-sm font-semibold transition-colors"
+            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
               style={{
+                padding: '10px 20px', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer', transition: 'all 0.14s',
                 backgroundColor: activeTab === tab.key ? '#0129ac' : '#fff',
                 color: activeTab === tab.key ? '#fff' : '#0129ac',
-              }}
-            >
+              }}>
               {tab.label}
             </button>
           ))}
@@ -88,73 +68,74 @@ export default function ExecutionLogs() {
 
       {activeTab === 'reports' && <MigrationReports />}
 
-      {activeTab === 'logs' && <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-1">
-          <div className="bg-white rounded-xl overflow-hidden" style={{ border: '1px solid #c5cef5' }}>
-            <div className="px-4 py-3" style={{ borderBottom: '1px solid #eef1fb' }}>
-              <h2 className="text-sm font-semibold" style={{ color: '#0129ac' }}>Executions</h2>
-            </div>
+      {activeTab === 'logs' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 24 }}>
+          {/* Left: execution list */}
+          <div className="card" style={{ overflow: 'hidden', alignSelf: 'start' }}>
+            <div className="card-header"><div className="card-title">Executions</div></div>
             {loading ? (
-              <div className="p-4 text-sm" style={{ color: '#7a8fd4' }}>Loading...</div>
+              <div style={{ padding: '20px 24px', fontSize: 14, color: '#9ca3af' }}>Loading…</div>
             ) : executions.length === 0 ? (
-              <div className="p-4 text-sm" style={{ color: '#4a65c0' }}>No executions found</div>
+              <div style={{ padding: '24px', fontSize: 14, color: '#6b7280', textAlign: 'center' }}>No executions found</div>
             ) : (
-              <div className="max-h-[600px] overflow-y-auto">
+              <div style={{ maxHeight: 600, overflowY: 'auto' }}>
                 {executions.map((exec) => (
-                  <button
-                    key={exec.executionId}
-                    onClick={() => setSelectedId(exec.executionId)}
-                    className="w-full text-left px-4 py-3 transition-colors border-t"
+                  <button key={exec.executionId} onClick={() => setSelectedId(exec.executionId)}
                     style={{
-                      borderColor: '#eef1fb',
-                      backgroundColor: selectedId === exec.executionId ? '#eef1fb' : 'transparent',
-                      borderLeft: selectedId === exec.executionId ? '3px solid #0129ac' : '3px solid transparent',
-                    }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs" style={{ color: '#2a40a8' }}>{exec.executionId.slice(0, 8)}...</span>
+                      width: '100%', textAlign: 'left', padding: '14px 20px', border: 'none', cursor: 'pointer', transition: 'background 0.12s',
+                      borderBottom: '1px solid #eef1fb',
+                      backgroundColor: selectedId === exec.executionId ? '#eef1fd' : 'transparent',
+                      borderLeft: selectedId === exec.executionId ? '4px solid #0129ac' : '4px solid transparent',
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#0129ac' }}>{exec.executionId.slice(0, 8)}…</span>
                       <StatusBadge status={exec.status} />
                     </div>
-                    <p className="text-xs mt-1" style={{ color: '#7a8fd4' }}>{new Date(exec.createdAt).toLocaleString()}</p>
+                    <p style={{ fontSize: 12, color: '#9ca3af' }}>{new Date(exec.createdAt).toLocaleString()}</p>
                   </button>
                 ))}
               </div>
             )}
           </div>
-        </div>
 
-        <div className="lg:col-span-2 space-y-4">
-          {selectedExec && (
-            <div className="bg-white rounded-xl p-4" style={{ border: '1px solid #c5cef5' }}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium" style={{ color: '#0129ac' }}>
-                    {selectedExec.context?.sourceEmail} → {selectedExec.context?.destinationEmail}
-                  </p>
-                  <p className="text-xs mt-0.5" style={{ color: '#7a8fd4' }}>
+          {/* Right: log detail */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {selectedExec && (
+              <div className="card">
+                <div className="card-body" style={{ padding: '20px 24px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <p style={{ fontSize: 15, fontWeight: 700, color: '#0129ac' }}>
+                      {selectedExec.context?.sourceEmail} → {selectedExec.context?.destinationEmail}
+                    </p>
+                    <StatusBadge status={selectedExec.status} />
+                  </div>
+                  <p style={{ fontSize: 13, color: '#9ca3af' }}>
                     {selectedExec.context?.migrationType} | {new Date(selectedExec.createdAt).toLocaleString()}
                   </p>
+                  {selectedExec.currentAgent && (
+                    <p style={{ fontSize: 13, color: '#0129ac', marginTop: 10 }}>
+                      <span style={{ fontWeight: 700 }}>Agent:</span> {selectedExec.currentAgent}
+                    </p>
+                  )}
+                  {selectedExec.progress && (
+                    <p style={{ fontSize: 13, color: '#3d5296', marginTop: 4 }}>{selectedExec.progress}</p>
+                  )}
                 </div>
-                <StatusBadge status={selectedExec.status} />
               </div>
-              {selectedExec.currentAgent && (
-                <p className="text-xs mt-2" style={{ color: '#0129ac' }}>
-                  <span className="font-medium">Agent:</span> {selectedExec.currentAgent}
-                </p>
-              )}
-              {selectedExec.progress && (
-                <p className="text-xs mt-1" style={{ color: '#2a40a8' }}>{selectedExec.progress}</p>
-              )}
-            </div>
-          )}
+            )}
 
-          {logsLoading ? (
-            <div className="rounded-xl p-6 text-sm" style={{ backgroundColor: '#0129ac', color: 'rgba(255,255,255,0.6)' }}>Loading logs...</div>
-          ) : (
-            <LogViewer logs={logs} />
-          )}
+            {logsLoading ? (
+              <div className="card">
+                <div className="card-body" style={{ padding: '24px', textAlign: 'center', fontSize: 14, color: '#9ca3af' }}>
+                  Loading logs…
+                </div>
+              </div>
+            ) : (
+              <LogViewer logs={logs} />
+            )}
+          </div>
         </div>
-      </div>}
+      )}
     </div>
   );
 }
