@@ -566,6 +566,8 @@ export default function MessageAgentForm({
             onMappingComplete={handleMappingComplete}
             includeSlack
             onSourceProviderChange={setLiveSourceProvider}
+            srcProviderOverride={sourceProvider}
+            dstProviderOverride={destinationProvider}
           />
           {mappedPairs && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

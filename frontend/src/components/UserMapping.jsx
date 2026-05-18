@@ -28,15 +28,30 @@ function openOAuthPopup(url) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function UserMapping({ onMappingComplete, includeSlack = false, onSourceProviderChange }) {
+export default function UserMapping({
+  onMappingComplete,
+  includeSlack = false,
+  onSourceProviderChange,
+  srcProviderOverride,
+  dstProviderOverride,
+}) {
   const pk = includeSlack ? 'msg-' : '';
-  const [srcProvider, setSrcProvider] = usePersistedState(`${pk}map-srcProvider`, 'google');
+
+  // Default providers derived from the override; fall back to persisted value.
+  const [srcProvider, setSrcProvider] = usePersistedState(
+    `${pk}map-srcProvider`,
+    srcProviderOverride || 'google'
+  );
+  const [dstProvider, setDstProvider] = usePersistedState(
+    `${pk}map-dstProvider`,
+    dstProviderOverride || 'microsoft'
+  );
 
   useEffect(() => {
     onSourceProviderChange?.(srcProvider);
   }, [srcProvider, onSourceProviderChange]);
+
   const [srcEmail, setSrcEmail] = usePersistedState(`${pk}map-srcAdmin`, '');
-  const [dstProvider, setDstProvider] = usePersistedState(`${pk}map-dstProvider`, 'microsoft');
   const [dstEmail, setDstEmail] = usePersistedState(`${pk}map-destAdmin`, '');
 
   const [sourceUsers, setSourceUsers] = usePersistedState(`${pk}map-srcUsers`, []);
@@ -48,6 +63,34 @@ export default function UserMapping({ onMappingComplete, includeSlack = false, o
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [fetched, setFetched] = usePersistedState(`${pk}map-fetched`, false);
+
+  // When the combination changes (parent passes new override), reset to the correct
+  // provider and clear stale user data so the new combination starts fresh.
+  const VALID = ['google', 'microsoft', 'slack'];
+
+  useEffect(() => {
+    if (!srcProviderOverride || !VALID.includes(srcProviderOverride)) return;
+    if (srcProviderOverride === srcProvider) return;
+    setSrcProvider(srcProviderOverride);
+    setSrcEmail('');
+    setSourceUsers([]);
+    setMappings([]);
+    setUnmappedSource([]);
+    setUnmappedDest([]);
+    setFetched(false);
+  }, [srcProviderOverride]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!dstProviderOverride || !VALID.includes(dstProviderOverride)) return;
+    if (dstProviderOverride === dstProvider) return;
+    setDstProvider(dstProviderOverride);
+    setDstEmail('');
+    setDestUsers([]);
+    setMappings([]);
+    setUnmappedSource([]);
+    setUnmappedDest([]);
+    setFetched(false);
+  }, [dstProviderOverride]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // connected accounts (from backend)
   const [accounts, setAccounts] = useState([]);  // [{ provider, email, connectedAt }]
