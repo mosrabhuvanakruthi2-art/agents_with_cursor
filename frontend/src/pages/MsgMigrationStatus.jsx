@@ -5,9 +5,13 @@ import { getCFReports, closeCFChatMigration, validateCFChatMigration } from '../
 const COMBINATION_LABELS = {
   S2T: 'Slack → Teams',
   S2C: 'Slack → Google Chat',
-  T2T: 'Teams → Teams',
-  C2T: 'Google Chat → Teams',
   S2S: 'Slack → Slack',
+  T2T: 'Teams → Teams',
+  T2C: 'Teams → Google Chat',
+  T2S: 'Teams → Slack',
+  C2T: 'Google Chat → Teams',
+  C2C: 'Google Chat → Google Chat',
+  C2S: 'Google Chat → Slack',
 };
 
 const STATUS_COLORS = {

@@ -2215,13 +2215,30 @@ class CFBrowserAutomation extends EventEmitter {
   /* ── 11: Wait for completion, close jobs, validate ───────────────────────── */
 
   _deriveCombCode(combination) {
-    const s = (combination || '').toLowerCase();
-    if (s.includes('slack') && (s.includes('teams') || s.includes('microsoft'))) return 'S2T';
-    if (s.includes('slack') && s.includes('chat')) return 'S2C';
-    if (s.includes('slack') && s.includes('slack')) return 'S2S';
-    if ((s.includes('teams') || s.includes('microsoft')) && (s.includes('teams') || s.includes('microsoft'))) return 'T2T';
-    if ((s.includes('chat') || s.includes('google')) && (s.includes('teams') || s.includes('microsoft'))) return 'C2T';
-    return 'S2T';
+    const str = (combination || '').toLowerCase();
+    // Split on → arrow or the literal word "to" surrounded by spaces
+    const parts = str.split(/→|->|\s+to\s+/);
+    const src = (parts[0] || '').trim();
+    const dst = (parts.length > 1 ? parts[1] : str).trim();
+
+    function platformLetter(s) {
+      if (s.includes('slack'))                              return 'S';
+      if (s.includes('teams') || s.includes('microsoft'))  return 'T';
+      if (s.includes('chat')  || s.includes('google'))     return 'C';
+      return null;
+    }
+
+    const s = platformLetter(src);
+    const d = platformLetter(dst);
+    if (s && d) {
+      const code = `${s}2${d}`;
+      const valid = ['S2T','S2C','S2S','T2T','T2C','T2S','C2T','C2C','C2S'];
+      if (valid.includes(code)) return code;
+    }
+    // Fallback for plain combination codes already in API format
+    const upper = str.toUpperCase().replace(/\s/g, '');
+    const plain = ['S2T','S2C','S2S','T2T','T2C','T2S','C2T','C2C','C2S'].find(c => upper.includes(c));
+    return plain || 'S2T';
   }
 
   async _waitCloseAndValidate() {
