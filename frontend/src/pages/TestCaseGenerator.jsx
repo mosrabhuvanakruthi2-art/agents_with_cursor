@@ -27,7 +27,32 @@ const PRODUCT_COMBOS = {
     'Chat → Chat',
     'Chat → Slack',
   ],
-  Content: [], // user will supply combinations later
+  Content: [
+    'Box → OneDrive',
+    'Box → SharePoint Online',
+    'Box → MyDrive',
+    'Box → Shared Drive',
+    'MyDrive → MyDrive',
+    'Shared Drive → Shared Drive',
+    'Dropbox → OneDrive',
+    'Dropbox → SharePoint Online',
+    'Dropbox → MyDrive',
+    'Dropbox → Shared Drive',
+    'OneDrive → OneDrive',
+    'SharePoint → SharePoint',
+    'MyDrive → OneDrive',
+    'Shared Drive → SharePoint Online',
+    'Egnyte → MyDrive',
+    'Egnyte → Shared Drive',
+    'Egnyte → OneDrive',
+    'Egnyte → SharePoint Online',
+    'SharePoint Online → Shared Drive',
+    'OneDrive → MyDrive',
+    'ShareFile → MyDrive',
+    'ShareFile → Shared Drive',
+    'ShareFile → OneDrive',
+    'ShareFile → SharePoint Online',
+  ],
 };
 
 const MAIL_FOLDER_OPTIONS = [
@@ -40,6 +65,14 @@ const MAIL_FOLDER_OPTIONS = [
 const MESSAGE_FOLDER_OPTIONS = [
   'Channels', 'Direct Messages', 'Group Messages', 'Threads',
   'Attachments', 'Reactions', 'Pinned Messages', 'Archived Channels',
+  'Negative Test Cases',
+];
+
+const CONTENT_FOLDER_OPTIONS = [
+  'Root Folder Permissions', 'Root File Permissions', 'Versions',
+  'Selective Versions', 'Embedded Links', 'Shared Links',
+  'Inner File Permissions', 'Sub Folder Permissions',
+  'Special Character Replacement', 'Pick Inside', 'Timestamps',
   'Negative Test Cases',
 ];
 
@@ -276,8 +309,8 @@ export default function TestCaseGenerator() {
   }
 
   const combos         = PRODUCT_COMBOS[productType] || [];
-  const folderOptions  = productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
-  const isContentType  = productType === 'Content';
+  const folderOptions  = productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : productType === 'Content' ? CONTENT_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
+  const isContentType  = combos.length === 0;
   const effectiveCombo = isContentType ? customCombo : combination;
 
   const loadSaved = useCallback(async () => {
