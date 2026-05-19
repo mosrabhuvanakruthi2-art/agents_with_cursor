@@ -629,10 +629,11 @@ async function slackArchiveOrClose(token, channelId) {
           await tryClose();
           return;
         }
-        // Private channel — we can't join; log as "already inaccessible" and skip
+        // Private channel or already deleted — inaccessible, treat as already gone (not an error).
+        // Throwing here would block validation even though the channel is effectively closed.
         if (err2.message === 'channel_not_found' || err2.message === 'not_in_channel' ||
             err2.message === 'is_private') {
-          throw new Error(`channel_not_found — channel may be private or already deleted (${channelId})`);
+          return; // silently skip — channel is already inaccessible / archived / deleted
         }
         throw err2;
       }

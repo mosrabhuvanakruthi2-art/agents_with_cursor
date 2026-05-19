@@ -416,23 +416,70 @@ async function closeCFChatJobs(req, res) {
 }
 
 /**
+ * Converts a display combination string (e.g. "Slack → Microsoft Teams")
+ * to the CF API combination code (e.g. "S2T").
+ * Mirrors the logic in cfBrowserAutomation._deriveCombCode.
+ */
+function deriveCombCode(combination) {
+  const str = (combination || '').toLowerCase();
+  const parts = str.split(/→|->|\s+to\s+/);
+  const src = (parts[0] || '').trim();
+  const dst = (parts.length > 1 ? parts[1] : str).trim();
+  function platformLetter(s) {
+    if (s.includes('slack'))                             return 'S';
+    if (s.includes('teams') || s.includes('microsoft')) return 'T';
+    if (s.includes('chat')  || s.includes('google'))    return 'C';
+    return null;
+  }
+  const s = platformLetter(src);
+  const d = platformLetter(dst);
+  if (s && d) {
+    const code = `${s}2${d}`;
+    const valid = ['S2T','S2C','S2S','T2T','T2C','T2S','C2T','C2C','C2S'];
+    if (valid.includes(code)) return code;
+  }
+  const upper = str.toUpperCase().replace(/\s/g, '');
+  const plain = ['S2T','S2C','S2S','T2T','T2C','T2S','C2T','C2C','C2S'].find(c => upper.includes(c));
+  return plain || '';
+}
+
+/**
  * POST /api/agents/cf-validate-migration
  * Body: { combination?: string, migrationStatus?: string, sourceLabel?: string, destLabel?: string }
  *
- * Fetches all jobs from CloudFuze, builds a validation summary by comparing
+ * Fetches all jobs from CloudFuze, closes any completed-but-open jobs (matching CF
+ * "Close Teams" button behavior), builds a validation summary by comparing
  * totalMessages vs processedMessages for each job, stores the result as a new
  * execution (so it appears in Validation Results), and returns the executionId.
  */
 async function validateCFChatMigration(req, res) {
   try {
     const {
-      combination = 'S2T',
+      combination = '',
       migrationStatus = 'All',
       sourceLabel = '',
       destLabel = '',
     } = req.body;
 
-    const jobs = await migrationClient.getMigrationReports({ combination, migrationStatus });
+    // Convert display string ("Slack → Microsoft Teams") → CF API code ("S2T")
+    const comboCode = deriveCombCode(combination);
+
+    const jobs = await migrationClient.getMigrationReports({ combination: comboCode, migrationStatus });
+
+    // Auto-close completed jobs (mirrors the "Close Teams" button in CF Reports).
+    // This is required before validation so the team status transitions from "Open" to "Closed".
+    const completedIds = jobs
+      .filter(j => (j.migrationStatus || '').toLowerCase() === 'completed')
+      .map(j => j.id)
+      .filter(Boolean);
+    if (completedIds.length > 0) {
+      try {
+        await migrationClient.closeChatMigrationJobs(completedIds);
+        logger.info(`validateCFChatMigration: closed ${completedIds.length} completed job(s)`);
+      } catch (closeErr) {
+        logger.warn(`validateCFChatMigration: close jobs error (non-fatal): ${closeErr.message}`);
+      }
+    }
 
     const channelDetails = [];
     const mismatches = [];
@@ -486,9 +533,9 @@ async function validateCFChatMigration(req, res) {
         kind: 'message-validation',
         context: {
           kind: 'message-validation',
-          combination,
-          sourceLabel: sourceLabel || combination.split('2')[0] || 'Source',
-          destLabel:   destLabel   || combination.split('2')[1] || 'Destination',
+          combination: comboCode,
+          sourceLabel: sourceLabel || comboCode.split('2')[0] || 'Source',
+          destLabel:   destLabel   || comboCode.split('2')[1] || 'Destination',
           validatedAt: now,
         },
         status: 'COMPLETED',
@@ -500,7 +547,7 @@ async function validateCFChatMigration(req, res) {
           validationSummary: {
             overallStatus,
             kind: 'message',
-            combination,
+            combination: comboCode,
             mismatches,
             messageValidation: {
               totalJobs,

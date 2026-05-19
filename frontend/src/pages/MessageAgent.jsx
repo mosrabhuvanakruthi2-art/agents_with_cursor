@@ -108,17 +108,30 @@ export default function MessageAgent() {
   }
 
   function buildCloseIds(payload) {
-    const { channelIds = [], dmIds = [], sourcePlatform } = payload;
+    const {
+      channelIds = [], dmIds = [],
+      channelObjects = [], dmObjects = [],
+      sourcePlatform,
+    } = payload;
+
+    // CF mode sends channel objects (not bare channelIds). Extract IDs from objects.
+    const rawChannelIds = channelObjects.length > 0
+      ? channelObjects.map(c => c.id || c.channelId || c.fromRootId).filter(Boolean)
+      : channelIds;
+    const rawDmIds = dmObjects.length > 0
+      ? dmObjects.map(d => d.id || d.channelId || d.fromRootId).filter(Boolean)
+      : dmIds;
+
     const pk = getPlatformKey(sourcePlatform);
     if (pk === 'gchat') {
-      return [...channelIds, ...dmIds].map(id => id.startsWith('spaces/') ? id : `spaces/${id}`);
+      return [...rawChannelIds, ...rawDmIds].map(id => id.startsWith('spaces/') ? id : `spaces/${id}`);
     }
     if (pk === 'teams') {
-      const ch = channelIds.map(id => id.startsWith('groups/') ? id : `groups/${id}`);
-      const dm = dmIds.map(id => id.startsWith('chats/') ? id : `chats/${id}`);
+      const ch = rawChannelIds.map(id => id.startsWith('groups/') ? id : `groups/${id}`);
+      const dm = rawDmIds.map(id => id.startsWith('chats/') ? id : `chats/${id}`);
       return [...ch, ...dm];
     }
-    return [...channelIds, ...dmIds]; // Slack: use as-is
+    return [...rawChannelIds, ...rawDmIds]; // Slack: use as-is
   }
 
   async function handleCloseSource() {
@@ -167,9 +180,12 @@ export default function MessageAgent() {
             const raw = line.slice(6).trim();
             let parsed;
             try { parsed = JSON.parse(raw); } catch { parsed = raw; }
-            const msg = typeof parsed === 'string' ? parsed : (parsed.msg || JSON.stringify(parsed));
+            const msg = typeof parsed === 'string' ? parsed
+              : (parsed.msg || parsed.message || JSON.stringify(parsed));
             setCloseLogs(prev => [...prev, { type: currentEvent, msg }]);
             if (currentEvent === 'done') setCloseState('done');
+            // 'fail' = global fatal error (e.g. no Slack token) — blocks validation
+            // 'failed' = individual channel couldn't be closed — log it but continue
             if (currentEvent === 'fail') { setCloseState('error'); setCloseError(msg); closeFailed = true; }
             currentEvent = 'message';
           }
@@ -182,10 +198,10 @@ export default function MessageAgent() {
       closeFailed = true;
     }
 
-    // Auto-trigger validation once close completes successfully
-    if (!closeFailed) {
-      await handleValidate();
-    }
+    // Always trigger validation after close attempt — even if some individual channels
+    // couldn't be archived (channel_not_found / private), the CF jobs may still be
+    // complete and we want to record that result.
+    await handleValidate();
   }
 
   async function handleValidate() {

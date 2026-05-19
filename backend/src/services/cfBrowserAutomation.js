@@ -1089,26 +1089,34 @@ class CFBrowserAutomation extends EventEmitter {
     }
     await this.page.waitForTimeout(WAIT_L);
 
-    // Ensure we are on the Users tab (the Map & Migrate wizard has tabs)
+    // Ensure we are on the Users tab (the Map & Migrate wizard has tabs).
+    // Bootstrap nav-tabs: the active tab is <li class="active"><a>Users</a></li>
+    // — click the anchor, not the li, so the Bootstrap JS handler fires correctly.
     for (const sel of [
       'a:has-text("Users")', 'button:has-text("Users")',
-      '[role="tab"]:has-text("Users")', 'li:has-text("Users") a',
+      '[role="tab"]:has-text("Users")',
+      'li:has-text("Users") a',   // Bootstrap nav-tab anchor (most reliable)
+      'li:has-text("Users")',
       'span:has-text("Users")',
     ]) {
       const tab = await this.page.$(sel).catch(() => null);
       if (tab && await tab.isVisible().catch(() => false)) {
         await tab.click().catch(() => {});
-        await this.page.waitForTimeout(WAIT_M);
-        this.log('MAPPING', 'Clicked Users tab');
+        await this.page.waitForTimeout(WAIT_L); // longer wait — tab content loads async
+        this.log('MAPPING', `Clicked Users tab via: ${sel}`);
         break;
       }
     }
 
     // Check if mappings already exist — skip auto-map if the table already shows "Mapped"
+    // Use a tight check: requires user-mapping table indicators, not just any "Mapped" text.
     const alreadyMapped = await this.page.evaluate(() => {
       const body = document.body.textContent || '';
-      return body.includes('Mapped') &&
-             (body.includes('Source User') || body.includes('Mapping Status'));
+      const hasMappedRows = document.querySelectorAll('table tr').length > 1;
+      return hasMappedRows &&
+             body.includes('Mapped') &&
+             (body.includes('Source User') || body.includes('Destination User') ||
+              body.includes('Mapping Status'));
     }).catch(() => false);
 
     if (alreadyMapped && !csvPathExists && userMappings.length === 0) {
@@ -1199,11 +1207,24 @@ class CFBrowserAutomation extends EventEmitter {
 
   async _triggerAutoMap() {
     let clicked = false;
+    // Extended selector list — CF has used many labels for this button across versions
     for (const sel of [
-      'button:has-text("Auto Map")', 'button:has-text("Auto-Map")',
-      'button:has-text("Auto Mapping")', 'button:has-text("Automap")',
-      'button:has-text("Map Automatically")', 'a:has-text("Auto Map")',
-      '[class*="auto-map"]', '[id*="automap"]', '[id*="auto-map"]',
+      'button:has-text("Auto Map")',
+      'button:has-text("Auto-Map")',
+      'button:has-text("Auto Mapping")',
+      'button:has-text("Automap")',
+      'button:has-text("Map Automatically")',
+      'button:has-text("Auto Map Users")',
+      'button:has-text("Automatch")',
+      'button:has-text("Auto Match")',
+      'a:has-text("Auto Map")',
+      'a:has-text("Auto-Map")',
+      '[class*="auto-map"]',
+      '[class*="automap"]',
+      '[id*="automap"]',
+      '[id*="auto-map"]',
+      // Generic fallback: any visible button near the users/mapping table
+      'table ~ button', 'table ~ div button',
     ]) {
       const btn = await this.page.$(sel).catch(() => null);
       if (!btn || !(await btn.isVisible().catch(() => false))) continue;
@@ -1214,21 +1235,25 @@ class CFBrowserAutomation extends EventEmitter {
       break;
     }
     if (!clicked) {
-      this.log('MAPPING', 'Auto Map button not found — mapping may already be set');
-    } else {
-      // Wait for mapping rows to populate
-      try {
-        await this.page.waitForFunction(
-          () => {
-            const body = document.body.textContent || '';
-            return body.includes('Mapped') || body.toLowerCase().includes('mapping complete');
-          },
-          { timeout: 15000 }
-        );
-        this.log('MAPPING', 'Auto-mapping rows populated ✓');
-      } catch {
-        this.log('MAPPING', 'Mapping table not confirmed within 15s — continuing');
-      }
+      this.log('MAPPING', 'Auto Map button not found — checking if mapping table already populated');
+    }
+    // Whether we clicked or not, wait for mapping rows to appear
+    try {
+      await this.page.waitForFunction(
+        () => {
+          const body = document.body.textContent || '';
+          const rows = document.querySelectorAll('table tr');
+          return rows.length > 1 && (
+            body.includes('Mapped') ||
+            body.toLowerCase().includes('mapping complete') ||
+            body.includes('Source User')
+          );
+        },
+        { timeout: 15000 }
+      );
+      this.log('MAPPING', 'Mapping rows populated ✓');
+    } catch {
+      this.log('MAPPING', 'Mapping table not confirmed within 15s — continuing anyway');
     }
   }
 
@@ -1664,6 +1689,31 @@ class CFBrowserAutomation extends EventEmitter {
     // ── Public tab ───────────────────────────────────────────────────────────
     const pubTabClicked = await this._clickCFTab(publicTabLabels);
     await this.page.waitForTimeout(WAIT_L);
+
+    // Verify tab switch worked — confirm we are NOT still on the Users/mapping tab.
+    // Bootstrap nav-tabs may need the anchor click (not the li) to activate.
+    const onPublicTab = await this.page.evaluate(() => {
+      const body = document.body.textContent || '';
+      const rows = document.querySelectorAll('tbody tr');
+      // Still on mapping page if no rows and showing user-mapping content
+      if (rows.length === 0 && (body.includes('Source User') || body.includes('Auto Map'))) return false;
+      return true;
+    }).catch(() => true);
+
+    if (!onPublicTab) {
+      this.log('CHANNELS', 'Still on Users tab — retrying Public Channels tab click with anchor strategy');
+      // Try every label with the anchor-in-li pattern explicitly
+      for (const label of publicTabLabels) {
+        const anchor = await this.page.$(`li a:has-text("${label}")`).catch(() => null);
+        if (anchor && await anchor.isVisible().catch(() => false)) {
+          await anchor.click();
+          await this.page.waitForTimeout(WAIT_L);
+          this.log('CHANNELS', `Tab re-clicked via anchor: ${label}`);
+          break;
+        }
+      }
+    }
+
     // Expand collapsed team rows so their channel sub-rows become selectable.
     await this._expandTeamRows();
     if (publicChannels.length > 0) {
@@ -1819,14 +1869,16 @@ class CFBrowserAutomation extends EventEmitter {
         `a:has-text("${label}")`,
         `button:has-text("${label}")`,
         `[role="tab"]:has-text("${label}")`,
+        `li:has-text("${label}") a`,   // Bootstrap nav-tabs: click anchor inside the li
         `li:has-text("${label}")`,
         `span:has-text("${label}")`,
+        `td:has-text("${label}")`,
       ]) {
         const el = await this.page.$(sel).catch(() => null);
         if (el && await el.isVisible().catch(() => false)) {
           await el.click();
-          await this.page.waitForTimeout(WAIT_M);
-          this.log('CHANNELS', `Tab selected: ${label}`);
+          await this.page.waitForTimeout(WAIT_L); // give the tab content time to render
+          this.log('CHANNELS', `Tab selected: ${label} (via ${sel})`);
           return true;
         }
       }
