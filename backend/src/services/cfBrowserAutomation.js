@@ -1623,13 +1623,26 @@ class CFBrowserAutomation extends EventEmitter {
     const privateChannels = channelObjects.filter(c => (c.channelType || '').toLowerCase() === 'private');
     this.log('CHANNELS', `public=${publicChannels.length} private=${privateChannels.length} dms=${dmObjects.length}`);
 
-    // ── Public Teams / Public Channels tab ───────────────────────────────────
-    // Click the tab regardless; only select rows when specific channels provided.
-    const pubTabClicked = await this._clickCFTab([
-      'Public Channels', 'Public Channel', 'Channels',
-      'Public Teams', 'Teams',          // Teams-to-Teams CF label
-      'Public', 'Standard Channels',
-    ]);
+    // Derive source platform code so we use the right tab labels per combination.
+    // CF labels differ: Slack→"Public Channels", Teams→"Teams"/"Public Teams",
+    // Google Chat→"Spaces"/"Public Spaces".
+    const combCode  = this._deriveCombCode(this.opts.combination || '');
+    const srcCode   = combCode[0] || 'S'; // 'S', 'T', or 'C'
+
+    const publicTabLabels = srcCode === 'T'
+      ? ['Public Teams', 'Teams', 'Standard Channels', 'Public Channels', 'Channels', 'Public']
+      : srcCode === 'C'
+        ? ['Spaces', 'Public Spaces', 'Public Channels', 'Channels', 'Public']
+        : ['Public Channels', 'Public Channel', 'Channels', 'Public', 'Standard Channels'];
+
+    const privateTabLabels = srcCode === 'T'
+      ? ['Private Teams', 'Private Channels', 'Private', 'Shared Channels']
+      : srcCode === 'C'
+        ? ['Private Spaces', 'Private Channels', 'Private']
+        : ['Private Channels', 'Private Channel', 'Private', 'Shared Channels'];
+
+    // ── Public tab ───────────────────────────────────────────────────────────
+    const pubTabClicked = await this._clickCFTab(publicTabLabels);
     await this.page.waitForTimeout(WAIT_L);
     // Expand collapsed team rows so their channel sub-rows become selectable.
     await this._expandTeamRows();
@@ -1640,11 +1653,8 @@ class CFBrowserAutomation extends EventEmitter {
       this.log('CHANNELS', 'No specific public channels — tab visited, no rows selected');
     }
 
-    // ── Private Teams / Private Channels tab ─────────────────────────────────
-    const prvTabClicked = await this._clickCFTab([
-      'Private Channels', 'Private Channel', 'Private Teams',
-      'Private', 'Shared Channels',
-    ]);
+    // ── Private tab ──────────────────────────────────────────────────────────
+    const prvTabClicked = await this._clickCFTab(privateTabLabels);
     await this.page.waitForTimeout(WAIT_L);
     // Expand collapsed team rows on this tab too.
     await this._expandTeamRows();
@@ -1810,31 +1820,13 @@ class CFBrowserAutomation extends EventEmitter {
   async _selectChannelRows(channelList) {
     if (!channelList || channelList.length === 0) return;
 
-    // Build name targets (channel name + workspace/team name for nested Teams rows)
-    const nameTargets = [...new Set(channelList.flatMap(c => {
-      const name = (c.name || c.channelName || c.displayName || '')
-        .toLowerCase().replace(/^#/, '').trim();
-      const team = (c.workSpaceName || c.destTeamName || '').toLowerCase().trim();
-      return [name, team].filter(n => n.length > 0 && !/^[a-z0-9]{8,}$/.test(n));
-    }))];
-
-    const idTargets = channelList
-      .map(c => (c.id || c.channelId || c.fromRootId || '').toLowerCase().trim())
-      .filter(Boolean);
-
-    const allTargets = [...new Set([...nameTargets, ...idTargets])];
-
-    if (allTargets.length === 0) {
-      this.log('CHANNELS', 'No targets to match — nothing to select');
-      return;
-    }
-    this.log('CHANNELS', `Matching targets: ${allTargets.slice(0, 12).join(', ')}`);
-
-    // Log visible table contents to help debug mismatches
+    // Log visible table contents for debugging
     const visibleRows = await this.page.evaluate(() => {
       return Array.from(document.querySelectorAll('tbody tr')).slice(0, 20).map(r => {
         const cells = Array.from(r.querySelectorAll('td')).map(td => td.textContent?.trim() || '');
-        return cells.join(' | ').replace(/\s+/g, ' ').slice(0, 100);
+        const attrs = ['data-id','data-channel-id','data-from-root-id','id']
+          .map(a => r.getAttribute(a) ? `${a}=${r.getAttribute(a)}` : '').filter(Boolean).join(',');
+        return (cells.join(' | ').replace(/\s+/g, ' ').slice(0, 90)) + (attrs ? ` [${attrs}]` : '');
       }).filter(r => r.trim());
     }).catch(() => []);
     if (visibleRows.length > 0) {
@@ -1851,80 +1843,198 @@ class CFBrowserAutomation extends EventEmitter {
 
     let matched = 0;
 
-    // Pass 1: try to match each target by text content and data attributes
-    for (const target of allTargets) {
+    // Helper injected via page.evaluate — selects a single row by clicking its checkbox/indicator
+    const SELECT_ROW_FN = `
+      function selectRow(row) {
+        const cb = row.querySelector('input[type="checkbox"]');
+        if (cb) {
+          if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); }
+          return 'checkbox';
+        }
+        const rb = row.querySelector('input[type="radio"]');
+        if (rb) {
+          if (!rb.checked) { rb.click(); rb.dispatchEvent(new Event('change', { bubbles: true })); }
+          return 'radio';
+        }
+        const indicator = row.querySelector(
+          '[class*="select"]:not(select), [class*="check"]:not(input), ' +
+          '[class*="circle"], [class*="toggle"], [class*="indicator"]'
+        );
+        if (indicator) { indicator.click(); return 'indicator'; }
+        const td = row.querySelector('td');
+        if (td) { td.click(); return 'td-click'; }
+        return null;
+      }
+    `;
+
+    for (const ch of channelList) {
+      const channelName  = (ch.name || ch.channelName || ch.displayName || '').replace(/^#/, '').trim();
+      const teamName     = (ch.workSpaceName || ch.destTeamName || '').trim();
+      const channelId    = (ch.id || ch.channelId || ch.fromRootId || '').trim();
+      const hasComposite = channelName.length > 0 && teamName.length > 0;
+
       let searchInput = null;
       for (const sel of searchSels) {
         const inp = await this.page.$(sel).catch(() => null);
         if (inp && await inp.isVisible().catch(() => false)) { searchInput = inp; break; }
       }
-      if (searchInput) {
-        await searchInput.fill(target);
-        await this.page.waitForTimeout(700);
-      }
 
-      const found = await this.page.evaluate(({ target }) => {
-        const norm = s => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/^#/, '').trim();
-
-        function selectRow(row) {
-          // 1. checkbox (most common — also covers CSS-circle-styled checkboxes)
-          const cb = row.querySelector('input[type="checkbox"]');
-          if (cb) {
-            if (!cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); }
-            return 'checkbox';
+      // ── Pass A: data-attribute ID match (most precise — Teams fromRootId) ──────
+      if (channelId) {
+        const found = await this.page.evaluate(({ cid, SELECT_ROW_FN }) => {
+          const norm = s => (s || '').toLowerCase().trim();
+          eval(SELECT_ROW_FN); // eslint-disable-line no-eval
+          const cidNorm = norm(cid);
+          const rows = Array.from(document.querySelectorAll('tr'));
+          for (const row of rows) {
+            const attrs = [
+              row.getAttribute('data-id'),
+              row.getAttribute('data-channel-id'),
+              row.getAttribute('data-from-root-id'),
+              row.id,
+            ];
+            if (attrs.some(a => a && norm(a) === cidNorm)) {
+              const how = selectRow(row);
+              if (!how) continue;
+              const cells = Array.from(row.querySelectorAll('td'));
+              const lbl = cells.length > 1 ? cells[1] : (cells[0] || row);
+              return { how, label: (lbl.textContent || '').trim().slice(0, 60) };
+            }
+            // Also check inner elements (e.g., <td data-id="...">)
+            const inner = row.querySelector(`[data-id="${cid}"],[data-channel-id="${cid}"],[data-from-root-id="${cid}"]`);
+            if (inner) {
+              const how = selectRow(row);
+              if (!how) continue;
+              return { how, label: (inner.textContent || '').trim().slice(0, 60) };
+            }
           }
-          // 2. radio button (some CF versions)
-          const rb = row.querySelector('input[type="radio"]');
-          if (rb) {
-            if (!rb.checked) { rb.click(); rb.dispatchEvent(new Event('change', { bubbles: true })); }
-            return 'radio';
-          }
-          // 3. custom circle / indicator element
-          const indicator = row.querySelector(
-            '[class*="select"]:not(select), [class*="check"]:not(input), ' +
-            '[class*="circle"], [class*="toggle"], [class*="indicator"]'
-          );
-          if (indicator) { indicator.click(); return 'indicator'; }
-          // 4. last resort — click the first cell
-          const td = row.querySelector('td');
-          if (td) { td.click(); return 'td-click'; }
           return null;
+        }, { cid: channelId, SELECT_ROW_FN }).catch(() => null);
+
+        if (found) {
+          this.log('CHANNELS', `✓ ID-match (${found.how}): "${found.label}" [id=${channelId}]`);
+          matched++;
+          continue;
         }
-
-        const rows = Array.from(document.querySelectorAll('tr'));
-        for (const row of rows) {
-          const txt     = norm(row.textContent || '');
-          const rowHtml = row.innerHTML.toLowerCase();
-          if (!txt.includes(target) && !rowHtml.includes(target)) continue;
-
-          const how = selectRow(row);
-          if (!how) continue;
-          const cells = Array.from(row.querySelectorAll('td'));
-          const labelEl = cells.length > 1 ? cells[1] : (cells[0] || row);
-          return { how, label: norm(labelEl.textContent || '').slice(0, 60) };
-        }
-        return null;
-      }, { target }).catch(() => null);
-
-      if (found) {
-        this.log('CHANNELS', `✓ Checked (${found.how}): "${found.label}"`);
-        matched++;
-      } else {
-        this.log('CHANNELS', `⚠ No row for: "${target}"`);
       }
 
-      if (searchInput) {
-        await searchInput.fill('').catch(() => {});
-        await this.page.waitForTimeout(300);
+      // ── Pass B: composite team+channel match (T2T hierarchy — avoids false matches) ─
+      if (hasComposite) {
+        // Search for channel name to filter the table, then scope within team subtree
+        if (searchInput) {
+          await searchInput.fill(channelName).catch(() => {});
+          await this.page.waitForTimeout(700);
+        }
+
+        const found = await this.page.evaluate(({ chName, tmName, SELECT_ROW_FN }) => {
+          const norm = s => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/^#/, '').trim();
+          eval(SELECT_ROW_FN); // eslint-disable-line no-eval
+          const chNorm = norm(chName);
+          const tmNorm = norm(tmName);
+
+          // Strategy 1: find team-header row → collect sibling rows until next team header
+          const allRows = Array.from(document.querySelectorAll('tbody tr'));
+          let teamRowIdx = -1;
+          for (let i = 0; i < allRows.length; i++) {
+            const txt = norm(allRows[i].textContent || '');
+            // Team row: contains team name and has NO checkbox (it's a parent row)
+            const hasCheckbox = !!allRows[i].querySelector('input[type="checkbox"], input[type="radio"]');
+            if (txt.includes(tmNorm) && !hasCheckbox) { teamRowIdx = i; break; }
+          }
+
+          if (teamRowIdx >= 0) {
+            // Scan forward from teamRowIdx+1 until we hit another team header or end of list
+            for (let i = teamRowIdx + 1; i < allRows.length; i++) {
+              const row = allRows[i];
+              const hasCheckbox = !!row.querySelector('input[type="checkbox"], input[type="radio"]');
+              const txt = norm(row.textContent || '');
+              // Stop at next team header (no checkbox, looks like a parent row)
+              if (!hasCheckbox && !txt.includes(chNorm)) break;
+              if (txt.includes(chNorm) && hasCheckbox) {
+                const how = selectRow(row);
+                if (!how) continue;
+                const cells = Array.from(row.querySelectorAll('td'));
+                const lbl = cells.length > 1 ? cells[1] : (cells[0] || row);
+                return { how, label: norm(lbl.textContent || '').slice(0, 60), strategy: 'team-subtree' };
+              }
+            }
+          }
+
+          // Strategy 2: full-page text match requiring BOTH team name AND channel name in same row
+          const rows2 = Array.from(document.querySelectorAll('tr'));
+          for (const row of rows2) {
+            const txt = norm(row.textContent || '');
+            if (txt.includes(chNorm) && txt.includes(tmNorm)) {
+              const how = selectRow(row);
+              if (!how) continue;
+              const cells = Array.from(row.querySelectorAll('td'));
+              const lbl = cells.length > 1 ? cells[1] : (cells[0] || row);
+              return { how, label: norm(lbl.textContent || '').slice(0, 60), strategy: 'both-in-row' };
+            }
+          }
+          return null;
+        }, { chName: channelName, tmName: teamName, SELECT_ROW_FN }).catch(() => null);
+
+        if (searchInput) {
+          await searchInput.fill('').catch(() => {});
+          await this.page.waitForTimeout(300);
+        }
+
+        if (found) {
+          this.log('CHANNELS', `✓ Composite-match (${found.how}/${found.strategy}): "${found.label}" [team=${teamName}]`);
+          matched++;
+          continue;
+        }
+        this.log('CHANNELS', `⚠ Composite match failed: "${channelName}" in team "${teamName}" — falling through`);
+      }
+
+      // ── Pass C: plain name/ID text search (Slack, Google Chat, or T2T fallback) ──
+      const targets = [channelName, channelId].filter(Boolean);
+      let passMatched = false;
+      for (const target of targets) {
+        if (searchInput) {
+          await searchInput.fill(target).catch(() => {});
+          await this.page.waitForTimeout(700);
+        }
+
+        const found = await this.page.evaluate(({ target, SELECT_ROW_FN }) => {
+          const norm = s => (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/^#/, '').trim();
+          eval(SELECT_ROW_FN); // eslint-disable-line no-eval
+          const rows = Array.from(document.querySelectorAll('tr'));
+          for (const row of rows) {
+            const txt     = norm(row.textContent || '');
+            const rowHtml = row.innerHTML.toLowerCase();
+            if (!txt.includes(target) && !rowHtml.includes(target)) continue;
+            const how = selectRow(row);
+            if (!how) continue;
+            const cells = Array.from(row.querySelectorAll('td'));
+            const lbl = cells.length > 1 ? cells[1] : (cells[0] || row);
+            return { how, label: norm(lbl.textContent || '').slice(0, 60) };
+          }
+          return null;
+        }, { target, SELECT_ROW_FN }).catch(() => null);
+
+        if (searchInput) {
+          await searchInput.fill('').catch(() => {});
+          await this.page.waitForTimeout(300);
+        }
+
+        if (found) {
+          this.log('CHANNELS', `✓ Text-match (${found.how}): "${found.label}" [target=${target}]`);
+          matched++;
+          passMatched = true;
+          break;
+        }
+      }
+      if (!passMatched) {
+        this.log('CHANNELS', `⚠ No row matched: "${channelName}" (team="${teamName}", id="${channelId}")`);
       }
     }
 
-    // Pass 2: if nothing matched, try the header "Select All" checkbox first,
-    // then fall back to clicking every individual row checkbox.
+    // Pass D: if nothing matched at all, try select-all then individual row fallback
     if (matched === 0 && channelList.length > 0) {
       this.log('CHANNELS', 'No rows matched by name/ID — attempting select-all on this tab');
 
-      // Try header "Select All" checkbox first (fastest, most reliable)
       const headerChecked = await this.page.evaluate(() => {
         const headerCb = document.querySelector(
           'thead input[type="checkbox"], th input[type="checkbox"], ' +
@@ -1960,7 +2070,7 @@ class CFBrowserAutomation extends EventEmitter {
         this.log('CHANNELS', `Select-all row fallback: ${selectCount} rows selected`);
       }
     } else {
-      this.log('CHANNELS', `${matched}/${allTargets.length} targets matched on this tab`);
+      this.log('CHANNELS', `${matched}/${channelList.length} channels matched on this tab`);
     }
   }
 
