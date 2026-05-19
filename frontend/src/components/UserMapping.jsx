@@ -97,16 +97,21 @@ export default function UserMapping({
   const [accounts, setAccounts] = useState([]);  // [{ provider, email, connectedAt }]
   const [accountsLoading, setAccountsLoading] = useState(true);
 
-  // Auto-select the first connected account when email is empty (on load or provider change)
+  // Auto-select the first connected account when email is empty (on load or provider change).
+  // When src and dst use the same provider (e.g. Teams → Teams), pick different accounts
+  // so they don't conflict: source gets the first, destination gets the second.
   useEffect(() => {
     const acc = accounts.find((a) => a.provider === srcProvider);
     if (acc && !srcEmail) setSrcEmail(acc.email);
   }, [accounts, srcProvider]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const acc = accounts.find((a) => a.provider === dstProvider);
+    const sameProvider = dstProvider === srcProvider;
+    const acc = accounts.find(
+      (a) => a.provider === dstProvider && (!sameProvider || a.email !== srcEmail)
+    );
     if (acc && !dstEmail) setDstEmail(acc.email);
-  }, [accounts, dstProvider]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [accounts, dstProvider, srcEmail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Login modal
   const [loginTarget, setLoginTarget] = useState(null); // 'source' | 'destination'
@@ -429,7 +434,7 @@ export default function UserMapping({
           accountsLoading={accountsLoading}
           onProviderChange={(p) => {
             setSrcProvider(p);
-            const first = accounts.find((a) => a.provider === p);
+            const first = accounts.find((a) => a.provider === p && a.email !== dstEmail);
             setSrcEmail(first ? first.email : '');
             setFetched(false);
           }}
@@ -446,7 +451,7 @@ export default function UserMapping({
           accountsLoading={accountsLoading}
           onProviderChange={(p) => {
             setDstProvider(p);
-            const first = accounts.find((a) => a.provider === p);
+            const first = accounts.find((a) => a.provider === p && a.email !== srcEmail);
             setDstEmail(first ? first.email : '');
             setFetched(false);
           }}
