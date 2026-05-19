@@ -68,6 +68,10 @@ class OutlookValidationAgent extends BaseAgent {
       await this._validateCalendar(sourceUser, destUser, result, log, context.sourceProvider);
     }
 
+    if (context.sourceProvider === 'microsoft') {
+      await this._validateMailboxSettings(sourceUser, destUser, result, log);
+    }
+
     /**
      * Best-effort contacts totals for the summary table. Always populated so the PDF shows 0
      * rather than '—' when the scope isn't granted — keeps the 4-metric layout consistent.
@@ -441,6 +445,146 @@ class OutlookValidationAgent extends BaseAgent {
       log.error(`E2E: Calendar validation failed: ${err.message}`);
       result.addMismatch('calendar', 'overall', 'accessible', err.message);
     }
+  }
+  /**
+   * Outlook→Outlook only: compare QA inbox rules, conditional formatting rules, and search
+   * folders between source and destination, and verify that section-40/41/42 test emails
+   * are present in the destination mailbox.
+   */
+  async _validateMailboxSettings(sourceUser, destUser, result, log) {
+    log.info('Settings validation: comparing Outlook settings between source and destination...');
+    result.settingsValidation.available = true;
+    const sv = result.settingsValidation;
+
+    // ── Inbox rules ──────────────────────────────────────────────────────────
+    try {
+      const [srcRulesResult, dstRulesResult] = await Promise.all([
+        outlookClient.getInboxRules(sourceUser),
+        outlookClient.getInboxRules(destUser),
+      ]);
+      const srcQaRules = (srcRulesResult.rules || []).filter((r) =>
+        String(r.displayName || '').startsWith('QA')
+      );
+      const dstQaRules = (dstRulesResult.rules || []).filter((r) =>
+        String(r.displayName || '').startsWith('QA')
+      );
+      sv.inboxRules.sourceCount = srcQaRules.length;
+      sv.inboxRules.destCount   = dstQaRules.length;
+
+      const dstRuleNames = new Set(dstQaRules.map((r) => r.displayName));
+      for (const r of srcQaRules) {
+        if (!dstRuleNames.has(r.displayName)) {
+          sv.inboxRules.missing.push(r.displayName);
+          result.addMismatch(
+            'settings',
+            `Inbox rule: ${r.displayName}`,
+            'present in destination',
+            'NOT FOUND'
+          );
+        }
+      }
+      log.info(
+        `Settings: inbox rules — source QA: ${srcQaRules.length}, dest QA: ${dstQaRules.length}, missing: ${sv.inboxRules.missing.length}`
+      );
+    } catch (err) {
+      log.warn(`Settings: inbox rules check failed: ${err.message}`);
+    }
+
+    // ── Conditional formatting rules ─────────────────────────────────────────
+    try {
+      const [srcCf, dstCf] = await Promise.all([
+        outlookClient.ewsGetConditionalFormattingRules(sourceUser),
+        outlookClient.ewsGetConditionalFormattingRules(destUser),
+      ]);
+      const srcQaCf = ((srcCf && srcCf.Rules) || []).filter((r) =>
+        String(r.Name || '').startsWith('QA')
+      );
+      const dstQaCf = ((dstCf && dstCf.Rules) || []).filter((r) =>
+        String(r.Name || '').startsWith('QA')
+      );
+      sv.conditionalFormatting.sourceCount = srcQaCf.length;
+      sv.conditionalFormatting.destCount   = dstQaCf.length;
+
+      const dstCfNames = new Set(dstQaCf.map((r) => r.Name));
+      for (const r of srcQaCf) {
+        if (!dstCfNames.has(r.Name)) {
+          sv.conditionalFormatting.missing.push(r.Name);
+          result.addMismatch(
+            'settings',
+            `Conditional formatting: ${r.Name}`,
+            'present in destination',
+            'NOT FOUND'
+          );
+        }
+      }
+      log.info(
+        `Settings: CF rules — source QA: ${srcQaCf.length}, dest QA: ${dstQaCf.length}, missing: ${sv.conditionalFormatting.missing.length}`
+      );
+    } catch (err) {
+      log.warn(`Settings: conditional formatting check failed: ${err.message}`);
+    }
+
+    // ── Search folders ────────────────────────────────────────────────────────
+    try {
+      const [srcFolders, dstFolders] = await Promise.all([
+        outlookClient.listSearchFolders(sourceUser),
+        outlookClient.listSearchFolders(destUser),
+      ]);
+      const srcQaSf = (srcFolders || []).filter((f) =>
+        String(f.displayName || '').startsWith('QA')
+      );
+      const dstQaSf = (dstFolders || []).filter((f) =>
+        String(f.displayName || '').startsWith('QA')
+      );
+      sv.searchFolders.sourceCount = srcQaSf.length;
+      sv.searchFolders.destCount   = dstQaSf.length;
+
+      const dstSfNames = new Set(dstQaSf.map((f) => f.displayName));
+      for (const f of srcQaSf) {
+        if (!dstSfNames.has(f.displayName)) {
+          sv.searchFolders.missing.push(f.displayName);
+          result.addMismatch(
+            'settings',
+            `Search folder: ${f.displayName}`,
+            'present in destination',
+            'NOT FOUND'
+          );
+        }
+      }
+      log.info(
+        `Settings: search folders — source QA: ${srcQaSf.length}, dest QA: ${dstQaSf.length}, missing: ${sv.searchFolders.missing.length}`
+      );
+    } catch (err) {
+      log.warn(`Settings: search folders check failed: ${err.message}`);
+    }
+
+    // ── Mailbox-level: verify section 40/41/42 emails in destination ──────────
+    const mailboxChecks = [
+      { key: 'section40', prefix: 'QA E2E 40 - ' },
+      { key: 'section41', prefix: 'QA E2E 41 - ' },
+      { key: 'section42', prefix: 'QA E2E 42 - ' },
+    ];
+    await Promise.all(
+      mailboxChecks.map(async ({ key, prefix }) => {
+        try {
+          const { count, available } = await outlookClient.countMessagesBySubjectPrefix(destUser, prefix);
+          if (!available) return;
+          sv.mailboxChecks[key].found = count;
+          const { total } = sv.mailboxChecks[key];
+          if (count < total) {
+            result.addMismatch(
+              'settings',
+              `${sv.mailboxChecks[key].label}`,
+              `${total} emails in destination`,
+              `${count} found`
+            );
+          }
+          log.info(`Settings mailbox check: ${key} — ${count}/${total} emails found in destination`);
+        } catch (err) {
+          log.warn(`Settings mailbox check ${key} failed: ${err.message}`);
+        }
+      })
+    );
   }
 }
 

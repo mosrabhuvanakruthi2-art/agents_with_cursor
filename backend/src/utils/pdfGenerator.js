@@ -1,96 +1,100 @@
+'use strict';
+
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
-const path = require('path');
 const ValidationResult = require('../models/ValidationResult');
 const { findDestCustomFolder, buildPdfValidationView } = require('./gmailOutlookLabelMatch');
 
-const MARGIN = 50;
+const MARGIN     = 45;
 const PAGE_WIDTH = 595;
-const CONTENT_W = PAGE_WIDTH - MARGIN * 2;
+const CONTENT_W  = PAGE_WIDTH - MARGIN * 2;
 
-const MISMATCH_RED = '#b91c1c';
-const WARNING_AMBER = '#c2410c';
+const C = {
+  pass: '#16a34a',   passBg: '#f0fdf4',   passBorder: '#86efac',
+  fail: '#dc2626',   failBg: '#fef2f2',   failBorder: '#fca5a5',
+  warn: '#d97706',   warnBg: '#fffbeb',   warnBorder: '#fde68a',
+  info: '#2563eb',   infoBg: '#eff6ff',   infoBorder: '#bfdbfe',
+  dark:    '#1e293b', darkAlt: '#334155',  surface: '#ffffff',
+  border:  '#e2e8f0', bg:      '#f8fafc',
+  text:    '#0f172a', subtle:  '#64748b',  muted: '#94a3b8',
+};
 
-/**
- * Embed a Unicode-capable TTF so characters like →, •, €, £, and emoji render correctly.
- * PDFKit's built-in Helvetica is WinAnsi-only and substitutes unknown codepoints with
- * broken glyphs (e.g. → rendered as "!'"). We probe well-known font paths on Windows/macOS/
- * Linux and fall back to Helvetica only when nothing is available, so reports still render.
- *
- * Resolved font names used throughout the document: F_REGULAR, F_BOLD, F_ITALIC.
- */
+// ── Fonts ─────────────────────────────────────────────────────────────────────
 const FONT_CANDIDATES = {
-  regular: [
-    'C:/Windows/Fonts/arial.ttf',
-    '/System/Library/Fonts/Supplemental/Arial.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/usr/share/fonts/TTF/DejaVuSans.ttf',
-  ],
-  bold: [
-    'C:/Windows/Fonts/arialbd.ttf',
-    '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-    '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
-  ],
-  italic: [
-    'C:/Windows/Fonts/ariali.ttf',
-    '/System/Library/Fonts/Supplemental/Arial Italic.ttf',
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
-    '/usr/share/fonts/TTF/DejaVuSans-Oblique.ttf',
-  ],
+  regular: ['C:/Windows/Fonts/arial.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
+  bold:    ['C:/Windows/Fonts/arialbd.ttf', '/System/Library/Fonts/Supplemental/Arial Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
+  italic:  ['C:/Windows/Fonts/ariali.ttf', '/System/Library/Fonts/Supplemental/Arial Italic.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf'],
 };
 
 function firstExistingPath(paths) {
-  for (const p of paths) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch { /* ignore */ }
-  }
+  for (const p of paths) { try { if (fs.existsSync(p)) return p; } catch { /* ignore */ } }
   return null;
 }
 
 let F_REGULAR = 'Helvetica';
-let F_BOLD = 'Helvetica-Bold';
-let F_ITALIC = 'Helvetica-Oblique';
+let F_BOLD    = 'Helvetica-Bold';
+let F_ITALIC  = 'Helvetica-Oblique';
 
 function registerUnicodeFonts(doc) {
-  const reg = firstExistingPath(FONT_CANDIDATES.regular);
+  const reg  = firstExistingPath(FONT_CANDIDATES.regular);
   const bold = firstExistingPath(FONT_CANDIDATES.bold);
   const ital = firstExistingPath(FONT_CANDIDATES.italic);
-  if (reg) {
-    try {
-      doc.registerFont('Unicode', reg);
-      F_REGULAR = 'Unicode';
-    } catch { F_REGULAR = 'Helvetica'; }
-  }
-  if (bold) {
-    try {
-      doc.registerFont('UnicodeBold', bold);
-      F_BOLD = 'UnicodeBold';
-    } catch { F_BOLD = 'Helvetica-Bold'; }
-  }
-  if (ital) {
-    try {
-      doc.registerFont('UnicodeItalic', ital);
-      F_ITALIC = 'UnicodeItalic';
-    } catch { F_ITALIC = 'Helvetica-Oblique'; }
-  }
+  if (reg)  { try { doc.registerFont('Unicode',       reg);  F_REGULAR = 'Unicode';       } catch { F_REGULAR = 'Helvetica';         } }
+  if (bold) { try { doc.registerFont('UnicodeBold',   bold); F_BOLD    = 'UnicodeBold';   } catch { F_BOLD    = 'Helvetica-Bold';    } }
+  if (ital) { try { doc.registerFont('UnicodeItalic', ital); F_ITALIC  = 'UnicodeItalic'; } catch { F_ITALIC  = 'Helvetica-Oblique'; } }
 }
 
-/**
- * Rebuild per-message rows when `messageResults` was not stored on the execution (older runs / truncation).
- * Uses deepMail mismatches from ValidationResult.computeOverallStatus (structuredDiffs + messageSubject).
- */
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function formatDurationMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return 'N/A';
+  if (n < 1000) return `${n} ms`;
+  const s = Math.round(n / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const parts = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (h > 0 || m > 0) parts.push(`${m}m`);
+  parts.push(`${sec}s`);
+  return parts.join(' ');
+}
+
+function currentTzAbbrev() {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(new Date());
+    return parts.find((p) => p.type === 'timeZoneName')?.value || '';
+  } catch { return ''; }
+}
+
+function formatTimestamp(value) {
+  if (!value) return 'N/A';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return 'N/A';
+  const tz = currentTzAbbrev();
+  return tz ? `${d.toLocaleString()} ${tz}` : d.toLocaleString();
+}
+
+function truncateRef(s, max = 52) {
+  const t = String(s || '').trim().replace(/\s+/g, ' ');
+  if (t.length <= max) return t;
+  const keep = Math.floor((max - 3) / 2);
+  return `${t.slice(0, keep)}…${t.slice(-keep)}`;
+}
+
+function truncatePdfCell(text, maxChars) {
+  const s = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, Math.max(0, maxChars - 24))}\n… (truncated)`;
+}
+
+// ── Data processing ───────────────────────────────────────────────────────────
 function fallbackDeepMailRowsFromMismatches(validation) {
   return (validation.mismatches || [])
     .filter((m) => m.category === 'deepMail')
     .map((m) => ({
       subject: m.messageSubject || '(no subject)',
       internetMessageId: typeof m.field === 'string' ? m.field : '',
-      sourceMessageId: typeof m.field === 'string' ? m.field : '',
-      destMessageId: null,
-      pass: false,
-      diffs: [],
+      sourceMessageId:   typeof m.field === 'string' ? m.field : '',
+      destMessageId: null, pass: false, diffs: [],
       note: String(m.actual || m.summaryLine || '').trim() || undefined,
       pdfStructuredDiffs: Array.isArray(m.structuredDiffs) ? m.structuredDiffs : null,
     }));
@@ -99,354 +103,25 @@ function fallbackDeepMailRowsFromMismatches(validation) {
 function normalizeDeepMailResultsForPdf(validation) {
   const deep = validation.deepMailValidation || {};
   let results = Array.isArray(deep.messageResults) ? [...deep.messageResults] : [];
-
-  if (results.length === 0) {
-    results = fallbackDeepMailRowsFromMismatches(validation);
-  }
-
+  if (results.length === 0) results = fallbackDeepMailRowsFromMismatches(validation);
   return { deep, results };
 }
 
 function structuredRowsForDeepPdfRow(r) {
   if (Array.isArray(r.pdfStructuredDiffs) && r.pdfStructuredDiffs.length > 0) {
     return r.pdfStructuredDiffs.map((x) => ({
-      fieldKey: x.fieldKey,
-      fieldLabel: x.fieldLabel,
-      sourceExpected: x.sourceExpected,
-      destinationActual: x.destinationActual,
+      fieldKey: x.fieldKey, fieldLabel: x.fieldLabel,
+      sourceExpected: x.sourceExpected, destinationActual: x.destinationActual,
       severity: x.severity || 'error',
     }));
   }
   return ValidationResult.buildStructuredDiffRowsFromDiffs(r.diffs || [], r.note);
 }
 
-function contentLeft(doc) {
-  return doc.page.margins.left;
-}
-
-function pageBottom(doc) {
-  return doc.page.height - doc.page.margins.bottom;
-}
-
-function ensureSpace(doc, y, needed) {
-  if (y + needed > pageBottom(doc)) {
-    doc.addPage();
-    return doc.page.margins.top;
-  }
-  return y;
-}
-
-function drawSectionHeader(doc, title) {
-  const left = contentLeft(doc);
-  doc.fontSize(13).font(F_BOLD).fillColor('#1e293b').text(title, left, doc.y, {
-    width: CONTENT_W,
-  });
-  const lineY = doc.y + 2;
-  doc.moveTo(left, lineY).lineTo(left + CONTENT_W, lineY).strokeColor('#cbd5e1').lineWidth(0.75).stroke();
-  doc.moveDown(0.4);
-}
-
-/** Tight key-value block (less padding below — use after tables to avoid large gaps). */
-function drawMetadataTableCompact(doc, pairs) {
-  const left = contentLeft(doc);
-  const labelW = 200;
-  const valueW = CONTENT_W - labelW;
-  let y = doc.y;
-  doc.fontSize(10);
-  for (const [label, value] of pairs) {
-    const v = String(value ?? '—');
-    const valueH = doc.heightOfString(v, { width: valueW });
-    const rowH = Math.max(doc.heightOfString(`${label}:`, { width: labelW }), valueH) + 3;
-    y = ensureSpace(doc, y, rowH);
-    doc.font(F_BOLD).fillColor('#475569').text(`${label}:`, left, y, { width: labelW });
-    doc.font(F_REGULAR).fillColor('#0f172a').text(v, left + labelW, y, { width: valueW, lineGap: 1 });
-    y += rowH;
-  }
-  doc.x = left;
-  doc.y = y + 2;
-}
-
-/**
- * Key-value block with aligned values (metadata).
- */
-function drawMetadataTable(doc, pairs) {
-  const left = contentLeft(doc);
-  const labelW = 220;
-  const valueW = CONTENT_W - labelW;
-  let y = doc.y;
-  doc.fontSize(10);
-  for (const [label, value] of pairs) {
-    const v = String(value ?? 'N/A');
-    const valueH = doc.heightOfString(v, { width: valueW });
-    const rowH = Math.max(doc.heightOfString(`${label}:`, { width: labelW }), valueH) + 4;
-    y = ensureSpace(doc, y, rowH);
-    doc.font(F_BOLD).fillColor('#475569').text(`${label}:`, left, y, { width: labelW });
-    doc.font(F_REGULAR).fillColor('#0f172a').text(v, left + labelW, y, { width: valueW, lineGap: 2 });
-    y += rowH;
-  }
-  doc.x = left;
-  doc.y = y + 6;
-}
-
-/**
- * Table with shaded header, grid alignment, variable row height for wrapped text.
- */
-function drawDataTable(doc, headers, rows, colWidths) {
-  const left = contentLeft(doc);
-  const tableW = colWidths.reduce((a, b) => a + b, 0);
-  let y = doc.y;
-
-  const drawHeader = () => {
-    const headerH = 22;
-    y = ensureSpace(doc, y, headerH);
-    doc.save();
-    doc.fillColor('#f1f5f9');
-    doc.rect(left, y, tableW, headerH).fill();
-    doc.restore();
-    let x = left;
-    doc.font(F_BOLD).fontSize(9).fillColor('#334155');
-    headers.forEach((h, i) => {
-      doc.text(h, x + 5, y + 6, { width: colWidths[i] - 10, lineGap: 1 });
-      x += colWidths[i];
-    });
-    doc.strokeColor('#94a3b8').lineWidth(0.5);
-    doc.moveTo(left, y + headerH).lineTo(left + tableW, y + headerH).stroke();
-    y += headerH;
-  };
-
-  drawHeader();
-
-  doc.font(F_REGULAR).fontSize(9);
-  for (const row of rows) {
-    const cells = row.map((c) => String(c ?? ''));
-    let maxH = 12;
-    for (let i = 0; i < cells.length; i++) {
-      const h = doc.heightOfString(cells[i], { width: colWidths[i] - 10 });
-      maxH = Math.max(maxH, h);
-    }
-    const padY = 6;
-    const rowH = maxH + padY * 2;
-    y = ensureSpace(doc, y, rowH);
-
-    let x = left;
-    const statusIdx = cells.length - 1;
-    for (let i = 0; i < cells.length; i++) {
-      const text = cells[i];
-      let color = '#0f172a';
-      if (i === statusIdx) {
-        if (text === 'Mismatch' || text === 'No' || text === 'NOT FOUND') color = '#b91c1c';
-        else if (text === 'Match' || text === 'Yes') color = '#15803d';
-        else if (text === 'Not measured' || text === 'Accumulated') color = '#64748b';
-      }
-      doc.fillColor(color);
-      doc.text(text, x + 5, y + padY, { width: colWidths[i] - 10, lineGap: 2 });
-      x += colWidths[i];
-    }
-    doc.strokeColor('#e2e8f0').lineWidth(0.4);
-    doc.moveTo(left, y + rowH).lineTo(left + tableW, y + rowH).stroke();
-    y += rowH;
-  }
-
-  doc.x = left;
-  doc.y = y + 3;
-}
-
-/**
- * Limit very long body cells so PDF rows stay bounded.
- */
-function truncatePdfCell(text, maxChars) {
-  const s = String(text ?? '').replace(/\r\n/g, '\n').trim();
-  if (s.length <= maxChars) return s;
-  return `${s.slice(0, Math.max(0, maxChars - 24))}\n… (truncated)`;
-}
-
-/**
- * Three-column table: Field | Source mailbox (Gmail) | Destination mailbox (Outlook).
- * Rows use raw Gmail vs Outlook values; From/To/Cc/Bcc “expected after mapping” is evaluated internally only.
- */
-function drawFieldComparisonTable(doc, structuredRows) {
-  const left = contentLeft(doc);
-  const fieldW = 92;
-  const srcW = (CONTENT_W - fieldW) / 2;
-  const dstW = srcW;
-  let y = doc.y;
-
-  const headerH = 22;
-  y = ensureSpace(doc, y, headerH);
-  doc.save();
-  doc.fillColor('#f1f5f9');
-  doc.rect(left, y, CONTENT_W, headerH).fill();
-  doc.restore();
-  doc.font(F_BOLD).fontSize(9).fillColor('#334155');
-  doc.text('Field', left + 5, y + 6, { width: fieldW - 10 });
-  doc.text('Source', left + fieldW + 5, y + 6, { width: srcW - 10 });
-  doc.text('Destination', left + fieldW + srcW + 5, y + 6, { width: dstW - 10 });
-  doc.strokeColor('#94a3b8').lineWidth(0.5);
-  doc.moveTo(left, y + headerH).lineTo(left + CONTENT_W, y + headerH).stroke();
-  y += headerH;
-
-  doc.font(F_REGULAR).fontSize(8);
-  for (const row of structuredRows) {
-    const fld = String(row.fieldLabel || row.fieldKey || '');
-    const sev = row.severity || 'error';
-    const valueColor =
-      sev === 'error' ? MISMATCH_RED : sev === 'warning' ? WARNING_AMBER : '#0f172a';
-    const bodyMax = fld === 'Body' ? 2200 : fld === 'Error' ? 2800 : 950;
-    const srcT = truncatePdfCell(row.sourceExpected, bodyMax);
-    const dstT = truncatePdfCell(row.destinationActual, bodyMax);
-
-    let maxH = 12;
-    maxH = Math.max(
-      maxH,
-      doc.heightOfString(fld, { width: fieldW - 10 }),
-      doc.heightOfString(srcT, { width: srcW - 10 }),
-      doc.heightOfString(dstT, { width: dstW - 10 })
-    );
-    const padY = 5;
-    const rowH = maxH + padY * 2;
-    y = ensureSpace(doc, y, rowH);
-
-    doc.font(F_BOLD).fillColor('#334155').text(fld, left + 5, y + padY, {
-      width: fieldW - 10,
-      lineGap: 1,
-    });
-    doc.font(F_REGULAR).fillColor(valueColor).text(srcT, left + fieldW + 5, y + padY, {
-      width: srcW - 10,
-      lineGap: 1,
-    });
-    doc.fillColor(valueColor).text(dstT, left + fieldW + srcW + 5, y + padY, {
-      width: dstW - 10,
-      lineGap: 1,
-    });
-    doc.strokeColor('#e2e8f0').lineWidth(0.4);
-    doc.moveTo(left, y + rowH).lineTo(left + CONTENT_W, y + rowH).stroke();
-    y += rowH;
-  }
-
-  doc.x = left;
-  doc.y = y + 4;
-}
-
-/**
- * Per-message Gmail vs Outlook comparison tables. Always emitted when validation exists so reports stay
- * consistent; uses messageResults when present, otherwise rebuilds rows from deepMail mismatches.
- */
-function drawDeepMailPerMessageSection(doc, validation) {
-  const { deep, results } = normalizeDeepMailResultsForPdf(validation);
-  const mmDeep = (validation.mismatches || []).filter((m) => m.category === 'deepMail').length;
-
-  // Section is always drawn for migration QA PDFs (requirement: visible at minimum with explanation).
-  if (results.length === 0) {
-    drawSectionHeader(doc, 'Per-message migration validation');
-    doc.x = contentLeft(doc);
-    const body =
-      deep.summary ||
-      (mmDeep > 0
-        ? `Deep-mail findings were recorded (${mmDeep}) but detailed per-message rows were not stored on this execution. Re-download the PDF after updating the server, or re-run validation.`
-        : 'No per-message rows were recorded. Deep validation may have been disabled (DISABLE_DEEP_MAIL_VALIDATION=true) or no QA-tagged source messages were found across scanned folders/labels.');
-    doc.fontSize(10).font(F_REGULAR).fillColor('#64748b').text(body, { width: CONTENT_W, lineGap: 2 });
-    doc.moveDown(0.35);
-    return;
-  }
-
-  const failed = results.filter((r) => !r.pass);
-  const warned = results.filter((r) => r.pass && (r.diffs || []).some((d) => d.ok === false));
-  const failN = failed.length;
-  const warnN = warned.length;
-  const totalN = results.length;
-
-  const title =
-    failN > 0
-      ? failN === totalN
-        ? `Per-message migration validation (${failN} failed)`
-        : `Per-message migration validation (${failN} failed of ${totalN})`
-      : warnN > 0
-        ? `Per-message migration validation (all ${totalN} passed — ${warnN} with advisories)`
-        : `Per-message migration validation (all ${totalN} passed)`;
-
-  drawSectionHeader(doc, title);
-  doc.x = contentLeft(doc);
-  doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
-    'Each row compares source vs destination for the same message. Red = mismatch (error); amber = advisory difference (warning). Recipient fields are compared after applying your permission mappings.',
-    { width: CONTENT_W, lineGap: 2 }
-  );
-  doc.moveDown(0.35);
-
-  if (failN === 0 && warnN === 0) {
-    doc.fontSize(10).font(F_REGULAR).fillColor('#15803d').text(
-      'All scanned and paired messages passed deep field comparison.',
-      { width: CONTENT_W }
-    );
-    doc.moveDown(0.35);
-    return;
-  }
-
-  if (failN === 0 && warnN > 0) {
-    doc.fontSize(10).font(F_REGULAR).fillColor('#15803d').text(
-      'All scanned and paired messages passed deep field comparison (no errors).',
-      { width: CONTENT_W }
-    );
-    doc.moveDown(0.25);
-  }
-
-  for (const r of failed) {
-    const subj = String(r.subject || '(no subject)').trim() || '(no subject)';
-    const ref = truncateRef(r.internetMessageId || r.sourceMessageId || '—', 72);
-    doc.x = contentLeft(doc);
-    doc.fontSize(10).font(F_BOLD).fillColor('#0f172a').text(subj, { width: CONTENT_W });
-    doc.fontSize(8).font(F_REGULAR).fillColor('#64748b').text(ref, { width: CONTENT_W });
-    doc.moveDown(0.15);
-
-    const rows = structuredRowsForDeepPdfRow(r);
-    if (rows.length === 0) {
-      doc.fontSize(9).font(F_REGULAR).fillColor(MISMATCH_RED).text(String(r.note || 'No diff details recorded.'), {
-        width: CONTENT_W,
-      });
-    } else {
-      drawFieldComparisonTable(doc, rows);
-    }
-    doc.moveDown(0.45);
-  }
-
-  if (warnN > 0) {
-    doc.x = contentLeft(doc);
-    doc.fontSize(10).font(F_BOLD).fillColor('#92400e').text(
-      `Advisory warnings (${warnN} message${warnN > 1 ? 's' : ''})`,
-      { width: CONTENT_W }
-    );
-    doc.moveDown(0.15);
-    doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
-      'These messages passed core validation checks. The amber rows show informational differences (read state, flag, importance, sent time, folder placement) that do not affect the overall pass/fail result.',
-      { width: CONTENT_W, lineGap: 2 }
-    );
-    doc.moveDown(0.35);
-
-    for (const r of warned) {
-      const subj = String(r.subject || '(no subject)').trim() || '(no subject)';
-      const ref = truncateRef(r.internetMessageId || r.sourceMessageId || '—', 72);
-      doc.x = contentLeft(doc);
-      doc.fontSize(10).font(F_BOLD).fillColor('#0f172a').text(subj, { width: CONTENT_W });
-      doc.fontSize(8).font(F_REGULAR).fillColor('#64748b').text(ref, { width: CONTENT_W });
-      doc.moveDown(0.15);
-
-      const rows = structuredRowsForDeepPdfRow(r);
-      if (rows.length > 0) {
-        drawFieldComparisonTable(doc, rows);
-      }
-      doc.moveDown(0.45);
-    }
-  }
-}
-
-function statusLabel(match) {
-  return match ? 'Match' : 'Mismatch';
-}
-
-/** Infer mismatch.kind for executions saved before enriched metadata existed. */
 function inferMismatchKind(m) {
   if (m.kind) return m.kind;
   const cat = String(m.category || '');
-  const a = String(m.actual || '');
+  const a   = String(m.actual   || '');
   if (cat === 'comparison') return 'comparison';
   if (/ENOTFOUND|ECONNRESET|ETIMEDOUT|getaddrinfo|EAI_|full read failed|token failed/i.test(a)) return 'infrastructure';
   if (/attachments?:|attachmentHash/i.test(a)) return 'attachment';
@@ -459,342 +134,776 @@ function inferMismatchKind(m) {
   return 'other';
 }
 
-function truncateRef(s, max = 52) {
-  const t = String(s || '').trim().replace(/\s+/g, ' ');
-  if (t.length <= max) return t;
-  const keep = Math.floor((max - 3) / 2);
-  return `${t.slice(0, keep)}…${t.slice(-keep)}`;
-}
-
-/** Format a duration in milliseconds as "10m 30s" / "1h 5m 20s" for human readability. */
-function formatDurationMs(ms) {
-  const n = Number(ms);
-  if (!Number.isFinite(n) || n < 0) return 'N/A';
-  if (n < 1000) return `${n} ms`;
-  const totalSec = Math.round(n / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const parts = [];
-  if (h > 0) parts.push(`${h}h`);
-  if (h > 0 || m > 0) parts.push(`${m}m`);
-  parts.push(`${s}s`);
-  return parts.join(' ');
-}
-
-/** Resolve the current runtime timezone abbreviation (e.g. "IST", "UTC") for report timestamps. */
-function currentTzAbbrev() {
-  try {
-    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(new Date());
-    const tz = parts.find((p) => p.type === 'timeZoneName');
-    return tz?.value || '';
-  } catch {
-    return '';
-  }
-}
-
-function formatTimestamp(value) {
-  if (!value) return 'N/A';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'N/A';
-  const tz = currentTzAbbrev();
-  return tz ? `${d.toLocaleString()} ${tz}` : d.toLocaleString();
-}
-
-const GROUP_ORDER = [
-  'infrastructure',
-  'attachment',
-  'headers',
-  'subject',
-  'folder',
-  'mailbox',
-  'calendar',
-  'comparison',
-  'other',
-];
-
-const GROUP_SECTION_TITLE = {
-  infrastructure: 'Network / API failures (often transient — re-run validation when online)',
-  attachment: 'Attachment differences (Tier A name + size vs destination)',
-  headers: 'Header mismatches (From / To / Cc / Bcc vs permission mapping)',
-  subject: 'Subject mismatches',
-  folder: 'Folder / label placement (structure vs destination folder)',
-  mailbox: 'Mailbox accessibility / structure',
-  calendar: 'Calendar checks',
-  comparison: 'Folder & label counts',
-  other: 'Other findings',
-};
-
-function summarizeMismatchKinds(mismatches) {
-  const counts = {};
-  for (const m of mismatches || []) {
-    const k = inferMismatchKind(m);
-    counts[k] = (counts[k] || 0) + 1;
-  }
-  const parts = GROUP_ORDER.filter((k) => counts[k])
-    .map((k) => `${counts[k]} ${k}`)
-    .join(', ');
-  return { counts, summaryText: parts || 'none' };
-}
-
-/**
- * Classify one failed deep-mail message into a human-friendly reason bucket so the executive
- * summary can collapse repeats ("11 messages: body text missing; attachments present") and
- * point the reader at the right next action.
- */
 function classifyDeepMailReason(result) {
-  const diffs = Array.isArray(result?.diffs) ? result.diffs : [];
+  const diffs      = Array.isArray(result?.diffs) ? result.diffs : [];
   const structured = Array.isArray(result?.pdfStructuredDiffs) ? result.pdfStructuredDiffs : [];
-  const errDiffs = diffs.filter((d) => d.ok === false && d.severity !== 'warning');
-  const fields = new Set(errDiffs.map((d) => String(d.field || '')));
-  const blob = [
-    ...errDiffs.map((d) => `${d.field || ''} ${d.displayDestination || ''} ${d.actual || ''}`),
-    ...structured.map((s) => `${s.fieldKey || ''} ${s.destinationActual || ''}`),
+  const errDiffs   = diffs.filter((d) => d.ok === false && d.severity !== 'warning');
+  const fields     = new Set(errDiffs.map((d) => String(d.field || '')));
+  const blob       = [
+    ...errDiffs.map((d) => `${d.field||''} ${d.displayDestination||''} ${d.actual||''}`),
+    ...structured.map((s) => `${s.fieldKey||''} ${s.destinationActual||''}`),
     String(result?.note || ''),
   ].join(' ');
 
-  if (
-    fields.has('body') &&
-    /only the text body is missing|text body missing \(attachments migrated|text body missing; attachments present/i.test(blob)
-  ) {
-    return {
-      key: 'body_text_missing_attachments_present',
-      label: 'Text body missing (attachments migrated OK)',
-      action: 'Re-migrate these messages or raise a support ticket.',
-    };
-  }
-  if (
-    fields.has('body') &&
-    /body and attachments missing|destination body is empty|body is empty/i.test(blob)
-  ) {
-    return {
-      key: 'body_empty_whole_message',
-      label: 'Body and attachments missing on destination',
-      action: 'Likely the whole message payload was dropped. Re-migrate or raise a support ticket.',
-    };
-  }
-  if (fields.has('body')) {
-    return {
-      key: 'body_mismatch',
-      label: 'Body content differs between source and destination',
-      action: 'Review the Body row on the per-message section to see the diff.',
-    };
-  }
-  if (fields.has('folder') || fields.has('starred') || fields.has('important')) {
-    return {
-      key: 'folder_or_flag_mismatch',
-      label: 'Folder / flag / importance placement mismatch',
-      action: 'Check label-to-folder mapping (STARRED → red flag, IMPORTANT → high) and Migrate Orphaned Labels setting.',
-    };
-  }
-  if (fields.has('attachments') || [...fields].some((f) => String(f).startsWith('attachmentHash'))) {
-    return {
-      key: 'attachments_mismatch',
-      label: 'Attachment manifest or byte-hash mismatch',
-      action: 'Inspect attachment names/sizes; Tier B hash row shows which file differs.',
-    };
-  }
-  if (['from', 'to', 'cc', 'bcc'].some((f) => fields.has(f))) {
-    return {
-      key: 'recipients_mapping_mismatch',
-      label: 'Recipient (From/To/Cc/Bcc) does not match permission mapping',
-      action: 'CloudFuze preserves original addresses; check whether the permission mapping reflects the migrated identities or adjust the mapping.',
-    };
-  }
-  if (fields.has('subject')) {
-    return {
-      key: 'subject_mismatch',
-      label: 'Subject line differs',
-      action: 'Review subject encoding (MIME encoded-words, truncation) on the per-message section.',
-    };
-  }
-  if (
-    /ENOTFOUND|ECONNRESET|ETIMEDOUT|getaddrinfo|EAI_|full read failed|token failed|network/i.test(blob)
-  ) {
-    return {
-      key: 'network_or_api',
-      label: 'Network / API errors during validation',
-      action: 'Often transient — re-run validation when connectivity is stable.',
-    };
-  }
-  return {
-    key: 'other',
-    label: 'Other deep-mail mismatch',
-    action: 'Open the per-message section for details.',
-  };
+  if (fields.has('body') && /only the text body is missing|text body missing/i.test(blob))
+    return { key: 'body_text_missing', label: 'Text body missing (attachments migrated OK)', action: 'Re-migrate these messages or raise a support ticket.', severity: 'critical' };
+  if (fields.has('body') && /body and attachments missing|destination body is empty|body is empty/i.test(blob))
+    return { key: 'body_empty', label: 'Body and attachments missing on destination', action: 'Likely the whole message payload was dropped. Re-migrate or raise a support ticket.', severity: 'critical' };
+  if (fields.has('body'))
+    return { key: 'body_mismatch', label: 'Body content differs between source and destination', action: 'Review the Body row on the per-message section.', severity: 'critical' };
+  if (fields.has('folder') || fields.has('starred') || fields.has('important'))
+    return { key: 'folder_flag', label: 'Folder / flag / importance placement mismatch', action: 'Check label-to-folder mapping and Migrate Orphaned Labels setting.', severity: 'warning' };
+  if (fields.has('attachments') || [...fields].some((f) => String(f).startsWith('attachmentHash')))
+    return { key: 'attachments', label: 'Attachment manifest or byte-hash mismatch', action: 'Inspect attachment names/sizes; Tier B hash row shows which file differs.', severity: 'critical' };
+  if (['from','to','cc','bcc'].some((f) => fields.has(f)))
+    return { key: 'recipients', label: 'Recipient (From/To/Cc/Bcc) does not match permission mapping', action: 'Check whether the permission mapping reflects the migrated identities.', severity: 'warning' };
+  if (fields.has('subject'))
+    return { key: 'subject', label: 'Subject line differs', action: 'Review subject encoding on the per-message section.', severity: 'minor' };
+  if (/ENOTFOUND|ECONNRESET|ETIMEDOUT|getaddrinfo|EAI_|full read failed|token failed|network/i.test(blob))
+    return { key: 'network', label: 'Network / API errors during validation', action: 'Often transient — re-run validation when connectivity is stable.', severity: 'minor' };
+  return { key: 'other', label: 'Other deep-mail mismatch', action: 'Open the per-message section for details.', severity: 'warning' };
 }
 
-/**
- * Build a reason-grouped summary of failing deep-mail results.
- * @returns {Array<{ key, label, action, count, sampleSubjects }>}
- */
 function buildDeepMailReasonGroups(results) {
   const groups = new Map();
   for (const r of results || []) {
     if (r.pass) continue;
     const reason = classifyDeepMailReason(r);
-    if (!groups.has(reason.key)) {
-      groups.set(reason.key, {
-        key: reason.key,
-        label: reason.label,
-        action: reason.action,
-        count: 0,
-        sampleSubjects: [],
-      });
-    }
+    if (!groups.has(reason.key)) groups.set(reason.key, { ...reason, count: 0, sampleSubjects: [] });
     const g = groups.get(reason.key);
-    g.count += 1;
-    if (g.sampleSubjects.length < 5) {
-      const subj = String(r.subject || '(no subject)').trim() || '(no subject)';
-      g.sampleSubjects.push(subj);
-    }
+    g.count++;
+    if (g.sampleSubjects.length < 5)
+      g.sampleSubjects.push(String(r.subject || '(no subject)').trim() || '(no subject)');
   }
   return [...groups.values()].sort((a, b) => b.count - a.count);
 }
 
-/**
- * Narrative summary + bullet stats after Overall status.
- * When deep-mail failures exist, show them grouped by reason with sample subjects and
- * concrete next actions, so a reader gets the full verdict without paging through 50+
- * per-message tables.
- */
-function drawReportAtAGlance(doc, validation, context) {
-  const mm = validation.mismatches || [];
-  const { counts } = summarizeMismatchKinds(mm);
-  const deep = validation.deepMailValidation;
-  const { results: deepResults } = normalizeDeepMailResultsForPdf(validation);
-  const deepFailed = deepResults.filter((r) => !r.pass);
-  const reasonGroups = buildDeepMailReasonGroups(deepResults);
+function buildComparisonRows(sourceLabels, destFolders, mapping) {
+  const rows = [];
+  for (const [gmailId, outlookName] of Object.entries(mapping)) {
+    const src      = sourceLabels.find((l) => l.id === gmailId || l.name === gmailId);
+    const dest     = destFolders.find((f) => f.name === outlookName || f.name === gmailId);
+    const srcCount  = src?.messageCount  ?? 0;
+    const destCount = dest?.messageCount ?? 0;
+    const match  = srcCount === destCount;
+    const status = (!match && gmailId === 'TRASH' && destCount > srcCount) ? 'Accumulated' : (match ? 'Match' : 'Mismatch');
+    rows.push({ label: `${gmailId} → ${outlookName}`, srcCount, destCount, status, nested: false });
+  }
+  return rows;
+}
 
-  drawSectionHeader(doc, 'Report at a glance');
-  doc.x = contentLeft(doc);
-  doc.fontSize(10).font(F_REGULAR).fillColor('#334155');
+// ── Layout primitives ─────────────────────────────────────────────────────────
+function pageBottom(doc) { return doc.page.height - doc.page.margins.bottom; }
 
-  const overall = validation.overallStatus === 'PASS';
-  if (overall) {
-    doc.text('No blocking mismatches were recorded for this run.', { width: CONTENT_W, lineGap: 2 });
-    doc.moveDown(0.35);
+function ensureSpace(doc, needed) {
+  if (doc.y + needed > pageBottom(doc)) doc.addPage();
+}
+
+function hRule(doc, y, color = C.border) {
+  doc.save().strokeColor(color).lineWidth(0.75)
+    .moveTo(MARGIN, y).lineTo(MARGIN + CONTENT_W, y).stroke().restore();
+}
+
+function drawSectionHeader(doc, title) {
+  ensureSpace(doc, 48);
+  doc.moveDown(0.7);
+  doc.fontSize(11).font(F_BOLD).fillColor(C.dark).text(title, MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.15);
+  hRule(doc, doc.y, '#cbd5e1');
+  doc.moveDown(0.5);
+}
+
+function statusTagColors(status) {
+  if (status === 'Match')     return { bg: C.passBg,  fg: C.pass   };
+  if (status === 'Mismatch')  return { bg: C.failBg,  fg: C.fail   };
+  if (status === 'NOT FOUND') return { bg: C.failBg,  fg: C.fail   };
+  if (status === 'Accumulated') return { bg: '#f1f5f9', fg: C.subtle };
+  return { bg: '#f1f5f9', fg: C.subtle };
+}
+
+function drawStatusBadge(doc, x, y, status) {
+  let bg, fg;
+  if (status === 'PASS')  { bg = C.passBg;  fg = C.pass;  }
+  else if (status === 'WARN') { bg = C.warnBg;  fg = C.warn;  }
+  else                    { bg = C.failBg;  fg = C.fail;  }
+  doc.save().fillColor(bg).roundedRect(x, y, 74, 26, 5).fill().restore();
+  doc.save().strokeColor(fg).lineWidth(1).roundedRect(x, y, 74, 26, 5).stroke().restore();
+  doc.fontSize(11).font(F_BOLD).fillColor(fg).text(status, x, y + 7, { width: 74, align: 'center' });
+}
+
+// ── Page header ───────────────────────────────────────────────────────────────
+function drawPageHeader(doc, execution, validation, context, result) {
+  const status  = validation?.overallStatus || 'N/A';
+  const genDate = formatTimestamp(new Date());
+  const src     = context?.sourceEmail      || '—';
+  const dest    = context?.destinationEmail || '—';
+
+  // Dark header band (full bleed)
+  doc.save().fillColor(C.dark).rect(0, 0, PAGE_WIDTH, 82).fill().restore();
+  doc.fontSize(17).font(F_BOLD).fillColor('#ffffff')
+    .text('Migration QA Validation Report', MARGIN, 18, { width: CONTENT_W - 90 });
+  doc.fontSize(8.5).font(F_REGULAR).fillColor(C.muted)
+    .text(`Generated: ${genDate}`, MARGIN, 45, { width: CONTENT_W - 90 });
+  drawStatusBadge(doc, PAGE_WIDTH - MARGIN - 82, 18, status);
+
+  // Light meta band
+  doc.save().fillColor('#f1f5f9').rect(0, 82, PAGE_WIDTH, 44).fill().restore();
+  const metaItems = [
+    `Exec: ${String(execution.executionId || '—').slice(0, 20)}`,
+    `${src} → ${dest}`,
+    `Type: ${context?.testType || 'E2E'}`,
+    `Migration: ${context?.migrationType === 'DELTA' ? 'DELTA' : 'FULL'}`,
+    `Duration: ${result?.duration != null ? formatDurationMs(result.duration) : 'N/A'}`,
+  ];
+  const metaColW = CONTENT_W / metaItems.length;
+  doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt);
+  metaItems.forEach((item, i) => {
+    doc.text(item, MARGIN + i * metaColW, 96, { width: metaColW - 6, lineBreak: false });
+  });
+
+  doc.y = 140;
+}
+
+// ── CloudFuze Migration Status (before Section 1) ────────────────────────────
+function drawMigrationJobSection(doc, context) {
+  const migJob    = context?.migrationJobDetails;
+  const srcEmail  = context?.sourceEmail      || '—';
+  const dstEmail  = context?.destinationEmail || '—';
+  const hasData   = migJob || srcEmail !== '—' || dstEmail !== '—';
+  if (!hasData) return;
+
+  drawSectionHeader(doc, 'CloudFuze Migration Status');
+
+  // ── header row ─────────────────────────────────────────────────────────────
+  const COLS = [
+    { label: 'Workspace ID', w: 100 },
+    { label: 'From Email',   w: 134 },
+    { label: 'To Email',     w: 134 },
+    { label: 'Total',        w:  54 },
+    { label: 'Processed',    w:  64 },
+    { label: 'Status',       w:  CONTENT_W - 100 - 134 - 134 - 54 - 64 },
+  ];
+  const TABLE_W = COLS.reduce((s, c) => s + c.w, 0);
+  const HDR_H = 22;
+  const ROW_H = 28;
+
+  ensureSpace(doc, HDR_H + ROW_H + 20);
+
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, TABLE_W, HDR_H).fill().restore();
+  let hx = MARGIN;
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  COLS.forEach((c) => {
+    doc.text(c.label, hx + 5, y + 6, { width: c.w - 10, lineBreak: false });
+    hx += c.w;
+  });
+  doc.save().strokeColor('#94a3b8').lineWidth(0.5)
+    .moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + TABLE_W, y + HDR_H).stroke().restore();
+  y += HDR_H;
+
+  // ── data row ───────────────────────────────────────────────────────────────
+  const workspaceId    = String(migJob?.workspaceId || context?.jobId || '—');
+  const totalCount     = migJob?.totalCount     != null ? String(migJob.totalCount)     : '—';
+  const processedCount = migJob?.processedCount != null ? String(migJob.processedCount) : '—';
+  const cfStatusRaw    = String(migJob?.cfStatus || '—');
+  const cfStatusLabel  = cfStatusRaw.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+  const cfStatusUp     = cfStatusRaw.toUpperCase();
+
+  let statusBg = '#f1f5f9', statusFg = C.subtle;
+  if (/^PROCESS(ED)?$/.test(cfStatusUp) || cfStatusUp === 'PROCESSED_WITH_CONFLICTS' || cfStatusUp === 'PROCESS_WITH_CONFLICTS') {
+    statusBg = C.passBg; statusFg = C.pass;
+  } else if (/FAIL|ERROR|CONFLICT/.test(cfStatusUp)) {
+    statusBg = C.failBg; statusFg = C.fail;
+  } else if (/PROGRESS|INPROG|QUEUE|INIT|RUN|PROCESS/.test(cfStatusUp)) {
+    statusBg = C.warnBg; statusFg = C.warn;
+  }
+
+  doc.save().fillColor('#fafafa').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
+
+  const cells = [
+    { text: workspaceId,    w: COLS[0].w },
+    { text: srcEmail,       w: COLS[1].w },
+    { text: dstEmail,       w: COLS[2].w },
+    { text: totalCount,     w: COLS[3].w },
+    { text: processedCount, w: COLS[4].w },
+    { text: null,           w: COLS[5].w },   // status badge handled separately
+  ];
+
+  let rx = MARGIN;
+  cells.forEach((cell, i) => {
+    if (i < cells.length - 1) {
+      doc.fontSize(8).font(F_REGULAR).fillColor(C.text)
+        .text(cell.text, rx + 5, y + 9, { width: cell.w - 10, lineBreak: false });
+    } else {
+      // Status badge in last cell
+      const tagW = Math.min(cell.w - 10, 110);
+      doc.save().fillColor(statusBg).roundedRect(rx + 5, y + 8, tagW, 14, 3).fill().restore();
+      doc.fontSize(7.5).font(F_BOLD).fillColor(statusFg)
+        .text(cfStatusLabel, rx + 5, y + 10, { width: tagW, align: 'center', lineBreak: false });
+    }
+    rx += cell.w;
+  });
+
+  doc.save().strokeColor(C.border).lineWidth(0.35)
+    .moveTo(MARGIN, y + ROW_H).lineTo(MARGIN + TABLE_W, y + ROW_H).stroke().restore();
+  y += ROW_H;
+  doc.y = y;
+
+  // ── Progress bar ──────────────────────────────────────────────────────────
+  const pct = (migJob?.totalCount > 0)
+    ? Math.round(((migJob.processedCount || 0) / migJob.totalCount) * 100)
+    : null;
+
+  if (pct != null) {
+    doc.moveDown(0.4);
+    const barY  = doc.y;
+    const barW  = CONTENT_W;
+    const barH  = 9;
+    const fillW = Math.max(4, Math.round(barW * pct / 100));
+    const fillColor = pct >= 100 ? C.pass : C.info;
+
+    doc.save().fillColor('#e2e8f0').roundedRect(MARGIN, barY, barW, barH, 4).fill().restore();
+    if (pct > 0) {
+      doc.save().fillColor(fillColor).roundedRect(MARGIN, barY, fillW, barH, 4).fill().restore();
+    }
+    doc.fontSize(7.5).font(F_BOLD).fillColor(fillColor)
+      .text(`${pct}% migrated`, MARGIN, barY - 14, { width: CONTENT_W, align: 'right', lineBreak: false });
+    doc.y = barY + barH + 8;
+  }
+
+  doc.moveDown(0.6);
+}
+
+// ── Section 1: Summary metric grid ───────────────────────────────────────────
+function drawSummarySection(doc, validation, context, result) {
+  drawSectionHeader(doc, '1 — Summary');
+
+  const { deep, results: deepResults } = normalizeDeepMailResultsForPdf(validation);
+  const deepFailed    = deepResults.filter((r) => !r.pass).length;
+  const totalFindings = (validation.mismatches || []).length;
+
+  const MAPPED_OUTLOOK = new Set(['Inbox', 'Sent Items', 'Drafts', 'Deleted Items', 'Junk Email']);
+  const MAPPED_GMAIL   = new Set(['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM']);
+  const srcDefaults = validation.sourceData?.defaultLabels  || [];
+  const srcCustoms  = validation.sourceData?.customLabels   || [];
+  const dstDefaults = validation.destinationData?.defaultFolders || [];
+  const dstCustoms  = validation.destinationData?.customFolders  || [];
+
+  const srcMail = srcDefaults.filter((l) => MAPPED_GMAIL.has(String(l.id ?? l.name ?? '').toUpperCase()))
+                    .reduce((s, l) => s + (l.messageCount || 0), 0)
+                + srcCustoms.reduce((s, l) => s + (l.messageCount || 0), 0);
+  const dstMail = dstDefaults.filter((f) => MAPPED_OUTLOOK.has(String(f.name ?? '')))
+                    .reduce((s, f) => s + (f.messageCount || 0), 0)
+                + dstCustoms.reduce((s, f) => s + (f.messageCount || 0), 0);
+  const mailMatch = srcMail === dstMail;
+
+  const metrics = [
+    { value: deep.scannedSourceMessages ?? '—', label: 'Messages Scanned', vc: C.text,  bg: C.bg,      bd: C.border      },
+    { value: deep.pairedCount           ?? '—', label: 'Paired Messages',  vc: C.text,  bg: C.bg,      bd: C.border      },
+    { value: deepFailed,    label: 'Deep Mail Failures', vc: deepFailed > 0 ? C.fail : C.pass, bg: deepFailed > 0 ? C.failBg : C.passBg, bd: deepFailed > 0 ? C.failBorder : C.passBorder },
+    { value: totalFindings, label: 'Total Findings',    vc: totalFindings > 0 ? C.warn : C.pass, bg: totalFindings > 0 ? C.warnBg : C.passBg, bd: totalFindings > 0 ? C.warnBorder : C.passBorder },
+    { value: result?.duration != null ? formatDurationMs(result.duration) : '—', label: 'Duration', vc: C.text, bg: C.bg, bd: C.border },
+    { value: `${srcMail} / ${dstMail}`, label: 'Mail Count (Src / Dst)', vc: mailMatch ? C.pass : C.fail, bg: mailMatch ? C.passBg : C.failBg, bd: mailMatch ? C.passBorder : C.failBorder },
+  ];
+
+  const gap = 10;
+  const cols = 3;
+  const cardW = (CONTENT_W - gap * (cols - 1)) / cols;
+  const cardH = 70;
+
+  ensureSpace(doc, cardH * 2 + gap + 16);
+  let startY = doc.y;
+
+  metrics.forEach((m, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx  = MARGIN + col * (cardW + gap);
+    const cy  = startY + row * (cardH + gap);
+
+    doc.save().fillColor(m.bg).roundedRect(cx, cy, cardW, cardH, 6).fill().restore();
+    doc.save().strokeColor(m.bd).lineWidth(1).roundedRect(cx, cy, cardW, cardH, 6).stroke().restore();
+
+    const valStr  = String(m.value ?? '—');
+    const valSize = valStr.length > 8 ? 13 : valStr.length > 5 ? 16 : 20;
+    doc.fontSize(valSize).font(F_BOLD).fillColor(m.vc)
+      .text(valStr, cx + 6, cy + 14, { width: cardW - 12, align: 'center' });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(m.label, cx + 6, cy + cardH - 20, { width: cardW - 12, align: 'center' });
+  });
+
+  doc.y = startY + Math.ceil(metrics.length / cols) * (cardH + gap) + 4;
+}
+
+// ── Section 2: Failure breakdown ──────────────────────────────────────────────
+function drawFailureBreakdown(doc, validation) {
+  const { results } = normalizeDeepMailResultsForPdf(validation);
+  const groups = buildDeepMailReasonGroups(results);
+  if (groups.length === 0) return;
+
+  drawSectionHeader(doc, '2 — Failure Breakdown');
+
+  for (const g of groups) {
+    ensureSpace(doc, 64);
+    const y   = doc.y;
+    const h   = 54;
+
+    doc.save().fillColor('#fafafa').roundedRect(MARGIN, y, CONTENT_W, h, 5).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.75).roundedRect(MARGIN, y, CONTENT_W, h, 5).stroke().restore();
+    doc.save().fillColor(C.fail).rect(MARGIN, y, 4, h).fill().restore();
+
+    doc.fontSize(24).font(F_BOLD).fillColor(C.fail)
+      .text(String(g.count), MARGIN + 12, y + 11, { width: 46, align: 'center' });
+
+    const textX = MARGIN + 66;
+    const textW = CONTENT_W - 74 - 58;
+    doc.fontSize(10).font(F_BOLD).fillColor(C.dark)
+      .text(g.label, textX, y + 9, { width: textW });
+    doc.fontSize(8.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(g.action, textX, y + 25, { width: textW });
+
+    // "Error" tag
+    const tagText = 'Error';
+    const tagX = MARGIN + CONTENT_W - 50;
+    doc.save().fillColor(C.failBg).roundedRect(tagX, y + 18, 44, 14, 3).fill().restore();
+    doc.fontSize(7.5).font(F_BOLD).fillColor(C.fail).text(tagText, tagX, y + 20, { width: 44, align: 'center' });
+
+    doc.y = y + h + 8;
+  }
+}
+
+// ── Folder table helper ───────────────────────────────────────────────────────
+function drawFolderTable(doc, rows, supportNested) {
+  const COL_W  = [202, 68, 68, 92];
+  const TABLE_W = COL_W.reduce((a, b) => a + b, 0);
+  const HDR_H   = 22;
+  const ROW_H   = 22;
+
+  ensureSpace(doc, HDR_H + ROW_H);
+
+  // Header
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, TABLE_W, HDR_H).fill().restore();
+  const headers = ['Folder / Label', 'Source', 'Destination', 'Status'];
+  let hx = MARGIN;
+  doc.fontSize(8.5).font(F_BOLD).fillColor(C.darkAlt);
+  headers.forEach((h, i) => {
+    doc.text(h, hx + 6, y + 6, { width: COL_W[i] - 12, lineBreak: false });
+    hx += COL_W[i];
+  });
+  doc.save().strokeColor('#94a3b8').lineWidth(0.5)
+    .moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + TABLE_W, y + HDR_H).stroke().restore();
+  y += HDR_H;
+
+  rows.forEach((row, idx) => {
+    ensureSpace(doc, ROW_H + 4);
+    y = doc.y;
+
+    const isMismatch = row.status === 'Mismatch' || row.status === 'NOT FOUND';
+    if (isMismatch) {
+      doc.save().fillColor(C.failBg).rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
+    } else if (idx % 2 === 0) {
+      doc.save().fillColor('#fafafa').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
+    }
+
+    const isNested = supportNested && row.nested;
+    const label    = isNested
+      ? `↳ ${(row.label || '').split('/').pop()}`
+      : (row.label || '—');
+    const indent = isNested ? 10 : 0;
+
+    let rx = MARGIN;
+    doc.fontSize(8.5).font(F_REGULAR).fillColor(C.text)
+      .text(label, rx + 6 + indent, y + 6, { width: COL_W[0] - 12 - indent, lineBreak: false });
+    rx += COL_W[0];
+
+    doc.fillColor(C.subtle)
+      .text(String(row.srcCount ?? '—'), rx + 6, y + 6, { width: COL_W[1] - 12, lineBreak: false });
+    rx += COL_W[1];
+
+    doc.text(String(row.destCount ?? '—'), rx + 6, y + 6, { width: COL_W[2] - 12, lineBreak: false });
+    rx += COL_W[2];
+
+    const { bg: tagBg, fg: tagFg } = statusTagColors(row.status);
+    const tagW = 64;
+    doc.save().fillColor(tagBg).roundedRect(rx + 6, y + 5, tagW, 13, 3).fill().restore();
+    doc.fontSize(7.5).font(F_BOLD).fillColor(tagFg)
+      .text(row.status, rx + 6, y + 7, { width: tagW, align: 'center', lineBreak: false });
+
+    doc.save().strokeColor(C.border).lineWidth(0.35)
+      .moveTo(MARGIN, y + ROW_H).lineTo(MARGIN + TABLE_W, y + ROW_H).stroke().restore();
+
+    y += ROW_H;
+    doc.y = y;
+  });
+
+  doc.moveDown(0.5);
+}
+
+// ── Section 3: Default folder mapping ────────────────────────────────────────
+function drawDefaultFolderMapping(doc, validation) {
+  drawSectionHeader(doc, '3 — Default Folder Mapping');
+  const rows = buildComparisonRows(
+    validation.sourceData.defaultLabels  || [],
+    validation.destinationData.defaultFolders || [],
+    { INBOX: 'Inbox', SENT: 'Sent Items', DRAFT: 'Drafts', TRASH: 'Deleted Items', SPAM: 'Junk Email' }
+  );
+  drawFolderTable(doc, rows, false);
+}
+
+// ── Section 4: Custom folder mapping ─────────────────────────────────────────
+function drawCustomFolderMapping(doc, validation) {
+  drawSectionHeader(doc, '4 — Custom Folder Mapping');
+
+  const customRows = (validation.sourceData.customLabels || []).map((src) => {
+    const dest  = findDestCustomFolder(validation.destinationData.customFolders || [], src.name);
+    const match = dest ? src.messageCount === dest.messageCount : false;
+    return {
+      label:     src.name,
+      srcCount:  src.messageCount,
+      destCount: dest ? dest.messageCount : null,
+      status:    dest ? (match ? 'Match' : 'Mismatch') : 'NOT FOUND',
+      nested:    src.name.includes('/'),
+    };
+  });
+
+  if (customRows.length === 0) {
+    doc.fontSize(9).font(F_REGULAR).fillColor(C.subtle)
+      .text('No custom labels on source mailbox.', MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.6);
     return;
   }
 
-  // One-line verdict sized by the actual number of deep-mail failures (the thing users care about).
-  if (deep?.enabled && deepResults.length > 0) {
-    const totalN = deepResults.length;
-    const failN = deepFailed.length;
-    const pct = totalN > 0 ? Math.round((failN / totalN) * 100) : 0;
-    doc.text(
-      `${failN} of ${totalN} deep-mail messages failed (${pct}%). ${mm.length} total finding(s) recorded.`,
-      { width: CONTENT_W, lineGap: 2 }
-    );
-  } else {
-    doc.text(`This run recorded ${mm.length} finding(s).`, { width: CONTENT_W, lineGap: 2 });
-  }
-  doc.moveDown(0.35);
+  drawFolderTable(doc, customRows, true);
 
-  // Failures by reason — the most important section for a QA reader.
-  if (reasonGroups.length > 0) {
-    doc.font(F_BOLD).fontSize(11).fillColor('#334155').text('Failures by reason', { width: CONTENT_W });
-    doc.moveDown(0.2);
-    for (const g of reasonGroups) {
-      doc.x = contentLeft(doc);
-      doc.font(F_BOLD).fontSize(10).fillColor(MISMATCH_RED)
-        .text(`${g.count} × ${g.label}`, { width: CONTENT_W, lineGap: 2 });
-      doc.font(F_REGULAR).fontSize(9).fillColor('#475569')
-        .text(`Action: ${g.action}`, { width: CONTENT_W, lineGap: 2 });
-      if (g.sampleSubjects.length > 0) {
-        const more = g.count > g.sampleSubjects.length ? ` (+${g.count - g.sampleSubjects.length} more)` : '';
-        doc.font(F_REGULAR).fontSize(9).fillColor('#64748b')
-          .text(`Examples: ${g.sampleSubjects.join(' · ')}${more}`, { width: CONTENT_W, lineGap: 2 });
+  ensureSpace(doc, 34);
+  const ibY = doc.y;
+  doc.save().fillColor(C.infoBg).roundedRect(MARGIN, ibY, CONTENT_W, 26, 5).fill().restore();
+  doc.save().strokeColor(C.infoBorder).lineWidth(0.75).roundedRect(MARGIN, ibY, CONTENT_W, 26, 5).stroke().restore();
+  doc.fontSize(7.5).font(F_ITALIC).fillColor(C.info)
+    .text(
+      'Note: Custom folder counts are compared after label mapping. Nested folders (/) are shown with ↳ prefix.',
+      MARGIN + 8, ibY + 8, { width: CONTENT_W - 16 }
+    );
+  doc.y = ibY + 32;
+}
+
+// ── Section 5: Advisory warnings ─────────────────────────────────────────────
+// ── Section 5: Settings & Rules Validation (Outlook→Outlook only) ─────────────
+function drawSettingsValidationSection(doc, validation) {
+  const sv = validation?.settingsValidation;
+  if (!sv || !sv.available) return;
+
+  drawSectionHeader(doc, '5 — Mailbox Settings Validation');
+
+  // ── 3-column settings overview table ───────────────────────────────────────
+  const settings = [
+    { label: 'Inbox Rules',              src: sv.inboxRules.sourceCount,          dst: sv.inboxRules.destCount,          missing: sv.inboxRules.missing          },
+    { label: 'Conditional Formatting',   src: sv.conditionalFormatting.sourceCount, dst: sv.conditionalFormatting.destCount, missing: sv.conditionalFormatting.missing },
+    { label: 'Search Folders',           src: sv.searchFolders.sourceCount,       dst: sv.searchFolders.destCount,       missing: sv.searchFolders.missing       },
+  ];
+
+  const COL_LABEL = 180, COL_SRC = 90, COL_DST = 90, COL_STATUS = CONTENT_W - COL_LABEL - COL_SRC - COL_DST;
+  const ROW_H = 22;
+  ensureSpace(doc, (settings.length + 1) * ROW_H + 60);
+
+  // Header row
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, ROW_H).fill().restore();
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, y, CONTENT_W, ROW_H).stroke().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Setting',       MARGIN + 6,                              y + 6, { width: COL_LABEL - 6,  lineBreak: false });
+  doc.text('Source (QA)',   MARGIN + COL_LABEL,                      y + 6, { width: COL_SRC,        lineBreak: false });
+  doc.text('Destination',   MARGIN + COL_LABEL + COL_SRC,            y + 6, { width: COL_DST,        lineBreak: false });
+  doc.text('Status',        MARGIN + COL_LABEL + COL_SRC + COL_DST,  y + 6, { width: COL_STATUS - 6, lineBreak: false });
+  y += ROW_H;
+
+  for (const [i, row] of settings.entries()) {
+    const ok    = row.missing.length === 0;
+    const rowBg = ok ? (i % 2 === 0 ? '#ffffff' : '#f8fafc') : C.failBg;
+    doc.save().fillColor(rowBg).rect(MARGIN, y, CONTENT_W, ROW_H).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, y, CONTENT_W, ROW_H).stroke().restore();
+    if (!ok) {
+      doc.save().fillColor(C.fail).rect(MARGIN, y, 3, ROW_H).fill().restore();
+    }
+    const statusLabel = row.src === 0 ? 'N/A' : ok ? 'Migrated' : `${row.missing.length} Missing`;
+    const statusColor = row.src === 0 ? C.subtle : ok ? C.pass : C.fail;
+
+    doc.fontSize(8).font(F_REGULAR).fillColor(C.dark)
+      .text(row.label,      MARGIN + 6,                              y + 6, { width: COL_LABEL - 6,  lineBreak: false });
+    doc.fillColor(C.darkAlt)
+      .text(String(row.src), MARGIN + COL_LABEL,                     y + 6, { width: COL_SRC - 4,    lineBreak: false });
+    doc.text(String(row.dst), MARGIN + COL_LABEL + COL_SRC,          y + 6, { width: COL_DST - 4,    lineBreak: false });
+    doc.font(F_BOLD).fillColor(statusColor)
+      .text(statusLabel,    MARGIN + COL_LABEL + COL_SRC + COL_DST,  y + 6, { width: COL_STATUS - 6, lineBreak: false });
+    y += ROW_H;
+
+    if (row.missing.length > 0) {
+      for (const name of row.missing) {
+        ensureSpace(doc, 16);
+        const my = doc.y;
+        doc.save().fillColor('#fff5f5').rect(MARGIN, my, CONTENT_W, 15).fill().restore();
+        doc.save().fillColor(C.fail).rect(MARGIN, my, 3, 15).fill().restore();
+        doc.fontSize(7).font(F_ITALIC).fillColor(C.fail)
+          .text(`Missing: ${name}`, MARGIN + 10, my + 3, { width: CONTENT_W - 16, lineBreak: false });
+        doc.y = my + 15;
+        y = doc.y;
       }
-      doc.moveDown(0.25);
     }
   }
+  doc.y = y;
+  doc.moveDown(0.8);
 
-  if (deep?.enabled) {
-    doc.moveDown(0.1);
-    doc.font(F_BOLD).fontSize(10).fillColor('#475569').text('Deep mail validation', { continued: false });
-    doc.moveDown(0.15);
-    doc.font(F_REGULAR).fontSize(10).fillColor('#0f172a');
-    if (deep.summary) {
-      doc.text(deep.summary, { width: CONTENT_W, lineGap: 2 });
-      doc.moveDown(0.25);
-    }
-    drawMetadataTableCompact(doc, [
-      ['Messages scanned (source)', String(deep.scannedSourceMessages ?? '—')],
-      ['Paired (source → destination)', String(deep.pairedCount ?? '—')],
-      ['Deep mail failures', String(mm.filter((m) => m.category === 'deepMail').length)],
-    ]);
+  // ── Mailbox checks (section emails) ────────────────────────────────────────
+  doc.fontSize(9).font(F_BOLD).fillColor(C.dark).text('Test Email Verification', MARGIN, doc.y);
+  doc.moveDown(0.3);
+
+  const checks = Object.values(sv.mailboxChecks || {});
+  if (checks.length === 0) {
+    doc.fontSize(8).font(F_ITALIC).fillColor(C.subtle).text('No mailbox checks available.', MARGIN, doc.y);
+    doc.moveDown(0.5);
+    return;
   }
 
+  const CHK_H = 22;
+  ensureSpace(doc, (checks.length + 1) * CHK_H + 10);
+  y = doc.y;
+
+  // Header
+  const CHK_LABEL = CONTENT_W - 80 - 80 - 80;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, CHK_H).fill().restore();
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, y, CONTENT_W, CHK_H).stroke().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Section',  MARGIN + 6,               y + 6, { width: CHK_LABEL - 6, lineBreak: false });
+  doc.text('Expected', MARGIN + CHK_LABEL,        y + 6, { width: 80 - 4,        lineBreak: false });
+  doc.text('Found',    MARGIN + CHK_LABEL + 80,   y + 6, { width: 80 - 4,        lineBreak: false });
+  doc.text('Status',   MARGIN + CHK_LABEL + 160,  y + 6, { width: 80 - 6,        lineBreak: false });
+  y += CHK_H;
+
+  for (const [i, chk] of checks.entries()) {
+    const pass  = chk.found >= chk.total;
+    const rowBg = pass ? (i % 2 === 0 ? '#ffffff' : '#f8fafc') : C.failBg;
+    doc.save().fillColor(rowBg).rect(MARGIN, y, CONTENT_W, CHK_H).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, y, CONTENT_W, CHK_H).stroke().restore();
+    if (!pass) {
+      doc.save().fillColor(C.fail).rect(MARGIN, y, 3, CHK_H).fill().restore();
+    }
+    const statusLabel = pass ? 'All Found' : `${chk.total - chk.found} Missing`;
+    const statusColor = pass ? C.pass : C.fail;
+
+    doc.fontSize(8).font(F_REGULAR).fillColor(C.dark)
+      .text(chk.label || '',          MARGIN + 6,              y + 6, { width: CHK_LABEL - 6, lineBreak: false });
+    doc.fillColor(C.darkAlt)
+      .text(String(chk.total),        MARGIN + CHK_LABEL,      y + 6, { width: 80 - 4,        lineBreak: false });
+    doc.text(String(chk.found),       MARGIN + CHK_LABEL + 80, y + 6, { width: 80 - 4,        lineBreak: false });
+    doc.font(F_BOLD).fillColor(statusColor)
+      .text(statusLabel,              MARGIN + CHK_LABEL + 160, y + 6, { width: 80 - 6,        lineBreak: false });
+    y += CHK_H;
+  }
+  doc.y = y;
+  doc.moveDown(0.6);
+}
+
+function drawAdvisoryWarnings(doc, validation) {
+  const { results } = normalizeDeepMailResultsForPdf(validation);
+  const warned = results.filter((r) => r.pass && (r.diffs || []).some((d) => d.ok === false));
+  if (warned.length === 0) return;
+
+  drawSectionHeader(doc, `6 — Advisory Warnings (${warned.length})`);
+  doc.fontSize(8).font(F_ITALIC).fillColor(C.subtle)
+    .text(
+      'These messages passed core validation but have informational differences that do not affect the overall pass/fail result.',
+      MARGIN, doc.y, { width: CONTENT_W, lineGap: 2 }
+    );
+  doc.moveDown(0.5);
+
+  for (const r of warned) {
+    const warnDiffs = (r.diffs || []).filter((d) => d.ok === false).slice(0, 5);
+    const itemH = 18 + warnDiffs.length * 16 + 6;
+    ensureSpace(doc, itemH + 8);
+
+    const y    = doc.y;
+    const subj = String(r.subject || '(no subject)').trim();
+
+    // Subject bar
+    doc.save().fillColor(C.warnBg).roundedRect(MARGIN, y, CONTENT_W, 18, 4).fill().restore();
+    doc.save().fillColor(C.warn).rect(MARGIN, y, 4, 18).fill().restore();
+    doc.fontSize(9).font(F_BOLD).fillColor(C.dark)
+      .text(subj, MARGIN + 10, y + 4, { width: CONTENT_W - 18, lineBreak: false });
+
+    // Diff rows
+    let dy = y + 20;
+    for (const d of warnDiffs) {
+      doc.save().fillColor('#fafafa').rect(MARGIN, dy, CONTENT_W, 15).fill().restore();
+      doc.save().strokeColor(C.border).lineWidth(0.3)
+        .rect(MARGIN, dy, CONTENT_W, 15).stroke().restore();
+      doc.save().fillColor(C.warn).rect(MARGIN, dy, 4, 15).fill().restore();
+
+      const fieldLabel = String(d.field || d.fieldKey || '');
+      const srcVal  = truncatePdfCell(d.expected || d.sourceExpected  || '—', 90);
+      const dstVal  = truncatePdfCell(d.actual   || d.destinationActual || '—', 90);
+      const midW = (CONTENT_W - 90) / 2 - 4;
+
+      doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt)
+        .text(fieldLabel, MARGIN + 8, dy + 3, { width: 84, lineBreak: false });
+      doc.font(F_REGULAR).fillColor(C.subtle)
+        .text(srcVal, MARGIN + 96, dy + 3, { width: midW, lineBreak: false });
+      doc.fillColor(C.muted)
+        .text('→', MARGIN + 96 + midW + 2, dy + 3, { width: 12, lineBreak: false });
+      doc.fillColor(C.warn)
+        .text(dstVal, MARGIN + 96 + midW + 16, dy + 3, { width: midW, lineBreak: false });
+
+      dy += 15;
+    }
+
+    doc.y = dy + 8;
+  }
+}
+
+// ── Section 6: Key issues (per-message failures) ──────────────────────────────
+function drawKeyIssues(doc, validation) {
+  const { results } = normalizeDeepMailResultsForPdf(validation);
+  const failed = results.filter((r) => !r.pass);
+
+  drawSectionHeader(doc, failed.length === 0 ? '7 — Key Issues' : `7 — Key Issues (${failed.length} failed)`);
+
+  if (failed.length === 0) {
+    ensureSpace(doc, 40);
+    const y = doc.y;
+    doc.save().fillColor(C.passBg).roundedRect(MARGIN, y, CONTENT_W, 32, 6).fill().restore();
+    doc.save().strokeColor(C.passBorder).lineWidth(1).roundedRect(MARGIN, y, CONTENT_W, 32, 6).stroke().restore();
+    doc.fontSize(10).font(F_BOLD).fillColor(C.pass)
+      .text('All scanned and paired messages passed deep field comparison.', MARGIN + 12, y + 10, { width: CONTENT_W - 24 });
+    doc.y = y + 38;
+    return;
+  }
+
+  doc.fontSize(8).font(F_ITALIC).fillColor(C.subtle)
+    .text('Each card shows a failed message with field-level diffs between source and destination.', MARGIN, doc.y, { width: CONTENT_W, lineGap: 2 });
+  doc.moveDown(0.4);
+
+  for (const r of failed) {
+    const reason    = classifyDeepMailReason(r);
+    const severity  = reason.severity || 'warning';
+    const accentCol = severity === 'critical' ? C.fail : severity === 'warning' ? C.warn : C.muted;
+    const tagBg     = severity === 'critical' ? C.failBg : severity === 'warning' ? C.warnBg : '#f1f5f9';
+    const tagFg     = severity === 'critical' ? C.fail   : severity === 'warning' ? C.warn   : C.subtle;
+    const subj = String(r.subject || '(no subject)').trim();
+    const ref  = truncateRef(r.internetMessageId || r.sourceMessageId || '—', 80);
+    const rows = structuredRowsForDeepPdfRow(r);
+
+    ensureSpace(doc, 80);
+
+    // Card header
+    const cardHdrH = 36;
+    const y = doc.y;
+    doc.save().fillColor('#fafafa').roundedRect(MARGIN, y, CONTENT_W, cardHdrH, 5).fill().restore();
+    doc.save().strokeColor(accentCol).lineWidth(1).roundedRect(MARGIN, y, CONTENT_W, cardHdrH, 5).stroke().restore();
+    doc.save().fillColor(accentCol).rect(MARGIN, y, 5, cardHdrH).fill().restore();
+
+    // Severity tag
+    const tagLabel = severity.toUpperCase();
+    const tagW     = 54;
+    doc.save().fillColor(tagBg).roundedRect(MARGIN + CONTENT_W - tagW - 10, y + 10, tagW, 14, 3).fill().restore();
+    doc.fontSize(7.5).font(F_BOLD).fillColor(tagFg)
+      .text(tagLabel, MARGIN + CONTENT_W - tagW - 10, y + 12, { width: tagW, align: 'center' });
+
+    doc.fontSize(9.5).font(F_BOLD).fillColor(C.dark)
+      .text(subj, MARGIN + 12, y + 7, { width: CONTENT_W - tagW - 30, lineBreak: false });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(ref,  MARGIN + 12, y + 22, { width: CONTENT_W - 24, lineBreak: false });
+
+    doc.y = y + cardHdrH;
+
+    // Field comparison rows
+    if (rows.length > 0) {
+      drawIssueFieldRows(doc, rows, accentCol);
+    } else {
+      const noteY = doc.y;
+      doc.save().fillColor(C.surface).roundedRect(MARGIN, noteY, CONTENT_W, 22, 5).fill().restore();
+      doc.save().strokeColor(accentCol).lineWidth(1).roundedRect(MARGIN, noteY, CONTENT_W, 22, 5).stroke().restore();
+      doc.save().fillColor(accentCol).rect(MARGIN, noteY, 5, 22).fill().restore();
+      doc.fontSize(8).font(F_ITALIC).fillColor(accentCol)
+        .text(String(r.note || 'No diff details recorded.'), MARGIN + 12, noteY + 5, { width: CONTENT_W - 22 });
+      doc.y = noteY + 28;
+    }
+
+    doc.moveDown(0.6);
+  }
+}
+
+function drawIssueFieldRows(doc, rows, accentColor) {
+  const FIELD_W = 90;
+  const SRC_W   = Math.floor((CONTENT_W - FIELD_W) / 2) - 2;
+  const DST_W   = SRC_W;
+
+  // Sub-table header
+  ensureSpace(doc, 20);
+  let y = doc.y;
+  doc.save().fillColor('#f8fafc').rect(MARGIN, y, CONTENT_W, 18).fill().restore();
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, y, CONTENT_W, 18).stroke().restore();
+  doc.save().fillColor(accentColor).rect(MARGIN, y, 5, 18).fill().restore();
+  doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Field',       MARGIN + 8,              y + 4, { width: FIELD_W - 10, lineBreak: false });
+  doc.text('Source',      MARGIN + FIELD_W + 4,    y + 4, { width: SRC_W  - 8,  lineBreak: false });
+  doc.text('Destination', MARGIN + FIELD_W + SRC_W + 4, y + 4, { width: DST_W - 8, lineBreak: false });
+  y += 18;
+  doc.y = y;
+
+  for (const row of rows) {
+    const sev   = row.severity || 'error';
+    const valCol = sev === 'error' ? C.fail : sev === 'warning' ? C.warn : C.text;
+    const bodyMax = String(row.fieldLabel || row.fieldKey || '') === 'Body' ? 2200 : 950;
+    const fld  = String(row.fieldLabel || row.fieldKey || '');
+    const srcT = truncatePdfCell(row.sourceExpected,    bodyMax);
+    const dstT = truncatePdfCell(row.destinationActual, bodyMax);
+
+    doc.fontSize(8);
+    let maxH = 12;
+    maxH = Math.max(maxH,
+      doc.heightOfString(fld,  { width: FIELD_W - 10 }),
+      doc.heightOfString(srcT, { width: SRC_W   - 8  }),
+      doc.heightOfString(dstT, { width: DST_W   - 8  })
+    );
+    const rowH = maxH + 10;
+
+    ensureSpace(doc, rowH + 2);
+    y = doc.y;
+
+    doc.save().fillColor(C.surface).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.35).rect(MARGIN, y, CONTENT_W, rowH).stroke().restore();
+    doc.save().fillColor(accentColor).rect(MARGIN, y, 5, rowH).fill().restore();
+
+    doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt)
+      .text(fld, MARGIN + 8, y + 5, { width: FIELD_W - 10, lineGap: 1 });
+    doc.fontSize(8).font(F_REGULAR).fillColor(valCol)
+      .text(srcT, MARGIN + FIELD_W + 4, y + 5, { width: SRC_W - 8, lineGap: 1 });
+    doc.fillColor(valCol)
+      .text(dstT, MARGIN + FIELD_W + SRC_W + 4, y + 5, { width: DST_W - 8, lineGap: 1 });
+
+    y += rowH;
+    doc.y = y;
+  }
+
+  // Close border around entire card body
+  doc.moveDown(0.2);
+}
+
+// ── Footer ────────────────────────────────────────────────────────────────────
+function drawFooter(doc, context) {
+  ensureSpace(doc, 50);
+  doc.moveDown(1);
+  hRule(doc, doc.y, '#cbd5e1');
   doc.moveDown(0.35);
-
-  const hintLines = [];
-  if ((counts.infrastructure || 0) > 0) {
-    hintLines.push(
-      '• Network/API errors may clear after connectivity stabilizes — not migration logic defects by themselves.'
-    );
+  const y = doc.y;
+  doc.fontSize(8).font(F_REGULAR).fillColor(C.muted)
+    .text('CloudFuze QA Agent  •  v1.0', MARGIN, y);
+  if (context?.runBy) {
+    doc.text(`Run by: ${context.runBy}`, MARGIN, y + 13);
   }
-  if ((counts.attachment || 0) > 0) {
-    hintLines.push(
-      '• Attachment size differences often reflect MIME wrapping or transport; use Tier B hash validation for byte-level proof.'
-    );
-  }
-  if (hintLines.length > 0) {
-    doc.fontSize(9).font(F_REGULAR).fillColor('#64748b');
-    doc.text(hintLines.join('\n'), { width: CONTENT_W, lineGap: 3 });
-    doc.moveDown(0.35);
-  }
+  doc.text(`Generated: ${formatTimestamp(new Date())}`, MARGIN + CONTENT_W - 200, y, { width: 200, align: 'right' });
 }
 
-/**
- * Grouped detail tables (excludes duplicate comparison rows when Comparison issues table exists).
- * Deep-mail rows are omitted when per-message failure tables are shown below (same content, richer there).
- */
-function drawDetailedFindings(doc, validation) {
-  const issues = validation.comparison?.issues || [];
-  const { results: deepResults } = normalizeDeepMailResultsForPdf(validation);
-  const showRichDeep = deepResults.some((r) => !r.pass);
-
-  let rows = [...(validation.mismatches || [])];
-  if (showRichDeep) {
-    rows = rows.filter((m) => m.category !== 'deepMail');
-  }
-  if (issues.length > 0) {
-    rows = rows.filter((m) => m.category !== 'comparison');
-  }
-
-  if (rows.length === 0) return;
-
-  drawSectionHeader(doc, `Detailed findings (${rows.length})`);
-
-  const byKind = {};
-  for (const m of rows) {
-    const k = inferMismatchKind(m);
-    if (!byKind[k]) byKind[k] = [];
-    byKind[k].push(m);
-  }
-
-  for (const kind of GROUP_ORDER) {
-    const group = byKind[kind];
-    if (!group?.length) continue;
-
-    doc.x = contentLeft(doc);
-    doc.fontSize(11).font(F_BOLD).fillColor('#334155').text(GROUP_SECTION_TITLE[kind] || kind);
-    doc.moveDown(0.25);
-
-    const tableRows = group.map((m) => {
-      const ref = truncateRef(m.field || '—', 56);
-      const detail = String(m.actual || m.summaryLine || '—').trim();
-      const typeCol = m.kindLabel || GROUP_SECTION_TITLE[kind] || kind;
-      return [typeCol, ref, detail];
-    });
-
-    const cw = [118, 128, CONTENT_W - 118 - 128];
-    drawDataTable(doc, ['Issue type', 'Message / reference', 'What was wrong'], tableRows, cw);
-    doc.moveDown(0.25);
-  }
-}
-
+// ── Main export ───────────────────────────────────────────────────────────────
 function generateValidationPdf(execution, stream) {
   const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
   registerUnicodeFonts(doc);
@@ -803,373 +912,37 @@ function generateValidationPdf(execution, stream) {
   const result = execution.result;
   let validation = result?.validationSummary;
   if (!validation && result?.agentResults) {
-    const outlook = result.agentResults.find((a) => a.name === 'OutlookValidationAgent');
-    validation = outlook?.result || null;
+    const agent = result.agentResults.find((a) => a.name === 'OutlookValidationAgent');
+    validation = agent?.result || null;
   }
-  if (validation) {
-    validation = buildPdfValidationView(validation);
-  }
+  if (validation) validation = buildPdfValidationView(validation);
   const context = execution.context;
 
-  doc.fontSize(22).font(F_BOLD).fillColor('#0f172a').text('Migration QA Validation Report', MARGIN, 50, {
-    width: CONTENT_W,
-    align: 'center',
-  });
-  doc.moveDown(0.3);
-  doc.fontSize(10).font(F_REGULAR).fillColor('#64748b').text(`Generated: ${formatTimestamp(new Date())}`, {
-    width: CONTENT_W,
-    align: 'center',
-  });
-  doc.x = MARGIN;
-  doc.moveDown(1.2);
-
-  drawSectionHeader(doc, 'Execution details');
-  const mapN = context?.csvPairsUploaded
-    || (Array.isArray(context?.userEmailMappings) ? context.userEmailMappings.length : 0);
-  drawMetadataTable(doc, [
-    ['Execution ID', execution.executionId],
-    ['Source email', context?.sourceEmail || 'N/A'],
-    ['Destination email', context?.destinationEmail || 'N/A'],
-    ['Test type', context?.testType || 'E2E'],
-    ['Migration type', context?.migrationType === 'DELTA' ? 'DELTA (delta)' : 'FULL (one-time)'],
-    ['Calendar scope', context?.includeCalendar ? 'Included' : 'Skipped'],
-    ['Contacts scope', context?.includeContacts ? 'Included' : 'Skipped'],
-    ['Permission mappings (pairs)', mapN > 0 ? String(mapN) : 'None'],
-    ['Run status', result?.status || 'N/A'],
-    ['Duration', result?.duration != null ? formatDurationMs(result.duration) : 'N/A'],
-    ['Started', formatTimestamp(execution.createdAt)],
-  ]);
-
-  // ── CloudFuze migration job details (shown right after Execution details) ──
-  const migJob = context?.migrationJobDetails;
-  if (migJob) {
-    drawSectionHeader(doc, 'CloudFuze migration job');
-    const cfStatusRaw = String(migJob.cfStatus || '—');
-    const cfStatusDisplay = cfStatusRaw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-    const totalCount = migJob.totalCount != null ? Number(migJob.totalCount) : null;
-    const processedCount = migJob.processedCount != null ? Number(migJob.processedCount) : null;
-    const pct = totalCount > 0 && processedCount != null
-      ? `${processedCount}/${totalCount} (${Math.round((processedCount / totalCount) * 100)}%)`
-      : '—';
-    const unprocessed = totalCount != null && processedCount != null && totalCount > processedCount
-      ? String(totalCount - processedCount) : '—';
-    const jobRows = [
-      ['Workspace ID',              migJob.workspaceId    || '—'],
-      ['Job ID',                    migJob.jobId          || context?.jobId || '—'],
-      ['CloudFuze status',          cfStatusDisplay],
-      ['Source email',              context?.sourceEmail  || '—'],
-      ['Destination email',         context?.destinationEmail || '—'],
-      ['Total count (server)',       totalCount     != null ? String(totalCount)     : '—'],
-      ['Processed count (server)',   processedCount != null ? String(processedCount) : '—'],
-      ['Migration progress',         pct],
-      ['Unprocessed / conflicts',    unprocessed],
-    ];
-    if (migJob.deltaRetry) {
-      const dr = migJob.deltaRetry;
-      if (dr.error) {
-        jobRows.push(['Delta retry', `Failed: ${dr.error}`]);
-      } else {
-        const drPct = dr.totalCount > 0 && dr.processedCount != null
-          ? `${dr.processedCount}/${dr.totalCount} (${Math.round((dr.processedCount / dr.totalCount) * 100)}%)`
-          : '—';
-        jobRows.push(['Delta retry status',   String(dr.status || '—').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())]);
-        jobRows.push(['Delta retry progress', drPct]);
-      }
-    }
-    drawDataTable(doc, ['Metric', 'Value'], jobRows, [200, CONTENT_W - 200]);
-    doc.moveDown(0.2);
-  }
-
-  drawSectionHeader(doc, 'Overall status');
-  doc.x = contentLeft(doc);
-  const statusColor = validation?.overallStatus === 'PASS' ? '#15803d' : '#b91c1c';
-  doc.fontSize(16).font(F_BOLD).fillColor(statusColor).text(validation?.overallStatus || 'N/A');
-  doc.moveDown(0.4);
-
-  if (validation?.comparison) {
-    const c = validation.comparison;
-    doc.x = contentLeft(doc);
-    doc.fontSize(10).font(F_REGULAR).fillColor('#334155');
-    doc.text(
-      `Default labels / folders: ${c.defaultLabelsMatch ? 'Match' : 'Mismatch'}  —  Custom labels / folders: ${c.customLabelsMatch ? 'Match' : 'Mismatch'}`,
-      { width: CONTENT_W }
-    );
-    doc.moveDown(0.45);
-  } else if (validation) {
-    doc.moveDown(0.35);
-  }
-
-  // ── Pre-migration source snapshot ───────────────────────────────
-  const snapshot = context?.preMigrationSnapshot;
-  if (snapshot?.folders?.length > 0) {
-    drawSectionHeader(doc, 'Pre-migration source snapshot');
-    doc.x = contentLeft(doc);
-    doc.fontSize(9).font(F_REGULAR).fillColor('#64748b').text(
-      `Captured at ${formatTimestamp(snapshot.timestamp)} — ${snapshot.totalFolders} folders, ` +
-      `${snapshot.totalMessages} total messages before migration started.`,
-      { width: CONTENT_W, lineGap: 2 }
-    );
-    doc.moveDown(0.3);
-    const snapRows = snapshot.folders.map((f) => [
-      f.name,
-      String(f.messageCount),
-      f.childFolderCount > 0 ? String(f.childFolderCount) : '—',
-    ]);
-    drawDataTable(doc, ['Folder', 'Messages', 'Sub-folders'], snapRows, [260, 80, 80 + (CONTENT_W - 420)]);
-    doc.moveDown(0.2);
-  }
-
-  if (validation) {
-    drawReportAtAGlance(doc, validation, context);
-  }
+  drawPageHeader(doc, execution, validation, context, result);
 
   if (!validation) {
-    doc.x = contentLeft(doc);
-    doc.fontSize(10).font(F_REGULAR).fillColor('#64748b').text('No validation data available.');
+    doc.fontSize(10).font(F_REGULAR).fillColor(C.subtle)
+      .text('No validation data is available for this execution.', MARGIN, doc.y, { width: CONTENT_W });
+    drawFooter(doc, context);
     doc.end();
     return;
   }
 
-  const mail = validation.mailValidation;
-  const cal = validation.calendarValidation;
-  const includeCalendar = context?.includeCalendar !== false;
-  const colDefault = [200, 72, 72, 95];
+  drawMigrationJobSection(doc, context);
+  drawSummarySection(doc, validation, context, result);
+  drawFailureBreakdown(doc, validation);
 
   if (validation.sourceData && validation.destinationData) {
-    drawSectionHeader(doc, 'Default labels vs folders');
-    const defaultRows = buildComparisonRows(
-      validation.sourceData.defaultLabels || [],
-      validation.destinationData.defaultFolders || [],
-      { INBOX: 'Inbox', SENT: 'Sent Items', DRAFT: 'Drafts', TRASH: 'Deleted Items', SPAM: 'Junk Email' }
-    );
-    drawDataTable(doc, ['Label / folder', 'Source', 'Destination', 'Status'], defaultRows, colDefault);
-
-    drawSectionHeader(doc, 'Custom labels vs folders');
-    const customRows = [];
-    for (const src of validation.sourceData.customLabels || []) {
-      const dest = findDestCustomFolder(validation.destinationData.customFolders || [], src.name);
-      const match = dest ? src.messageCount === dest.messageCount : false;
-      customRows.push([
-        src.name,
-        String(src.messageCount),
-        dest ? String(dest.messageCount) : '—',
-        dest ? statusLabel(match) : 'NOT FOUND',
-      ]);
-    }
-    if (customRows.length > 0) {
-      drawDataTable(doc, ['Label / folder', 'Source', 'Destination', 'Status'], customRows, colDefault);
-    } else {
-      doc.x = contentLeft(doc);
-      doc.fontSize(10).font(F_REGULAR).fillColor('#64748b').text('No custom labels on source.');
-      doc.moveDown(0.35);
-    }
+    drawDefaultFolderMapping(doc, validation);
+    drawCustomFolderMapping(doc, validation);
   }
 
-  /**
-   * 3-column table (metric | source | destination) that matches the **same scope** as the
-   * Default- and Custom-folder comparison tables above. If all per-folder rows match, this
-   * summary matches too (row-level Match == table-level Match).
-   *
-   * Earlier version mixed aggregations (Gmail getProfile.messagesTotal vs
-   * sum-of-all-Outlook-folders) which produced 69 vs 81 even when all per-folder rows
-   * showed Match. That inconsistency is fixed below by using:
-   *
-   *   Mail count  = Σ(mapped-default labels/folders counts) + Σ(custom counts)
-   *   Labels count = 5 mapped defaults + custom count on each side
-   *
-   * The mailbox-wide totals (Gmail messagesTotal, Outlook all-folders sum) are still useful
-   * and are surfaced as a footnote so nothing is lost — just not the primary comparison
-   * number.
-   */
-  if (mail) {
-    const MAPPED_DEFAULTS = ['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM'];
-    const MAPPED_OUTLOOK = new Set(['Inbox', 'Sent Items', 'Drafts', 'Deleted Items', 'Junk Email']);
-
-    const srcDefaults = validation.sourceData?.defaultLabels || [];
-    const srcCustoms  = validation.sourceData?.customLabels  || [];
-    const dstDefaults = validation.destinationData?.defaultFolders || [];
-    const dstCustoms  = validation.destinationData?.customFolders  || [];
-
-    const MAPPED_GMAIL_IDS = new Set(['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM']);
-    const isMappedSrcDefault = (l) =>
-      MAPPED_DEFAULTS.includes(String(l.id ?? l.name ?? '').toUpperCase());
-    const isMappedDstDefault = (f) =>
-      MAPPED_OUTLOOK.has(String(f.name ?? '')) || MAPPED_GMAIL_IDS.has(String(f.name ?? ''));
-
-    const srcDefaultCount = srcDefaults.filter(isMappedSrcDefault)
-      .reduce((s, l) => s + (l.messageCount || 0), 0);
-    const srcCustomCount = srcCustoms.reduce((s, l) => s + (l.messageCount || 0), 0);
-    const srcMail = srcDefaultCount + srcCustomCount;
-
-    const dstDefaultCount = dstDefaults.filter(isMappedDstDefault)
-      .reduce((s, f) => s + (f.messageCount || 0), 0);
-    const dstCustomCount = dstCustoms.reduce((s, f) => s + (f.messageCount || 0), 0);
-    const dstMail = dstDefaultCount + dstCustomCount;
-
-    const srcLabelsFolders =
-      srcDefaults.filter(isMappedSrcDefault).length + srcCustoms.length;
-    const dstLabelsFolders =
-      dstDefaults.filter(isMappedDstDefault).length + dstCustoms.length;
-
-    const srcCalendars =
-      validation.calendarValidation?.sourceCalendarCount
-      ?? ((validation.calendarValidation?.secondaryCalendars?.length || 0) + 1);
-    const dstCalendars =
-      validation.calendarValidation?.destinationCalendarCount
-      ?? ((validation.calendarValidation?.secondaryCalendars?.length || 0) + 1);
-    const srcContacts = validation.contactsValidation?.sourceCount ?? 0;
-    const dstContacts = validation.contactsValidation?.destinationCount ?? 0;
-
-    const mailMatch = srcMail === dstMail;
-    const labelMatch = srcLabelsFolders === dstLabelsFolders;
-    const calendarMatch = Number(srcCalendars) === Number(dstCalendars);
-    const contactsMatch = Number(srcContacts) === Number(dstContacts);
-    // Contacts row is only a real "Match" when we actually measured both sides. A 0/0 row with
-    // available=false is really "Not measured" — surfacing it as "Match" is misleading.
-    const contactsMeasured = validation.contactsValidation?.available !== false;
-    const contactsStatus = !contactsMeasured
-      ? 'Not measured'
-      : statusLabel(contactsMatch);
-
-    doc.moveDown(0.2);
-    drawSectionHeader(doc, 'Mail validation summary');
-    const summaryRows = [
-      ['Mail count', String(srcMail), String(dstMail), statusLabel(mailMatch)],
-      ['Labels / folders count', String(srcLabelsFolders), String(dstLabelsFolders), statusLabel(labelMatch)],
-    ];
-    if (includeCalendar) {
-      summaryRows.push([
-        'Calendars count',
-        String(srcCalendars),
-        String(dstCalendars),
-        statusLabel(calendarMatch),
-      ]);
-    }
-    summaryRows.push([
-      'Contacts count',
-      String(srcContacts),
-      String(dstContacts),
-      contactsStatus,
-    ]);
-
-    const msv = validation.mailboxSizeValidation;
-    if (msv && msv.available !== false) {
-      summaryRows.push([
-        'Mailbox size',
-        msv.sourceSizeHuman ?? '—',
-        msv.destSizeHuman ?? '—',
-        msv.statusLabel ?? '—',
-      ]);
-    }
-
-    drawDataTable(
-      doc,
-      ['Metric', 'Source', 'Destination', 'Status'],
-      summaryRows,
-      [180, 70, 70, 115]
-    );
-
-    const mailboxSrc = Number(mail.sourceCount ?? 0);
-    const mailboxDst = Number(mail.destinationCount ?? 0);
-    if (mailboxSrc || mailboxDst) {
-      const isOtgDir = context?.sourceProvider === 'microsoft';
-      const srcDesc = isOtgDir
-        ? 'sum of source Outlook folders (including system folders like Archive)'
-        : 'Gmail getProfile.messagesTotal — unique message count after label overlap';
-      const dstDesc = isOtgDir
-        ? 'Gmail getProfile.messagesTotal — unique message count after label overlap'
-        : 'sum of every Outlook folder, including Archive/Conversation History/Scheduled';
-      const diffNote = isOtgDir
-        ? 'A difference is expected when emails land in Gmail All Mail without the INBOX label, or when Outlook carries extra system folders not included in the compared scope.'
-        : 'A difference is expected: Gmail messages with multiple labels count once in messagesTotal but once per folder after migration; Outlook carries extra system folders (e.g. Archive) that Gmail does not.';
-      doc.x = contentLeft(doc);
-      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
-        `Note: "Mail count" above is the sum across compared folders (Inbox/Sent Items/Drafts/Deleted Items/Junk Email + custom). ` +
-        `Mailbox-wide totals (for reference): source=${mailboxSrc} (${srcDesc}), ` +
-        `destination=${mailboxDst} (${dstDesc}). ${diffNote}`,
-        { width: CONTENT_W, lineGap: 1 }
-      );
-      doc.moveDown(0.15);
-    }
-
-    if (validation.contactsValidation && validation.contactsValidation.available === false) {
-      doc.x = contentLeft(doc);
-      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
-        'Contacts count shown as 0 because the source OAuth token lacks the contacts.readonly scope, or the Graph /me/contacts endpoint is inaccessible. Grant the scope to include this row.',
-        { width: CONTENT_W, lineGap: 1 }
-      );
-      doc.moveDown(0.2);
-    }
-
-    if (msv && msv.available !== false && msv.note) {
-      doc.x = contentLeft(doc);
-      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
-        `Mailbox size note: ${msv.note}` +
-        (msv.srcMethod ? ` Source method: ${msv.srcMethod}.` : '') +
-        (msv.dstMethod ? ` Destination method: ${msv.dstMethod}.` : '') +
-        ((msv.sourceMessageCount != null && msv.destMessageCount != null)
-          ? ` Messages measured: src=${msv.sourceMessageCount}, dst=${msv.destMessageCount}.` : ''),
-        { width: CONTENT_W, lineGap: 1 }
-      );
-      doc.moveDown(0.2);
-    } else if (msv && msv.available === false) {
-      doc.x = contentLeft(doc);
-      doc.fontSize(8).font(F_ITALIC).fillColor('#64748b').text(
-        `Mailbox size could not be measured: ${msv.error || 'unknown error'}.`,
-        { width: CONTENT_W, lineGap: 1 }
-      );
-      doc.moveDown(0.2);
-    }
-
-    if (includeCalendar && cal) {
-      doc.moveDown(0.15);
-      drawSectionHeader(doc, 'Calendar validation (details)');
-      drawMetadataTableCompact(doc, [
-        ['Total events (source)', String(cal.sourceEventCount ?? 0)],
-        ['Total events (destination)', String(cal.destinationEventCount ?? 0)],
-        ['Recurring (sampled)', String(cal.recurringEvents?.length || 0)],
-        ['Secondary calendars', String(cal.secondaryCalendars?.length || 0)],
-      ]);
-    }
-    doc.moveDown(0.2);
-  }
-
-  const issues = validation.comparison?.issues || [];
-  if (issues.length > 0) {
-    drawSectionHeader(doc, `Comparison issues (${issues.length})`);
-    const issueRows = issues.map((issue) => [
-      issue.label || issue.type || '—',
-      String(issue.sourceCount ?? '—'),
-      String(issue.destCount ?? '—'),
-      'Mismatch',
-    ]);
-    drawDataTable(doc, ['Mapping', 'Source count', 'Dest count', 'Status'], issueRows, colDefault);
-  }
-
-  drawDeepMailPerMessageSection(doc, validation);
-
-  if (validation.mismatches?.length > 0) {
-    drawDetailedFindings(doc, validation);
-  }
+  drawSettingsValidationSection(doc, validation);
+  drawAdvisoryWarnings(doc, validation);
+  drawKeyIssues(doc, validation);
+  drawFooter(doc, context);
 
   doc.end();
-}
-
-function buildComparisonRows(sourceLabels, destFolders, mapping) {
-  const rows = [];
-  for (const [gmailId, outlookName] of Object.entries(mapping)) {
-    const src = sourceLabels.find((l) => l.id === gmailId || l.name === gmailId);
-    const dest = destFolders.find((f) => f.name === outlookName || f.name === gmailId);
-    const srcCount = src?.messageCount ?? 0;
-    const destCount = dest?.messageCount ?? 0;
-    const match = srcCount === destCount;
-    // TRASH accumulates deleted items over time — destCount > srcCount is expected, not a bug
-    const statusText = (!match && gmailId === 'TRASH' && destCount > srcCount)
-      ? 'Accumulated'
-      : statusLabel(match);
-    rows.push([`${gmailId} → ${outlookName}`, String(srcCount), String(destCount), statusText]);
-  }
-  return rows;
 }
 
 module.exports = { generateValidationPdf };

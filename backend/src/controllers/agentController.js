@@ -751,6 +751,21 @@ async function createOutlookData(req, res) {
     setImmediate(async () => {
       const agent = new OutlookTestDataAgent();
       try {
+        executionService.update(context.executionId, {
+          currentAgent: 'CleanupAgent',
+          progress: 'CleanupAgent: cleaning source mailbox before test data creation…',
+        });
+        const CleanupAgent = require('../agents/cleanup/CleanupAgent');
+        const cleanupAgent = new CleanupAgent();
+        await cleanupAgent.run({ ...context, destinationEmail: null });
+      } catch (cleanErr) {
+        logger.warn(`createOutlookData: cleanup warning (non-blocking): ${cleanErr.message}`);
+      }
+      executionService.update(context.executionId, {
+        currentAgent: 'OutlookTestDataAgent',
+        progress: 'OutlookTestDataAgent: listing folders, provisioning test mail data…',
+      });
+      try {
         const result = await agent.run(context);
         executionService.update(context.executionId, {
           status: 'COMPLETED',
@@ -822,6 +837,23 @@ async function createTestData(req, res) {
 
     setImmediate(async () => {
       const agent = new AgentClass();
+      try {
+        executionService.update(context.executionId, {
+          currentAgent: 'CleanupAgent',
+          progress: 'CleanupAgent: cleaning source mailbox before test data creation…',
+        });
+        const CleanupAgent = require('../agents/cleanup/CleanupAgent');
+        const cleanupAgent = new CleanupAgent();
+        await cleanupAgent.run({ ...context, destinationEmail: null });
+      } catch (cleanErr) {
+        logger.warn(`createTestData: cleanup warning (non-blocking): ${cleanErr.message}`);
+      }
+      executionService.update(context.executionId, {
+        currentAgent: agentName,
+        progress: isOutlook
+          ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
+          : 'GmailTestDataAgent: creating labels, mail, drafts…',
+      });
       try {
         const result = await agent.run(context);
         executionService.update(context.executionId, {

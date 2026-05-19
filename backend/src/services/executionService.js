@@ -28,6 +28,22 @@ function saveExecutions(executions) {
 
 const executions = loadExecutions();
 
+// On startup: any execution still marked RUNNING or PENDING was orphaned by a server
+// restart/crash — the background job is dead, so mark them as FAILED immediately.
+let _orphansFixed = false;
+for (const exec of executions.values()) {
+  if (exec.status === 'RUNNING' || exec.status === 'PENDING') {
+    Object.assign(exec, {
+      status: 'FAILED',
+      error: 'Server restarted while execution was in progress',
+      progress: 'Interrupted — server was restarted',
+      completedAt: new Date().toISOString(),
+    });
+    _orphansFixed = true;
+  }
+}
+if (_orphansFixed) saveExecutions(executions);
+
 // In-memory only — not persisted (if server restarts, running jobs are already dead)
 const cancelledIds = new Set();
 

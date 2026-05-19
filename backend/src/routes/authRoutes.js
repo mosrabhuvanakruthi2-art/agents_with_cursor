@@ -23,7 +23,7 @@ const router = express.Router();
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
-const BACKEND_BASE = `http://localhost:${env.PORT || 5000}`;
+const BACKEND_BASE = process.env.BACKEND_BASE || `http://localhost:${env.PORT || 5000}`;
 
 function googleOAuthClient(tenant) {
   let clientId, clientSecret;

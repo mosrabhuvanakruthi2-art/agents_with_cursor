@@ -1658,68 +1658,121 @@ class OutlookTestDataAgent extends BaseAgent {
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
-    // ── 24. Inbox forwarding rule test ──────────────────────────────────────
-    // Creates an Outlook inbox rule so that emails FROM a specific sender are
-    // automatically delivered into QA-Forwarding-Rule-Folder (no manual move).
-    // This tests that Outlook inbox-rule routing survives migration.
+    // ── 24. Inbox forwarding rule tests (two cases) ─────────────────────────
+    // Case A: rule routes a sender to a NEWLY CREATED folder (simulates "Create new folder"
+    //         in Outlook's rule UI). Folder name includes the sender name.
+    // Case B: rule routes a different sender to an ALREADY EXISTING custom folder
+    //         (simulates "Move to a different folder…" → select existing folder).
+    // Both rules use "From: <sender>" as the condition.
     // Requires MailboxSettings.ReadWrite application permission on the Azure AD app.
-    log.info('E2E: creating inbox forwarding rule test…');
-    try {
-      const ruleFolderId  = await outlookClient.getOrCreateMailFolder(userEmail, 'QA-Forwarding-Rule-Folder');
-      // Use the last sender in the rotation as the dedicated rule-trigger sender
-      // so it doesn't conflict with externalSender used in earlier sections.
-      const ruleSenderRaw = senderRotation.length > 0
-        ? senderRotation[senderRotation.length - 1]
-        : FALLBACK_EXTERNAL_SENDERS[FALLBACK_EXTERNAL_SENDERS.length - 1];
-      const ruleSender    = toSenderObject(ruleSenderRaw);
 
-      // Graph API uses "fromAddresses" (not "from") for the sender-filter predicate.
-      const createdRule = await outlookClient.createInboxRule(userEmail, {
-        displayName:  'QA - Forwarding Rule: route sender to custom folder',
+    // Pick last two senders from the rotation as dedicated rule-trigger senders
+    // so they don't conflict with senders used in earlier sections.
+    const fallback = FALLBACK_EXTERNAL_SENDERS;
+    const ruleRotation = senderRotation.length >= 2 ? senderRotation : fallback;
+    const ruleSenderA = toSenderObject(ruleRotation[ruleRotation.length - 1]);       // Ron (new folder)
+    const ruleSenderB = toSenderObject(ruleRotation[ruleRotation.length >= 2 ? ruleRotation.length - 2 : 0]); // Dan (existing folder)
+    const senderAName = (ruleSenderA.name || ruleSenderA.address.split('@')[0]).replace(/\s+/g, '-');
+    const senderBName = (ruleSenderB.name || ruleSenderB.address.split('@')[0]).replace(/\s+/g, '-');
+
+    // ── 24-A: new folder created specifically for the rule ───────────────────
+    log.info(`E2E: creating forwarding rule 24-A — route ${senderAName} to new folder…`);
+    try {
+      const newFolderName = `QA-Forwarding-Rule-From-${senderAName}`;
+      const newFolderId   = await outlookClient.getOrCreateMailFolder(userEmail, newFolderName);
+
+      const ruleA = await outlookClient.createInboxRule(userEmail, {
+        displayName:  `QA - Forwarding Rule: route ${senderAName} to new folder`,
         sequence:     100,
         isEnabled:    true,
-        conditions: {
-          fromAddresses: [{ emailAddress: { address: ruleSender.address, name: ruleSender.name } }],
-        },
-        actions: {
-          moveToFolder:       ruleFolderId,
-          stopProcessingRules: true,
-        },
+        conditions:   { fromAddresses: [{ emailAddress: { address: ruleSenderA.address, name: ruleSenderA.name } }] },
+        actions:      { moveToFolder: newFolderId, stopProcessingRules: true },
       });
-      log.info(`✓ Inbox rule created: "${createdRule.displayName}" (id: ${createdRule.id})`);
-      if (!summary.foldersPopulated.includes('QA-Forwarding-Rule-Folder')) {
-        summary.foldersPopulated.push('QA-Forwarding-Rule-Folder');
-      }
+      log.info(`✓ Rule 24-A created: "${ruleA.displayName}" → ${newFolderName}`);
+      if (!summary.foldersPopulated.includes(newFolderName)) summary.foldersPopulated.push(newFolderName);
 
-      // Insert forwarding rule test emails directly into the target folder via Graph POST.
-      // This avoids actual Exchange transport (which would put emails in ruleSender's mailbox).
-      const fwdMessages = [
-        { subject: 'QA E2E 24 - Forwarding Rule Email 1', body: 'Email routed by Outlook inbox rule — plain text migration QA.',                                 isRead: true  },
-        { subject: 'QA E2E 24 - Forwarding Rule Email 2', body: 'Second email routed by inbox rule — tests multiple messages in rule folder.',                    isRead: false },
-        { subject: 'QA E2E 24 - Forwarding Rule Email 3', body: 'Third email routed by inbox rule — tests unread state in rule-routed folder.',                   isRead: false },
-        { subject: 'QA E2E 24 - Forwarding Rule HTML',    body: '<html><body><p>HTML email routed by inbox rule — tests HTML content in forwarded folder.</p></body></html>', isRead: false, html: true },
+      const fwdMsgsA = [
+        { subject: `QA E2E 24A - ${senderAName} Routed Email 1`, body: `Email from ${senderAName} routed to new folder by Outlook inbox rule — migration QA.`,            isRead: true  },
+        { subject: `QA E2E 24A - ${senderAName} Routed Email 2`, body: `Second email from ${senderAName} in new rule folder — tests multiple messages after rule routing.`, isRead: false },
+        { subject: `QA E2E 24A - ${senderAName} Routed HTML`,    body: `<html><body><p>HTML email from ${senderAName} routed by rule — tests HTML in new rule folder.</p></body></html>`, isRead: false, html: true },
       ];
-
-      for (const fm of fwdMessages) {
+      for (const fm of fwdMsgsA) {
         try {
-          await outlookClient.createMessageInFolder(userEmail, ruleFolderId, {
+          await outlookClient.createMessageInFolder(userEmail, newFolderId, {
             subject:      fm.subject,
             body:         { contentType: fm.html ? 'html' : 'text', content: fm.body },
-            from:         { emailAddress: ruleSender },
+            from:         { emailAddress: ruleSenderA },
             toRecipients: [{ emailAddress: { address: userEmail, name: userEmail.split('@')[0] } }],
-            isRead:       fm.isRead, isDraft: false,
+            isRead: fm.isRead, isDraft: false,
           });
           summary.messagesCreated++;
-          log.info(`✓ Forwarding rule: inserted "${fm.subject}"`);
+          log.info(`✓ 24-A: inserted "${fm.subject}"`);
         } catch (err) {
-          log.warn(`Forwarding rule email "${fm.subject}" failed: ${err.message}`);
-          summary.errors.push(`Forwarding rule "${fm.subject}": ${err.message}`);
+          log.warn(`24-A email "${fm.subject}" failed: ${err.message}`);
+          summary.errors.push(`Rule 24-A "${fm.subject}": ${err.message}`);
         }
       }
-      log.info(`✓ Forwarding rule test complete — emails inserted directly into QA-Forwarding-Rule-Folder`);
+      log.info(`✓ Rule 24-A complete — ${fwdMsgsA.length} emails in ${newFolderName}`);
     } catch (err) {
-      log.warn(`Inbox forwarding rule test failed: ${err.message}`);
-      summary.errors.push(`Inbox rule: ${err.message}`);
+      log.warn(`Inbox rule 24-A failed: ${err.message}`);
+      summary.errors.push(`Inbox rule 24-A: ${err.message}`);
+    }
+
+    // ── 24-B: rule routes to an already-existing custom folder ───────────────
+    log.info(`E2E: creating forwarding rule 24-B — route ${senderBName} to existing folder…`);
+    try {
+      const existFolderName = `QA-Forwarding-Rule-From-${senderBName}`;
+      const existFolderId   = await outlookClient.getOrCreateMailFolder(userEmail, existFolderName);
+
+      // Pre-populate the folder with one email so it is "already existing" before the rule is created.
+      try {
+        await outlookClient.createMessageInFolder(userEmail, existFolderId, {
+          subject:      `QA E2E 24B - ${senderBName} Pre-existing Email`,
+          body:         { contentType: 'text', content: `Pre-existing email in ${existFolderName} before the forwarding rule was set up.` },
+          from:         { emailAddress: ruleSenderB },
+          toRecipients: [{ emailAddress: { address: userEmail, name: userEmail.split('@')[0] } }],
+          isRead: true, isDraft: false,
+        });
+        summary.messagesCreated++;
+        log.info(`✓ 24-B: pre-populated "${existFolderName}" with one existing email`);
+      } catch (err) {
+        log.warn(`24-B pre-populate failed: ${err.message}`);
+      }
+
+      const ruleB = await outlookClient.createInboxRule(userEmail, {
+        displayName:  `QA - Forwarding Rule: route ${senderBName} to existing folder`,
+        sequence:     101,
+        isEnabled:    true,
+        conditions:   { fromAddresses: [{ emailAddress: { address: ruleSenderB.address, name: ruleSenderB.name } }] },
+        actions:      { moveToFolder: existFolderId, stopProcessingRules: true },
+      });
+      log.info(`✓ Rule 24-B created: "${ruleB.displayName}" → ${existFolderName}`);
+      if (!summary.foldersPopulated.includes(existFolderName)) summary.foldersPopulated.push(existFolderName);
+
+      const fwdMsgsB = [
+        { subject: `QA E2E 24B - ${senderBName} Routed Email 1`, body: `Email from ${senderBName} routed to existing folder by inbox rule — tests rule targeting existing folder.`,  isRead: true  },
+        { subject: `QA E2E 24B - ${senderBName} Routed Email 2`, body: `Second email from ${senderBName} in existing folder — tests co-existence of pre-existing and rule-routed mail.`, isRead: false },
+      ];
+      for (const fm of fwdMsgsB) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, existFolderId, {
+            subject:      fm.subject,
+            body:         { contentType: 'text', content: fm.body },
+            from:         { emailAddress: ruleSenderB },
+            toRecipients: [{ emailAddress: { address: userEmail, name: userEmail.split('@')[0] } }],
+            isRead: fm.isRead, isDraft: false,
+          });
+          summary.messagesCreated++;
+          log.info(`✓ 24-B: inserted "${fm.subject}"`);
+        } catch (err) {
+          log.warn(`24-B email "${fm.subject}" failed: ${err.message}`);
+          summary.errors.push(`Rule 24-B "${fm.subject}": ${err.message}`);
+        }
+      }
+      log.info(`✓ Rule 24-B complete — ${fwdMsgsB.length} new + 1 pre-existing in ${existFolderName}`);
+    } catch (err) {
+      log.warn(`Inbox rule 24-B failed: ${err.message}`);
+      summary.errors.push(`Inbox rule 24-B: ${err.message}`);
     }
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
@@ -2563,6 +2616,411 @@ console.log('Migration status:', result.status); // ✅ completed
         log.warn(`Section 39 Sent: ${err.message}`);
         summary.errors.push(`Section 39 Sent: ${err.message}`);
       }
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 40. Conditional formatting rules ────────────────────────────────────
+    // Creates 4 OWA conditional formatting rules with different condition/formatting
+    // combinations to cover Outlook's full rule configuration surface area.
+    // Stored via EWS UserConfiguration (OWA.ConditionalFormattingRules).
+    // Condition types covered: From, Subject, High Importance, Has Attachment.
+    // Formatting options covered: font color, background color, font name, bold, italic, underline.
+    // Each rule gets 2 matching inbox emails so the formatting can be verified visually.
+    log.info('E2E: creating conditional formatting rules (Section 40)…');
+    try {
+      // Pick 2 senders from the rotation for the From-based rules
+      const cfSenderA = toSenderObject(senderRotation.length > 0 ? senderRotation[0] : FALLBACK_EXTERNAL_SENDERS[0]); // Ben
+      const cfSenderB = toSenderObject(senderRotation.length > 1 ? senderRotation[1] : FALLBACK_EXTERNAL_SENDERS[1]); // Dan
+
+      const cfRules = [
+        // Rule 1 — From: Ben → Cranberry color + Lucida Handwriting font
+        {
+          name:         `QA - Conditional Format: From ${cfSenderA.name || cfSenderA.address.split('@')[0]} - Cranberry`,
+          conditionType: 'From',
+          fromAddresses: [cfSenderA.address],
+          fontColor:     'Cranberry',
+          fontName:      'Lucida Handwriting',
+        },
+        // Rule 2 — From: Dan → Teal color + Bold
+        {
+          name:         `QA - Conditional Format: From ${cfSenderB.name || cfSenderB.address.split('@')[0]} - Teal Bold`,
+          conditionType: 'From',
+          fromAddresses: [cfSenderB.address],
+          fontColor:    'Teal',
+          isBold:       true,
+        },
+        // Rule 3 — Subject contains "Migration QA" → Red color + Italic
+        {
+          name:           'QA - Conditional Format: Subject contains Migration - Red Italic',
+          conditionType:  'Subject',
+          subjectContains: 'Migration QA',
+          fontColor:      'Red',
+          isItalic:       true,
+        },
+        // Rule 4 — High Importance → Blue color + Underline + larger font
+        {
+          name:             'QA - Conditional Format: High Importance - Blue Underline',
+          conditionType:    'HighImportance',
+          isHighImportance: true,
+          fontColor:        'Blue',
+          isUnderline:      true,
+          fontSize:         14,
+        },
+      ];
+
+      await outlookClient.createConditionalFormattingRules(userEmail, cfRules);
+      log.info(`✓ Section 40: ${cfRules.length} conditional formatting rules created`);
+
+      // ── Emails matching Rule 1 (From: Ben) ───────────────────────────────
+      const cfEmails1 = [
+        { subject: `QA E2E 40 - CF Rule 1: From ${cfSenderA.name || 'Ben'} (Cranberry Font) #1`,
+          body: { contentType: 'text', content: `Email from ${cfSenderA.address} — should display in Cranberry color / Lucida Handwriting. Tests "From" condition in conditional formatting.` },
+          from: { emailAddress: cfSenderA }, isRead: false },
+        { subject: `QA E2E 40 - CF Rule 1: From ${cfSenderA.name || 'Ben'} (Cranberry Font) #2`,
+          body: { contentType: 'html', content: `<html><body><p>Second email from <strong>${cfSenderA.address}</strong> — Cranberry Lucida Handwriting formatting should apply.</p></body></html>` },
+          from: { emailAddress: cfSenderA }, isRead: true },
+      ];
+      for (const em of cfEmails1) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            ...em, toRecipients: [{ emailAddress: { address: userEmail } }], isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`40 CF Rule 1 email failed: ${e.message}`); }
+      }
+
+      // ── Emails matching Rule 2 (From: Dan) ───────────────────────────────
+      const cfEmails2 = [
+        { subject: `QA E2E 40 - CF Rule 2: From ${cfSenderB.name || 'Dan'} (Teal Bold) #1`,
+          body: { contentType: 'text', content: `Email from ${cfSenderB.address} — should display in Teal Bold. Tests second "From" condition variation.` },
+          from: { emailAddress: cfSenderB }, isRead: false },
+        { subject: `QA E2E 40 - CF Rule 2: From ${cfSenderB.name || 'Dan'} (Teal Bold) #2`,
+          body: { contentType: 'html', content: `<html><body><p>Second email from <strong>${cfSenderB.address}</strong> — Teal Bold formatting should apply.</p></body></html>` },
+          from: { emailAddress: cfSenderB }, isRead: false },
+      ];
+      for (const em of cfEmails2) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            ...em, toRecipients: [{ emailAddress: { address: userEmail } }], isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`40 CF Rule 2 email failed: ${e.message}`); }
+      }
+
+      // ── Emails matching Rule 3 (Subject contains "Migration QA") ─────────
+      const cfEmails3 = [
+        { subject: 'QA E2E 40 - CF Rule 3: Migration QA Subject Test (Red Italic) #1',
+          body: { contentType: 'text', content: 'Email with "Migration QA" in subject — should display in Red Italic. Tests subject-contains condition.' },
+          from: { emailAddress: externalSender }, isRead: false },
+        { subject: 'QA E2E 40 - CF Rule 3: Migration QA Report (Red Italic) #2',
+          body: { contentType: 'html', content: '<html><body><p>Second <em>Migration QA</em> subject email — Red Italic conditional format should apply.</p></body></html>' },
+          from: { emailAddress: externalSender }, isRead: true },
+      ];
+      for (const em of cfEmails3) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            ...em, toRecipients: [{ emailAddress: { address: userEmail } }], isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`40 CF Rule 3 email failed: ${e.message}`); }
+      }
+
+      // ── Emails matching Rule 4 (High Importance) ──────────────────────────
+      const cfEmails4 = [
+        { subject: 'QA E2E 40 - CF Rule 4: High Importance (Blue Underline) #1',
+          body: { contentType: 'text', content: 'High-importance email — should display in Blue Underlined font (size 14). Tests high-importance condition in conditional formatting.' },
+          from: { emailAddress: externalSender }, importance: 'high', isRead: false },
+        { subject: 'QA E2E 40 - CF Rule 4: High Importance Urgent Notice (Blue Underline) #2',
+          body: { contentType: 'html', content: '<html><body><p><strong>Urgent:</strong> High-importance email #2 — Blue Underline conditional format should apply.</p></body></html>' },
+          from: { emailAddress: externalSender }, importance: 'high', isRead: false },
+      ];
+      for (const em of cfEmails4) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            ...em, toRecipients: [{ emailAddress: { address: userEmail } }], isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`40 CF Rule 4 email failed: ${e.message}`); }
+      }
+
+      log.info(`✓ Section 40 complete — 4 rules + ${cfEmails1.length + cfEmails2.length + cfEmails3.length + cfEmails4.length} matching emails`);
+    } catch (err) {
+      log.warn(`Conditional formatting section 40 failed: ${err.message}`);
+      summary.errors.push(`Section 40 conditional formatting: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 41. Account-level email forwarding ──────────────────────────────────
+    // Replicates Outlook Settings → Mail → Forwarding:
+    //   "Enable forwarding" + "Keep a copy of forwarded messages"
+    // Implemented as an inbox rule with forwardTo action and no conditions
+    // (= applies to all incoming messages). The "keep copy" behaviour is the
+    // default — message stays in Inbox AND gets forwarded.
+    // The matching inbox emails show the mailbox state while forwarding is active.
+    log.info('E2E: creating email forwarding rule + test data (Section 41)…');
+    try {
+      const fwdTarget = toSenderObject(senderRotation.length > 0 ? senderRotation[0] : FALLBACK_EXTERNAL_SENDERS[0]);
+
+      const fwdRule = await outlookClient.createInboxRule(userEmail, {
+        displayName:  `QA - Email Forwarding: all mail → ${fwdTarget.address}`,
+        sequence:     200,
+        isEnabled:    true,
+        conditions:   {},
+        actions: {
+          forwardTo: [{ emailAddress: { address: fwdTarget.address, name: fwdTarget.name || fwdTarget.address.split('@')[0] } }],
+          stopProcessingRules: false,
+        },
+      });
+      log.info(`✓ Forwarding rule created: "${fwdRule.displayName}"`);
+
+      const fwdEmails = [
+        {
+          subject: 'QA E2E 41 - Forwarded Email #1 (Plain Text)',
+          body:    { contentType: 'text', content: `This email would be forwarded to ${fwdTarget.address}. Tests account-level forwarding rule migration — keep-copy mode.` },
+          from:    { emailAddress: externalSender },
+          isRead:  false,
+        },
+        {
+          subject: 'QA E2E 41 - Forwarded Email #2 (With Attachment)',
+          body:    { contentType: 'text', content: `Email with attachment covered by forwarding rule → ${fwdTarget.address}. Tests forwarding + attachment.` },
+          from:    { emailAddress: toSenderObject(senderRotation.length > 1 ? senderRotation[1] : FALLBACK_EXTERNAL_SENDERS[1]) },
+          isRead:  true,
+          attachments: [{
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name:         'qa-fwd-attachment.txt',
+            contentType:  'text/plain',
+            contentBytes: Buffer.from('QA forwarding rule test attachment — section 41.').toString('base64'),
+          }],
+        },
+        {
+          subject: 'QA E2E 41 - Forwarded Email #3 (HTML)',
+          body:    { contentType: 'html', content: '<html><body><p>HTML email covered by <strong>forwarding rule</strong> — kept in Inbox and forwarded. Tests forwarding with HTML content.</p></body></html>' },
+          from:    { emailAddress: externalSender },
+          isRead:  false,
+        },
+      ];
+
+      for (const em of fwdEmails) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            ...em,
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isDraft: false,
+          });
+          summary.messagesCreated++;
+          log.info(`✓ 41: inserted "${em.subject}"`);
+        } catch (e) {
+          log.warn(`Section 41 email "${em.subject}" failed: ${e.message}`);
+          summary.errors.push(`Section 41 "${em.subject}": ${e.message}`);
+        }
+      }
+      log.info(`✓ Section 41 complete — forwarding rule + ${fwdEmails.length} inbox emails`);
+    } catch (err) {
+      log.warn(`Email forwarding section 41 failed: ${err.message}`);
+      summary.errors.push(`Section 41 forwarding: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 42. Search folders ───────────────────────────────────────────────────
+    // Creates 7 Outlook search folders covering all OWA "Type" options:
+    //   Unread mail · Flagged · High importance · Has attachments (inbox only)
+    //   Keyword in subject · From specific sender · Large messages (≥512 KB)
+    // Each is a virtual mailSearchFolder (Graph API) with a different filterQuery.
+    // Dedicated matching emails are also inserted so each folder has visible results.
+    log.info('E2E: creating search folders + matching emails (Section 42)…');
+    try {
+      const sfSender = toSenderObject(senderRotation.length > 0 ? senderRotation[0] : FALLBACK_EXTERNAL_SENDERS[0]);
+
+      // ── Define 7 search folder specs ────────────────────────────────────────
+      const ALL_FOLDERS   = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive'];
+      const INBOX_ONLY    = ['inbox'];
+
+      const searchFolderSpecs = [
+        {
+          displayName:         'QA Search - Unread Mail',
+          filterQuery:         'isRead eq false',
+          sourceFolderIds:     ALL_FOLDERS,
+          includeNestedFolders: true,
+          description:         'Unread mail — all folders',
+        },
+        {
+          displayName:         'QA Search - Flagged Messages',
+          filterQuery:         "flag/flagStatus eq 'flagged'",
+          sourceFolderIds:     ALL_FOLDERS,
+          includeNestedFolders: true,
+          description:         'Mail flagged for follow-up',
+        },
+        {
+          displayName:         'QA Search - High Importance',
+          filterQuery:         "importance eq 'high'",
+          sourceFolderIds:     ALL_FOLDERS,
+          includeNestedFolders: true,
+          description:         'Important mail',
+        },
+        {
+          displayName:         'QA Search - Has Attachments (Inbox)',
+          filterQuery:         'hasAttachments eq true',
+          sourceFolderIds:     INBOX_ONLY,
+          includeNestedFolders: false,
+          description:         'Mail with attachments — inbox only',
+        },
+        {
+          displayName:         'QA Search - Keyword: Migration QA',
+          filterQuery:         "contains(subject, 'Migration QA')",
+          sourceFolderIds:     ALL_FOLDERS,
+          includeNestedFolders: true,
+          description:         'Mail with specific words in subject',
+        },
+        {
+          displayName:         `QA Search - From ${sfSender.name || sfSender.address.split('@')[0]}`,
+          filterQuery:         `from/emailAddress/address eq '${sfSender.address}'`,
+          sourceFolderIds:     INBOX_ONLY,
+          includeNestedFolders: false,
+          description:         `Mail from ${sfSender.address} — inbox only`,
+        },
+        {
+          displayName:         'QA Search - Large Messages (≥512 KB)',
+          filterQuery:         'size ge 524288',
+          sourceFolderIds:     ALL_FOLDERS,
+          includeNestedFolders: true,
+          description:         'Large mail (≥ 512 KB)',
+        },
+      ];
+
+      let sfCreated = 0;
+      for (const spec of searchFolderSpecs) {
+        try {
+          await outlookClient.createSearchFolder(userEmail, spec.displayName, spec.filterQuery, {
+            sourceFolderIds:     spec.sourceFolderIds,
+            includeNestedFolders: spec.includeNestedFolders,
+          });
+          sfCreated++;
+          log.info(`✓ Search folder: "${spec.displayName}" (${spec.description})`);
+        } catch (err) {
+          log.warn(`Search folder "${spec.displayName}" failed: ${err.message}`);
+          summary.errors.push(`Section 42 search folder "${spec.displayName}": ${err.message}`);
+        }
+      }
+
+      // ── Dedicated matching emails for each search folder type ───────────────
+
+      // Unread mail (isRead eq false) — 2 unread messages
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: Unread #${i}`,
+            body:         { contentType: 'text', content: `Unread email #${i} — matches "QA Search - Unread Mail" search folder. Tests isRead eq false filter.` },
+            from:         { emailAddress: externalSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 unread email #${i}: ${e.message}`); }
+      }
+
+      // Flagged messages — 2 flagged emails
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: Flagged #${i}`,
+            body:         { contentType: 'text', content: `Flagged email #${i} — matches "QA Search - Flagged Messages" search folder. Tests flag/flagStatus eq 'flagged' filter.` },
+            from:         { emailAddress: externalSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            flag:         { flagStatus: 'flagged' },
+            isRead: false, isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 flagged email #${i}: ${e.message}`); }
+      }
+
+      // High importance — 2 emails
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: High Importance #${i}`,
+            body:         { contentType: 'text', content: `High-importance email #${i} — matches "QA Search - High Importance" search folder. Tests importance eq 'high' filter.` },
+            from:         { emailAddress: externalSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            importance:   'high',
+            isRead: false, isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 high-importance email #${i}: ${e.message}`); }
+      }
+
+      // Has attachments (inbox) — 2 emails with attachments
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: Has Attachment #${i}`,
+            body:         { contentType: 'text', content: `Email with attachment #${i} — matches "QA Search - Has Attachments (Inbox)". Tests hasAttachments eq true filter.` },
+            from:         { emailAddress: externalSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            attachments: [{
+              '@odata.type': '#microsoft.graph.fileAttachment',
+              name:          `qa-search-attachment-${i}.txt`,
+              contentType:   'text/plain',
+              contentBytes:  Buffer.from(`QA search folder attachment #${i} — migration QA section 42.`).toString('base64'),
+            }],
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 attachment email #${i}: ${e.message}`); }
+      }
+
+      // Keyword "Migration QA" in subject — 2 emails
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: Migration QA Keyword Test #${i}`,
+            body:         { contentType: 'text', content: `Email with "Migration QA" in subject #${i} — matches "QA Search - Keyword: Migration QA" folder. Tests contains(subject) filter.` },
+            from:         { emailAddress: externalSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 keyword email #${i}: ${e.message}`); }
+      }
+
+      // From specific sender — 2 emails
+      for (let i = 1; i <= 2; i++) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+            subject:      `QA E2E 42 - Search Folder: From ${sfSender.name || sfSender.address.split('@')[0]} #${i}`,
+            body:         { contentType: 'text', content: `Email from ${sfSender.address} #${i} — matches "QA Search - From ${sfSender.name || sfSender.address.split('@')[0]}" folder. Tests from/emailAddress/address filter.` },
+            from:         { emailAddress: sfSender },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+          });
+          summary.messagesCreated++;
+        } catch (e) { log.warn(`42 from-sender email #${i}: ${e.message}`); }
+      }
+
+      // Large messages (≥512 KB) — 1 email with ~512 KB attachment
+      try {
+        await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+          subject:      'QA E2E 42 - Search Folder: Large Message (≥512 KB)',
+          body:         { contentType: 'text', content: 'Large email (≥512 KB) — matches "QA Search - Large Messages" folder. Tests size ge 524288 filter.' },
+          from:         { emailAddress: externalSender },
+          toRecipients: [{ emailAddress: { address: userEmail } }],
+          isRead: false, isDraft: false,
+          attachments: [{
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name:          'qa-large-search.bin',
+            contentType:   'application/octet-stream',
+            contentBytes:  Buffer.alloc(540000, 0x41).toString('base64'),
+          }],
+        });
+        summary.messagesCreated++;
+      } catch (e) { log.warn(`42 large message email: ${e.message}`); }
+
+      log.info(`✓ Section 42 complete — ${sfCreated}/${searchFolderSpecs.length} search folders created + 13 matching emails`);
+    } catch (err) {
+      log.warn(`Search folders section 42 failed: ${err.message}`);
+      summary.errors.push(`Section 42 search folders: ${err.message}`);
     }
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;

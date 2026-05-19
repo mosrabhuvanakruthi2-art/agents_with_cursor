@@ -1070,7 +1070,22 @@ async function cleanGmailMailbox(sourceEmail) {
     }
   } catch (err) { summary.errors.push('Calendars: ' + err.message); }
 
-  log.info('[clean-gmail ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs, ' + summary.foldersDeleted + ' labels, ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' calendars');
+  log.info('[clean-gmail ' + sourceEmail + '] Step 5: Deleting all Gmail filters...');
+  try {
+    const filtersRes = await gmail.users.settings.filters.list({ userId: 'me' });
+    const filters = filtersRes.data.filter || [];
+    for (const f of filters) {
+      try {
+        await gmail.users.settings.filters.delete({ userId: 'me', id: f.id });
+        log.info('[clean-gmail ' + sourceEmail + ']   Deleted filter id=' + f.id);
+      } catch (err) {
+        summary.errors.push('Filter ' + f.id + ': ' + err.message);
+      }
+    }
+    if (filters.length > 0) log.info('[clean-gmail ' + sourceEmail + ']   Deleted ' + filters.length + ' filter(s)');
+  } catch (err) { summary.errors.push('Filters: ' + err.message); }
+
+  log.info('[clean-gmail ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs, ' + summary.foldersDeleted + ' labels, ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' calendars (FULL WIPE — all settings cleared)');
   return summary;
 }
 

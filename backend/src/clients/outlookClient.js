@@ -5,6 +5,7 @@ const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const { normalizeSubject } = require('../utils/mailMigrationComparator');
+const { generateTestFileBuffer } = require('../utils/testFileGenerator');
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -943,6 +944,44 @@ async function getEwsToken(tenant = '1') {
  * EWS FindItem — returns all calendar event ItemIds for the given mailbox.
  * Uses ExchangeImpersonation so the app-only token can access any mailbox.
  */
+/**
+ * EWS FindItem — list item IDs from the RecoverableItems/Deletions dumpster folder.
+ * Returns up to 1000 EWS ItemIds per call.
+ */
+async function ewsFindRecoverableItemIds(userId, tenant = '1') {
+  const token = await getEwsToken(tenant);
+  const soap = `<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:SmtpAddress>${userId}</t:SmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:FindItem Traversal="Shallow">
+      <m:ItemShape><t:BaseShape>IdOnly</t:BaseShape></m:ItemShape>
+      <m:IndexedPageItemView MaxEntriesReturned="1000" Offset="0" BasePoint="Beginning"/>
+      <m:ParentFolderIds>
+        <t:DistinguishedFolderId Id="recoverableitemsdeletions">
+          <t:Mailbox><t:EmailAddress>${userId}</t:EmailAddress></t:Mailbox>
+        </t:DistinguishedFolderId>
+      </m:ParentFolderIds>
+    </m:FindItem>
+  </soap:Body>
+</soap:Envelope>`;
+
+  const res = await axios.post(EWS_ENDPOINT, soap, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'text/xml; charset=utf-8' },
+    timeout: 30000,
+  });
+  const ids = [];
+  for (const m of String(res.data).matchAll(/ItemId Id="([^"]+)"/g)) ids.push(m[1]);
+  return ids;
+}
+
 async function ewsFindCalendarItemIds(userId, tenant = '1') {
   const token = await getEwsToken(tenant);
   const soap = `<?xml version="1.0" encoding="UTF-8"?>
@@ -1183,58 +1222,98 @@ async function getRecoverableItemsCount(userId) {
 }
 
 /**
- * Permanently purge the Recoverable Items > Deletions folder.
- * Uses permanentDelete action on each item — truly removes them so they don't show as
- * "Recover items deleted from this folder (N items)" in Outlook.
- * Returns the number of items purged.
+ * Permanently purge the Recoverable Items > Deletions dumpster.
+ *
+ * Strategy (in order):
+ *   1. EWS HardDelete — same mechanism used for calendar events, no Mail.Purge required.
+ *      Loops until the folder is empty.
+ *   2. Graph API permanentDelete (batch) — fallback if EWS is unavailable.
+ *      Uses ID-based no-progress detection so it stops cleanly if permission is missing.
+ *
+ * Returns total items purged.
  */
 async function cleanRecoverableItems(userId) {
   const log = require('../utils/logger');
+  let totalPurged = 0;
+  const tenant = getMsTenant(userId);
+
+  // ── Primary: EWS HardDelete ────────────────────────────────────────────────
+  let ewsSucceeded = false;
   try {
-    const token = await getAccessToken(userId);
-    const folderRes = await axios.get(
-      `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/recoverableitemsdeletions`,
-      { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
-    );
-    const folderCount = folderRes.data?.totalItemCount ?? 0;
-    if (folderCount === 0) return 0;
-
-    log.info(`[cleanRecoverable ${userId}] Purging ${folderCount} recoverable items via permanentDelete…`);
-    const folderId = folderRes.data?.id;
-    if (!folderId) return 0;
-
-    // Fetch all items and permanentDelete them in parallel batches
-    let purged = 0;
     let lastCount = -1;
-    for (let iter = 0; iter < 20; iter++) {
-      const tkn = await getAccessToken(userId);
-      const res = await axios.get(
-        `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=100&$select=id`,
-        { headers: { Authorization: `Bearer ${tkn}` }, timeout: 15000 }
-      );
-      const items = res.data.value || [];
-      if (items.length === 0) break;
-      if (items.length === lastCount) {
-        log.warn(`[cleanRecoverable ${userId}] No progress on recoverable items — may require Mail.Purge permission`);
+    for (let iter = 0; iter < 50; iter++) {
+      const itemIds = await ewsFindRecoverableItemIds(userId, tenant);
+      if (itemIds.length === 0) break;
+      if (itemIds.length === lastCount) {
+        log.warn(`[cleanRecoverable ${userId}] EWS: no progress after HardDelete — stopping EWS attempt`);
         break;
       }
-      lastCount = items.length;
-      const batchSize = 20;
-      const batches = [];
-      for (let i = 0; i < items.length; i += batchSize) {
-        batches.push(items.slice(i, i + batchSize).map((m) =>
-          `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(m.id)}`
-        ));
-      }
-      await Promise.all(batches.map((b) => batchDelete(b, userId, { permanent: true })));
-      purged += items.length;
+      lastCount = itemIds.length;
+      // Reuse ewsDeleteCalendarItems — it uses HardDelete and works for all item types
+      await ewsDeleteCalendarItems(userId, itemIds, tenant);
+      totalPurged += itemIds.length;
+      log.info(`[cleanRecoverable ${userId}] EWS HardDelete: purged ${totalPurged} recoverable items so far (iter ${iter + 1})…`);
     }
-    log.info(`[cleanRecoverable ${userId}] Purged ${purged} recoverable items`);
-    return purged;
-  } catch (err) {
-    log.warn(`[cleanRecoverable ${userId}] Could not purge recoverable items: ${err.message}`);
-    return 0;
+    ewsSucceeded = true;
+    log.info(`[cleanRecoverable ${userId}] EWS HardDelete complete — ${totalPurged} items purged`);
+  } catch (ewsErr) {
+    log.warn(`[cleanRecoverable ${userId}] EWS unavailable (${ewsErr.message}) — falling back to Graph permanentDelete`);
   }
+
+  if (ewsSucceeded) return totalPurged;
+
+  // ── Fallback: Graph API permanentDelete ────────────────────────────────────
+  const RECOVERABLE_FOLDERS = ['recoverableitemsdeletions', 'recoverableitemspurges'];
+  for (const folderWellKnown of RECOVERABLE_FOLDERS) {
+    try {
+      const token = await getAccessToken(userId);
+      const folderRes = await axios.get(
+        `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${folderWellKnown}`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const folderCount = folderRes.data?.totalItemCount ?? 0;
+      if (folderCount === 0) continue;
+
+      log.info(`[cleanRecoverable ${userId}] Graph: purging ${folderCount} items from ${folderWellKnown}…`);
+      const folderId = folderRes.data?.id;
+      if (!folderId) continue;
+
+      let purged = 0;
+      let lastSeenIds = new Set();
+      for (let iter = 0; iter < 50; iter++) {
+        const tkn = await getAccessToken(userId);
+        const res = await axios.get(
+          `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/messages?$top=999&$select=id`,
+          { headers: { Authorization: `Bearer ${tkn}` }, timeout: 30000 }
+        );
+        const items = res.data.value || [];
+        if (items.length === 0) break;
+
+        const currentIds = new Set(items.map((m) => m.id));
+        const noProgress = lastSeenIds.size > 0 && items.every((m) => lastSeenIds.has(m.id));
+        if (noProgress) {
+          log.warn(`[cleanRecoverable ${userId}] Graph: no progress on ${folderWellKnown} — Mail.Purge permission may be missing`);
+          break;
+        }
+        lastSeenIds = currentIds;
+
+        const batches = [];
+        for (let i = 0; i < items.length; i += 20) {
+          batches.push(items.slice(i, i + 20).map((m) =>
+            `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(m.id)}`
+          ));
+        }
+        await Promise.all(batches.map((b) => batchDelete(b, userId, { permanent: true })));
+        purged += items.length;
+        log.info(`[cleanRecoverable ${userId}] Graph ${folderWellKnown}: purged ${purged} so far (iter ${iter + 1})…`);
+      }
+      log.info(`[cleanRecoverable ${userId}] Graph ${folderWellKnown}: done — ${purged} items`);
+      totalPurged += purged;
+    } catch (err) {
+      log.warn(`[cleanRecoverable ${userId}] Graph: could not purge ${folderWellKnown}: ${err.message}`);
+    }
+  }
+  return totalPurged;
 }
 
 /**
@@ -1813,7 +1892,10 @@ async function createMessageInFolder(userId, folderId, messageBody) {
       const result = await createMessageViaEws(userId, folderId, messageBody);
       if (result !== null) return result; // well-known EWS folder handled it
     } catch (ewsErr) {
-      logger.warn(`[EWS insert ${userId}] ${ewsErr.message} — falling back to Graph POST`);
+      logger.warn(`[EWS insert ${userId}/${folderId}] ${ewsErr.message} — falling back to Graph POST`);
+      if (ewsErr.response) {
+        logger.warn(`[EWS insert ${userId}] HTTP ${ewsErr.response.status}: ${String(ewsErr.response.data).substring(0, 400)}`);
+      }
     }
 
     // Custom folder: EWS can't accept Graph folder IDs directly.
@@ -2063,13 +2145,82 @@ async function getGroupsCount(userId = '') {
  */
 async function createMessageWithLargeAttachment(userId, folderId, messageBody, fileName, sizeMB = 26) {
   const recipientToken = await getAppAccessToken(getMsTenant(userId));
-  const recipientUid   = graphUserPath(userId);
-  const sizeBytes      = sizeMB * 1024 * 1024;
+  const fileBuffer     = generateTestFileBuffer(fileName, sizeMB);
+  const sizeBytes      = fileBuffer.length;
+  const chunkSize      = 4 * 1024 * 1024;
 
+  async function uploadChunks(uploadUrl) {
+    let offset = 0;
+    while (offset < sizeBytes) {
+      const end   = Math.min(offset + chunkSize - 1, sizeBytes - 1);
+      const chunk = fileBuffer.slice(offset, end + 1);
+      await axios.put(uploadUrl, chunk, {
+        headers: {
+          'Content-Length': chunk.length,
+          'Content-Range': `bytes ${offset}-${end}/${sizeBytes}`,
+          'Content-Type': 'application/octet-stream',
+        },
+        timeout: 120000,
+        maxBodyLength: chunkSize + 1024,
+      });
+      offset = end + 1;
+    }
+  }
+
+  // ── Primary: send from a same-tenant sender → Exchange delivers as real non-draft ──
+  // Avoids the draft-flag problem entirely: sent messages arrive in the recipient's
+  // inbox with isDraft=false, set by Exchange transport — no EWS patching needed.
+  const domain = String(userId).split('@')[1]?.toLowerCase();
+  const accounts = (env.outlookAccounts || []).map(e => e.toLowerCase());
+  const senderEmail = accounts.find(e => e !== userId.toLowerCase() && e.endsWith('@' + domain));
+
+  if (senderEmail) {
+    const senderUid = graphUserPath(senderEmail);
+    let senderDraftId = null;
+    try {
+      // Step 1: create draft in SENDER's mailbox
+      const draftRes = await axios.post(
+        `${GRAPH_BASE}/users/${senderUid}/messages`,
+        {
+          subject:      messageBody.subject,
+          body:         messageBody.body,
+          toRecipients: [{ emailAddress: { address: userId } }],
+          importance:   messageBody.importance || 'normal',
+        },
+        { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      senderDraftId = draftRes.data.id;
+
+      // Step 2: upload session on sender's draft
+      const sessionRes = await axios.post(
+        `${GRAPH_BASE}/users/${senderUid}/messages/${encodeURIComponent(senderDraftId)}/attachments/createUploadSession`,
+        { AttachmentItem: { attachmentType: 'file', name: fileName, size: sizeBytes } },
+        { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      await uploadChunks(sessionRes.data.uploadUrl);
+
+      // Step 3: send → Exchange delivers to recipient's inbox as a proper received message
+      await axios.post(
+        `${GRAPH_BASE}/users/${senderUid}/messages/${encodeURIComponent(senderDraftId)}/send`,
+        {},
+        { headers: { Authorization: `Bearer ${recipientToken}` }, timeout: 30000 }
+      );
+
+      logger.info(`createMessageWithLargeAttachment: ${sizeMB} MB sent ${senderEmail} → ${userId} (non-draft via Exchange transport)`);
+      return { id: senderDraftId };
+    } catch (sendErr) {
+      logger.warn(`createMessageWithLargeAttachment: send approach failed (${sendErr.message}) — falling back to direct insert`);
+      if (senderDraftId) {
+        axios.delete(`${GRAPH_BASE}/users/${senderUid}/messages/${encodeURIComponent(senderDraftId)}`,
+          { headers: { Authorization: `Bearer ${recipientToken}` }, timeout: 15000 }).catch(() => {});
+      }
+    }
+  }
+
+  // ── Fallback: create directly in recipient's mailbox ─────────────────────────
+  const recipientUid = graphUserPath(userId);
   let draftId = null;
-
   try {
-    // ── Step 1: create draft directly in recipient's mailbox (no send) ──────
     const draftRes = await axios.post(
       `${GRAPH_BASE}/users/${recipientUid}/messages`,
       {
@@ -2083,36 +2234,13 @@ async function createMessageWithLargeAttachment(userId, folderId, messageBody, f
     );
     draftId = draftRes.data.id;
 
-    // ── Step 2: create upload session on the draft ──────────────────────────
     const sessionRes = await axios.post(
       `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}/attachments/createUploadSession`,
       { AttachmentItem: { attachmentType: 'file', name: fileName, size: sizeBytes } },
       { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
     );
-    const uploadUrl = sessionRes.data.uploadUrl;
+    await uploadChunks(sessionRes.data.uploadUrl);
 
-    // ── Step 3: upload in 4 MB chunks ───────────────────────────────────────
-    const chunkSize = 4 * 1024 * 1024;
-    const pattern   = Buffer.from('QA Migration Large Attachment Test Data — CloudFuze QA Agent\n');
-    let offset = 0;
-    while (offset < sizeBytes) {
-      const end      = Math.min(offset + chunkSize - 1, sizeBytes - 1);
-      const chunkLen = end - offset + 1;
-      const chunk    = Buffer.alloc(chunkLen);
-      for (let i = 0; i < chunkLen; i++) chunk[i] = pattern[i % pattern.length];
-      await axios.put(uploadUrl, chunk, {
-        headers: {
-          'Content-Length': chunkLen,
-          'Content-Range': `bytes ${offset}-${end}/${sizeBytes}`,
-          'Content-Type': 'application/octet-stream',
-        },
-        timeout: 120000,
-        maxBodyLength: chunkSize + 1024,
-      });
-      offset = end + 1;
-    }
-
-    // ── Step 4: move draft to target folder, capture new message ID ─────────
     const targetFolder = folderId || 'inbox';
     let movedId = draftId;
     if (targetFolder !== 'drafts' && targetFolder !== 'draft') {
@@ -2123,32 +2251,14 @@ async function createMessageWithLargeAttachment(userId, folderId, messageBody, f
       );
       movedId = moveRes.data?.id || draftId;
     }
-
-    // ── Step 5: clear MSGFLAG_UNSENT via Graph extended property → isDraft=false ─
-    // EWS UpdateItem requires an EWS item ID; movedId is a Graph REST ID, so use
-    // Graph singleValueExtendedProperties PATCH to set PR_MESSAGE_FLAGS directly.
-    const isRead = messageBody.isRead !== false;
-    try {
-      await axios.patch(
-        `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(movedId)}`,
-        { singleValueExtendedProperties: [{ id: 'Integer 0x0e07', value: String(isRead ? 1 : 0) }] },
-        { headers: { Authorization: `Bearer ${recipientToken}`, 'Content-Type': 'application/json' }, timeout: 30000 }
-      );
-      logger.info(`createMessageWithLargeAttachment: ${sizeMB} MB attachment in ${targetFolder} (isDraft cleared via Graph PATCH)`);
-    } catch (clearErr) {
-      logger.warn(`createMessageWithLargeAttachment: clear-draft PATCH failed (${clearErr.message})`);
-    }
+    logger.warn(`createMessageWithLargeAttachment: ${sizeMB} MB inserted directly (may show as draft — no same-tenant sender found)`);
     return { id: movedId };
 
   } catch (err) {
     logger.warn(`createMessageWithLargeAttachment: ${err.message}`);
     if (draftId) {
-      try {
-        await axios.delete(
-          `${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}`,
-          { headers: { Authorization: `Bearer ${recipientToken}` }, timeout: 15000 }
-        );
-      } catch (_) { /* ignore */ }
+      axios.delete(`${GRAPH_BASE}/users/${recipientUid}/messages/${encodeURIComponent(draftId)}`,
+        { headers: { Authorization: `Bearer ${recipientToken}` }, timeout: 15000 }).catch(() => {});
     }
     return null;
   }
@@ -2187,6 +2297,221 @@ async function deleteMessageRule(userId, ruleId) {
     `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/inbox/messageRules/${encodeURIComponent(ruleId)}`,
     userId
   );
+}
+
+// ── OWA Conditional Formatting Rules via EWS UserConfiguration ────────────────
+// OWA stores conditional formatting rules as a UserConfiguration item named
+// "OWA.ConditionalFormattingRules" in the Inbox folder.
+// Data is stored as BinaryData (base64-encoded UTF-8 JSON).
+// Format: { "Rules": [ { Id, Name, IsEnabled, ConditionType, FromAddresses,
+//   SubjectContains, IsHighImportance, IsLowImportance, HasAttachments,
+//   FontColor, BackgroundColor, FontName, IsBold, IsItalic, IsUnderline, FontSize } ] }
+
+const CF_CONFIG_NAME = 'OWA.ConditionalFormattingRules';
+
+async function ewsGetConditionalFormattingRules(userId) {
+  const tenant = getMsTenant(userId);
+  const token  = await getEwsToken(tenant);
+  const soap = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:PrimarySmtpAddress>${xmlEsc(userId)}</t:PrimarySmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:GetUserConfiguration>
+      <m:UserConfigurationName Name="${xmlEsc(CF_CONFIG_NAME)}">
+        <t:DistinguishedFolderId Id="inbox"/>
+      </m:UserConfigurationName>
+      <m:UserConfigurationProperties>BinaryData</m:UserConfigurationProperties>
+    </m:GetUserConfiguration>
+  </soap:Body>
+</soap:Envelope>`;
+
+  try {
+    const res = await axios.post(EWS_ENDPOINT, soap, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'text/xml; charset=utf-8',
+        SOAPAction: '"http://schemas.microsoft.com/exchange/services/2006/messages/GetUserConfiguration"',
+      },
+      timeout: 20000,
+    });
+    const xml = String(res.data || '');
+    const b64Match = xml.match(/<t:BinaryData>([\s\S]*?)<\/t:BinaryData>/);
+    if (!b64Match) return null;
+    try {
+      return JSON.parse(Buffer.from(b64Match[1].trim(), 'base64').toString('utf8'));
+    } catch { return null; }
+  } catch { return null; }
+}
+
+async function ewsSetConditionalFormattingRules(userId, rulesObj) {
+  const tenant = getMsTenant(userId);
+  const token  = await getEwsToken(tenant);
+  const b64 = Buffer.from(JSON.stringify(rulesObj), 'utf8').toString('base64');
+
+  // Try UpdateUserConfiguration first; if that returns ErrorItemNotFound, fall back to Create
+  for (const action of ['UpdateUserConfiguration', 'CreateUserConfiguration']) {
+    const soap = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:PrimarySmtpAddress>${xmlEsc(userId)}</t:PrimarySmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:${action}>
+      <m:UserConfiguration>
+        <t:UserConfigurationName Name="${xmlEsc(CF_CONFIG_NAME)}">
+          <t:DistinguishedFolderId Id="inbox"/>
+        </t:UserConfigurationName>
+        <t:BinaryData>${b64}</t:BinaryData>
+      </m:UserConfiguration>
+    </m:${action}>
+  </soap:Body>
+</soap:Envelope>`;
+    const res = await axios.post(EWS_ENDPOINT, soap, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'text/xml; charset=utf-8',
+        SOAPAction: `"http://schemas.microsoft.com/exchange/services/2006/messages/${action}"`,
+      },
+      timeout: 20000,
+    });
+    const xml = String(res.data || '');
+    if (xml.includes('NoError')) return true;
+    if (action === 'UpdateUserConfiguration' && xml.includes('ErrorItemNotFound')) continue;
+    const errMatch = xml.match(/<m:MessageText>([^<]+)<\/m:MessageText>/);
+    throw new Error(`EWS ${action}: ${errMatch?.[1] || xml.substring(0, 200)}`);
+  }
+  return true;
+}
+
+async function ewsDeleteConditionalFormattingRules(userId) {
+  const tenant = getMsTenant(userId);
+  const token  = await getEwsToken(tenant);
+  const soap = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016"/>
+    <t:ExchangeImpersonation>
+      <t:ConnectingSID><t:PrimarySmtpAddress>${xmlEsc(userId)}</t:PrimarySmtpAddress></t:ConnectingSID>
+    </t:ExchangeImpersonation>
+  </soap:Header>
+  <soap:Body>
+    <m:DeleteUserConfiguration>
+      <m:UserConfigurationName Name="${xmlEsc(CF_CONFIG_NAME)}">
+        <t:DistinguishedFolderId Id="inbox"/>
+      </m:UserConfigurationName>
+    </m:DeleteUserConfiguration>
+  </soap:Body>
+</soap:Envelope>`;
+  try {
+    const res = await axios.post(EWS_ENDPOINT, soap, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'text/xml; charset=utf-8',
+        SOAPAction: '"http://schemas.microsoft.com/exchange/services/2006/messages/DeleteUserConfiguration"',
+      },
+      timeout: 20000,
+    });
+    return String(res.data || '').includes('NoError');
+  } catch { return false; }
+}
+
+/**
+ * Create or replace OWA conditional formatting rules for a mailbox.
+ * rules: array of { name, isEnabled, conditionType, fromAddresses, subjectContains,
+ *   isHighImportance, isLowImportance, hasAttachments,
+ *   fontColor, backgroundColor, fontName, isBold, isItalic, isUnderline, fontSize }
+ */
+async function createConditionalFormattingRules(userId, rules) {
+  // Replace ALL existing rules — do not preserve non-QA ones.
+  // Cleanup wipes the mailbox to a complete nil state before each run,
+  // so no pre-existing rules should be here; merge logic would silently carry
+  // stale rules into the next test run.
+  const newRules = rules.map((r, i) => ({
+    Id:              `qa-cf-rule-${i + 1}-${Date.now()}`,
+    Name:            r.name,
+    IsEnabled:       r.isEnabled !== false,
+    ConditionType:   r.conditionType || 'From',
+    FromAddresses:   r.fromAddresses || [],
+    SubjectContains: r.subjectContains || null,
+    IsHighImportance: r.isHighImportance || false,
+    IsLowImportance:  r.isLowImportance  || false,
+    HasAttachments:   r.hasAttachments   || false,
+    FontColor:        r.fontColor        || 'Black',
+    BackgroundColor:  r.backgroundColor  || 'None',
+    FontName:         r.fontName         || null,
+    IsBold:           r.isBold           || false,
+    IsItalic:         r.isItalic         || false,
+    IsUnderline:      r.isUnderline      || false,
+    FontSize:         r.fontSize         || null,
+  }));
+  return ewsSetConditionalFormattingRules(userId, { Rules: newRules });
+}
+
+async function deleteQaConditionalFormattingRules(userId) {
+  // Alias kept for backward compatibility — now delegates to the full wipe.
+  return deleteAllConditionalFormattingRules(userId);
+}
+
+// ── Search Folders (mailSearchFolder via Graph API) ───────────────────────────
+// Outlook Settings → Mail → Search folders
+// Search folders are virtual folders that display messages matching a filter
+// across one or more source folders without moving messages.
+// Graph endpoint: POST /users/{id}/mailFolders/searchfolders/childFolders
+
+/**
+ * Create an Outlook search folder (virtual folder with filter).
+ * filterQuery: OData filter string (e.g. "isRead eq false")
+ * sourceFolderIds: array of well-known names or folder IDs to search;
+ *   defaults to the six standard system folders when omitted.
+ * includeNestedFolders: whether to recurse into sub-folders (default true).
+ */
+async function createSearchFolder(userId, displayName, filterQuery, {
+  sourceFolderIds = ['inbox', 'sentitems', 'drafts', 'deleteditems', 'junkemail', 'archive'],
+  includeNestedFolders = true,
+} = {}) {
+  const token = await getAppAccessToken(getMsTenant(userId));
+  const uid   = graphUserPath(userId);
+  const res   = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/mailFolders/searchfolders/childFolders`,
+    {
+      '@odata.type':        'microsoft.graph.mailSearchFolder',
+      displayName,
+      includeNestedFolders,
+      sourceFolderIds,
+      filterQuery,
+    },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+  );
+  return res.data;
+}
+
+async function listSearchFolders(userId) {
+  const token = await getAppAccessToken(getMsTenant(userId));
+  const uid   = graphUserPath(userId);
+  const res   = await axios.get(
+    `${GRAPH_BASE}/users/${uid}/mailFolders/searchfolders/childFolders?$select=id,displayName&$top=100`,
+    { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+  );
+  return res.data?.value || [];
+}
+
+async function deleteQaSearchFolders(userId) {
+  // Alias kept for backward compatibility — now delegates to the full wipe.
+  return deleteAllSearchFolders(userId);
 }
 
 /**
@@ -2454,6 +2779,127 @@ async function addEventAttachment(userId, eventId, attachment) {
   return res.data;
 }
 
+// ── Full-wipe helpers (used by CleanupAgent for complete nil-mailbox cleanup) ──
+
+/**
+ * Delete ALL inbox rules from a mailbox (not just QA-prefixed ones).
+ * Returns the number of rules deleted.
+ */
+async function deleteAllInboxRules(userId) {
+  try {
+    const { rules, available } = await getInboxRules(userId);
+    if (!available || !rules || rules.length === 0) return 0;
+    await Promise.all(
+      rules.map((r) =>
+        deleteMessageRule(userId, r.id).catch((err) =>
+          logger.warn(`deleteAllInboxRules: "${r.displayName}" (${r.id}): ${err.message}`)
+        )
+      )
+    );
+    logger.info(`deleteAllInboxRules(${userId}): deleted ${rules.length} rule(s)`);
+    return rules.length;
+  } catch (err) {
+    logger.warn(`deleteAllInboxRules(${userId}): ${err.message}`);
+    return 0;
+  }
+}
+
+/**
+ * Delete ALL OWA conditional formatting rules (the entire UserConfiguration object).
+ * Returns true on success, false if there was nothing to delete or an error occurred.
+ */
+async function deleteAllConditionalFormattingRules(userId) {
+  // Always attempt DELETE directly — do NOT skip based on a GET result.
+  // The GET may return null even when rules exist (e.g. OWA stored a different JSON
+  // schema for manually-created rules), causing a false "nothing to delete" early exit.
+  // EWS DeleteUserConfiguration is idempotent: it returns ErrorItemNotFound when the
+  // config doesn't exist, which we treat as success (already clean).
+  try {
+    // First, try to overwrite with an empty rule list (handles cases where DELETE
+    // fails but SET succeeds — e.g. the config exists but we can't parse its format).
+    try {
+      await ewsSetConditionalFormattingRules(userId, { Rules: [] });
+      logger.info(`deleteAllConditionalFormattingRules(${userId}): rules cleared via SET empty`);
+    } catch { /* fall through to DELETE */ }
+
+    // Always call DELETE to fully remove the UserConfiguration object.
+    const ok = await ewsDeleteConditionalFormattingRules(userId);
+    if (ok) {
+      logger.info(`deleteAllConditionalFormattingRules(${userId}): UserConfiguration deleted`);
+    } else {
+      logger.warn(`deleteAllConditionalFormattingRules(${userId}): DELETE returned false (may already be gone)`);
+    }
+    return true; // Consider it clean regardless — we attempted both SET-empty and DELETE
+  } catch (err) {
+    logger.warn(`deleteAllConditionalFormattingRules(${userId}): ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Delete ALL search folders from a mailbox (not just QA-prefixed ones).
+ * Uses app-only token for both list AND delete so auth is consistent.
+ * Returns the number of folders deleted.
+ */
+async function deleteAllSearchFolders(userId) {
+  try {
+    const folders = await listSearchFolders(userId);
+    logger.info(`deleteAllSearchFolders(${userId}): found ${folders.length} search folder(s): ${folders.map((f) => `"${f.displayName}"`).join(', ') || '(none)'}`);
+    if (!folders || folders.length === 0) return 0;
+
+    const token = await getAppAccessToken(getMsTenant(userId));
+    const uid   = graphUserPath(userId);
+
+    await Promise.all(
+      folders.map((f) =>
+        axios
+          .delete(
+            `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(f.id)}`,
+            { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+          )
+          .then(() => logger.info(`deleteAllSearchFolders(${userId}): deleted "${f.displayName}"`))
+          .catch((err) =>
+            logger.warn(`deleteAllSearchFolders(${userId}): "${f.displayName}" — ${err.response?.status || err.message}`)
+          )
+      )
+    );
+    logger.info(`deleteAllSearchFolders(${userId}): finished — ${folders.length} search folder(s) processed`);
+    return folders.length;
+  } catch (err) {
+    logger.warn(`deleteAllSearchFolders(${userId}): ${err.message}`);
+    return 0;
+  }
+}
+
+/**
+ * Count messages whose subject starts with `prefix` across the entire mailbox.
+ * Uses ConsistencyLevel=eventual + $count for an index-backed search (Graph limitation).
+ * Returns { count, available }.
+ */
+async function countMessagesBySubjectPrefix(userId, prefix) {
+  const uid   = graphUserPath(userId);
+  const token = await getAccessToken(userId);
+  const safePrefix = prefix.replace(/'/g, "''");
+  try {
+    const res = await retryWithBackoff(
+      () => axios.get(`${GRAPH_BASE}/users/${uid}/messages`, {
+        headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+        params: {
+          '$filter': `startsWith(subject,'${safePrefix}')`,
+          '$select': 'id',
+          '$count': 'true',
+          '$top': '1',
+        },
+      }),
+      { label: `Graph COUNT prefix:${prefix.substring(0, 30)}` }
+    );
+    const count = res.data['@odata.count'] ?? (res.data.value || []).length;
+    return { count: Number(count) || 0, available: true };
+  } catch {
+    return { count: 0, available: false };
+  }
+}
+
 /**
  * Sum all message sizes in a mailbox via paginated GET /messages?$select=size.
  * Returns { sizeBytes, messageCount, method }.
@@ -2533,4 +2979,14 @@ module.exports = {
   getInboxRules,
   addEventAttachment,
   getMailboxSizeBytes,
+  createConditionalFormattingRules,
+  deleteQaConditionalFormattingRules,
+  createSearchFolder,
+  listSearchFolders,
+  deleteQaSearchFolders,
+  ewsGetConditionalFormattingRules,
+  countMessagesBySubjectPrefix,
+  deleteAllInboxRules,
+  deleteAllConditionalFormattingRules,
+  deleteAllSearchFolders,
 };

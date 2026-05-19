@@ -23,7 +23,7 @@ export default function AgentForm({ onSubmit, loading }) {
     testType: 'E2E',
     migrationType: 'FULL',
   });
-  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('migration-server-url', 'https://newtestemail5.cloudfuze.com');
+  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('migration-server-url', 'https://devemail.cloudfuze.com/proxyservices/v1');
   const [migrationServerEmail, setMigrationServerEmail] = usePersistedState('migration-server-email', '');
   const [migrationServerPassword, setMigrationServerPassword] = useState('');
   const [mappedPairs, setMappedPairs] = useState(null);
@@ -111,41 +111,66 @@ export default function AgentForm({ onSubmit, loading }) {
       </div>
 
       <div className="border border-gray-200 rounded-xl p-5 space-y-4 bg-gray-50/50">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-900">Migration Server</h3>
-          <p className="text-xs text-gray-500 mt-0.5">CloudFuze server credentials used by the migration agent</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Migration Server</h3>
+            <p className="text-xs text-gray-500 mt-0.5">CloudFuze server to run the migration against</p>
+          </div>
+          {/* Mode badge */}
+          {migrationServerEmail && migrationServerPassword ? (
+            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 inline-block" />
+              New server (email + password)
+            </span>
+          ) : (
+            <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+              Legacy server (Basic auth)
+            </span>
+          )}
         </div>
+
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Server URL</label>
           <input
             type="url"
             value={migrationServerUrl}
             onChange={(e) => setMigrationServerUrl(e.target.value)}
-            placeholder="https://newtestemail5.cloudfuze.com"
+            placeholder="https://devemail.cloudfuze.com/proxyservices/v1"
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white font-mono"
           />
         </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Email <span className="text-gray-400 font-normal">(new server only)</span>
+            </label>
             <input
               type="email"
               value={migrationServerEmail}
               onChange={(e) => setMigrationServerEmail(e.target.value)}
-              placeholder="admin@company.com"
+              placeholder="Leave empty for devemail"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Password</label>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Password <span className="text-gray-400 font-normal">(new server only)</span>
+            </label>
             <input
               type="password"
               value={migrationServerPassword}
               onChange={(e) => setMigrationServerPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder="Leave empty for devemail"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
             />
           </div>
+        </div>
+
+        <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700 space-y-0.5">
+          <p><span className="font-semibold">devemail (legacy):</span> use URL <code className="bg-blue-100 px-1 rounded">https://devemail.cloudfuze.com/proxyservices/v1</code> — leave Email &amp; Password empty. Auth uses Basic credentials from <code className="bg-blue-100 px-1 rounded">.env</code>.</p>
+          <p><span className="font-semibold">newtestemail5 (new):</span> use URL <code className="bg-blue-100 px-1 rounded">https://newtestemail5.cloudfuze.com</code> — fill in Email &amp; Password.</p>
         </div>
       </div>
 

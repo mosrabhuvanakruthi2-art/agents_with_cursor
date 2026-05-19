@@ -52,9 +52,15 @@ function getActiveEmailBaseUrl() {
   }
 }
 
-/** True when a runtime server override is active (newtestemail5 style API paths) */
+/**
+ * True when the active server uses the NEW API format (newtestemail5 style).
+ * New servers require email + MD5 password for login and use /email/* paths.
+ * Legacy servers (devemail) use Basic auth and /mail/* paths.
+ * Detection: new server requires runtime credentials (email + password).
+ * A runtime URL with no credentials is treated as a legacy server override.
+ */
 function isNewServer() {
-  return Boolean(runtimeConfig?.baseUrl);
+  return Boolean(runtimeConfig?.baseUrl && runtimeConfig?.email && runtimeConfig?.password);
 }
 
 const migrationHttpsAgent = env.MIGRATION_API_TLS_INSECURE
@@ -197,10 +203,12 @@ async function login() {
     );
   }
 
+  // Use runtime URL if set (legacy server override), otherwise fall back to env
+  const legacyBase = runtimeConfig?.baseUrl || env.MIGRATION_API_URL;
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${env.MIGRATION_API_URL}/mail/login`,
+        `${legacyBase}/mail/login`,
         null,
         migrationAxiosConfig({
           headers: { Authorization: `Basic ${basic}` },
@@ -640,7 +648,7 @@ async function pollReports(deltaMigration, fromMailId, {
 
   const reportsUrl = isNewServer()
     ? `${getActiveEmailBaseUrl()}/email/user/jobs`
-    : `${env.MIGRATION_API_URL}/mail/reports`;
+    : `${getActiveBaseUrl()}/mail/reports`;
 
   const maxPolls = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
   const executionService = require('../services/executionService');

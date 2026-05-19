@@ -1,4 +1,4 @@
-/** @typedef {'comparison'|'attachment'|'headers'|'subject'|'folder'|'infrastructure'|'mailbox'|'calendar'|'other'} MismatchKind */
+/** @typedef {'comparison'|'attachment'|'headers'|'subject'|'folder'|'infrastructure'|'mailbox'|'calendar'|'settings'|'other'} MismatchKind */
 
 /**
  * Rewrite older, verbose body-mismatch wording stored on past executions to the
@@ -177,6 +177,33 @@ class ValidationResult {
     };
     this.rulesAdvisory = null;
     this.mailboxSizeValidation = null;
+    /**
+     * Settings-level + mailbox-level validation for Outlook→Outlook runs.
+     * Only populated when sourceProvider === 'microsoft'.
+     */
+    this.settingsValidation = {
+      available: false,
+      inboxRules: {
+        sourceCount: 0,
+        destCount: 0,
+        missing: [],
+      },
+      conditionalFormatting: {
+        sourceCount: 0,
+        destCount: 0,
+        missing: [],
+      },
+      searchFolders: {
+        sourceCount: 0,
+        destCount: 0,
+        missing: [],
+      },
+      mailboxChecks: {
+        section40: { label: 'Conditional Formatting emails (§40)', found: 0, total: 8 },
+        section41: { label: 'Email Forwarding emails (§41)',       found: 0, total: 3 },
+        section42: { label: 'Search Folder emails (§42)',          found: 0, total: 13 },
+      },
+    };
     this.sourceData = {
       defaultLabels: [],
       customLabels: [],
@@ -206,13 +233,16 @@ class ValidationResult {
   }
 
   addMismatch(category, field, expected, actual) {
-    const kind = category === 'mail' ? 'mailbox' : category === 'calendar' ? 'calendar' : 'other';
+    const kind =
+      category === 'mail'     ? 'mailbox'  :
+      category === 'calendar' ? 'calendar' :
+      category === 'settings' ? 'settings' :
+      'other';
     const kindLabel =
-      category === 'mail'
-        ? 'Mailbox check'
-        : category === 'calendar'
-          ? 'Calendar check'
-          : 'Validation';
+      category === 'mail'     ? 'Mailbox check'  :
+      category === 'calendar' ? 'Calendar check' :
+      category === 'settings' ? 'Settings / Rules' :
+      'Validation';
     this.mismatches.push({
       category,
       kind,
@@ -287,6 +317,7 @@ class ValidationResult {
       contactsValidation: this.contactsValidation,
       rulesAdvisory: this.rulesAdvisory,
       mailboxSizeValidation: this.mailboxSizeValidation,
+      settingsValidation: this.settingsValidation,
       sourceData: this.sourceData,
       destinationData: this.destinationData,
       comparison: this.comparison,
