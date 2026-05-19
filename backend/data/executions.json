@@ -54220,5 +54220,99 @@
     "createdAt": "2026-05-19T05:01:48.821Z",
     "completedAt": "2026-05-19T05:03:31.712Z",
     "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "7d873878-6c42-4415-bfc0-33ab7b9dbd4b",
+    "context": {
+      "executionId": "7d873878-6c42-4415-bfc0-33ab7b9dbd4b",
+      "kind": "cf-browser",
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "granger@gajha.com",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-19T10:09:01.755Z",
+    "completedAt": "2026-05-19T10:10:32.720Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "7949decf-9429-4b68-b44e-5f5b2f6a128b",
+    "context": {
+      "executionId": "7949decf-9429-4b68-b44e-5f5b2f6a128b",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-19T10:50:07.989Z",
+    "completedAt": "2026-05-19T10:51:32.378Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "msg-val-1779188469310-u0a82",
+    "kind": "message-validation",
+    "context": {
+      "kind": "message-validation",
+      "combination": "Slack → Microsoft Teams",
+      "sourceLabel": "slack",
+      "destLabel": "microsoft",
+      "validatedAt": "2026-05-19T11:01:09.310Z"
+    },
+    "status": "COMPLETED",
+    "currentAgent": null,
+    "error": null,
+    "createdAt": "2026-05-19T11:01:09.310Z",
+    "completedAt": "2026-05-19T11:01:09.310Z",
+    "result": {
+      "validationSummary": {
+        "overallStatus": "MATCHED",
+        "kind": "message",
+        "combination": "Slack → Microsoft Teams",
+        "mismatches": [],
+        "messageValidation": {
+          "totalJobs": 0,
+          "completedJobs": 0,
+          "partialJobs": 0,
+          "inProgressJobs": 0,
+          "totalMessages": 0,
+          "processedMessages": 0,
+          "matchRate": 0,
+          "channelDetails": []
+        }
+      }
+    }
+  },
+  {
+    "executionId": "3f19efa6-27c1-403c-8e91-b2e6cae8cb80",
+    "context": {
+      "executionId": "3f19efa6-27c1-403c-8e91-b2e6cae8cb80",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-19T12:58:19.597Z",
+    "completedAt": "2026-05-19T12:59:53.370Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
   }
 ]
