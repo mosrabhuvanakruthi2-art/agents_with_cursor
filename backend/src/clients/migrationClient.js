@@ -60,7 +60,10 @@ function getActiveEmailBaseUrl() {
  * A runtime URL with no credentials is treated as a legacy server override.
  */
 function isNewServer() {
-  return Boolean(runtimeConfig?.baseUrl && runtimeConfig?.email && runtimeConfig?.password);
+  if (!runtimeConfig?.baseUrl || !runtimeConfig?.email || !runtimeConfig?.password) return false;
+  const url = runtimeConfig.baseUrl.toLowerCase();
+  // devemail and /proxyservices/v1 URLs are legacy servers even when credentials are provided
+  return !url.includes('devemail') && !url.includes('/proxyservices/');
 }
 
 const migrationHttpsAgent = env.MIGRATION_API_TLS_INSECURE
