@@ -3,7 +3,7 @@ import UserMapping from './UserMapping';
 
 export default function AgentForm({ onSubmit, loading }) {
   const [form, setForm] = useState({
-    testType: 'SANITY',
+    testType: 'E2E',
     migrationType: 'FULL',
     includeMail: true,
     includeCalendar: true,
@@ -52,7 +52,7 @@ export default function AgentForm({ onSubmit, loading }) {
             </button>
           )}
         </div>
-        <UserMapping onMappingComplete={handleMappingComplete} />
+        <UserMapping onMappingComplete={handleMappingComplete} agent="mail" />
         {mappedPairs && (
           <div className="rounded-lg p-3 text-sm" style={{ backgroundColor: '#eef1fb', border: '1px solid #c5cef5', color: '#0129ac' }}>
             {mappedPairs.length} pair{mappedPairs.length > 1 ? 's' : ''} mapped.
@@ -64,10 +64,11 @@ export default function AgentForm({ onSubmit, loading }) {
 
       <div>
         <label className="block text-sm font-medium mb-2" style={{ color: '#0129ac' }}>Test Type</label>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           {[
             { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
             { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
+            { value: 'E2E', label: 'End-to-End', desc: 'Full coverage test' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -90,6 +91,7 @@ export default function AgentForm({ onSubmit, loading }) {
         <div className="mt-2 text-xs" style={{ color: '#4a65c0' }}>
           {form.testType === 'SMOKE' && 'Creates 1 plain text email. Validates inbox accessibility and message count. Fastest.'}
           {form.testType === 'SANITY' && 'Creates plain text, HTML, attachment emails + labels + drafts. Validates folders, subjects, and attachments.'}
+          {form.testType === 'E2E' && 'Full coverage: all email types, inline images, sent mail, labels, drafts, calendar events. Deepest validation.'}
         </div>
       </div>
 

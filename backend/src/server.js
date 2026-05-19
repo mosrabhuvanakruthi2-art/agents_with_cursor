@@ -87,10 +87,7 @@ async function start() {
     const { loadFromMongo } = require('./clients/oauthTokenStore');
     await loadFromMongo();
   } catch (e) {
-    if (env.MONGODB_URI) {
-      logger.error(`MongoDB connection failed: ${e?.message || e}`);
-      process.exit(1);
-    }
+    logger.warn(`MongoDB unavailable — running without persistence: ${e?.message || e}`);
   }
 
   // Auto-install pre-issued Slack user token from .env (if set)

@@ -34,8 +34,9 @@ export default function UserMapping({
   onSourceProviderChange,
   srcProviderOverride,
   dstProviderOverride,
+  agent = 'message',
 }) {
-  const pk = includeSlack ? 'msg-' : '';
+  const pk = agent === 'mail' ? 'mail-' : includeSlack ? 'msg-' : '';
 
   // Default providers derived from the override; fall back to persisted value.
   const [srcProvider, setSrcProvider] = usePersistedState(
@@ -96,6 +97,17 @@ export default function UserMapping({
   const [accounts, setAccounts] = useState([]);  // [{ provider, email, connectedAt }]
   const [accountsLoading, setAccountsLoading] = useState(true);
 
+  // Auto-select the first connected account when email is empty (on load or provider change)
+  useEffect(() => {
+    const acc = accounts.find((a) => a.provider === srcProvider);
+    if (acc && !srcEmail) setSrcEmail(acc.email);
+  }, [accounts, srcProvider]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const acc = accounts.find((a) => a.provider === dstProvider);
+    if (acc && !dstEmail) setDstEmail(acc.email);
+  }, [accounts, dstProvider]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Login modal
   const [loginTarget, setLoginTarget] = useState(null); // 'source' | 'destination'
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -107,8 +119,7 @@ export default function UserMapping({
 
   const loadAccounts = useCallback(async () => {
     try {
-      // Message Agent view only — keeps Run Agent's account list separate.
-      const res = await getConnectedAccounts('message');
+      const res = await getConnectedAccounts(agent);
       const list = res?.data?.accounts;
       setAccounts(Array.isArray(list) ? list : []);
     } catch {
@@ -116,7 +127,7 @@ export default function UserMapping({
     } finally {
       setAccountsLoading(false);
     }
-  }, []);
+  }, [agent]);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
 
@@ -170,12 +181,11 @@ export default function UserMapping({
     try {
       let res;
       if (providerKey === 'slack') {
-        res = await getSlackOAuthUrl('popup', 'message');
+        res = await getSlackOAuthUrl('popup', agent);
       } else if (providerKey === 'google') {
-        // Message Agent flow → Google Chat scopes only (no Gmail/Calendar).
-        res = await getGoogleOAuthUrl('popup', googleTenant, 'message');
+        res = await getGoogleOAuthUrl('popup', googleTenant, agent);
       } else {
-        res = await getMicrosoftOAuthUrl('popup', msTenant, 'message');
+        res = await getMicrosoftOAuthUrl('popup', msTenant, agent);
       }
       const authUrl = res?.data?.url;
       if (!authUrl) {
@@ -197,7 +207,7 @@ export default function UserMapping({
     setOauthError(null);
     setOauthLoading(true);
     try {
-      const res = await connectSlackToken(token, 'message');
+      const res = await connectSlackToken(token, agent);
       const email = res?.data?.email;
       if (!email) throw new Error('Token accepted but no email returned');
       if (target === 'source') setSrcEmail(email);
@@ -215,7 +225,7 @@ export default function UserMapping({
     setOauthError(null);
     setOauthLoading(true);
     try {
-      const res = await connectMicrosoftAdmin(email, msTenant, 'message');
+      const res = await connectMicrosoftAdmin(email, msTenant, agent);
       const connectedEmail = res?.data?.email || email;
       if (target === 'source') setSrcEmail(connectedEmail);
       else setDstEmail(connectedEmail);
@@ -417,7 +427,12 @@ export default function UserMapping({
           email={srcEmail}
           connectedAccounts={srcAccounts}
           accountsLoading={accountsLoading}
-          onProviderChange={(p) => { setSrcProvider(p); setSrcEmail(''); setFetched(false); }}
+          onProviderChange={(p) => {
+            setSrcProvider(p);
+            const first = accounts.find((a) => a.provider === p);
+            setSrcEmail(first ? first.email : '');
+            setFetched(false);
+          }}
           onEmailChange={setSrcEmail}
           onLogin={() => { setLoginTarget('source'); setOauthError(null); }}
           onSignOut={(email) => handleSignOut(srcProvider, email)}
@@ -429,7 +444,12 @@ export default function UserMapping({
           email={dstEmail}
           connectedAccounts={dstAccounts}
           accountsLoading={accountsLoading}
-          onProviderChange={(p) => { setDstProvider(p); setDstEmail(''); setFetched(false); }}
+          onProviderChange={(p) => {
+            setDstProvider(p);
+            const first = accounts.find((a) => a.provider === p);
+            setDstEmail(first ? first.email : '');
+            setFetched(false);
+          }}
           onEmailChange={setDstEmail}
           onLogin={() => { setLoginTarget('destination'); setOauthError(null); }}
           onSignOut={(email) => handleSignOut(dstProvider, email)}

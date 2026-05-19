@@ -51944,5 +51944,2281 @@
     "createdAt": "2026-05-01T09:58:05.193Z",
     "completedAt": "2026-05-01T09:59:29.822Z",
     "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "feab7ada-8868-4064-8629-ab140c1d840f",
+    "context": {
+      "executionId": "feab7ada-8868-4064-8629-ab140c1d840f",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-04T14:32:00.750Z",
+    "completedAt": "2026-05-04T14:32:56.712Z",
+    "progress": "page.waitForTimeout: Target page, context or browser has been closed"
+  },
+  {
+    "executionId": "f7ecc4c4-d9a0-4689-9a93-c92ee729577d",
+    "context": {
+      "executionId": "f7ecc4c4-d9a0-4689-9a93-c92ee729577d",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-04T15:12:41.473Z",
+    "completedAt": "2026-05-04T15:13:58.000Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "d68c66c3-2412-4c73-be26-ccddc9d39191",
+    "context": {
+      "executionId": "d68c66c3-2412-4c73-be26-ccddc9d39191",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-04T16:06:37.438Z",
+    "completedAt": "2026-05-04T16:07:57.626Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "ac18105c-3df1-43c7-97ed-838c9ba3c15c",
+    "context": {
+      "executionId": "ac18105c-3df1-43c7-97ed-838c9ba3c15c",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-06T13:52:02.740Z",
+    "completedAt": "2026-05-06T13:53:28.633Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "862a7d2a-932b-42c9-9522-fc7b14f114c5",
+    "context": {
+      "executionId": "862a7d2a-932b-42c9-9522-fc7b14f114c5",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T13:41:45.308Z",
+    "completedAt": "2026-05-07T13:43:14.034Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "e0399fef-55e9-4533-86ce-f262e978fc80",
+    "context": {
+      "executionId": "e0399fef-55e9-4533-86ce-f262e978fc80",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T14:12:24.385Z",
+    "completedAt": "2026-05-07T14:13:53.798Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "4873e89d-ea25-44be-a84e-b313dda1e6e0",
+    "context": {
+      "executionId": "4873e89d-ea25-44be-a84e-b313dda1e6e0",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T14:23:23.262Z",
+    "completedAt": "2026-05-07T14:25:00.419Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "cecfb1e8-6dfc-41ab-bdc8-d7c8c1d1a6c5",
+    "context": {
+      "executionId": "cecfb1e8-6dfc-41ab-bdc8-d7c8c1d1a6c5",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T14:27:40.095Z",
+    "completedAt": "2026-05-07T14:29:11.044Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "c2fbc29a-09b6-4055-bb1a-a6feb61d16fc",
+    "context": {
+      "executionId": "c2fbc29a-09b6-4055-bb1a-a6feb61d16fc",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T14:42:37.383Z",
+    "completedAt": "2026-05-07T14:44:19.701Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "79b8fe17-482e-423c-b62d-e90fa017b36c",
+    "context": {
+      "executionId": "79b8fe17-482e-423c-b62d-e90fa017b36c",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-07T14:44:58.483Z",
+    "completedAt": "2026-05-07T14:46:45.212Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "75331495-44dd-4e5a-af21-ff74e04c36d5",
+    "context": {
+      "executionId": "75331495-44dd-4e5a-af21-ff74e04c36d5",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-08T08:29:47.383Z",
+    "completedAt": "2026-05-08T08:31:38.912Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "a8a4bb9b-6e28-4851-8aae-74213bc4001d",
+    "context": {
+      "executionId": "a8a4bb9b-6e28-4851-8aae-74213bc4001d",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T10:00:22.459Z",
+    "completedAt": "2026-05-11T10:02:19.608Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "a8150300-0ef2-4b18-9fba-3185cca9e018",
+    "context": {
+      "executionId": "a8150300-0ef2-4b18-9fba-3185cca9e018",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T10:30:28.247Z",
+    "completedAt": "2026-05-11T10:32:01.660Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "524a4ea9-445d-4109-987e-f9a41fae2fe6",
+    "context": {
+      "executionId": "524a4ea9-445d-4109-987e-f9a41fae2fe6",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T10:44:30.902Z",
+    "completedAt": "2026-05-11T10:46:06.932Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "868f5dc7-5315-4889-b6f6-23eeb285fb0a",
+    "context": {
+      "executionId": "868f5dc7-5315-4889-b6f6-23eeb285fb0a",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T11:16:21.125Z",
+    "completedAt": "2026-05-11T11:17:54.719Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "668e64fd-339f-416a-a40c-6ae1b5987dae",
+    "context": {
+      "executionId": "668e64fd-339f-416a-a40c-6ae1b5987dae",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T11:32:12.151Z",
+    "completedAt": "2026-05-11T11:34:03.776Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "73953895-eac8-4417-b421-0c7fea5a1075",
+    "context": {
+      "executionId": "73953895-eac8-4417-b421-0c7fea5a1075",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T11:35:02.215Z",
+    "completedAt": "2026-05-11T11:35:06.165Z",
+    "progress": "page.goto: Target page, context or browser has been closed\nCall log:\n\u001b[2m  - navigating to \"https://s2cdev.cloudfuze.com/\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "executionId": "02de0939-111c-446d-b4ad-759a813dd86c",
+    "context": {
+      "executionId": "02de0939-111c-446d-b4ad-759a813dd86c",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T11:35:06.540Z",
+    "completedAt": "2026-05-11T11:35:17.058Z",
+    "progress": "page.waitForTimeout: Target page, context or browser has been closed"
+  },
+  {
+    "executionId": "f6aa61b5-8fae-460d-93c0-5580d6cb6cc1",
+    "context": {
+      "executionId": "f6aa61b5-8fae-460d-93c0-5580d6cb6cc1",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T11:58:35.673Z",
+    "completedAt": "2026-05-11T12:00:36.477Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "4cb66b23-03fb-460c-9ef1-6df821fff62f",
+    "context": {
+      "executionId": "4cb66b23-03fb-460c-9ef1-6df821fff62f",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T12:04:32.814Z",
+    "completedAt": "2026-05-11T12:06:21.988Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "219fb1df-d357-403e-87f8-f984939e53d2",
+    "context": {
+      "executionId": "219fb1df-d357-403e-87f8-f984939e53d2",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T12:06:54.315Z",
+    "completedAt": "2026-05-11T12:08:39.873Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "fdfe76eb-eb37-4598-b410-dcaefd8b8e43",
+    "context": {
+      "executionId": "fdfe76eb-eb37-4598-b410-dcaefd8b8e43",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T12:19:23.897Z",
+    "completedAt": "2026-05-11T12:21:12.567Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "d7bb32e6-b441-4c62-b62d-dcb3b2a5b2f5",
+    "context": {
+      "executionId": "d7bb32e6-b441-4c62-b62d-dcb3b2a5b2f5",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-11T15:37:28.140Z",
+    "completedAt": "2026-05-11T15:39:08.782Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "05ac545c-e000-432f-82de-527c8b8bcb3c",
+    "context": {
+      "executionId": "05ac545c-e000-432f-82de-527c8b8bcb3c",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T14:09:24.537Z",
+    "completedAt": "2026-05-12T14:11:12.772Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "295fbc4d-f445-4f08-b419-f05e5180c7d9",
+    "context": {
+      "executionId": "295fbc4d-f445-4f08-b419-f05e5180c7d9",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T14:11:51.262Z",
+    "completedAt": "2026-05-12T14:13:42.821Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "c88a4595-cbbb-4f52-b741-1aa2e926aa1d",
+    "context": {
+      "executionId": "c88a4595-cbbb-4f52-b741-1aa2e926aa1d",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T14:39:34.123Z",
+    "completedAt": "2026-05-12T14:39:35.424Z",
+    "progress": "page.goto: net::ERR_ABORTED; maybe frame was detached?\nCall log:\n\u001b[2m  - navigating to \"https://s2cdev.cloudfuze.com/\", waiting until \"domcontentloaded\"\u001b[22m\n"
+  },
+  {
+    "executionId": "217b19c6-0a35-46d5-b448-1d9c6f16ce5a",
+    "context": {
+      "executionId": "217b19c6-0a35-46d5-b448-1d9c6f16ce5a",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T14:39:35.602Z",
+    "completedAt": "2026-05-12T14:41:26.105Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "7184ec7b-b285-4525-9dca-b469c8a16d19",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "7184ec7b-b285-4525-9dca-b469c8a16d19"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "7184ec7b-b285-4525-9dca-b469c8a16d19",
+      "status": "COMPLETED",
+      "duration": 1595,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:37.896Z",
+          "completedAt": "2026-05-12T15:28:39.442Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "mia@pepperwood.club",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": false,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 1,
+            "postsSucceeded": 1,
+            "postsFailed": 0,
+            "skipped": [],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "mia@pepperwood.club",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": false,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 1,
+        "postsSucceeded": 1,
+        "postsFailed": 0,
+        "skipped": [],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:37.792Z",
+    "completedAt": "2026-05-12T15:28:39.443Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "a88534ee-2cfb-48bc-aa8f-c8fdda9b3463",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "mia@gajha.com",
+      "destinationEmail": "granger@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "a88534ee-2cfb-48bc-aa8f-c8fdda9b3463"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "a88534ee-2cfb-48bc-aa8f-c8fdda9b3463",
+      "status": "COMPLETED",
+      "duration": 717,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:39.603Z",
+          "completedAt": "2026-05-12T15:28:40.268Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "mia@gajha.com",
+            "effectiveSourceEmail": "mia@gajha.com",
+            "usingAdminFallback": false,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "mia@gajha.com",
+        "effectiveSourceEmail": "mia@gajha.com",
+        "usingAdminFallback": false,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:39.498Z",
+    "completedAt": "2026-05-12T15:28:40.270Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "b99e51b4-0226-4585-be26-60a69c8de758",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "sophia@pepperwood.club",
+      "destinationEmail": "sophia@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "b99e51b4-0226-4585-be26-60a69c8de758"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "b99e51b4-0226-4585-be26-60a69c8de758",
+      "status": "COMPLETED",
+      "duration": 118,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:40.445Z",
+          "completedAt": "2026-05-12T15:28:40.498Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "sophia@pepperwood.club",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "sophia@pepperwood.club",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:40.324Z",
+    "completedAt": "2026-05-12T15:28:40.499Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "077a223d-f1f2-480d-b09d-354d7c5a37b5",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "santosh@cloudfuze.com",
+      "destinationEmail": "santosh@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "077a223d-f1f2-480d-b09d-354d7c5a37b5"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "077a223d-f1f2-480d-b09d-354d7c5a37b5",
+      "status": "COMPLETED",
+      "duration": 74,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:40.653Z",
+          "completedAt": "2026-05-12T15:28:40.675Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "santosh@cloudfuze.com",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "santosh@cloudfuze.com",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:40.553Z",
+    "completedAt": "2026-05-12T15:28:40.676Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "eb062a43-4e8f-4823-951a-d3187566a654",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "alex@filefuze.co",
+      "destinationEmail": "alex@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "eb062a43-4e8f-4823-951a-d3187566a654"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "eb062a43-4e8f-4823-951a-d3187566a654",
+      "status": "COMPLETED",
+      "duration": 79,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:40.831Z",
+          "completedAt": "2026-05-12T15:28:40.856Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "alex@filefuze.co",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "alex@filefuze.co",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:40.725Z",
+    "completedAt": "2026-05-12T15:28:40.857Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "886da771-c1c0-4fb9-a0d7-4e8aa69b30bd",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "dan@voohalu.co",
+      "destinationEmail": "dan@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "886da771-c1c0-4fb9-a0d7-4e8aa69b30bd"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "886da771-c1c0-4fb9-a0d7-4e8aa69b30bd",
+      "status": "COMPLETED",
+      "duration": 79,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:41.002Z",
+          "completedAt": "2026-05-12T15:28:41.026Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "dan@voohalu.co",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "dan@voohalu.co",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:40.907Z",
+    "completedAt": "2026-05-12T15:28:41.027Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "cb8e59f0-95cb-44ad-a7f2-a9c749eca8a9",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "granger@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A8ALHBCCV"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A8ALHBCCV",
+          "name": "cfqamsg-channelmention-pub-channel",
+          "channelName": "cfqamsg-channelmention-pub-channel",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-channelmention-pub-channel-api-rea-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768305704",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testsanity8"
+      ],
+      "executionId": "cb8e59f0-95cb-44ad-a7f2-a9c749eca8a9"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "cb8e59f0-95cb-44ad-a7f2-a9c749eca8a9",
+      "status": "COMPLETED",
+      "duration": 76,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T15:28:41.162Z",
+          "completedAt": "2026-05-12T15:28:41.186Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "granger@gajha.com",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testsanity8",
+                "target": "C0A8ALHBCCV",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "granger@gajha.com",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testsanity8",
+            "target": "C0A8ALHBCCV",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T15:28:41.082Z",
+    "completedAt": "2026-05-12T15:28:41.189Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "f9f1a33c-6d36-49ca-961e-d3c6592c16be",
+    "context": {
+      "executionId": "f9f1a33c-6d36-49ca-961e-d3c6592c16be",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T15:29:01.201Z",
+    "completedAt": "2026-05-12T15:30:48.974Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "1006be31-7b06-4f4f-bcde-3c51f55d9572",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "1006be31-7b06-4f4f-bcde-3c51f55d9572"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "1006be31-7b06-4f4f-bcde-3c51f55d9572",
+      "status": "COMPLETED",
+      "duration": 1648,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:11.784Z",
+          "completedAt": "2026-05-12T16:22:13.381Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "mia@pepperwood.club",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": false,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 1,
+            "postsSucceeded": 1,
+            "postsFailed": 0,
+            "skipped": [],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "mia@pepperwood.club",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": false,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 1,
+        "postsSucceeded": 1,
+        "postsFailed": 0,
+        "skipped": [],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:11.682Z",
+    "completedAt": "2026-05-12T16:22:13.384Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "75212f17-9c67-4db0-b638-44b369c2db70",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "mia@gajha.com",
+      "destinationEmail": "granger@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "75212f17-9c67-4db0-b638-44b369c2db70"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "75212f17-9c67-4db0-b638-44b369c2db70",
+      "status": "COMPLETED",
+      "duration": 587,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:13.524Z",
+          "completedAt": "2026-05-12T16:22:14.065Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "mia@gajha.com",
+            "effectiveSourceEmail": "mia@gajha.com",
+            "usingAdminFallback": false,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "mia@gajha.com",
+        "effectiveSourceEmail": "mia@gajha.com",
+        "usingAdminFallback": false,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:13.433Z",
+    "completedAt": "2026-05-12T16:22:14.066Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "58dc5ea4-06bd-4e7b-8613-eff0685c57f7",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "sophia@pepperwood.club",
+      "destinationEmail": "sophia@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "58dc5ea4-06bd-4e7b-8613-eff0685c57f7"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "58dc5ea4-06bd-4e7b-8613-eff0685c57f7",
+      "status": "COMPLETED",
+      "duration": 77,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:14.216Z",
+          "completedAt": "2026-05-12T16:22:14.243Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "sophia@pepperwood.club",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "sophia@pepperwood.club",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:14.118Z",
+    "completedAt": "2026-05-12T16:22:14.244Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "6621ec65-4a90-414c-9f48-cf69b8058a30",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "santosh@cloudfuze.com",
+      "destinationEmail": "santosh@gajha.com",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "6621ec65-4a90-414c-9f48-cf69b8058a30"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "6621ec65-4a90-414c-9f48-cf69b8058a30",
+      "status": "COMPLETED",
+      "duration": 111,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:14.499Z",
+          "completedAt": "2026-05-12T16:22:14.543Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "santosh@cloudfuze.com",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "santosh@cloudfuze.com",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:14.336Z",
+    "completedAt": "2026-05-12T16:22:14.545Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "d196d784-596d-4fb6-8c5f-302a739667b1",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "alex@filefuze.co",
+      "destinationEmail": "alex@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "d196d784-596d-4fb6-8c5f-302a739667b1"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "d196d784-596d-4fb6-8c5f-302a739667b1",
+      "status": "COMPLETED",
+      "duration": 71,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:14.691Z",
+          "completedAt": "2026-05-12T16:22:14.713Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "alex@filefuze.co",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "alex@filefuze.co",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:14.595Z",
+    "completedAt": "2026-05-12T16:22:14.714Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "5840e0f0-6003-49cd-a591-6be7334cc99e",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "dan@voohalu.co",
+      "destinationEmail": "dan@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "5840e0f0-6003-49cd-a591-6be7334cc99e"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "5840e0f0-6003-49cd-a591-6be7334cc99e",
+      "status": "COMPLETED",
+      "duration": 76,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:14.862Z",
+          "completedAt": "2026-05-12T16:22:14.888Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "dan@voohalu.co",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "dan@voohalu.co",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:14.762Z",
+    "completedAt": "2026-05-12T16:22:14.888Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "0c4734df-eba9-4a1f-9321-f27c2e7ddafc",
+    "context": {
+      "kind": "message",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "granger@filefuze.co",
+      "sourceAdminEmail": "mia@pepperwood.club",
+      "migrationType": "FULL",
+      "testType": "SANITY",
+      "messageCombination": "Slack → Microsoft Teams",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "teams",
+      "channelIds": [
+        "C0A9T03G1QE"
+      ],
+      "dmIds": [],
+      "channelObjects": [
+        {
+          "id": "C0A9T03G1QE",
+          "name": "cfqamsg-link-of-a-message",
+          "channelName": "cfqamsg-link-of-a-message",
+          "channelType": "public",
+          "workSpaceName": "",
+          "destChannelName": "cfqamsg-link-of-a-message-s2c-new",
+          "destTeamName": "Reports page",
+          "channelDate": "1768927152",
+          "externalShared": false
+        }
+      ],
+      "dmObjects": [],
+      "selectedTestCaseIds": [
+        "Testscenario45"
+      ],
+      "executionId": "0c4734df-eba9-4a1f-9321-f27c2e7ddafc"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "MessageTestDataAgent",
+    "result": {
+      "kind": "message",
+      "phase": "seed",
+      "executionId": "0c4734df-eba9-4a1f-9321-f27c2e7ddafc",
+      "status": "COMPLETED",
+      "duration": 73,
+      "agentResults": [
+        {
+          "name": "MessageTestDataAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-05-12T16:22:15.041Z",
+          "completedAt": "2026-05-12T16:22:15.065Z",
+          "result": {
+            "combination": "Slack → Microsoft Teams",
+            "sourcePlatform": "slack",
+            "destinationPlatform": "teams",
+            "sourceEmail": "granger@gajha.com",
+            "effectiveSourceEmail": "mia@pepperwood.club",
+            "usingAdminFallback": true,
+            "totalTargets": 1,
+            "totalCases": 1,
+            "repeatCount": 1,
+            "plannedPosts": 1,
+            "postsAttempted": 0,
+            "postsSucceeded": 0,
+            "postsFailed": 0,
+            "skipped": [
+              {
+                "case": "Testscenario45",
+                "target": "C0A9T03G1QE",
+                "reason": "already seeded"
+              }
+            ],
+            "errors": [],
+            "livePosting": true,
+            "liveSlackPosting": true
+          },
+          "error": null
+        }
+      ],
+      "sourceData": {
+        "combination": "Slack → Microsoft Teams",
+        "sourcePlatform": "slack",
+        "destinationPlatform": "teams",
+        "sourceEmail": "granger@gajha.com",
+        "effectiveSourceEmail": "mia@pepperwood.club",
+        "usingAdminFallback": true,
+        "totalTargets": 1,
+        "totalCases": 1,
+        "repeatCount": 1,
+        "plannedPosts": 1,
+        "postsAttempted": 0,
+        "postsSucceeded": 0,
+        "postsFailed": 0,
+        "skipped": [
+          {
+            "case": "Testscenario45",
+            "target": "C0A9T03G1QE",
+            "reason": "already seeded"
+          }
+        ],
+        "errors": [],
+        "livePosting": true,
+        "liveSlackPosting": true
+      }
+    },
+    "error": null,
+    "createdAt": "2026-05-12T16:22:14.942Z",
+    "completedAt": "2026-05-12T16:22:15.066Z",
+    "progress": "Seeding complete — ready to initiate migration"
+  },
+  {
+    "executionId": "18d80920-ef27-4532-957f-c6b7500252b6",
+    "context": {
+      "executionId": "18d80920-ef27-4532-957f-c6b7500252b6",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-12T16:22:37.561Z",
+    "completedAt": "2026-05-12T16:24:29.764Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "ddab209a-9bda-4dcb-a6c7-08dde45721b1",
+    "context": {
+      "executionId": "ddab209a-9bda-4dcb-a6c7-08dde45721b1",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-14T09:25:47.524Z",
+    "completedAt": "2026-05-14T09:27:19.325Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "6dcc1458-047b-4860-8091-20e297579757",
+    "context": {
+      "executionId": "6dcc1458-047b-4860-8091-20e297579757",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Done",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-14T09:29:08.486Z",
+    "completedAt": "2026-05-14T09:30:38.844Z",
+    "progress": "Migration started in CloudFuze"
+  },
+  {
+    "executionId": "msg-val-1778751710395-rbjpo",
+    "kind": "message-validation",
+    "context": {
+      "kind": "message-validation",
+      "combination": "Slack → Microsoft Teams",
+      "sourceLabel": "slack",
+      "destLabel": "microsoft",
+      "validatedAt": "2026-05-14T09:41:50.395Z"
+    },
+    "status": "COMPLETED",
+    "currentAgent": null,
+    "error": null,
+    "createdAt": "2026-05-14T09:41:50.395Z",
+    "completedAt": "2026-05-14T09:41:50.395Z",
+    "result": {
+      "validationSummary": {
+        "overallStatus": "MATCHED",
+        "kind": "message",
+        "combination": "Slack → Microsoft Teams",
+        "mismatches": [],
+        "messageValidation": {
+          "totalJobs": 0,
+          "completedJobs": 0,
+          "partialJobs": 0,
+          "inProgressJobs": 0,
+          "totalMessages": 0,
+          "processedMessages": 0,
+          "matchRate": 0,
+          "channelDetails": []
+        }
+      }
+    }
+  },
+  {
+    "executionId": "65f19dd5-72c0-4234-9b86-56eb1e7e4ffd",
+    "context": {
+      "executionId": "65f19dd5-72c0-4234-9b86-56eb1e7e4ffd",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "RUNNING",
+    "currentAgent": "LOGIN",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-18T14:11:56.869Z",
+    "completedAt": null,
+    "progress": "Logged in — https://s2cdev.cloudfuze.com/pages/cloudmanager.html?ver=1231"
+  },
+  {
+    "executionId": "d062c7f1-a2cd-41a8-978b-1bf3811505ca",
+    "context": {
+      "executionId": "d062c7f1-a2cd-41a8-978b-1bf3811505ca",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-18T14:12:19.606Z",
+    "completedAt": "2026-05-18T14:12:30.496Z",
+    "progress": "page.waitForTimeout: Target page, context or browser has been closed"
+  },
+  {
+    "executionId": "a40574c6-0e73-4503-befc-bc41121404f4",
+    "context": {
+      "executionId": "a40574c6-0e73-4503-befc-bc41121404f4",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-18T14:12:57.728Z",
+    "completedAt": "2026-05-18T14:14:27.849Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "msg-val-1779114521257-1xifi",
+    "kind": "message-validation",
+    "context": {
+      "kind": "message-validation",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "sourceLabel": "microsoft",
+      "destLabel": "microsoft",
+      "validatedAt": "2026-05-18T14:28:41.257Z"
+    },
+    "status": "COMPLETED",
+    "currentAgent": null,
+    "error": null,
+    "createdAt": "2026-05-18T14:28:41.257Z",
+    "completedAt": "2026-05-18T14:28:41.257Z",
+    "result": {
+      "validationSummary": {
+        "overallStatus": "MATCHED",
+        "kind": "message",
+        "combination": "Microsoft Teams → Microsoft Teams",
+        "mismatches": [],
+        "messageValidation": {
+          "totalJobs": 0,
+          "completedJobs": 0,
+          "partialJobs": 0,
+          "inProgressJobs": 0,
+          "totalMessages": 0,
+          "processedMessages": 0,
+          "matchRate": 0,
+          "channelDetails": []
+        }
+      }
+    }
+  },
+  {
+    "executionId": "4dcb45e6-0570-406c-9a4c-b5abe413192f",
+    "context": {
+      "executionId": "4dcb45e6-0570-406c-9a4c-b5abe413192f",
+      "kind": "cf-browser",
+      "sourceEmail": "granger@gajha.com",
+      "destinationEmail": "erik@filefuze.co",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-18T14:41:11.123Z",
+    "completedAt": "2026-05-18T14:42:44.597Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "610a90c8-fe71-46bf-a323-97e8cdac33f5",
+    "context": {
+      "executionId": "610a90c8-fe71-46bf-a323-97e8cdac33f5",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "microsoft",
+      "destinationPlatform": "microsoft",
+      "combination": "Microsoft Teams → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-05-19T05:01:48.821Z",
+    "completedAt": "2026-05-19T05:03:31.712Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
   }
 ]
