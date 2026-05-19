@@ -178,8 +178,20 @@ export default function MessageAgentForm({
   const cfDstAccounts = useMemo(() => cfAccounts.filter(a => a.cloudName === cfDstPlatform), [cfAccounts, cfDstPlatform]);
 
   useEffect(() => {
+    // For same-platform migrations (T2T, S2S, GC2GC) the source and destination account lists
+    // are identical — auto-selecting index 0 for both would send the same cloud ID twice,
+    // causing CloudFuze to treat it as a self-migration and mark it "Conflict".
+    const effectiveSrcId = cfSrcCloudId || (cfSrcAccounts.length > 0 ? cfSrcAccounts[0].id : '');
     if (cfSrcAccounts.length > 0 && !cfSrcCloudId) setCfSrcCloudId(cfSrcAccounts[0].id);
-    if (cfDstAccounts.length > 0 && !cfDstCloudId) setCfDstCloudId(cfDstAccounts[0].id);
+    if (cfDstAccounts.length > 0 && !cfDstCloudId) {
+      const isSamePlatform = cfSrcPlatform && cfSrcPlatform === cfDstPlatform;
+      if (isSamePlatform && effectiveSrcId) {
+        const different = cfDstAccounts.find(a => a.id !== effectiveSrcId);
+        setCfDstCloudId(different ? different.id : cfDstAccounts[0].id);
+      } else {
+        setCfDstCloudId(cfDstAccounts[0].id);
+      }
+    }
   }, [cfSrcAccounts, cfDstAccounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

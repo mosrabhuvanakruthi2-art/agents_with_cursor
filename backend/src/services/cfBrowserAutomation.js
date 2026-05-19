@@ -730,23 +730,43 @@ class CFBrowserAutomation extends EventEmitter {
         }
       }
 
-      // Pass 2: platform (cloudname) + email — cloudname is mandatory, email preferred
+      // Pass 2: platform (cloudname) + email
+      // When email is known: require it to match (prevents wrong-account selection in T2T where
+      // both source and destination share the same platform with different emails).
+      // When email is unknown: match any radio for this platform (original behaviour).
       for (const r of pool) {
         const cn   = norm(r.getAttribute('cloudname') || r.getAttribute('data-cloudname') || '');
         const mail = (r.getAttribute('mail') || r.getAttribute('data-mail') || r.getAttribute('email') || '').toLowerCase();
         if (!cn) continue;
         const platformOk = labelNorms.some(l => cn.includes(l) || l.includes(cn));
-        if (platformOk && (!email || !mail || mail.includes(email.toLowerCase()))) {
+        if (!platformOk) continue;
+        if (email) {
+          // Email provided: require the button to have a matching mail attribute.
+          // If no mail attribute exists on ANY button, fall through to Pass 3 for graceful degradation.
+          if (mail && mail.includes(email.toLowerCase())) {
+            return { ok: true, how: 'platform+email', globalIdx: allRadios.indexOf(r) };
+          }
+        } else {
+          // No email: match first platform radio (cloud-ID match in Pass 1 already tried).
           return { ok: true, how: 'platform+email', globalIdx: allRadios.indexOf(r) };
         }
       }
 
-      // Pass 3: platform only — cloudname matches, ignore email
-      for (const r of pool) {
-        const cn = norm(r.getAttribute('cloudname') || r.getAttribute('data-cloudname') || '');
-        if (!cn) continue;
-        if (labelNorms.some(l => cn.includes(l) || l.includes(cn))) {
-          return { ok: true, how: 'platform-only', globalIdx: allRadios.indexOf(r) };
+      // Pass 3: platform only — cloudname matches, ignore email.
+      // SKIPPED when email is provided: for same-platform migrations (T2T, S2S, GC2GC) a platform-only
+      // match would silently pick the wrong account.  Only use this pass when no email was given
+      // (i.e., the caller doesn't care which account is selected) or when no radio has a mail attr
+      // (legacy CF builds that don't emit the mail attribute at all).
+      const anyRadioHasMail = pool.some(r =>
+        !!(r.getAttribute('mail') || r.getAttribute('data-mail') || r.getAttribute('email'))
+      );
+      if (!email || !anyRadioHasMail) {
+        for (const r of pool) {
+          const cn = norm(r.getAttribute('cloudname') || r.getAttribute('data-cloudname') || '');
+          if (!cn) continue;
+          if (labelNorms.some(l => cn.includes(l) || l.includes(cn))) {
+            return { ok: true, how: 'platform-only', globalIdx: allRadios.indexOf(r) };
+          }
         }
       }
 
@@ -2031,44 +2051,14 @@ class CFBrowserAutomation extends EventEmitter {
       }
     }
 
-    // Pass D: if nothing matched at all, try select-all then individual row fallback
+    // Pass D: select-all fallback deliberately REMOVED.
+    // Selecting all channels when name/ID matching fails causes CloudFuze to initiate migration
+    // for every channel — including ones not requested — which produces "Conflict" status for
+    // channels already migrated and silently migrates unintended channels.
+    // Caller must ensure channelList contains correct IDs; if nothing matched, log and stop.
     if (matched === 0 && channelList.length > 0) {
-      this.log('CHANNELS', 'No rows matched by name/ID — attempting select-all on this tab');
-
-      const headerChecked = await this.page.evaluate(() => {
-        const headerCb = document.querySelector(
-          'thead input[type="checkbox"], th input[type="checkbox"], ' +
-          '[class*="select-all"], [id*="selectAll"], [id*="select-all"]'
-        );
-        if (headerCb && !headerCb.checked) {
-          headerCb.click();
-          headerCb.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
-        return false;
-      }).catch(() => false);
-
-      if (headerChecked) {
-        await this.page.waitForTimeout(WAIT_M);
-        this.log('CHANNELS', 'Select-all via header checkbox ✓');
-      } else {
-        const selectCount = await this.page.evaluate(() => {
-          let n = 0;
-          document.querySelectorAll('tbody tr').forEach(row => {
-            const cb = row.querySelector('input[type="checkbox"]');
-            if (cb && !cb.checked) { cb.click(); cb.dispatchEvent(new Event('change', { bubbles: true })); n++; return; }
-            const rb = row.querySelector('input[type="radio"]');
-            if (rb && !rb.checked) { rb.click(); rb.dispatchEvent(new Event('change', { bubbles: true })); n++; return; }
-            const ind = row.querySelector(
-              '[class*="select"]:not(select), [class*="check"]:not(input), ' +
-              '[class*="circle"], [class*="toggle"], [class*="indicator"]'
-            );
-            if (ind) { ind.click(); n++; }
-          });
-          return n;
-        }).catch(() => 0);
-        this.log('CHANNELS', `Select-all row fallback: ${selectCount} rows selected`);
-      }
+      this.log('CHANNELS', `⚠ 0/${channelList.length} channels matched — aborting channel selection to prevent accidental migration of wrong channels`);
+      this.err('CHANNELS', `Channel rows not found in CF table. Requested: ${channelList.map(c => c.channelName || c.name || c.id).join(', ')}`);
     } else {
       this.log('CHANNELS', `${matched}/${channelList.length} channels matched on this tab`);
     }
