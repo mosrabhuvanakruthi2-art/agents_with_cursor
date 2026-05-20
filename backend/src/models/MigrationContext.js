@@ -32,6 +32,8 @@ class MigrationContext {
     migrationServerEmail = '',
     /** App account password for the migration server */
     migrationServerPassword = '',
+    /** 'email' | 'content' — determines which agents and flows to run */
+    mode = 'email',
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -71,6 +73,7 @@ class MigrationContext {
     this.migrationServerUrl = String(migrationServerUrl || '').trim().replace(/\/$/, '');
     this.migrationServerEmail = String(migrationServerEmail || '').trim();
     this.migrationServerPassword = String(migrationServerPassword || '');
+    this.mode = mode === 'content' ? 'content' : 'email';
   }
 
   validate() {

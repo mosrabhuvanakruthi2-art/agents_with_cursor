@@ -3,22 +3,17 @@ import UserMapping from './UserMapping';
 import usePersistedState from '../hooks/usePersistedState';
 
 /** Aligns with backend MigrationContext defaults: FULL = mail + labels only; DELTA adds calendar + contacts. Deep validation is server-side always on. */
-function scopesForMigrationType(migrationType) {
-  if (migrationType === 'DELTA') {
-    return {
-      includeMail: true,
-      includeCalendar: true,
-      includeContacts: true,
-    };
+function scopesForMigrationType(migrationType, mode) {
+  if (mode === 'content') {
+    return { includeMail: false, includeCalendar: true, includeContacts: true };
   }
-  return {
-    includeMail: true,
-    includeCalendar: false,
-    includeContacts: false,
-  };
+  if (migrationType === 'DELTA') {
+    return { includeMail: true, includeCalendar: true, includeContacts: true };
+  }
+  return { includeMail: true, includeCalendar: false, includeContacts: false };
 }
 
-export default function AgentForm({ onSubmit, loading }) {
+export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
   const [form, setForm] = useState({
     testType: 'E2E',
     migrationType: 'FULL',
@@ -63,13 +58,13 @@ export default function AgentForm({ onSubmit, loading }) {
     const mappingPayload = userEmailMappings && userEmailMappings.length > 0
       ? userEmailMappings
       : mappedPairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail }));
-    const scope = scopesForMigrationType(form.migrationType);
+    const scope = scopesForMigrationType(form.migrationType, mode);
     const serverFields = {
       ...(migrationServerUrl ? { migrationServerUrl } : {}),
       ...(migrationServerEmail ? { migrationServerEmail } : {}),
       ...(migrationServerPassword ? { migrationServerPassword } : {}),
     };
-    const payloadBase = { ...form, ...scope, sourceAdminEmail, destAdminEmail, ...serverFields };
+    const payloadBase = { ...form, ...scope, sourceAdminEmail, destAdminEmail, ...serverFields, mode };
     if (mappedPairs.length === 1) {
       onSubmit({
         ...payloadBase,
@@ -100,7 +95,7 @@ export default function AgentForm({ onSubmit, loading }) {
             </button>
           )}
         </div>
-        <UserMapping onMappingComplete={handleMappingComplete} />
+        <UserMapping onMappingComplete={handleMappingComplete} mode={mode} />
         {mappedPairs && (
           <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">
             {mappedPairs.length} pair{mappedPairs.length > 1 ? 's' : ''} mapped.
@@ -156,13 +151,13 @@ export default function AgentForm({ onSubmit, loading }) {
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Password <span className="text-gray-400 font-normal">(new server only)</span>
+              Password <span className="text-gray-400 font-normal">(new server) / Basic Auth Token (legacy)</span>
             </label>
             <input
               type="password"
               value={migrationServerPassword}
               onChange={(e) => setMigrationServerPassword(e.target.value)}
-              placeholder="Leave empty for devemail"
+              placeholder="New server: password. Legacy: paste Basic auth token"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
             />
           </div>
@@ -170,6 +165,7 @@ export default function AgentForm({ onSubmit, loading }) {
 
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700 space-y-0.5">
           <p><span className="font-semibold">devemail (legacy):</span> use URL <code className="bg-blue-100 px-1 rounded">https://devemail.cloudfuze.com/proxyservices/v1</code> — leave Email &amp; Password empty. Auth uses Basic credentials from <code className="bg-blue-100 px-1 rounded">.env</code>.</p>
+          <p><span className="font-semibold">qarelease (content):</span> use URL <code className="bg-blue-100 px-1 rounded">https://qarelease.cloudfuze.com/</code> — leave Email empty, paste the Basic auth token in Password field.</p>
           <p><span className="font-semibold">newtestemail5 (new):</span> use URL <code className="bg-blue-100 px-1 rounded">https://newtestemail5.cloudfuze.com</code> — fill in Email &amp; Password.</p>
         </div>
       </div>
@@ -178,29 +174,33 @@ export default function AgentForm({ onSubmit, loading }) {
         <label className="block text-sm font-medium text-gray-700 mb-2">Test Type</label>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
-            { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
-            { value: 'E2E', label: 'E2E', desc: 'Full Gmail seed + calendar (slow)' },
-          ].map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setForm((prev) => ({ ...prev, testType: opt.value }))}
-              className={`relative rounded-xl border-2 p-4 text-left transition-all ${
-                form.testType === opt.value
-                  ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500'
-                  : 'border-gray-200 bg-white hover:border-gray-300'
-              }`}
-            >
-              <p className={`text-sm font-semibold ${form.testType === opt.value ? 'text-indigo-700' : 'text-gray-900'}`}>
-                {opt.label}
-              </p>
-              <p className="text-xs text-gray-500 mt-0.5">{opt.desc}</p>
-              {form.testType === opt.value && (
-                <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-indigo-500" />
-              )}
-            </button>
-          ))}
+            { value: 'SMOKE', label: 'Smoke', emailDesc: 'Quick connectivity check', contentDesc: 'Quick connectivity check' },
+            { value: 'SANITY', label: 'Sanity', emailDesc: 'Core feature validation', contentDesc: 'Core content validation' },
+            { value: 'E2E', label: 'E2E', emailDesc: 'Full Gmail seed + calendar (slow)', contentDesc: 'Full calendar & contacts (slow)' },
+          ].map((opt) => {
+            const isActive = form.testType === opt.value;
+            const activeColor = mode === 'content' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500';
+            const activeText = mode === 'content' ? 'text-blue-700' : 'text-indigo-700';
+            const activeDot = mode === 'content' ? 'bg-blue-500' : 'bg-indigo-500';
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setForm((prev) => ({ ...prev, testType: opt.value }))}
+                className={`relative rounded-xl border-2 p-4 text-left transition-all ${
+                  isActive ? activeColor : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <p className={`text-sm font-semibold ${isActive ? activeText : 'text-gray-900'}`}>
+                  {opt.label}
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {mode === 'content' ? opt.contentDesc : opt.emailDesc}
+                </p>
+                {isActive && <span className={`absolute top-2 right-2 w-2 h-2 rounded-full ${activeDot}`} />}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -219,16 +219,18 @@ export default function AgentForm({ onSubmit, loading }) {
           <option value="DELTA">Delta Migration</option>
         </select>
         <p className="text-xs text-gray-500 leading-relaxed">
-          {form.migrationType === 'FULL' ? (
-            <>
-              <strong>One Time</strong> — initial transfer: email, folders/labels, threads, and metadata (mail scope). Calendar and
-              contacts are not part of this run.
-            </>
+          {mode === 'content' ? (
+            form.migrationType === 'FULL' ? (
+              <><strong>One Time</strong> — initial transfer of calendar events and contacts.</>
+            ) : (
+              <><strong>Delta</strong> — incremental calendar and contacts changes after the initial migration.</>
+            )
           ) : (
-            <>
-              <strong>Delta</strong> — incremental email and folder/label changes after the initial migration, plus contacts and
-              calendars.
-            </>
+            form.migrationType === 'FULL' ? (
+              <><strong>One Time</strong> — initial transfer: email, folders/labels, threads, and metadata (mail scope). Calendar and contacts are not part of this run.</>
+            ) : (
+              <><strong>Delta</strong> — incremental email and folder/label changes after the initial migration, plus contacts and calendars.</>
+            )
           )}
         </p>
       </div>
@@ -236,7 +238,11 @@ export default function AgentForm({ onSubmit, loading }) {
       <button
         type="submit"
         disabled={loading || !mappedPairs || mappedPairs.length === 0}
-        className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 focus:ring-4 focus:ring-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        className={`w-full md:w-auto px-8 py-3 text-white text-sm font-semibold rounded-lg focus:ring-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all ${
+          mode === 'content'
+            ? 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-200'
+            : 'bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-200'
+        }`}
       >
         {loading ? (
           <span className="flex items-center gap-2">

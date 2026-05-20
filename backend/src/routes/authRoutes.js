@@ -78,6 +78,8 @@ router.get('/status', (_req, res) => {
   res.json({
     google: tokenStore.getGoogleStatus(),
     microsoft: tokenStore.getMicrosoftStatus(),
+    box: tokenStore.getBoxStatus(),
+    sharepoint: tokenStore.getSharePointStatus(),
   });
 });
 
@@ -254,6 +256,126 @@ router.post('/microsoft/signout', (req, res) => {
   const { email } = req.body;
   logger.info(`[auth] Microsoft account disconnected: ${email || 'all'}`);
   tokenStore.removeMicrosoftToken(email || null);
+  res.json({ success: true });
+});
+
+// ─── Box OAuth ────────────────────────────────────────────────────────────────
+
+const BOX_AUTH_URL = 'https://account.box.com/api/oauth2/authorize';
+const BOX_TOKEN_URL = 'https://api.box.com/oauth2/token';
+const BOX_API_ME = 'https://api.box.com/2.0/users/me';
+
+router.get('/box/url', (req, res) => {
+  const clientId = process.env.BOX_CLIENT_ID;
+  if (!clientId) return res.status(400).json({ error: 'BOX_CLIENT_ID not configured' });
+  const isPopup = req.query.source === 'popup';
+  const state = isPopup ? 'popup' : 'default';
+  const redirectUri = `${BACKEND_BASE}/api/auth/box/callback`;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    state,
+  });
+  res.json({ url: `${BOX_AUTH_URL}?${params}` });
+});
+
+router.get('/box/callback', async (req, res) => {
+  const { code, error, state } = req.query;
+  const isPopup = state === 'popup';
+  const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+  const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+
+  if (error) {
+    logger.warn(`[auth] Box OAuth error: ${error}`);
+    return res.redirect(`${errorBase}?error=box&message=${encodeURIComponent(error)}`);
+  }
+  if (!code) return res.status(400).send('Missing code');
+
+  try {
+    const redirectUri = `${BACKEND_BASE}/api/auth/box/callback`;
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: process.env.BOX_CLIENT_ID,
+      client_secret: process.env.BOX_CLIENT_SECRET,
+      redirect_uri: redirectUri,
+    });
+    const tokenRes = await axios.post(BOX_TOKEN_URL, params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+    const { access_token, refresh_token, expires_in } = tokenRes.data;
+
+    const meRes = await axios.get(BOX_API_ME, {
+      headers: { Authorization: `Bearer ${access_token}` },
+      params: { fields: 'id,login,name' },
+    });
+    const email = meRes.data.login;
+
+    tokenStore.setBoxToken({
+      email,
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresAt: Date.now() + expires_in * 1000,
+    });
+    logger.info(`[auth] Box account connected: ${email}`);
+
+    res.redirect(`${successBase}?connected=box&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    logger.error(`[auth] Box callback error: ${err.message}`);
+    res.redirect(`${errorBase}?error=box&message=${encodeURIComponent(err.message)}`);
+  }
+});
+
+/** Simple email-only connect (no OAuth required — uses BOX_DEVELOPER_TOKEN from env). */
+router.post('/box/connect', (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const key = email.trim().toLowerCase();
+  const existing = tokenStore.getBoxToken(key);
+  tokenStore.setBoxToken({
+    email: key,
+    accessToken: existing?.accessToken || null,
+    refreshToken: existing?.refreshToken || null,
+    expiresAt: existing?.expiresAt || null,
+  });
+  logger.info(`[auth] Box account registered: ${key}`);
+  res.json({ success: true, email: key });
+});
+
+router.post('/box/signout', (req, res) => {
+  const { email } = req.body;
+  if (email) {
+    tokenStore.removeBoxToken(email);
+    logger.info(`[auth] Box account disconnected: ${email}`);
+  }
+  res.json({ success: true });
+});
+
+// ─── SharePoint Online ────────────────────────────────────────────────────────
+
+/** Email-only connect — uses same Microsoft Graph credentials already configured. */
+router.post('/sharepoint/connect', (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'email required' });
+  const key = email.trim().toLowerCase();
+  const existing = tokenStore.getSharePointToken(key);
+  tokenStore.setSharePointToken({
+    email: key,
+    accessToken: existing?.accessToken || null,
+    refreshToken: existing?.refreshToken || null,
+    expiresAt: existing?.expiresAt || null,
+  });
+  logger.info(`[auth] SharePoint account registered: ${key}`);
+  res.json({ success: true, email: key });
+});
+
+router.post('/sharepoint/signout', (req, res) => {
+  const { email } = req.body;
+  if (email) {
+    tokenStore.removeSharePointToken(email);
+    logger.info(`[auth] SharePoint account disconnected: ${email}`);
+  }
   res.json({ success: true });
 });
 

@@ -27,6 +27,8 @@ router.post('/clean-destination-folders', controller.cleanDestinationFolders);
 router.post('/clean-destination-events', controller.cleanDestinationEvents);
 router.post('/create-outlook-data', controller.createOutlookData);
 router.post('/create-test-data', controller.createTestData);
+router.post('/create-box-data', controller.createBoxData);
+router.get('/box/users', controller.getBoxUsers);
 router.post('/executions/:id/cancel', controller.cancelExecution);
 
 module.exports = router;

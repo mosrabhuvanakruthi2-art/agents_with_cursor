@@ -10,17 +10,39 @@ let bearerToken = null;
 let loginToken = null;
 // Last observed job details from /email/user/jobs polling — cleared on each new run
 let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+// Full raw job object from last successful report match (for content migration report)
+let lastJobReport = null;
+// Workspace ID returned by POST /mail/register on some legacy servers
+let registeredWorkspaceId = null;
 
 // ── Runtime config: set by MigrationAgent when context provides a server URL ──
 // { baseUrl: string, email: string, password: string }
 // When set, all API calls use this server instead of env.MIGRATION_API_URL.
 let runtimeConfig = null;
 
+/**
+ * If the caller provides a bare root URL like https://qarelease.cloudfuze.com/,
+ * automatically append /proxyservices/v1 so all relative paths resolve correctly.
+ */
+function normalizeBaseUrl(url) {
+  if (!url) return url;
+  try {
+    const u = new URL(url);
+    if (u.pathname === '/' || u.pathname === '') {
+      return url.replace(/\/$/, '') + '/proxyservices/v1';
+    }
+  } catch {}
+  return url.replace(/\/$/, '');
+}
+
 function setRuntimeConfig(cfg) {
+  if (cfg?.baseUrl) cfg = { ...cfg, baseUrl: normalizeBaseUrl(cfg.baseUrl) };
   runtimeConfig = cfg ? { ...cfg } : null;
   // Clear cached tokens whenever we switch servers
   bearerToken = null;
   loginToken = null;
+  registeredWorkspaceId = null;
+  lastJobReport = null;
   if (cfg?.baseUrl) {
     logger.info(`CloudFuze: runtime server override set to ${cfg.baseUrl}`);
   }
@@ -31,10 +53,16 @@ function clearRuntimeConfig() {
   bearerToken = null;
   loginToken = null;
   lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+  lastJobReport = null;
+  registeredWorkspaceId = null;
 }
 
 function getLastJobDetails() {
   return { ...lastJobDetails };
+}
+
+function getLastJobReport() {
+  return lastJobReport ? { ...lastJobReport } : null;
 }
 
 /** Returns the active API base URL (runtime override takes priority over env) */
@@ -80,6 +108,12 @@ function migrationAxiosConfig(overrides = {}) {
 }
 
 function basicAuthPayload() {
+  // Runtime override: user provided a Basic auth token via UI (password field, no email)
+  if (runtimeConfig?.basicAuth) {
+    let raw = String(runtimeConfig.basicAuth).trim();
+    if (/^basic\s+/i.test(raw)) raw = raw.replace(/^basic\s+/i, '').trim();
+    return raw;
+  }
   let raw = (env.MIGRATION_API_BASIC_AUTH || env.MIGRATION_API_KEY || '').trim();
   if (!raw) return '';
   if (/^basic\s+/i.test(raw)) raw = raw.replace(/^basic\s+/i, '').trim();
@@ -120,10 +154,11 @@ async function register() {
   const basic = basicAuthPayload();
   if (!basic) throw new Error('CloudFuze: MIGRATION_API_KEY or MIGRATION_API_BASIC_AUTH required for /mail/register');
 
+  const legacyBase = runtimeConfig?.baseUrl || env.MIGRATION_API_URL;
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${env.MIGRATION_API_URL}/mail/register`,
+        `${legacyBase}/mail/register`,
         null,
         migrationAxiosConfig({
           headers: { Authorization: `Basic ${basic}` },
@@ -137,6 +172,13 @@ async function register() {
   const token = typeof raw === 'string'
     ? raw.replace(/^Bearer\s*/i, '').trim()
     : raw?.token || raw?.accessToken || raw?.jwtToken || String(raw || '');
+
+  // Some legacy servers (e.g. qarelease) return a workspace/job ID alongside the token
+  const wsId = raw?.workspaceId || raw?.workspace_id || raw?.id || raw?.jobId || null;
+  if (wsId && typeof wsId === 'string') {
+    registeredWorkspaceId = wsId;
+    logger.info(`CloudFuze register: workspace ID captured: ${wsId}`);
+  }
 
   bearerToken = token;
   logger.info('CloudFuze: fresh JWT obtained via POST /mail/register');
@@ -489,12 +531,19 @@ async function triggerPreScan(fromMailId, fromCloud) {
   return res.data;
 }
 
-function initiatePathCandidates() {
+function initiatePathCandidates(sourceCloudId) {
   if (isNewServer()) return ['email/move/initiate'];
   const custom = (env.MIGRATION_API_INITIATE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
   const defaults = ['mail/move/initiate', 'mail/initiate', 'initiate'];
   const out = [];
   if (custom) out.push(custom);
+  // When a runtime server URL is set (e.g. qarelease), also try the newmultiuser paths.
+  // These use Basic auth rather than Bearer — handled separately in triggerMigration.
+  if (runtimeConfig?.baseUrl) {
+    if (registeredWorkspaceId) out.push(`move/newmultiuser/create/${registeredWorkspaceId}`);
+    if (sourceCloudId && sourceCloudId !== registeredWorkspaceId) out.push(`move/newmultiuser/create/${sourceCloudId}`);
+    out.push('move/newmultiuser/create');
+  }
   for (const d of defaults) {
     if (d && !out.includes(d)) out.push(d);
   }
@@ -558,48 +607,63 @@ async function triggerMigration(context) {
     ];
   }
 
-  const paths = initiatePathCandidates();
+  const paths = initiatePathCandidates(context.sourceCloudId);
   const base = getActiveBaseUrl();
+  const basic = basicAuthPayload();
   let lastErr;
 
   logger.info(`CloudFuze triggerMigration payload: ${JSON.stringify(payload)}`);
 
   for (let i = 0; i < paths.length; i += 1) {
     const path = paths[i];
-    try {
-      const res = await retryWithBackoff(
-        () => client.post(path, payload),
-        { label: `CloudFuze POST ${path}`, maxRetries: 1 }
-      );
+    // Determine auth clients to try for this path
+    // newmultiuser paths may require Basic auth (as seen on qarelease DevTools)
+    const isNewMultiuserPath = path.startsWith('move/newmultiuser/create');
+    const authVariants = isNewMultiuserPath && basic
+      ? [
+          { label: 'Bearer', req: () => client.post(path, payload) },
+          { label: 'Basic', req: () => axios.post(`${base}/${path}`, payload, migrationAxiosConfig({ headers: { 'Content-Type': 'application/json', Authorization: `Basic ${basic}` }, timeout: 60000 })) },
+        ]
+      : [{ label: 'Bearer', req: () => client.post(path, payload) }];
 
-      logger.info(`Migration initiated via ${base}/${path}`, {
-        executionId: context.executionId,
-        response: JSON.stringify(res.data),
-      });
+    let authErr;
+    for (const variant of authVariants) {
+      try {
+        const res = await retryWithBackoff(variant.req, { label: `CloudFuze POST ${path} (${variant.label})`, maxRetries: 1 });
 
-      return {
-        jobId: res.data?.id || res.data?.[0]?.id || res.data?.jobId || 'initiated',
-        status: 'INITIATED',
-        rawResponse: res.data,
-        initiatePath: path,
-      };
-    } catch (err) {
-      lastErr = err;
-      const st = err.response?.status;
-      const allow = err.response?.headers?.allow || err.response?.headers?.Allow;
-      const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
-      logger.error(`CloudFuze POST ${path} HTTP ${st} error body: ${errBody}`);
-      if ((st === 405 || st === 404) && i < paths.length - 1) {
-        logger.warn(`POST ${base}/${path} → HTTP ${st}${allow ? `; Allow: ${allow}` : ''} — trying next path…`);
-        continue;
+        logger.info(`Migration initiated via ${base}/${path} (${variant.label})`, {
+          executionId: context.executionId,
+          response: JSON.stringify(res.data),
+        });
+
+        return {
+          jobId: res.data?.id || res.data?.[0]?.id || res.data?.jobId || 'initiated',
+          status: 'INITIATED',
+          rawResponse: res.data,
+          initiatePath: path,
+        };
+      } catch (err) {
+        authErr = err;
+        const st = err.response?.status;
+        const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
+        logger.warn(`CloudFuze POST ${path} (${variant.label}) HTTP ${st}: ${errBody}`);
       }
-      if (st === 405) {
-        throw new Error(
-          `${err.message || 'HTTP 405'}${allow ? ` (Allow: ${allow})` : ''}. Set MIGRATION_API_INITIATE_PATH from DevTools.`
-        );
-      }
-      throw err;
     }
+
+    lastErr = authErr;
+    const st = lastErr?.response?.status;
+    const allow = lastErr?.response?.headers?.allow || lastErr?.response?.headers?.Allow;
+    if ((st === 405 || st === 404) && i < paths.length - 1) {
+      logger.warn(`POST ${base}/${path} → HTTP ${st}${allow ? `; Allow: ${allow}` : ''} — trying next path…`);
+      continue;
+    }
+    if (st === 405) {
+      throw new Error(
+        `${lastErr?.message || 'HTTP 405'}${allow ? ` (Allow: ${allow})` : ''}. Set MIGRATION_API_INITIATE_PATH from DevTools.`
+      );
+    }
+    if (st === 404 && i < paths.length - 1) continue;
+    if (lastErr) throw lastErr;
   }
 
   throw lastErr || new Error('Migration initiate failed: no path candidates');
@@ -611,6 +675,9 @@ async function triggerMigration(context) {
 //   Legacy     → GET /mail/reports
 // Terminal statuses: PROCESSED | PROCESSED_WITH_CONFLICTS | CONFLICT | PAUSE
 // New server may return "PROCESS" (without D) — include both forms.
+// Content migration statuses (qarelease / newmultiuser):
+//   Success (proceed to validation): VERSION_PROCESSED
+//   Stop (show report, skip validation): VERSION_NOT_PROCESSED, IN_PROGRESS, CONFLICTS, INPROGRESS
 const TERMINAL_STATUSES = new Set([
   'PROCESSED',
   'PROCESS',
@@ -618,9 +685,16 @@ const TERMINAL_STATUSES = new Set([
   'PROCESS_WITH_CONFLICTS',
   'PROCESSED_WITH_CONFLICT_AND_PAUSE',
   'CONFLICT',
+  'CONFLICTS',
   'PAUSE',
   'FAILED',
   'ERROR',
+  // Content migration statuses
+  'VERSION_PROCESSED',
+  'VERSION_NOT_PROCESSED',
+  'IN_PROGRESS',
+  'INPROGRESS',
+  'NOT_PROCESSED',
 ]);
 
 async function pollReports(deltaMigration, fromMailId, {
@@ -737,6 +811,8 @@ async function pollReports(deltaMigration, fromMailId, {
         totalCount: totalCount || null,
         processedCount: processedCount || null,
       };
+      // Store full job object for content migration report display
+      lastJobReport = { ...matchedJob, _matchedDetail: matchedDetail || null };
 
       if (!status && attempt === 1) {
         // Log field names once on first match so we can identify the correct key
@@ -805,5 +881,6 @@ module.exports = {
   setRuntimeConfig,
   clearRuntimeConfig,
   getLastJobDetails,
+  getLastJobReport,
   migrationAxiosConfig,
 };

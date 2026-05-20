@@ -195,6 +195,29 @@ export function signOutMicrosoft(email) {
   return api.post('/auth/microsoft/signout', { email: email || null });
 }
 
+export function getBoxOAuthUrl(source) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  const qs = params.toString();
+  return api.get('/auth/box/url' + (qs ? `?${qs}` : ''));
+}
+
+export function connectBoxAccount(email) {
+  return api.post('/auth/box/connect', { email });
+}
+
+export function signOutBox(email) {
+  return api.post('/auth/box/signout', { email });
+}
+
+export function connectSharePointAccount(email) {
+  return api.post('/auth/sharepoint/connect', { email });
+}
+
+export function signOutSharePoint(email) {
+  return api.post('/auth/sharepoint/signout', { email });
+}
+
 export function addDwdAccount(email) {
   return api.post('/auth/dwd', { email });
 }

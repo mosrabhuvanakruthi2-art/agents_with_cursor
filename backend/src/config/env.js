@@ -383,4 +383,7 @@ module.exports = {
   BULK_CALENDAR_API_URL: (process.env.BULK_CALENDAR_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
   /** Base URL for the create-mails-outlook Spring Boot service. Default: http://localhost:8080 */
   OUTLOOK_DATA_API_URL: (process.env.OUTLOOK_DATA_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
+  /** Box OAuth 2.0 app credentials (Standard OAuth 2.0 app from Box Developer Console) */
+  BOX_CLIENT_ID: (process.env.BOX_CLIENT_ID || '').trim(),
+  BOX_CLIENT_SECRET: (process.env.BOX_CLIENT_SECRET || '').trim(),
 };

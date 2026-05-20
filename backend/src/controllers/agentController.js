@@ -23,6 +23,7 @@ async function runAgents(req, res) {
       userEmailMappings,
       sourceAdminEmail,
       destAdminEmail,
+      mode,
     } = req.body;
     const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
 
@@ -77,6 +78,7 @@ async function runAgents(req, res) {
       migrationServerUrl: req.body.migrationServerUrl || '',
       migrationServerEmail: req.body.migrationServerEmail || '',
       migrationServerPassword: req.body.migrationServerPassword || '',
+      mode: mode || 'email',
     });
     context.validate();
 
@@ -252,6 +254,32 @@ async function getSourceUsers(req, res) {
       return res.json({ adminEmail, users, source: 'graph' });
     }
 
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getSourceUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getSourceUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail.split('@')[1]?.toLowerCase();
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, source: 'box-graph-fallback' });
+      }
+    }
+
+    if (provider === 'sharepoint') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getSourceUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail.split('@')[1]?.toLowerCase();
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, source: 'sharepoint' });
+    }
+
     // Default: Google Workspace
     const gmailClient = require('../clients/gmailClient');
     const users = await gmailClient.listDomainUsers(adminEmail);
@@ -289,6 +317,32 @@ async function getDestinationUsers(req, res) {
       logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
       const users = await gmailClient.listDomainUsers(adminEmail);
       return res.json({ adminEmail, users, total: users.length, source: 'gmail' });
+    }
+
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getDestinationUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, total: users.length, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getDestinationUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, total: users.length, source: 'box-graph-fallback' });
+      }
+    }
+
+    if (provider === 'sharepoint') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getDestinationUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, total: users.length, source: 'sharepoint' });
     }
 
     // Default: Microsoft 365 via Graph API
@@ -879,6 +933,87 @@ async function createTestData(req, res) {
   }
 }
 
+/**
+ * GET /agents/box/users?adminEmail=admin@domain.com
+ * List all active managed Box users for the given admin account.
+ */
+async function getBoxUsers(req, res) {
+  try {
+    const { adminEmail } = req.query;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
+    const boxClient = require('../clients/boxClient');
+    const users = await boxClient.getUsers(adminEmail);
+    const mapped = users.map((u) => ({ id: u.id, email: u.login, displayName: u.name }));
+    res.json({ adminEmail, users: mapped, total: mapped.length });
+  } catch (err) {
+    logger.error(`getBoxUsers error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-box-data
+ * Body: { adminEmail, targetUserId? }
+ *
+ * Runs BoxTestDataAgent — creates the full QA data set in Box cloud.
+ * adminEmail must already be connected via GET /api/auth/box/url.
+ * targetUserId (optional): Box user ID to create data as (As-User impersonation).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxData(req, res) {
+  try {
+    const { adminEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxTestDataAgent = require('../agents/box/BoxTestDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxTestDataAgent',
+      progress: 'BoxTestDataAgent: starting Box data creation…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxTestDataAgent',
+          progress: 'BoxTestDataAgent: creating folders, uploading files, building versions…',
+        });
+        const result = await agent.run({ adminEmail, boxTargetUserId: targetUserId || null, executionId });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -888,5 +1023,6 @@ module.exports = {
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
   createOutlookData, cancelExecution, createTestData,
+  getBoxUsers, createBoxData,
 };
 

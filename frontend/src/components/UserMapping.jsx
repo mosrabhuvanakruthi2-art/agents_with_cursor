@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getSourceUsers, getDestinationUsers,
   getGoogleOAuthUrl, getMicrosoftOAuthUrl,
-  getConnectedAccounts, signOutGoogle, signOutMicrosoft,
-  addDwdAccount,
+  getConnectedAccounts, signOutGoogle, signOutMicrosoft, signOutBox, signOutSharePoint,
+  addDwdAccount, connectBoxAccount, connectSharePointAccount,
 } from '../services/api';
 import usePersistedState from '../hooks/usePersistedState';
 
@@ -12,6 +12,8 @@ import usePersistedState from '../hooks/usePersistedState';
 const PROVIDERS = {
   google: { key: 'google', label: 'Google Workspace', short: 'Google', icon: GoogleIcon },
   microsoft: { key: 'microsoft', label: 'Microsoft 365', short: 'Microsoft', icon: MicrosoftIcon },
+  box: { key: 'box', label: 'Box', short: 'Box', icon: BoxIcon },
+  sharepoint: { key: 'sharepoint', label: 'SharePoint Online', short: 'SharePoint', icon: SharePointIcon },
 };
 
 // ─── OAuth popup ──────────────────────────────────────────────────────────────
@@ -27,7 +29,7 @@ function openOAuthPopup(url) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function UserMapping({ onMappingComplete }) {
+export default function UserMapping({ onMappingComplete, mode = 'email' }) {
   const [srcProvider, setSrcProvider] = usePersistedState('map-srcProvider', 'google');
   const [srcEmail, setSrcEmail] = usePersistedState('map-srcAdmin', '');
   const [dstProvider, setDstProvider] = usePersistedState('map-dstProvider', 'microsoft');
@@ -54,6 +56,8 @@ export default function UserMapping({ onMappingComplete }) {
   const [googleTenant, setGoogleTenant] = useState('1');
   const [msTenant, setMsTenant] = useState('1');
   const [dwdEmail, setDwdEmail] = useState('admin@migrationn.com');
+  const [boxEmail, setBoxEmail] = useState('erik@filefuze.co');
+  const [sharePointEmail, setSharePointEmail] = useState('');
   const pollRef = useRef(null);
   const popupRef = useRef(null);
 
@@ -104,6 +108,8 @@ export default function UserMapping({ onMappingComplete }) {
   async function handleSignOut(provider, email) {
     try {
       if (provider === 'google') await signOutGoogle(email);
+      else if (provider === 'box') await signOutBox(email);
+      else if (provider === 'sharepoint') await signOutSharePoint(email);
       else await signOutMicrosoft(email);
       if (srcEmail === email) setSrcEmail('');
       if (dstEmail === email) setDstEmail('');
@@ -130,11 +136,46 @@ export default function UserMapping({ onMappingComplete }) {
       return;
     }
 
+    // Box uses email-only connect (no OAuth popup)
+    if (providerKey === 'box') {
+      const email = boxEmail.trim().toLowerCase();
+      if (!email) return;
+      try {
+        await connectBoxAccount(email);
+        await loadAccounts();
+      } catch (err) {
+        setOauthError(err.response?.data?.error || err.message);
+        return;
+      }
+      if (target === 'source') setSrcEmail(email);
+      else setDstEmail(email);
+      setLoginTarget(null);
+      return;
+    }
+
+    // SharePoint uses email-only connect (reuses Microsoft Graph credentials)
+    if (providerKey === 'sharepoint') {
+      const email = sharePointEmail.trim().toLowerCase();
+      if (!email) return;
+      try {
+        await connectSharePointAccount(email);
+        await loadAccounts();
+      } catch (err) {
+        setOauthError(err.response?.data?.error || err.message);
+        return;
+      }
+      if (target === 'source') setSrcEmail(email);
+      else setDstEmail(email);
+      setLoginTarget(null);
+      return;
+    }
+
     setOauthError(null);
     setOauthLoading(true);
     try {
-      const getFn = providerKey === 'google' ? getGoogleOAuthUrl : getMicrosoftOAuthUrl;
-      const tenant = providerKey === 'google' ? googleTenant : msTenant;
+      let getFn, tenant;
+      if (providerKey === 'google') { getFn = getGoogleOAuthUrl; tenant = googleTenant; }
+      else { getFn = getMicrosoftOAuthUrl; tenant = msTenant; }
       const res = await getFn('popup', tenant);
       popupRef.current = openOAuthPopup(res.data.url);
       startPolling(providerKey, (email) => {
@@ -247,6 +288,9 @@ export default function UserMapping({ onMappingComplete }) {
     );
   }
 
+  // Providers available for this mode (Box only in content tab)
+  const availableProviders = Object.values(PROVIDERS).filter((p) => mode === 'content' || (p.key !== 'box' && p.key !== 'sharepoint'));
+
   // Accounts for each provider
   const srcAccounts = accounts.filter((a) => a.provider === srcProvider);
   const dstAccounts = accounts.filter((a) => a.provider === dstProvider);
@@ -261,6 +305,7 @@ export default function UserMapping({ onMappingComplete }) {
           email={srcEmail}
           connectedAccounts={srcAccounts}
           accountsLoading={accountsLoading}
+          availableProviders={availableProviders}
           onProviderChange={(p) => { setSrcProvider(p); setSrcEmail(''); setFetched(false); }}
           onEmailChange={setSrcEmail}
           onLogin={() => { setLoginTarget('source'); setOauthError(null); }}
@@ -272,6 +317,7 @@ export default function UserMapping({ onMappingComplete }) {
           email={dstEmail}
           connectedAccounts={dstAccounts}
           accountsLoading={accountsLoading}
+          availableProviders={availableProviders}
           onProviderChange={(p) => { setDstProvider(p); setDstEmail(''); setFetched(false); }}
           onEmailChange={setDstEmail}
           onLogin={() => { setLoginTarget('destination'); setOauthError(null); }}
@@ -399,6 +445,10 @@ export default function UserMapping({ onMappingComplete }) {
           onMsTenantChange={setMsTenant}
           dwdEmail={dwdEmail}
           onDwdEmailChange={setDwdEmail}
+          boxEmail={boxEmail}
+          onBoxEmailChange={setBoxEmail}
+          sharePointEmail={sharePointEmail}
+          onSharePointEmailChange={setSharePointEmail}
           onConnect={() => handleLogin(loginTarget)}
           onClose={() => { setLoginTarget(null); setOauthError(null); stopPolling(); popupRef.current?.close(); }}
         />
@@ -409,7 +459,7 @@ export default function UserMapping({ onMappingComplete }) {
 
 // ─── AdminField ───────────────────────────────────────────────────────────────
 
-function AdminField({ label, provider, email, connectedAccounts, accountsLoading, onProviderChange, onEmailChange, onLogin, onSignOut }) {
+function AdminField({ label, provider, email, connectedAccounts, accountsLoading, availableProviders, onProviderChange, onEmailChange, onLogin, onSignOut }) {
   const p = PROVIDERS[provider];
   const Icon = p.icon;
   const count = connectedAccounts.length;
@@ -430,7 +480,7 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
 
       {/* Provider toggle */}
       <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
-        {Object.values(PROVIDERS).map((pv) => {
+        {(availableProviders || Object.values(PROVIDERS)).map((pv) => {
           const PvIcon = pv.icon;
           const pvCount = connectedAccounts.filter ? 0 : 0; // unused but keep pattern
           const active = provider === pv.key;
@@ -489,6 +539,10 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             className={`w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
               provider === 'google'
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                : provider === 'box'
+                ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                : provider === 'sharepoint'
+                ? 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
                 : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
             }`}
           >
@@ -519,6 +573,10 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors flex-shrink-0 ${
               provider === 'google'
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                : provider === 'box'
+                ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                : provider === 'sharepoint'
+                ? 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
                 : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
             }`}
           >
@@ -533,10 +591,12 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
 
 // ─── Login Modal ──────────────────────────────────────────────────────────────
 
-function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant, onGoogleTenantChange, msTenant, onMsTenantChange, dwdEmail, onDwdEmailChange }) {
+function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant, onGoogleTenantChange, msTenant, onMsTenantChange, dwdEmail, onDwdEmailChange, boxEmail, onBoxEmailChange, sharePointEmail, onSharePointEmailChange }) {
   const p = PROVIDERS[provider];
   const Icon = p.icon;
   const isDwd = provider === 'google' && googleTenant === '3';
+  const isBox = provider === 'box';
+  const isSharePoint = provider === 'sharepoint';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -556,12 +616,12 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
             <div>
               <p className="text-sm font-semibold text-gray-900">{p.label}</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                {isDwd ? 'Domain-Wide Delegation — no sign-in required' : 'Sign in as an admin to fetch and auto-map users'}
+                {isDwd ? 'Domain-Wide Delegation — no sign-in required' : isBox ? 'Email-only connect — uses developer token for API access' : isSharePoint ? 'Email-only connect — uses Microsoft Graph credentials from .env' : 'Sign in as an admin to fetch and auto-map users'}
               </p>
             </div>
           </div>
 
-          {isDwd ? (
+          {isBox || isSharePoint ? null : isDwd ? (
             <>
               <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
                 <strong>migrationn.com</strong> is configured with a service account (DWD). No OAuth needed — enter any admin email to proceed.
@@ -615,15 +675,49 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
               </select>
             </div>
           )}
+          {isBox && (
+            <div className="space-y-2">
+              <div className="bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 text-xs text-sky-800">
+                Enter your Box admin email. No OAuth required — uses the configured developer token.
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-600">Box admin email</label>
+                <input
+                  type="email"
+                  value={boxEmail}
+                  onChange={(e) => onBoxEmailChange(e.target.value)}
+                  className="w-full text-sm rounded-lg border border-gray-200 px-3 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  placeholder="erik@filefuze.co"
+                />
+              </div>
+            </div>
+          )}
+          {isSharePoint && (
+            <div className="space-y-2">
+              <div className="bg-teal-50 border border-teal-200 rounded-lg px-3 py-2 text-xs text-teal-800">
+                Enter your SharePoint admin email. Uses Microsoft Graph credentials already configured in <code className="bg-teal-100 px-1 rounded">.env</code>.
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-600">SharePoint admin email</label>
+                <input
+                  type="email"
+                  value={sharePointEmail}
+                  onChange={(e) => onSharePointEmailChange(e.target.value)}
+                  className="w-full text-sm rounded-lg border border-gray-200 px-3 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-teal-400"
+                  placeholder="admin@yourtenant.onmicrosoft.com"
+                />
+              </div>
+            </div>
+          )}
           {error && <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
         </div>
         <div className="px-6 pb-6 flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-colors">Cancel</button>
           <button onClick={onConnect} disabled={loading}
-            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 transition-colors ${provider === 'google' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50 transition-colors ${provider === 'google' ? 'bg-blue-600 hover:bg-blue-700' : isBox ? 'bg-sky-600 hover:bg-sky-700' : isSharePoint ? 'bg-teal-600 hover:bg-teal-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
             {loading
               ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Waiting…</>
-              : isDwd ? <><Icon className="w-3.5 h-3.5" />Use this account</> : <><Icon className="w-3.5 h-3.5" />Sign in</>}
+              : isDwd || isBox || isSharePoint ? <><Icon className="w-3.5 h-3.5" />Connect account</> : <><Icon className="w-3.5 h-3.5" />Sign in</>}
           </button>
         </div>
       </div>
@@ -656,6 +750,32 @@ function MicrosoftIcon({ className }) {
       <rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
       <rect x="1" y="12" width="10" height="10" fill="#00A4EF" />
       <rect x="12" y="12" width="10" height="10" fill="#FFB900" />
+    </svg>
+  );
+}
+
+function BoxIcon({ className }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} fill="none">
+      <rect width="48" height="48" rx="10" fill="#0061D5" />
+      <path d="M24 14c-5.523 0-10 4.477-10 10s4.477 10 10 10 10-4.477 10-10-4.477-10-10-10zm0 16a6 6 0 110-12 6 6 0 010 12z" fill="white" />
+      <rect x="8" y="22" width="6" height="4" rx="2" fill="white" />
+      <rect x="34" y="22" width="6" height="4" rx="2" fill="white" />
+    </svg>
+  );
+}
+
+function SharePointIcon({ className }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} fill="none">
+      {/* Back circle (teal) */}
+      <circle cx="30" cy="20" r="13" fill="#036C70" />
+      {/* Middle circle (lighter teal) */}
+      <circle cx="20" cy="28" r="11" fill="#1A9BA1" />
+      {/* Front circle (lightest teal) */}
+      <circle cx="24" cy="38" r="8" fill="#37C6D0" />
+      {/* White S letter */}
+      <text x="23" y="24" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="14" fontWeight="bold" fontFamily="Arial, sans-serif">S</text>
     </svg>
   );
 }

@@ -24,13 +24,12 @@ const COLLECTION = 'connected_accounts';
 
 function read() {
   try {
-    if (!fs.existsSync(TOKEN_FILE)) return {};
+    if (!fs.existsSync(TOKEN_FILE)) return migrateIfNeeded({});
     const raw = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
-    if (!raw) return {};
-    const data = JSON.parse(raw);
-    return migrateIfNeeded(data);
+    if (!raw) return migrateIfNeeded({});
+    return migrateIfNeeded(JSON.parse(raw));
   } catch {
-    return {};
+    return migrateIfNeeded({});
   }
 }
 
@@ -44,6 +43,10 @@ function migrateIfNeeded(data) {
   if (!data.google.accounts) data.google.accounts = {};
   if (!data.microsoft) data.microsoft = { accounts: {} };
   if (!data.microsoft.accounts) data.microsoft.accounts = {};
+  if (!data.box) data.box = { accounts: {} };
+  if (!data.box.accounts) data.box.accounts = {};
+  if (!data.sharepoint) data.sharepoint = { accounts: {} };
+  if (!data.sharepoint.accounts) data.sharepoint.accounts = {};
   return data;
 }
 
@@ -105,6 +108,18 @@ async function loadFromMongo() {
         loaded++;
       } else if (provider === 'microsoft') {
         data.microsoft.accounts[email.toLowerCase()] = {
+          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
+          expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+        };
+        loaded++;
+      } else if (provider === 'box') {
+        data.box.accounts[email.toLowerCase()] = {
+          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
+          expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+        };
+        loaded++;
+      } else if (provider === 'sharepoint') {
+        data.sharepoint.accounts[email.toLowerCase()] = {
           accessToken: rest.accessToken, refreshToken: rest.refreshToken,
           expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
         };
@@ -221,9 +236,71 @@ function getMicrosoftStatus() {
   };
 }
 
+// ─── Box ─────────────────────────────────────────────────────────────────────
+
+function getBoxToken(email) {
+  const data = read();
+  return data.box.accounts[email.toLowerCase()] || null;
+}
+
+function setBoxToken({ email, accessToken, refreshToken, expiresAt }) {
+  const data = read();
+  const key = email.toLowerCase();
+  const existing = data.box.accounts[key];
+  const entry = { accessToken, refreshToken, expiresAt, connectedAt: existing?.connectedAt || new Date().toISOString() };
+  data.box.accounts[key] = entry;
+  write(data);
+  syncToMongo('box', key, { email: key, ...entry });
+}
+
+function removeBoxToken(email) {
+  const data = read();
+  const key = email.toLowerCase();
+  delete data.box.accounts[key];
+  write(data);
+  removeFromMongo('box', key);
+}
+
+function getBoxStatus() {
+  const data = read();
+  const emails = Object.keys(data.box.accounts);
+  return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
+}
+
+// ─── SharePoint Online ────────────────────────────────────────────────────────
+
+function getSharePointToken(email) {
+  const data = read();
+  return data.sharepoint.accounts[email.toLowerCase()] || null;
+}
+
+function setSharePointToken({ email, accessToken, refreshToken, expiresAt }) {
+  const data = read();
+  const key = email.toLowerCase();
+  const existing = data.sharepoint.accounts[key];
+  const entry = { accessToken, refreshToken, expiresAt, connectedAt: existing?.connectedAt || new Date().toISOString() };
+  data.sharepoint.accounts[key] = entry;
+  write(data);
+  syncToMongo('sharepoint', key, { email: key, ...entry });
+}
+
+function removeSharePointToken(email) {
+  const data = read();
+  const key = email.toLowerCase();
+  delete data.sharepoint.accounts[key];
+  write(data);
+  removeFromMongo('sharepoint', key);
+}
+
+function getSharePointStatus() {
+  const data = read();
+  const emails = Object.keys(data.sharepoint.accounts);
+  return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
+}
+
 // ─── All accounts ─────────────────────────────────────────────────────────────
 
-/** Return all connected accounts across both providers, sorted by connectedAt desc. */
+/** Return all connected accounts across all providers, sorted by connectedAt desc. */
 function getAllConnectedAccounts() {
   const data = read();
   const accounts = [];
@@ -232,6 +309,12 @@ function getAllConnectedAccounts() {
   }
   for (const [email, entry] of Object.entries(data.microsoft.accounts)) {
     accounts.push({ provider: 'microsoft', email, connectedAt: entry.connectedAt });
+  }
+  for (const [email, entry] of Object.entries(data.box.accounts)) {
+    accounts.push({ provider: 'box', email, connectedAt: entry.connectedAt });
+  }
+  for (const [email, entry] of Object.entries(data.sharepoint.accounts)) {
+    accounts.push({ provider: 'sharepoint', email, connectedAt: entry.connectedAt });
   }
   return accounts.sort((a, b) => (b.connectedAt || '').localeCompare(a.connectedAt || ''));
 }
@@ -250,6 +333,16 @@ module.exports = {
   setMicrosoftToken,
   removeMicrosoftToken,
   getMicrosoftStatus,
+  // Box
+  getBoxToken,
+  setBoxToken,
+  removeBoxToken,
+  getBoxStatus,
+  // SharePoint
+  getSharePointToken,
+  setSharePointToken,
+  removeSharePointToken,
+  getSharePointStatus,
   // Combined
   getAllConnectedAccounts,
 };

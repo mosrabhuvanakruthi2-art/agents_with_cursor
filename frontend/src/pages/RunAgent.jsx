@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import AgentForm from '../components/AgentForm';
 import StatusBadge from '../components/StatusBadge';
@@ -16,22 +17,47 @@ function normalizeRunResult(exec) {
   return exec;
 }
 
+const TABS = [
+  { id: 'email', label: 'Email Migration', desc: 'Configure and trigger a migration QA flow for email' },
+  { id: 'content', label: 'Content Migration', desc: 'Configure and trigger a migration QA flow for calendar & contacts' },
+];
+
 export default function RunAgent() {
   const { execution, loading, error, run } = useAgentExecution();
+  const [activeTab, setActiveTab] = useState('email');
 
   const isBulk = execution?.bulk;
   const isRunning = execution && !isBulk && execution.status === 'RUNNING';
   const runView = normalizeRunResult(execution);
+  const currentTab = TABS.find((t) => t.id === activeTab);
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Run Agent</h1>
-        <p className="text-sm text-gray-500 mt-1">Configure and trigger a migration QA flow</p>
+        <p className="text-sm text-gray-500 mt-1">{currentTab.desc}</p>
+      </div>
+
+      {/* Tab switcher */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${
+              activeTab === tab.id
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <AgentForm onSubmit={run} loading={loading} />
+        <AgentForm onSubmit={run} loading={loading} mode={activeTab} />
       </div>
 
       {error && (
@@ -182,6 +208,44 @@ export default function RunAgent() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {runView.contentMigrationReport && (
+            <div className="bg-white rounded-xl border border-blue-200 p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <h3 className="text-sm font-semibold text-gray-900">Content Migration Report</h3>
+                <StatusBadge status={runView.contentMigrationReport.status} />
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <p className="text-xs text-blue-600 font-medium">Workspace ID</p>
+                  <p className="font-mono text-sm text-gray-900 mt-1 break-all">{runView.contentMigrationReport.workspaceId || '—'}</p>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <p className="text-xs text-blue-600 font-medium">Status</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-1">{runView.contentMigrationReport.status || '—'}</p>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <p className="text-xs text-blue-600 font-medium">Processed</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-1">
+                    {runView.contentMigrationReport.processedCount ?? '—'}
+                    {runView.contentMigrationReport.totalCount ? ` / ${runView.contentMigrationReport.totalCount}` : ''}
+                  </p>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <p className="text-xs text-blue-600 font-medium">Stopped At</p>
+                  <p className="text-xs text-gray-900 mt-1">{runView.contentMigrationReport.stoppedAt ? new Date(runView.contentMigrationReport.stoppedAt).toLocaleString() : '—'}</p>
+                </div>
+              </div>
+              {runView.contentMigrationReport.rawJobData && (
+                <details className="mt-2">
+                  <summary className="text-xs text-blue-600 cursor-pointer hover:text-blue-800 font-medium">View raw job data</summary>
+                  <pre className="mt-2 text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-auto max-h-64 text-gray-700">
+                    {JSON.stringify(runView.contentMigrationReport.rawJobData, null, 2)}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
 
