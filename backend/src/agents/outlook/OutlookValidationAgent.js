@@ -2,6 +2,7 @@ const { BaseAgent } = require('../core/BaseAgent');
 const outlookClient = require('../../clients/outlookClient');
 const gmailClient = require('../../clients/gmailClient');
 const calendarClient = require('../../clients/calendarClient');
+const migrationClient = require('../../clients/migrationClient');
 const ValidationResult = require('../../models/ValidationResult');
 const logger = require('../../utils/logger');
 const { findDestCustomFolder } = require('../../utils/gmailOutlookLabelMatch');
@@ -43,6 +44,20 @@ class OutlookValidationAgent extends BaseAgent {
     const testType = context.testType || 'E2E';
 
     log.info(`Validating [${testType}]: ${sourceUser} → ${destUser} (sourceProvider=${context.sourceProvider || 'google'})`);
+
+    // Fetch CloudFuze migration job status so the PDF report shows Workspace ID, total/processed
+    // counts, and status. Only fetch if not already populated by MigrationAgent in this execution.
+    if (!context.migrationJobDetails) {
+      try {
+        const jobStatus = await migrationClient.fetchCurrentJobStatus(sourceUser);
+        if (jobStatus) {
+          context.migrationJobDetails = jobStatus;
+          log.info(`CloudFuze job status fetched: workspaceId=${jobStatus.workspaceId} status=${jobStatus.cfStatus} ${jobStatus.processedCount}/${jobStatus.totalCount}`);
+        }
+      } catch (e) {
+        log.warn(`CloudFuze job status fetch failed (non-fatal): ${e.message}`);
+      }
+    }
 
     // Fetch source data — Outlook or Gmail depending on source provider
     if (context.sourceProvider === 'microsoft') {

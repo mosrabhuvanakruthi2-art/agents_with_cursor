@@ -379,8 +379,7 @@ function drawSummarySection(doc, validation, context, result) {
   drawSectionHeader(doc, '1 — Summary');
 
   const { deep, results: deepResults } = normalizeDeepMailResultsForPdf(validation);
-  const deepFailed    = deepResults.filter((r) => !r.pass).length;
-  const totalFindings = (validation.mismatches || []).length;
+  const deepFailed = deepResults.filter((r) => !r.pass).length;
 
   const MAPPED_OUTLOOK = new Set(['Inbox', 'Sent Items', 'Drafts', 'Deleted Items', 'Junk Email']);
   const MAPPED_GMAIL   = new Set(['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM']);
@@ -397,19 +396,60 @@ function drawSummarySection(doc, validation, context, result) {
                 + dstCustoms.reduce((s, f) => s + (f.messageCount || 0), 0);
   const mailMatch = srcMail === dstMail;
 
+  const scanned  = deep.scannedSourceMessages ?? null;
+  const paired   = deep.pairedCount           ?? null;
+  const unpaired = (scanned != null && paired != null) ? Math.max(0, scanned - paired) : null;
+
+  // Each card: value shown large, label in semi-bold, sub in small gray explaining what it means
   const metrics = [
-    { value: deep.scannedSourceMessages ?? '—', label: 'Messages Scanned', vc: C.text,  bg: C.bg,      bd: C.border      },
-    { value: deep.pairedCount           ?? '—', label: 'Paired Messages',  vc: C.text,  bg: C.bg,      bd: C.border      },
-    { value: deepFailed,    label: 'Deep Mail Failures', vc: deepFailed > 0 ? C.fail : C.pass, bg: deepFailed > 0 ? C.failBg : C.passBg, bd: deepFailed > 0 ? C.failBorder : C.passBorder },
-    { value: totalFindings, label: 'Total Findings',    vc: totalFindings > 0 ? C.warn : C.pass, bg: totalFindings > 0 ? C.warnBg : C.passBg, bd: totalFindings > 0 ? C.warnBorder : C.passBorder },
-    { value: result?.duration != null ? formatDurationMs(result.duration) : '—', label: 'Duration', vc: C.text, bg: C.bg, bd: C.border },
-    { value: `${srcMail} / ${dstMail}`, label: 'Mail Count (Src / Dst)', vc: mailMatch ? C.pass : C.fail, bg: mailMatch ? C.passBg : C.failBg, bd: mailMatch ? C.passBorder : C.failBorder },
+    {
+      value: scanned ?? '—',
+      label: 'Emails Checked',
+      sub:   'QA source emails examined',
+      vc: C.text, bg: C.bg, bd: C.border,
+    },
+    {
+      value: paired ?? '—',
+      label: 'Matched in Destination',
+      sub:   'Source emails found & paired',
+      vc: C.text, bg: C.bg, bd: C.border,
+    },
+    {
+      value: unpaired ?? '—',
+      label: 'Not Found in Destination',
+      sub:   'Source emails missing from dest',
+      vc: unpaired > 0 ? C.fail : C.pass,
+      bg: unpaired > 0 ? C.failBg : C.passBg,
+      bd: unpaired > 0 ? C.failBorder : C.passBorder,
+    },
+    {
+      value: deepFailed,
+      label: 'Content Mismatches',
+      sub:   'Paired emails with field differences',
+      vc: deepFailed > 0 ? C.fail : C.pass,
+      bg: deepFailed > 0 ? C.failBg : C.passBg,
+      bd: deepFailed > 0 ? C.failBorder : C.passBorder,
+    },
+    {
+      value: `${srcMail} → ${dstMail}`,
+      label: 'Mailbox Email Count',
+      sub:   'Total emails: source → destination',
+      vc: mailMatch ? C.pass : C.fail,
+      bg: mailMatch ? C.passBg : C.failBg,
+      bd: mailMatch ? C.passBorder : C.failBorder,
+    },
+    {
+      value: result?.duration != null ? formatDurationMs(result.duration) : '—',
+      label: 'Total Run Time',
+      sub:   'End-to-end execution duration',
+      vc: C.text, bg: C.bg, bd: C.border,
+    },
   ];
 
-  const gap = 10;
-  const cols = 3;
+  const gap   = 10;
+  const cols  = 3;
   const cardW = (CONTENT_W - gap * (cols - 1)) / cols;
-  const cardH = 70;
+  const cardH = 90; // taller to fit value + label + subtitle
 
   ensureSpace(doc, cardH * 2 + gap + 16);
   let startY = doc.y;
@@ -420,15 +460,23 @@ function drawSummarySection(doc, validation, context, result) {
     const cx  = MARGIN + col * (cardW + gap);
     const cy  = startY + row * (cardH + gap);
 
+    // Card background + border
     doc.save().fillColor(m.bg).roundedRect(cx, cy, cardW, cardH, 6).fill().restore();
     doc.save().strokeColor(m.bd).lineWidth(1).roundedRect(cx, cy, cardW, cardH, 6).stroke().restore();
 
+    // Large value
     const valStr  = String(m.value ?? '—');
-    const valSize = valStr.length > 8 ? 13 : valStr.length > 5 ? 16 : 20;
+    const valSize = valStr.length > 8 ? 13 : valStr.length > 5 ? 16 : 22;
     doc.fontSize(valSize).font(F_BOLD).fillColor(m.vc)
-      .text(valStr, cx + 6, cy + 14, { width: cardW - 12, align: 'center' });
-    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
-      .text(m.label, cx + 6, cy + cardH - 20, { width: cardW - 12, align: 'center' });
+      .text(valStr, cx + 6, cy + 13, { width: cardW - 12, align: 'center' });
+
+    // Label (semi-bold, readable)
+    doc.fontSize(8.5).font(F_BOLD).fillColor(C.text)
+      .text(m.label, cx + 6, cy + cardH - 38, { width: cardW - 12, align: 'center' });
+
+    // Subtitle (small gray, explains what the number means)
+    doc.fontSize(6.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(m.sub, cx + 6, cy + cardH - 22, { width: cardW - 12, align: 'center' });
   });
 
   doc.y = startY + Math.ceil(metrics.length / cols) * (cardH + gap) + 4;

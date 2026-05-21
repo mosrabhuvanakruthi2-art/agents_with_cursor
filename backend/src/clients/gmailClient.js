@@ -472,6 +472,7 @@ async function getMessageMetadata(sourceEmail, messageId, format = 'metadata') {
     to: headerMap.to || '',
     cc: headerMap.cc || '',
     bcc: headerMap.bcc || '',
+    replyTo: headerMap['reply-to'] || '',
     date: headerMap.date || '',
     raw: data,
   };
@@ -606,8 +607,9 @@ async function findMessagesByInternetMessageId(email, internetMessageId) {
   const rawId = String(internetMessageId || '').replace(/^<+|>+$/g, '').trim();
   if (!rawId) return [];
   const gmail = getGmailForEmail(email);
+  // in:anywhere includes Trash and Spam — without it, Gmail search skips those folders
   const res = await retryWithBackoff(
-    () => gmail.users.messages.list({ userId: 'me', q: `rfc822msgid:${rawId}`, maxResults: 5 }),
+    () => gmail.users.messages.list({ userId: 'me', q: `rfc822msgid:${rawId} in:anywhere`, maxResults: 5 }),
     { label: `Gmail findByMID (${email})` }
   );
   return res.data.messages || [];
@@ -623,10 +625,28 @@ async function findMessagesBySubjectAndTime(email, subject, anchorMs, windowMinu
   const afterSec = Math.floor(anchorMs / 1000) - windowSec;
   const beforeSec = Math.floor(anchorMs / 1000) + windowSec;
   const safeSubject = String(subject || '').replace(/"/g, '').slice(0, 100);
-  const q = `subject:"${safeSubject}" after:${afterSec} before:${beforeSec}`;
+  // in:anywhere includes Trash and Spam — without it, Gmail search skips those folders
+  const q = `subject:"${safeSubject}" after:${afterSec} before:${beforeSec} in:anywhere`;
   const res = await retryWithBackoff(
     () => gmail.users.messages.list({ userId: 'me', q, maxResults: 10 }),
     { label: `Gmail findBySubjectTime (${email})` }
+  );
+  return res.data.messages || [];
+}
+
+/**
+ * Find Gmail messages by subject only (no time constraint). Use as last-resort fallback
+ * for emails where the Gmail internalDate may be far from the Outlook receivedDateTime
+ * (e.g. Archive folder messages migrated by CloudFuze).
+ * Returns [{id, threadId}] or [].
+ */
+async function findMessagesBySubject(email, subject) {
+  const gmail = getGmailForEmail(email);
+  const safeSubject = String(subject || '').replace(/"/g, '').slice(0, 100);
+  const q = `subject:"${safeSubject}" in:anywhere`;
+  const res = await retryWithBackoff(
+    () => gmail.users.messages.list({ userId: 'me', q, maxResults: 10 }),
+    { label: `Gmail findBySubject (${email})` }
   );
   return res.data.messages || [];
 }
@@ -1295,6 +1315,85 @@ async function getGmailMailboxSizeBytes(userEmail) {
   return { sizeBytes: totalBytes, messageCount: allIds.length, partial, method: 'gmail_size_estimate' };
 }
 
+/**
+ * Fetch all messages in a Gmail thread (conversation chain).
+ * Uses metadata format with Subject/From/Date/Message-ID headers.
+ * Returns messages in the thread's natural order (oldest first, as Gmail stores them).
+ */
+async function getGmailThread(userEmail, threadId) {
+  try {
+    const gmail = getGmailForEmail(userEmail);
+    const res = await gmail.users.threads.get({
+      userId: 'me',
+      id: threadId,
+      format: 'metadata',
+      metadataHeaders: ['Subject', 'From', 'Date', 'Message-ID'],
+    });
+    const thread = res.data;
+    const messages = (thread.messages || []).map((msg) => {
+      const hm = headersArrayToMap(msg.payload?.headers);
+      return {
+        id: msg.id,
+        threadId: msg.threadId,
+        subject: hm.subject || '',
+        from: hm.from || '',
+        date: hm.date || '',
+        internetMessageId: normalizeInternetMessageId(hm['message-id'] || ''),
+        labelIds: msg.labelIds || [],
+        internalDate: msg.internalDate ? Number(msg.internalDate) : null,
+      };
+    });
+    // Sort oldest-first by internalDate (ms epoch) when available
+    messages.sort((a, b) => (a.internalDate || 0) - (b.internalDate || 0));
+    return { threadId, messages, available: true };
+  } catch (e) {
+    return { threadId, messages: [], available: false, note: `getGmailThread failed: ${String(e.message).substring(0, 120)}` };
+  }
+}
+
+async function getGmailFilters(userEmail) {
+  try {
+    const gmail = getGmailForEmail(userEmail);
+    const res = await gmail.users.settings.filters.list({ userId: 'me' });
+    return { filters: res.data.filter || [], available: true };
+  } catch (e) {
+    return { filters: [], available: false, note: `Gmail filters fetch failed: ${String(e.message).substring(0, 120)}` };
+  }
+}
+
+async function getGmailDraftDetails(userEmail, maxDrafts = 100) {
+  try {
+    const gmail = getGmailForEmail(userEmail);
+    const listRes = await gmail.users.drafts.list({ userId: 'me', maxResults: maxDrafts });
+    const draftRefs = listRes.data.drafts || [];
+    const drafts = [];
+    for (const dr of draftRefs) {
+      try {
+        const draftRes = await gmail.users.drafts.get({
+          userId: 'me',
+          id: dr.id,
+          format: 'metadata',
+          metadataHeaders: ['Subject', 'To', 'Cc', 'From', 'Reply-To'],
+        });
+        const msg = draftRes.data.message;
+        const hm = headersArrayToMap(msg.payload?.headers);
+        drafts.push({
+          id: dr.id,
+          messageId: msg.id,
+          subject: hm.subject || '',
+          to: hm.to || '',
+          cc: hm.cc || '',
+          from: hm.from || '',
+          replyTo: hm['reply-to'] || '',
+        });
+      } catch { /* skip this draft */ }
+    }
+    return { drafts, available: true };
+  } catch (e) {
+    return { drafts: [], available: false, note: `Gmail drafts fetch failed: ${String(e.message).substring(0, 120)}` };
+  }
+}
+
 module.exports = {
   hasServiceAccount,
   buildRawMessage,
@@ -1308,6 +1407,7 @@ module.exports = {
   listMessageIdsForLabelUpTo,
   findMessagesByInternetMessageId,
   findMessagesBySubjectAndTime,
+  findMessagesBySubject,
   getMessageMetadata,
   getMessageFullForValidation,
   getAttachmentData,
@@ -1330,5 +1430,8 @@ module.exports = {
   cleanGmailFoldersOnly,
   cleanGmailCalendarsOnly,
   deleteGmailQaMessages,
+  getGmailThread,
+  getGmailFilters,
+  getGmailDraftDetails,
   GMAIL_SYSTEM_LABEL_IDS,
 };

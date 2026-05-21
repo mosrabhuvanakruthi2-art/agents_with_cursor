@@ -73,6 +73,7 @@ const path  = require('path');
 const fs    = require('fs');
 const zlib  = require('zlib');
 const axios = require('axios');
+const XLSX_LIB = require('xlsx');
 const { BaseAgent }    = require('../core/BaseAgent');
 const outlookClient    = require('../../clients/outlookClient');
 const env              = require('../../config/env');
@@ -80,6 +81,12 @@ const logger           = require('../../utils/logger');
 const executionService = require('../../services/executionService');
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+// Minimal valid PDF (556 bytes) — correct xref offsets, renders one page with text.
+const MINIMAL_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ID4+ID4+ID4+CmVuZG9iago0IDAgb2JqCjw8IC9MZW5ndGggNTMgPj4Kc3RyZWFtCkJUIC9GMSAxMiBUZiAxMDAgNzAwIFRkIChRQSBNaWdyYXRpb24gVGVzdCBQREYpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDUKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjkwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNSAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKMzkzCiUlRU9GCg==';
+
+// Minimal valid DOCX (~1 KB) — proper ZIP/OpenXML container, opens in Word without errors.
+const MINIMAL_DOCX_B64 = 'UEsDBBQAAAAIAIkMtFx5bjPX6AAAAK0BAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH1QyU7DMBD9FWuuKHHggBCK0wPLETiUDxjZk8SqN3nc0v49Tlt6QIXjzFv1+tXeO7GjzDYGBbdtB4KCjsaGScHn+rV5AMEFg0EXAyk4EMNq6NeHRCyqNrCCuZT0KCXrmTxyGxOFiowxeyz1zJNMqDc4kbzrunupYygUSlMWDxj6Zxpx64p42df3qUcmxyCeTsQlSwGm5KzGUnG5C+ZXSnNOaKvyyOHZJr6pBJBXExbk74Cz7r0Ok60h8YG5vKGvLPkVs5Em6q2vyvZ/mys94zhaTRf94pZy1MRcF/euvSAebfjpL49zD99QSwMEFAAAAAgAiQy0XJv9N+qtAAAAKQEAAAsAAABfcmVscy8ucmVsc43POw7CMAwG4KtE3mlaBoRQ0y4IqSsqB7ASN61oHkrCo7cnAwNFDIy2f3+W6/ZpZnanECdnBVRFCYysdGqyWsClP232wGJCq3B2lgQsFKFt6jPNmPJKHCcfWTZsFDCm5A+cRzmSwVg4TzZPBhcMplwGzT3KK2ri27Lc8fBpwNpknRIQOlUB6xdP/9huGCZJRydvhmz6ceIrkWUMmpKAhwuKq3e7yCzwpuarF5sXUEsDBBQAAAAIAIkMtFzp+cGTewAAAJsAAAAcAAAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1XMQQ4CIQyF4auQ7h3QhTEGmJ0HMHqAZqYCkSmEEqO3l6UuX/68z87vLasXNUmFHewnA4p4KWvi4OB+u+xOoKQjr5gLk4MPCczeXiljHxeJqYoaBouD2Hs9ay1LpA1lKpV4lEdpG/YxW9AVlycG0gdjjrr9GuCt/kP9F1BLAwQUAAAACACJDLRc0tYU0fMAAACWAQAAEQAAAHdvcmQvZG9jdW1lbnQueG1sbZDdSsQwEIVfJeTepuuFSGl3kRXvRIUK3o5p2gaaTMiMrfv2JvEPViGcTDLMN2emPby7RawmkkXfyV1VS2G8xsH6qZPP/d3FtRTE4AdY0JtOngzJw77dmgH1mzOeRQJ4aragOzkzh0Yp0rNxQJWzOiLhyJVGp3AcrTZqwzioy3pXlyhE1IYodTuCX4HkN+4PDIPxKTdidMDpGaczgFsStr5SDqyX2eErDqd8hywxC++fbsS9nSJwGlf0hljcfs3RqpzPGouG89J+tiTSAcGl7uH4IoAZ9FzWkIwJ94NeYbFDCat/wWQ0P0ZVPj59qt+V7j8AUEsBAhQAFAAAAAgAiQy0XHluM9foAAAArQEAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACACJDLRcm/036q0AAAApAQAACwAAAAAAAAAAAAAAgAEZAQAAX3JlbHMvLnJlbHNQSwECFAAUAAAACACJDLRc6fnBk3sAAACbAAAAHAAAAAAAAAAAAAAAgAHvAQAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1BLAQIUABQAAAAIAIkMtFzS1hTR8wAAAJYBAAARAAAAAAAAAAAAAACAAaQCAAB3b3JkL2RvY3VtZW50LnhtbFBLBQYAAAAABAAEAAMBAADGAwAAAAA=';
 
 /** Generate a valid solid-colour PNG in base64 — size×size pixels, RGB (r,g,b). */
 function makeSolidColorPng(r, g, b, size = 16) {
@@ -181,12 +188,55 @@ const FALLBACK_CASES = [
   { subject: 'QA Smoke - Unread State Test',   textBody: 'Unread state validation test email.',           folder: 'Inbox', labelIds: ['INBOX'], isRead: false },
 ];
 
+/**
+ * SANITY tier: ~20 messages covering all key folder types + marker states.
+ * Designed to be a superset of SMOKE (5 msgs) with broader folder + state coverage.
+ */
+const SANITY_CASES = [
+  // Inbox — read / unread
+  { subject: 'QA Sanity - Inbox Read',           textBody: 'Inbox read message sanity check.',            folder: 'Inbox',         isRead: true  },
+  { subject: 'QA Sanity - Inbox Unread',          textBody: 'Inbox unread message sanity check.',          folder: 'Inbox',         isRead: false },
+  { subject: 'QA Sanity - Inbox With Attachment', textBody: 'Inbox message with attachment.',              folder: 'Inbox',         isRead: true,
+    attachments: [{ name: 'qa-sanity.txt', contentType: 'text/plain', content: 'U2FuaXR5IFFBIGZpbGU=' }] },
+  { subject: 'QA Sanity - Inbox CC Recipients',   textBody: 'Message with CC recipients.',                 folder: 'Inbox',         isRead: true  },
+  { subject: 'QA Sanity - Inbox Flagged',         textBody: 'Flagged inbox message (STARRED in Gmail).',   folder: 'Inbox',         isRead: true,
+    flag: { flagStatus: 'flagged' } },
+  { subject: 'QA Sanity - Inbox High Importance', textBody: 'High importance inbox message.',              folder: 'Inbox',         isRead: false,
+    importance: 'high' },
+  // Sent Items
+  { subject: 'QA Sanity - Sent Items',            textBody: 'Sent items sanity check.',                    folder: 'Sent Items',    isRead: true  },
+  { subject: 'QA Sanity - Sent Unread',           textBody: 'Unread sent item (unusual but valid).',       folder: 'Sent Items',    isRead: false },
+  // Drafts
+  { subject: 'QA Sanity - Draft Message',         textBody: 'Draft message for sanity check.',             folder: 'Drafts',        isRead: false },
+  // Junk Email
+  { subject: 'QA Sanity - Junk Email',            textBody: 'Junk/spam message sanity check.',             folder: 'Junk Email',    isRead: false },
+  // Deleted Items
+  { subject: 'QA Sanity - Deleted Items',         textBody: 'Deleted items message sanity check.',         folder: 'Deleted Items', isRead: true  },
+  // Archive
+  { subject: 'QA Sanity - Archive',               textBody: 'Archive folder message sanity check.',        folder: 'Archive',       isRead: true  },
+  // Custom folder
+  { subject: 'QA Sanity - Custom Folder A',       textBody: 'Custom folder message sanity check.',         folder: 'QA-Sanity-Folder', isRead: true },
+  { subject: 'QA Sanity - Custom Folder B',       textBody: 'Second message in custom folder.',            folder: 'QA-Sanity-Folder', isRead: false },
+  // Additional inbox variants
+  { subject: 'QA Sanity - Sender Check',          textBody: 'External sender validation.',                 folder: 'Inbox',         isRead: true  },
+  { subject: 'QA Sanity - HTML Body',
+    htmlBody: '<html><body><b>Bold</b> and <i>italic</i> content for <a href="https://example.com">sanity check</a>.</body></html>',
+    folder: 'Inbox',   isRead: true  },
+  { subject: 'QA Sanity - Low Importance',        textBody: 'Low importance message.',                     folder: 'Inbox',         isRead: true,
+    importance: 'low' },
+  { subject: 'QA Sanity - Category Red',          textBody: 'Message with Red Category.',                  folder: 'Inbox',         isRead: true,
+    categories: ['Red Category'] },
+  { subject: 'QA Sanity - Multiple TO',           textBody: 'Message addressed to multiple recipients.',   folder: 'Inbox',         isRead: true  },
+  { subject: 'QA Sanity - Empty Subject',         textBody: 'Sanity check message with empty subject.',    folder: 'Inbox',         isRead: false,
+    subject: '' },
+];
+
 function loadTestCases(testType, log) {
   try {
     const filePath = path.resolve(__dirname, '../../../data/custom-test-cases.json');
     if (!fs.existsSync(filePath)) {
       log.warn('custom-test-cases.json not found — using fallback messages');
-      return FALLBACK_CASES;
+      return testType === 'SANITY' ? SANITY_CASES : FALLBACK_CASES;
     }
     const data  = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const key   = testType.toLowerCase();
@@ -196,6 +246,11 @@ function loadTestCases(testType, log) {
     if (cases.length > 0) {
       log.info(`Loaded ${cases.length} custom test case(s) from Agent Repo for ${testType}`);
       return cases;
+    }
+    // SANITY: use built-in 20-message set when no custom cases defined
+    if (key === 'sanity') {
+      log.warn(`No sanity test cases in Agent Repo — using built-in SANITY_CASES (${SANITY_CASES.length} cases)`);
+      return SANITY_CASES;
     }
     // E2E: fall back to smoke cases (comprehensive base) rather than 5 hardcoded messages.
     // The _createExtendedTestData method then adds E2E-specific scenarios on top.
@@ -207,7 +262,7 @@ function loadTestCases(testType, log) {
     return FALLBACK_CASES;
   } catch (e) {
     log.warn(`Failed to load test cases: ${e.message} — using fallback`);
-    return FALLBACK_CASES;
+    return testType === 'SANITY' ? SANITY_CASES : FALLBACK_CASES;
   }
 }
 
@@ -241,15 +296,17 @@ function buildGraphMessage(tc, index, userEmail, senderRotation) {
     ? senderRotation
     : FALLBACK_EXTERNAL_SENDERS;
   const externalContact = toSenderObject(rotation[index % rotation.length]);
-  const body   = tc.textBody || tc.htmlBody || 'QA migration test message.';
 
   const folder = (tc.folder || '').trim().toLowerCase();
   const isSent  = folder === 'sent' || folder === 'sent items' || folder === 'sentitems';
   const isDraft = folder === 'draft' || folder === 'drafts';
 
+  const isHtml = !!tc.htmlBody;
+  const body   = tc.htmlBody || tc.textBody || 'QA migration test message.';
+
   const msg = {
-    subject:      tc.subject || `QA Test Message #${index + 1}`,
-    body:         { contentType: 'text', content: body },
+    subject:      tc.subject !== undefined ? tc.subject : `QA Test Message #${index + 1}`,
+    body:         { contentType: isHtml ? 'html' : 'text', content: body },
     isRead:       tc.isRead !== undefined ? Boolean(tc.isRead) : index % 2 === 0,
     isDraft:      isDraft,
   };
@@ -260,6 +317,19 @@ function buildGraphMessage(tc, index, userEmail, senderRotation) {
   } else {
     msg.from         = { emailAddress: externalContact };
     msg.toRecipients = [{ emailAddress: { address: userEmail, name: userEmail.split('@')[0] } }];
+  }
+
+  // Pass-through optional fields from test case
+  if (tc.importance) msg.importance = tc.importance;
+  if (tc.flag) msg.flag = tc.flag;
+  if (tc.categories) msg.categories = tc.categories;
+  if (Array.isArray(tc.attachments) && tc.attachments.length > 0) {
+    msg.attachments = tc.attachments.map((a) => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.name,
+      contentType: a.contentType || 'application/octet-stream',
+      contentBytes: a.content || Buffer.from(a.name).toString('base64'),
+    }));
   }
 
   return msg;
@@ -481,7 +551,22 @@ class OutlookTestDataAgent extends BaseAgent {
     // Scenario B: 26 MB — "Upload and share as a OneDrive link" (user chose the link option)
     // Outlook shows a dialog for files in the ~10–33 MB range. The user picked OneDrive link.
     // Exchange stores a referenceAttachment; no binary data is in the message.
+    // We upload a real XLSX to the user's OneDrive and use the real share URL so the link resolves.
     try {
+      const wb26 = XLSX_LIB.utils.book_new();
+      XLSX_LIB.utils.book_append_sheet(
+        wb26,
+        XLSX_LIB.utils.aoa_to_sheet([
+          ['QA Large File', '26 MB OneDrive Link Test'],
+          ['Scenario', 'User selected "Upload and share as a OneDrive link" in Outlook'],
+          ['Size class', '~26 MB (user-chosen link, Outlook 10–33 MB dialog)'],
+        ]),
+        'QA',
+      );
+      const buf26 = Buffer.from(XLSX_LIB.write(wb26, { type: 'base64', bookType: 'xlsx' }), 'base64');
+      const { shareUrl: shareUrl26 } = await outlookClient.uploadFileAndCreateShareLink(
+        userEmail, 'qa-large-file-26mb.xlsx', buf26,
+      );
       const created3b = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
         subject: 'QA E2E 3b - Attachment OneDrive Link (26 MB)',
         body: {
@@ -490,8 +575,7 @@ class OutlookTestDataAgent extends BaseAgent {
             + '<p>Email sharing a 26 MB file via OneDrive link — user selected '
             + '<em>"Upload and share as a OneDrive link"</em> in Outlook.</p>'
             + '<p><strong>qa-large-file-26mb.xlsx</strong> (26 MB):</p>'
-            + '<p><a href="https://qatestagent.sharepoint.com/sites/QAMigration/Shared%20Documents/qa-large-file-26mb.xlsx">'
-            + 'View on OneDrive</a></p></body></html>',
+            + `<p><a href="${shareUrl26}">View on OneDrive</a></p></body></html>`,
         },
         from: { emailAddress: externalSender },
         toRecipients: [{ emailAddress: { address: userEmail } }],
@@ -504,20 +588,36 @@ class OutlookTestDataAgent extends BaseAgent {
       if (msgId3b) {
         await addReferenceAttachment(userEmail, msgId3b, {
           name: 'qa-large-file-26mb.xlsx',
-          sourceUrl: 'https://qatestagent.sharepoint.com/sites/QAMigration/Shared%20Documents/qa-large-file-26mb.xlsx',
+          sourceUrl: shareUrl26,
         });
       }
       summary.messagesCreated++;
       log.info('✓ Attachment Scenario B created (26 MB OneDrive link — user chose link option)');
     } catch (err) {
-      log.warn(`Attachment Scenario B failed: ${err.message}`);
+      const noOd = err.code === 'NO_ONEDRIVE';
+      log.warn(`Attachment Scenario B failed: ${err.message}${noOd ? ' — OneDrive/SharePoint license may not be enabled for this tenant' : ''}`);
       summary.errors.push(`Attachment Scenario B (OneDrive link 26MB): ${err.message}`);
     }
 
     // Scenario C: 35 MB — forced OneDrive link (>33 MB, Outlook gives NO "Attach as a copy" option)
     // Tests that CloudFuze migrates reference attachments created under the forced-link path,
     // where Exchange only ever stores a referenceAttachment (never a binary fileAttachment).
+    // We upload a real XLSX to the user's OneDrive and use the real share URL so the link resolves.
     try {
+      const wb35 = XLSX_LIB.utils.book_new();
+      XLSX_LIB.utils.book_append_sheet(
+        wb35,
+        XLSX_LIB.utils.aoa_to_sheet([
+          ['QA Large File', '35 MB Forced OneDrive Link Test'],
+          ['Scenario', 'Outlook forced OneDrive link — files >33 MB have no "Attach as a copy" option'],
+          ['Size class', '~35 MB (forced link path)'],
+        ]),
+        'QA',
+      );
+      const buf35 = Buffer.from(XLSX_LIB.write(wb35, { type: 'base64', bookType: 'xlsx' }), 'base64');
+      const { shareUrl: shareUrl35 } = await outlookClient.uploadFileAndCreateShareLink(
+        userEmail, 'qa-large-file-35mb.xlsx', buf35,
+      );
       const created3c = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
         subject: 'QA E2E 3c - Attachment Forced OneDrive Link (35 MB)',
         body: {
@@ -527,8 +627,7 @@ class OutlookTestDataAgent extends BaseAgent {
             + '<strong>does not offer "Attach as a copy"</strong>. Only the OneDrive link '
             + 'option is available.</p>'
             + '<p><strong>qa-large-file-35mb.xlsx</strong> (35 MB):</p>'
-            + '<p><a href="https://qatestagent.sharepoint.com/sites/QAMigration/Shared%20Documents/qa-large-file-35mb.xlsx">'
-            + 'View on OneDrive</a></p></body></html>',
+            + `<p><a href="${shareUrl35}">View on OneDrive</a></p></body></html>`,
         },
         from: { emailAddress: externalSender },
         toRecipients: [{ emailAddress: { address: userEmail } }],
@@ -541,13 +640,14 @@ class OutlookTestDataAgent extends BaseAgent {
       if (msgId3c) {
         await addReferenceAttachment(userEmail, msgId3c, {
           name: 'qa-large-file-35mb.xlsx',
-          sourceUrl: 'https://qatestagent.sharepoint.com/sites/QAMigration/Shared%20Documents/qa-large-file-35mb.xlsx',
+          sourceUrl: shareUrl35,
         });
       }
       summary.messagesCreated++;
       log.info('✓ Attachment Scenario C created (35 MB forced OneDrive link — >33 MB, no binary option)');
     } catch (err) {
-      log.warn(`Attachment Scenario C failed: ${err.message}`);
+      const noOd = err.code === 'NO_ONEDRIVE';
+      log.warn(`Attachment Scenario C failed: ${err.message}${noOd ? ' — OneDrive/SharePoint license may not be enabled for this tenant' : ''}`);
       summary.errors.push(`Attachment Scenario C (forced OneDrive link 35MB): ${err.message}`);
     }
 
@@ -733,13 +833,7 @@ class OutlookTestDataAgent extends BaseAgent {
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
     // Shared minimal-valid PDF bytes reused across all attachment-test sections (8, 9, 16, 17, 18, 19).
-    const QA_PDF_BYTES = Buffer.from(
-      '%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n' +
-      '2 0 obj<</Type /Pages /Kids[3 0 R] /Count 1>>endobj\n' +
-      '3 0 obj<</Type /Page /MediaBox[0 0 612 792]>>endobj\n' +
-      'xref\n0 4\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n9\n%%EOF\n' +
-      'QA migration test PDF attachment.'
-    ).toString('base64');
+    const QA_PDF_BYTES = MINIMAL_PDF_B64;
 
     // ── 8. Email with single attachment ────────────────────────────────────
     log.info('E2E: creating email with single attachment…');
@@ -2376,50 +2470,57 @@ class OutlookTestDataAgent extends BaseAgent {
       // Minimal 1×1 white PNG (valid binary image)
       const PNG_1X1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==';
 
-      const makeAttachments = (folderLabel) => [
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-report-${folderLabel}.pdf`,
-          contentType: 'application/pdf',
-          contentBytes: b64(
-            '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
-            `2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n` +
-            `3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n` +
-            `xref\n0 4\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n9\n%%EOF\n` +
-            `QA Migration test — ${folderLabel} PDF attachment`
-          ),
-        },
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-spreadsheet-${folderLabel}.xlsx`,
-          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          contentBytes: b64(`QA XLSX placeholder — ${folderLabel}\nCol A,Col B,Col C\nRow1,Data,Test\nRow2,Migration,QA`),
-        },
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-document-${folderLabel}.docx`,
-          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          contentBytes: b64(`QA DOCX placeholder — ${folderLabel}\n\nThis document is a migration QA test attachment.\nFolder: ${folderLabel}`),
-        },
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-image-${folderLabel}.png`,
-          contentType: 'image/png',
-          contentBytes: PNG_1X1,
-        },
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-data-${folderLabel}.csv`,
-          contentType: 'text/csv',
-          contentBytes: b64(`id,name,folder,status\n1,QA Test,${folderLabel},migrated\n2,Sample,${folderLabel},verified\n3,Check,${folderLabel},pass`),
-        },
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `qa-notes-${folderLabel}.txt`,
-          contentType: 'text/plain',
-          contentBytes: b64(`QA migration notes for ${folderLabel}\n\nAttachment type: plain text\nTest: multi-type attachment in single email\nFolder: ${folderLabel}\nFiles: PDF, XLSX, DOCX, PNG, CSV, TXT`),
-        },
-      ];
+      const makeAttachments = (folderLabel) => {
+        // Build a real XLSX workbook so the file opens correctly in Excel
+        const wb = XLSX_LIB.utils.book_new();
+        const ws = XLSX_LIB.utils.aoa_to_sheet([
+          ['ID', 'Name', 'Folder', 'Status'],
+          [1, 'QA Test Row 1', folderLabel, 'Migrated'],
+          [2, 'QA Test Row 2', folderLabel, 'Verified'],
+          [3, 'QA Test Row 3', folderLabel, 'Pass'],
+        ]);
+        XLSX_LIB.utils.book_append_sheet(wb, ws, 'QA Data');
+        const xlsxB64 = XLSX_LIB.write(wb, { type: 'base64', bookType: 'xlsx' });
+
+        return [
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-report-${folderLabel}.pdf`,
+            contentType: 'application/pdf',
+            contentBytes: MINIMAL_PDF_B64,
+          },
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-spreadsheet-${folderLabel}.xlsx`,
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            contentBytes: xlsxB64,
+          },
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-document-${folderLabel}.docx`,
+            contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            contentBytes: MINIMAL_DOCX_B64,
+          },
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-image-${folderLabel}.png`,
+            contentType: 'image/png',
+            contentBytes: PNG_1X1,
+          },
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-data-${folderLabel}.csv`,
+            contentType: 'text/csv',
+            contentBytes: b64(`id,name,folder,status\n1,QA Test,${folderLabel},migrated\n2,Sample,${folderLabel},verified\n3,Check,${folderLabel},pass`),
+          },
+          {
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: `qa-notes-${folderLabel}.txt`,
+            contentType: 'text/plain',
+            contentBytes: b64(`QA migration notes for ${folderLabel}\n\nAttachment type: plain text\nTest: multi-type attachment in single email\nFolder: ${folderLabel}\nFiles: PDF, XLSX, DOCX, PNG, CSV, TXT`),
+          },
+        ];
+      };
 
       const customFolderCacheSec38 = {};
       const _sec38Folders = [

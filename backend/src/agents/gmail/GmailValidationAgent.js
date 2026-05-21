@@ -24,9 +24,11 @@ const { BaseAgent }      = require('../core/BaseAgent');
 const outlookClient      = require('../../clients/outlookClient');
 const gmailClient        = require('../../clients/gmailClient');
 const calendarClient     = require('../../clients/calendarClient');
+const migrationClient    = require('../../clients/migrationClient');
 const ValidationResult   = require('../../models/ValidationResult');
 const logger             = require('../../utils/logger');
 const { findDestCustomFolder } = require('../../utils/gmailOutlookLabelMatch');
+const { parseRecipientEmails } = require('../../utils/mailMigrationComparator');
 
 // Outlook well-known display name → Gmail label ID
 const OUTLOOK_TO_GMAIL_LABEL = {
@@ -63,6 +65,20 @@ class GmailValidationAgent extends BaseAgent {
     const testType   = (context.testType || 'E2E').toUpperCase();
 
     log.info(`Validating Outlook→Gmail [${testType}]: ${sourceUser} → ${destUser}`);
+
+    // Fetch CloudFuze migration job status so the PDF report shows Workspace ID, total/processed
+    // counts, and status. Only fetch if not already populated by MigrationAgent in this execution.
+    if (!context.migrationJobDetails) {
+      try {
+        const jobStatus = await migrationClient.fetchCurrentJobStatus(sourceUser);
+        if (jobStatus) {
+          context.migrationJobDetails = jobStatus;
+          log.info(`CloudFuze job status fetched: workspaceId=${jobStatus.workspaceId} status=${jobStatus.cfStatus} ${jobStatus.processedCount}/${jobStatus.totalCount}`);
+        }
+      } catch (e) {
+        log.warn(`CloudFuze job status fetch failed (non-fatal): ${e.message}`);
+      }
+    }
 
     // ── 1. Source Outlook data ─────────────────────────────────────────────
     await this._fetchSourceOutlookData(sourceUser, result, log);
@@ -109,18 +125,34 @@ class GmailValidationAgent extends BaseAgent {
           const dst = dstMap.get(key);
           if (!dst) continue; // unmatched contacts reported by count mismatch
 
-          // Email address check (first email)
-          const srcEmail = (src.emailAddresses?.[0]?.address || '').toLowerCase();
-          const dstEmail = (dst.emailAddresses?.[0] || '').toLowerCase();
-          if (srcEmail && dstEmail && srcEmail !== dstEmail) {
-            fieldMismatches.push({ contact: src.displayName, field: 'emailAddress', source: srcEmail, destination: dstEmail });
+          // Email addresses — compare all, sorted and normalised
+          const srcEmails = (src.emailAddresses || []).map(e => (e.address || '').toLowerCase()).filter(Boolean).sort();
+          const dstEmails = (dst.emailAddresses || []).map(e => String(e || '').toLowerCase()).filter(Boolean).sort();
+          if (srcEmails.length > 0 && dstEmails.length > 0 && srcEmails.join(',') !== dstEmails.join(',')) {
+            fieldMismatches.push({ contact: src.displayName, field: 'emailAddresses', source: srcEmails.join(', '), destination: dstEmails.join(', ') });
+          } else if (srcEmails.length > 0 && dstEmails.length === 0) {
+            fieldMismatches.push({ contact: src.displayName, field: 'emailAddresses', source: srcEmails.join(', '), destination: '(none)' });
           }
 
-          // Phone number check (first business phone)
-          const srcPhone = (src.businessPhones?.[0] || '').replace(/\s/g, '');
-          const dstPhone = (dst.phoneNumbers?.[0] || '').replace(/\s/g, '');
-          if (srcPhone && dstPhone && srcPhone !== dstPhone) {
-            fieldMismatches.push({ contact: src.displayName, field: 'phone', source: srcPhone, destination: dstPhone });
+          // Phone numbers — merge businessPhones + mobilePhone vs phoneNumbers
+          const srcPhones = [...(src.businessPhones || []), src.mobilePhone].filter(Boolean).map(p => p.replace(/\s/g, '')).sort();
+          const dstPhones = (dst.phoneNumbers || []).map(p => p.replace(/\s/g, '')).sort();
+          if (srcPhones.length > 0 && dstPhones.length > 0 && srcPhones.join(',') !== dstPhones.join(',')) {
+            fieldMismatches.push({ contact: src.displayName, field: 'phoneNumbers', source: srcPhones.join(', '), destination: dstPhones.join(', ') });
+          }
+
+          // Organization / company name
+          const srcOrg = (src.companyName || '').trim().toLowerCase();
+          const dstOrg = (dst.organization || '').trim().toLowerCase();
+          if (srcOrg && dstOrg && srcOrg !== dstOrg) {
+            fieldMismatches.push({ contact: src.displayName, field: 'organization', source: src.companyName, destination: dst.organization });
+          }
+
+          // Job title
+          const srcTitle = (src.jobTitle || '').trim().toLowerCase();
+          const dstTitle = (dst.jobTitle || '').trim().toLowerCase();
+          if (srcTitle && dstTitle && srcTitle !== dstTitle) {
+            fieldMismatches.push({ contact: src.displayName, field: 'jobTitle', source: src.jobTitle, destination: dst.jobTitle });
           }
 
           // Photo check
@@ -145,26 +177,86 @@ class GmailValidationAgent extends BaseAgent {
       }
     }
 
-    // ── 5b. Inbox Rules Advisory ──────────────────────────────────────────────
+    // ── 5b. Inbox Rules Advisory + Gmail Filters comparison ──────────────────
     // Outlook inbox rules are NOT migrated as Gmail filters by CloudFuze.
-    // This block detects rules and adds an advisory note to the result.
+    // This block detects rules on source and any existing filters on destination.
     try {
-      const rulesResult = await outlookClient.getInboxRules(sourceUser);
+      const [rulesResult, filtersResult] = await Promise.all([
+        outlookClient.getInboxRules(sourceUser),
+        gmailClient.getGmailFilters(destUser).catch(() => ({ filters: [], available: false })),
+      ]);
       const rules = rulesResult.rules || [];
+      const filters = filtersResult.filters || [];
       result.rulesAdvisory = {
         available: rulesResult.available,
         count: rules.length,
         names: rules.map(r => r.displayName || r.name || '(unnamed)').slice(0, 20),
+        gmailFiltersCount: filters.length,
+        gmailFiltersAvailable: filtersResult.available,
         note: rules.length > 0
-          ? `${rules.length} Outlook inbox rule(s) detected. CloudFuze does not migrate Outlook inbox rules as Gmail filters — manual recreation in Gmail Filters is required.`
-          : 'No Outlook inbox rules detected.',
+          ? `${rules.length} Outlook inbox rule(s) detected. CloudFuze does not migrate Outlook inbox rules as Gmail filters — manual recreation required. Gmail currently has ${filters.length} filter(s).`
+          : `No Outlook inbox rules detected. Gmail has ${filters.length} filter(s).`,
       };
       if (rules.length > 0) {
-        log.warn(`Inbox rules: ${rules.length} rule(s) found — not migrated as Gmail filters`);
+        log.warn(`Inbox rules: ${rules.length} Outlook rule(s), ${filters.length} Gmail filter(s)`);
       }
     } catch (err) {
       log.warn(`Inbox rules advisory failed: ${err.message}`);
       result.rulesAdvisory = { available: false, count: 0, note: `Rules check failed: ${err.message}` };
+    }
+
+    // ── 5c. Draft body comparison ─────────────────────────────────────────────
+    if (context.includeMail !== false) {
+      try {
+        const [outlookDraftsRaw, gmailDraftsResult] = await Promise.all([
+          outlookClient.listMessagesInFolderPaged(
+            sourceUser, 'drafts', 200,
+            'id,subject,toRecipients,ccRecipients,from,isDraft'
+          ),
+          gmailClient.getGmailDraftDetails(destUser, 200),
+        ]);
+        const outlookDrafts = (outlookDraftsRaw || []).filter(m => m.isDraft !== false);
+        const gmailDrafts = gmailDraftsResult.drafts || [];
+        result.draftComparison = {
+          available: true,
+          sourceCount: outlookDrafts.length,
+          destinationCount: gmailDrafts.length,
+          countMatch: outlookDrafts.length === gmailDrafts.length,
+          subjectMismatches: [],
+        };
+        // Match drafts by normalized subject
+        const normalizeS = (s) => String(s || '').toLowerCase().replace(/^re:|^fwd?:/i, '').replace(/\s+/g, ' ').trim();
+        const gmailDraftMap = new Map(gmailDrafts.map(d => [normalizeS(d.subject), d]));
+        for (const od of outlookDrafts) {
+          const nk = normalizeS(od.subject);
+          const gd = gmailDraftMap.get(nk);
+          if (!gd) {
+            result.draftComparison.subjectMismatches.push({
+              subject: od.subject || '(no subject)',
+              issue: 'Draft not found in Gmail by subject',
+            });
+            continue;
+          }
+          // Compare recipients
+          const srcTo = (od.toRecipients || []).map(r => (r.emailAddress?.address || '').toLowerCase()).sort().join(',');
+          const dstTo = parseRecipientEmails(gd.to).join(',');
+          if (srcTo && dstTo && srcTo !== dstTo) {
+            result.draftComparison.subjectMismatches.push({
+              subject: od.subject || '(no subject)',
+              issue: `To recipients differ: Outlook=[${srcTo}] Gmail=[${dstTo}]`,
+            });
+          }
+        }
+        log.info(
+          `Draft comparison: src=${outlookDrafts.length} dst=${gmailDrafts.length} ` +
+          `mismatches=${result.draftComparison.subjectMismatches.length}`
+        );
+        if (!result.draftComparison.countMatch) {
+          result.addMismatch('mail', 'draftCount', outlookDrafts.length, gmailDrafts.length);
+        }
+      } catch (err) {
+        log.warn(`Draft comparison failed: ${err.message}`);
+      }
     }
 
     // ── 6. Groups (DELTA + E2E only — not migrated in One Time) ───────────
@@ -451,29 +543,58 @@ class GmailValidationAgent extends BaseAgent {
       result.calendarValidation.countMatch =
         result.calendarValidation.sourceEventCount === result.calendarValidation.destinationEventCount;
 
-      // Attachment validation — check that events with attachments in source also have attachments in dest
+      // Per-event detail comparison: match source↔destination events by subject+start time
       try {
+        result.calendarValidation.eventDetailMismatches = [];
         const srcCals = await outlookClient.getCalendars(sourceUser);
         for (const cal of srcCals) {
           const srcEvs = await outlookClient.getEvents(sourceUser, cal.id);
           for (const srcEv of srcEvs) {
-            if (!srcEv.hasAttachments) continue;
-            // find matching dest event by subject
+            const evSubjectLower = (srcEv.subject || '').toLowerCase().trim();
+            // Find matching dest event by subject (case-insensitive)
             const destEv = result.calendarValidation.eventDetails.find(
-              d => (d.subject || '').toLowerCase() === (srcEv.subject || '').toLowerCase()
+              (d) => (d.subject || '').toLowerCase().trim() === evSubjectLower
             );
-            if (!destEv) continue;
-            if (destEv.attachmentCount === 0) {
-              result.calendarValidation.attachmentMismatches = result.calendarValidation.attachmentMismatches || [];
+            if (!destEv) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject || '(no subject)',
+                issue: 'Event not found in Google Calendar by subject',
+                severity: 'error',
+              });
+              continue;
+            }
+            // Attachment check
+            if (srcEv.hasAttachments && destEv.attachmentCount === 0) {
               result.calendarValidation.attachmentMismatches.push({
                 subject: srcEv.subject,
                 note: 'Outlook event has attachments but no attachments found on Google Calendar event',
               });
             }
+            // Attendee count check
+            const srcAttendeeCount = (srcEv.attendees || []).length;
+            if (srcAttendeeCount > 0 && srcAttendeeCount !== destEv.attendeeCount) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject || '(no subject)',
+                issue: `Attendee count differs: source=${srcAttendeeCount} dest=${destEv.attendeeCount}`,
+                severity: 'warning',
+              });
+            }
+            // All-day check
+            const srcIsAllDay = !srcEv.start?.dateTime;
+            if (srcIsAllDay !== destEv.isAllDay) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject || '(no subject)',
+                issue: `All-day status differs: source=${srcIsAllDay} dest=${destEv.isAllDay}`,
+                severity: 'warning',
+              });
+            }
           }
         }
+        if (result.calendarValidation.eventDetailMismatches.length > 0) {
+          log.warn(`Calendar event detail mismatches: ${result.calendarValidation.eventDetailMismatches.length}`);
+        }
       } catch (attErr) {
-        log.warn(`Calendar attachment check failed: ${attErr.message}`);
+        log.warn(`Calendar detail check failed: ${attErr.message}`);
       }
 
       if (!result.calendarValidation.countMatch) {

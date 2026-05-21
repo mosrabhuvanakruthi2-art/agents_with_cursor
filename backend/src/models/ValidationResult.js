@@ -26,6 +26,7 @@ function buildStructuredDiffRowsFromDiffs(diffs, fallbackNote) {
     to: 'To',
     cc: 'Cc',
     bcc: 'Bcc',
+    replyTo: 'Reply-To',
     subject: 'Subject',
     body: 'Body',
     folder: 'Folder / labels',
@@ -36,6 +37,11 @@ function buildStructuredDiffRowsFromDiffs(diffs, fallbackNote) {
     flag: 'Flag status',
     importance: 'Importance',
     sentDateTime: 'Sent Date/Time',
+    category: 'Category → label',
+    sensitivity: 'Sensitivity label',
+    oneDriveLink: 'OneDrive link',
+    zoomLink: 'Zoom link',
+    threadGrouping: 'Thread grouping',
   };
   const RECIPIENT_FIELDS = new Set(['from', 'to', 'cc', 'bcc']);
   const rows = [];
@@ -161,7 +167,9 @@ class ValidationResult {
       secondaryCalendars: [],
       eventDetails: [],
       attachmentMismatches: [],
+      eventDetailMismatches: [],
     };
+    this.draftComparison = null;
     /**
      * Contacts totals (Google People API vs Graph /me/contacts). Defaults to 0 when the run
      * didn't request contacts validation; the summary still renders the row with "0" so the
@@ -228,6 +236,8 @@ class ValidationResult {
       unmatchedSourceIds: [],
       ambiguousInternetMessageIds: [],
       messageResults: [],
+      /** Per-conversation thread chain results (Outlook→Gmail only) */
+      threadChainResults: [],
       summary: '',
     };
   }
@@ -280,6 +290,33 @@ class ValidationResult {
       );
     }
 
+    if (this.deepMailValidation.enabled && Array.isArray(this.deepMailValidation.threadChainResults)) {
+      for (const t of this.deepMailValidation.threadChainResults) {
+        if (t.pass) continue;
+        const errMismatches = (t.mismatches || []).filter((m) => m.severity === 'error');
+        this.mismatches.push({
+          category: 'deepMail',
+          kind: 'other',
+          kindLabel: 'Thread chain integrity',
+          field: t.conversationId || 'unknown',
+          expected: `${t.outlookMessageCount} message(s) in thread`,
+          actual: `${t.gmailMessageCount} message(s) in Gmail thread${t.threadSplit ? ' (thread split)' : ''}`,
+          summaryLine: `Thread "${(t.rootSubject || '').substring(0, 80)}": Outlook=${t.outlookMessageCount} Gmail=${t.gmailMessageCount}${t.threadSplit ? ' SPLIT' : ''}`,
+          structuredDiffs: errMismatches.map((m) => ({
+            fieldKey: m.field,
+            fieldLabel: m.field === 'threadCount' ? 'Thread message count'
+              : m.field === 'threadSplit' ? 'Thread split'
+              : m.field === 'threadSubject' ? 'Thread subject'
+              : m.field,
+            sourceExpected: String(m.displaySource ?? m.expected ?? ''),
+            destinationActual: String(m.displayDestination ?? m.actual ?? ''),
+            severity: m.severity || 'error',
+          })),
+          messageSubject: t.rootSubject || '',
+        });
+      }
+    }
+
     if (this.deepMailValidation.enabled && Array.isArray(this.deepMailValidation.messageResults)) {
       for (const r of this.deepMailValidation.messageResults) {
         if (r.pass) continue;
@@ -318,6 +355,7 @@ class ValidationResult {
       rulesAdvisory: this.rulesAdvisory,
       mailboxSizeValidation: this.mailboxSizeValidation,
       settingsValidation: this.settingsValidation,
+      draftComparison: this.draftComparison,
       sourceData: this.sourceData,
       destinationData: this.destinationData,
       comparison: this.comparison,

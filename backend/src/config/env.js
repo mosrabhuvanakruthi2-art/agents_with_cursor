@@ -265,6 +265,8 @@ module.exports = {
       .trim()
       .toLowerCase() === 'true' || process.env.MIGRATION_API_TLS_INSECURE === '1',
   MIGRATION_API_KEY: process.env.MIGRATION_API_KEY || '',
+  /** Plaintext password for POST /app/login — agent sends this directly (server does MD5 hashing) */
+  MIGRATION_APP_LOGIN_PASSWORD: (process.env.MIGRATION_APP_LOGIN_PASSWORD || '').trim(),
   /**
    * Optional JWT from Migration UI: DevTools → Network → initiate (or login) → Authorization.
    * Paste the token only or the full "Bearer …" value. When set, POST /mail/login is skipped.

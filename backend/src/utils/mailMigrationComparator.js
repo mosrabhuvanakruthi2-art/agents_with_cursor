@@ -252,19 +252,57 @@ function compareTierA(source, dest, opts = {}) {
     }
   }
 
+  // Reply-To: warn when source sets a replyTo that differs from the destination
+  {
+    const sReplyTo = source.replyToEmails && Array.isArray(source.replyToEmails)
+      ? [...new Set(source.replyToEmails.map((e) => String(e).toLowerCase()).filter(Boolean))].sort()
+      : graphRecipientsToEmails(source.replyTo);
+    const dReplyTo = dest.replyToEmails && Array.isArray(dest.replyToEmails)
+      ? [...new Set(dest.replyToEmails.map((e) => String(e).toLowerCase()).filter(Boolean))].sort()
+      : dest.replyTo && typeof dest.replyTo === 'string'
+        ? parseRecipientEmails(dest.replyTo)
+        : graphRecipientsToEmails(dest.replyTo);
+    if (sReplyTo.length > 0 && JSON.stringify(sReplyTo) !== JSON.stringify(dReplyTo)) {
+      diffs.push({
+        field: 'replyTo',
+        ok: false,
+        expected: sReplyTo.join(','),
+        actual: dReplyTo.join(','),
+        displaySource: sReplyTo.join(','),
+        displayDestination: dReplyTo.join(','),
+        severity: 'warning',
+      });
+    }
+  }
+
   const srcAtt = source.attachments || [];
   const dstAtt = dest.attachments || [];
   if (!attachmentListsEqual(srcAtt, dstAtt)) {
     const expJ = JSON.stringify(normalizeAttachmentListForCompare(srcAtt));
     const actJ = JSON.stringify(normalizeAttachmentListForCompare(dstAtt));
+
+    // Outlook→Gmail: Gmail imposes a 25 MB attachment limit on individual messages.
+    // CloudFuze converts binary attachments >25 MB to Google Drive links stored in the
+    // message body instead of as fileAttachments.  The Graph/Gmail APIs see no attachment
+    // in the destination, but the file is still accessible via the Drive link.
+    // Downgrade from error to info so this expected conversion doesn't block QA.
+    const GMAIL_ATTACH_LIMIT = 25 * 1024 * 1024; // 25 MB
+    const combination = opts.combination || '';
+    const allSrcLarge = srcAtt.length > 0 && dstAtt.length === 0 &&
+      combination === 'outlook_to_gmail' &&
+      normalizeAttachmentListForCompare(srcAtt).every((a) => a.size > GMAIL_ATTACH_LIMIT);
+
     diffs.push({
       field: 'attachments',
-      ok: false,
+      ok: allSrcLarge,
       expected: expJ,
       actual: actJ,
       displaySource: expJ,
       displayDestination: actJ,
-      severity: 'error',
+      severity: allSrcLarge ? 'info' : 'error',
+      ...(allSrcLarge ? {
+        note: 'All source attachments exceed Gmail\'s 25 MB limit — CloudFuze converts them to Google Drive links in the message body. No binary attachment is expected in destination.',
+      } : {}),
     });
   }
 
@@ -770,6 +808,13 @@ function compareAttachmentSizesWithTolerance(srcAttachments, dstAttachments, com
 
   const diffs = [];
 
+  // For cross-platform migrations (Outlook↔Gmail), Graph API reports the full MIME-envelope size
+  // (base64 content + headers), while Gmail API reports raw decoded bytes. For small files the
+  // fixed header block (~150–200 B) dominates and pushes the ratio far outside the expected
+  // encoding-overhead band even when the content is perfectly intact. Below this threshold the
+  // ratio is unreliable; Tier B hashes are the correct check for content integrity.
+  const SMALL_FILE_SRC_THRESHOLD = 2048; // bytes
+
   for (const [name, srcSize] of srcMap) {
     if (!dstMap.has(name)) continue; // missing file already caught by Tier A name check
     const dstSize = dstMap.get(name);
@@ -785,6 +830,27 @@ function compareAttachmentSizesWithTolerance(srcAttachments, dstAttachments, com
         displayDestination: `${dstSize}B`,
         severity: 'info',
         note: 'Source attachment size is 0 bytes; size ratio cannot be computed.',
+      });
+      continue;
+    }
+
+    // Small files: MIME header overhead (~150–200 B) makes the ratio unreliable across platforms.
+    // Downgrade to 'info' — Tier B hash comparison is the authoritative check for these.
+    if (
+      (combination === 'outlook_to_gmail' || combination === 'gmail_to_outlook') &&
+      srcSize < SMALL_FILE_SRC_THRESHOLD
+    ) {
+      diffs.push({
+        field: `attachmentSize:${name}`,
+        ok: true,
+        expected: `${srcSize}B (source)`,
+        actual: `${dstSize}B (destination)`,
+        displaySource: `${srcSize}B`,
+        displayDestination: `${dstSize}B`,
+        severity: 'info',
+        note:
+          `Small file (source ${srcSize} B < ${SMALL_FILE_SRC_THRESHOLD} B): cross-platform size ratio is unreliable ` +
+          `because the fixed MIME header block (~150–200 B) dominates. Use Tier B hash comparison to verify content.`,
       });
       continue;
     }

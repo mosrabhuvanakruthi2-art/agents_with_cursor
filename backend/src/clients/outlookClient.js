@@ -333,7 +333,7 @@ async function getAttachments(userId, messageId) {
 
 /** Fields for deep source↔destination mail validation (includes Gmail-mapping markers). */
 const MESSAGE_SELECT_DEEP =
-  'internetMessageId,subject,bodyPreview,body,hasAttachments,receivedDateTime,sentDateTime,toRecipients,ccRecipients,bccRecipients,from,parentFolderId,flag,importance,categories';
+  'internetMessageId,subject,bodyPreview,body,hasAttachments,receivedDateTime,sentDateTime,toRecipients,ccRecipients,bccRecipients,replyTo,from,parentFolderId,flag,importance,isRead,categories,conversationId';
 
 /**
  * Single message by Graph id with recipient + body fields.
@@ -1954,10 +1954,14 @@ async function createMessageInFolder(userId, folderId, messageBody) {
   const uid   = graphUserPath(userId);
   const token = await getAccessToken(userId);
   const body  = { ...messageBody };
+  // Strip read-only / EWS-only fields that Graph rejects with 400
+  delete body.isDraft;
+  delete body.internetMessageId;
+  delete body.inReplyTo;
+  delete body.references;
+  delete body.receivedDateTime;
+  delete body.sentDateTime;
   if (!isDraftFolder) {
-    const now = new Date().toISOString();
-    body.receivedDateTime = body.receivedDateTime || now;
-    body.sentDateTime     = body.sentDateTime     || now;
     if (!body.sender && body.from) body.sender = body.from;
   }
   const res = await axios.post(
@@ -2759,6 +2763,53 @@ async function setContactPhoto(userId, contactId, photoBase64) {
   );
 }
 
+/**
+ * Fetch all messages belonging to an Outlook conversation (thread chain).
+ * Returns messages sorted ascending by sentDateTime so reply order is preserved.
+ *
+ * Some restricted-plan tenants (e.g. qatestagent.com) reject $filter+$orderby even with
+ * ConsistencyLevel:eventual.  On 400, we retry without $orderby and sort client-side.
+ */
+async function getConversationMessages(userId, conversationId) {
+  const uid = graphUserPath(userId);
+  const select = 'id,subject,sentDateTime,receivedDateTime,from,internetMessageId,conversationId,conversationIndex';
+  const escaped = String(conversationId || '').replace(/'/g, "''");
+  const filter = encodeURIComponent(`conversationId eq '${escaped}'`);
+
+  const toMsgShape = (m) => ({
+    id: m.id,
+    subject: m.subject || '',
+    sentDateTime: m.sentDateTime,
+    receivedDateTime: m.receivedDateTime,
+    from: m.from?.emailAddress?.address || '',
+    internetMessageId: m.internetMessageId || '',
+    conversationId: m.conversationId || '',
+  });
+
+  try {
+    // First attempt: $filter + $orderby (fastest, server-sorted)
+    const orderby = encodeURIComponent('sentDateTime asc');
+    const url = `${GRAPH_BASE}/users/${uid}/messages?$filter=${filter}&$orderby=${orderby}&$select=${encodeURIComponent(select)}&$top=100&$count=true`;
+    const res = await graphGetWithHeaders(url, userId, { 'ConsistencyLevel': 'eventual' });
+    const messages = (res.data.value || []).map(toMsgShape);
+    return { messages, available: true };
+  } catch (firstErr) {
+    if (firstErr?.response?.status !== 400) {
+      return { messages: [], available: false, note: `getConversationMessages failed: ${String(firstErr.message).substring(0, 120)}` };
+    }
+    // Restricted plan doesn't support $filter+$orderby — retry without $orderby, sort client-side
+    try {
+      const url2 = `${GRAPH_BASE}/users/${uid}/messages?$filter=${filter}&$select=${encodeURIComponent(select)}&$top=100&$count=true`;
+      const res2 = await graphGetWithHeaders(url2, userId, { 'ConsistencyLevel': 'eventual' });
+      const messages = (res2.data.value || []).map(toMsgShape)
+        .sort((a, b) => new Date(a.sentDateTime || 0) - new Date(b.sentDateTime || 0));
+      return { messages, available: true };
+    } catch (secondErr) {
+      return { messages: [], available: false, note: `getConversationMessages failed: ${String(secondErr.message).substring(0, 120)}` };
+    }
+  }
+}
+
 async function getInboxRules(userId) {
   const uid = graphUserPath(userId);
   try {
@@ -2901,23 +2952,123 @@ async function countMessagesBySubjectPrefix(userId, prefix) {
 }
 
 /**
- * Sum all message sizes in a mailbox via paginated GET /messages?$select=size.
- * Returns { sizeBytes, messageCount, method }.
+ * Upload a file to OneDrive (under QAMigration/ folder) and return a real sharing link.
+ * Used by OutlookTestDataAgent to create realistic OneDrive-link emails.
+ * Returns { webUrl, shareUrl, itemId }.
+ *
+ * On 404: attempts to provision the user's OneDrive by calling GET /drive (which triggers
+ * first-time activation for licensed users who haven't opened OneDrive yet), waits 3 s,
+ * then retries the upload once.  If the drive still doesn't exist the 404 propagates so
+ * the caller can handle it gracefully.
+ */
+async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
+  const uid = graphUserPath(userId);
+  const token = await getAccessToken(userId);
+
+  const uploadUrl = `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/content`;
+  const uploadHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' };
+
+  let uploadRes;
+  try {
+    uploadRes = await axios.put(uploadUrl, contentBuffer, {
+      headers: uploadHeaders,
+      maxBodyLength: 10 * 1024 * 1024,
+      timeout: 60000,
+    });
+  } catch (firstErr) {
+    const status = firstErr?.response?.status;
+    if (status !== 404) throw firstErr;
+
+    // 404 often means the OneDrive hasn't been provisioned yet for this user.
+    // GET /drive triggers first-time activation; wait then retry once.
+    logger.info(`uploadFileAndCreateShareLink: 404 on first upload attempt for ${userId} — trying to provision OneDrive drive…`);
+    try {
+      await axios.get(`${GRAPH_BASE}/users/${uid}/drive`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+      });
+    } catch (provErr) {
+      if (provErr?.response?.status === 404) {
+        throw Object.assign(
+          new Error(`OneDrive not provisioned for ${userId} (tenant may not have SharePoint/OneDrive license)`),
+          { code: 'NO_ONEDRIVE', cause: provErr }
+        );
+      }
+    }
+    // Brief pause to let the newly-provisioned drive become available
+    await new Promise(r => setTimeout(r, 3000));
+    uploadRes = await axios.put(uploadUrl, contentBuffer, {
+      headers: uploadHeaders,
+      maxBodyLength: 10 * 1024 * 1024,
+      timeout: 60000,
+    });
+  }
+
+  const itemId = uploadRes.data.id;
+  const webUrl = uploadRes.data.webUrl || '';
+
+  // Create an org-scoped view link; fall back to anonymous if the tenant plan doesn't allow org scope
+  let shareUrl = webUrl;
+  try {
+    const linkRes = await axios.post(
+      `${GRAPH_BASE}/users/${uid}/drive/items/${itemId}/createLink`,
+      { type: 'view', scope: 'organization' },
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
+    );
+    shareUrl = linkRes.data.link?.webUrl || webUrl;
+  } catch (linkErr) {
+    // Some restricted plans reject 'organization' scope — retry with 'anonymous'
+    if (linkErr?.response?.status === 403 || linkErr?.response?.status === 400) {
+      try {
+        const linkRes2 = await axios.post(
+          `${GRAPH_BASE}/users/${uid}/drive/items/${itemId}/createLink`,
+          { type: 'view', scope: 'anonymous' },
+          {
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            timeout: 30000,
+          }
+        );
+        shareUrl = linkRes2.data.link?.webUrl || webUrl;
+        logger.info(`uploadFileAndCreateShareLink: used anonymous link scope for ${userId} (org scope rejected)`);
+      } catch {
+        shareUrl = webUrl; // webUrl is the direct item URL, still usable
+      }
+    } else {
+      throw linkErr;
+    }
+  }
+  return { webUrl, shareUrl, itemId };
+}
+
+/**
+ * Sum all message sizes in a mailbox via paginated GET /messages?$select=id,size.
+ * Returns { sizeBytes, messageCount, method, available }.
+ * Returns available=false gracefully if the tenant's Exchange plan doesn't expose `size`.
  */
 async function getMailboxSizeBytes(userId) {
   const uid = graphUserPath(userId);
-  let url = `${GRAPH_BASE}/users/${uid}/messages?$select=size&$top=999`;
+  let url = `${GRAPH_BASE}/users/${uid}/messages?$select=id,size&$top=999`;
   let totalBytes = 0;
   let messageCount = 0;
-  while (url) {
-    const res = await graphGet(url, userId);
-    for (const msg of (res.data.value || [])) {
-      totalBytes += Number(msg.size) || 0;
-      messageCount++;
+  try {
+    while (url) {
+      const res = await graphGet(url, userId);
+      for (const msg of (res.data.value || [])) {
+        totalBytes += Number(msg.size) || 0;
+        messageCount++;
+      }
+      url = res.data['@odata.nextLink'] || null;
     }
-    url = res.data['@odata.nextLink'] || null;
+  } catch (err) {
+    if (err.response?.status === 400) {
+      return { sizeBytes: 0, messageCount: 0, method: 'graph_messages_size', available: false };
+    }
+    throw err;
   }
-  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size' };
+  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: true };
 }
 
 module.exports = {
@@ -2976,8 +3127,10 @@ module.exports = {
   clearFolderCache,
   getContactsWithDetails,
   setContactPhoto,
+  getConversationMessages,
   getInboxRules,
   addEventAttachment,
+  uploadFileAndCreateShareLink,
   getMailboxSizeBytes,
   createConditionalFormattingRules,
   deleteQaConditionalFormattingRules,

@@ -17,6 +17,16 @@ let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null
 let runtimeConfig = null;
 
 function setRuntimeConfig(cfg) {
+  if (cfg?.baseUrl) {
+    let url = cfg.baseUrl.replace(/\/+$/, '');
+    const lc = url.toLowerCase();
+    // Auto-add /proxyservices/v1 for devemail URLs that arrive without the path prefix
+    if (lc.includes('devemail') && !lc.includes('/proxyservices/')) {
+      url = url + '/proxyservices/v1';
+      cfg = { ...cfg, baseUrl: url };
+      logger.info(`CloudFuze: auto-appended /proxyservices/v1 to devemail URL → ${url}`);
+    }
+  }
   runtimeConfig = cfg ? { ...cfg } : null;
   // Clear cached tokens whenever we switch servers
   bearerToken = null;
@@ -42,14 +52,11 @@ function getActiveBaseUrl() {
   return runtimeConfig?.baseUrl || env.MIGRATION_API_URL;
 }
 
-/** Returns the email-endpoint base URL (strips /proxyservices/v1 for legacy servers) */
+/** Returns the email-endpoint base URL. For legacy servers the /email/* paths live
+ *  under the same /proxyservices/v1 prefix as /mail/* — do NOT strip it. */
 function getActiveEmailBaseUrl() {
   if (runtimeConfig?.baseUrl) return runtimeConfig.baseUrl;
-  try {
-    return new URL(env.MIGRATION_API_URL).origin;
-  } catch {
-    return env.MIGRATION_API_URL.replace(/\/proxyservices\/v1.*$/i, '');
-  }
+  return env.MIGRATION_API_URL;
 }
 
 /**
@@ -191,11 +198,90 @@ async function login() {
   const staticBearer = normalizeBearerFromEnv(env.MIGRATION_API_BEARER_TOKEN);
   if (staticBearer) {
     if (isJwtExpired(staticBearer)) {
-      logger.warn('CloudFuze: MIGRATION_API_BEARER_TOKEN is expired — falling back to /mail/login');
+      logger.warn('CloudFuze: MIGRATION_API_BEARER_TOKEN is expired — will try POST /app/login to auto-refresh');
     } else {
       loginToken = staticBearer;
       logger.info('CloudFuze: using MIGRATION_API_BEARER_TOKEN (skipping /mail/login)');
       return loginToken;
+    }
+  }
+
+  const legacyBase = runtimeConfig?.baseUrl || env.MIGRATION_API_URL;
+
+  // /app/login lives under the same path prefix as /mail/* (i.e. /proxyservices/v1/app/login).
+  // Use legacyBase directly — it already includes /proxyservices/v1 after setRuntimeConfig normalisation.
+  const appLoginBase = legacyBase.replace(/\/+$/, '');
+
+  // Try POST /app/login directly — same call that /mail/login makes internally.
+  // /mail/login: authenticates Basic auth → cfUser → calls /app/login{ email, password: cfUser.getPassword(), ent }
+  // cfUser.getPassword() == second part of MIGRATION_API_BASIC_AUTH == appLoginPasswordMd5 here.
+  const apiKey = (env.MIGRATION_API_KEY || '').trim();
+  if (apiKey) {
+    let appLoginEmail = '';
+    let appLoginPasswordPlain = '';
+    let appLoginPasswordMd5 = '';
+    try {
+      const decoded = Buffer.from(apiKey, 'base64').toString('utf8');
+      const colonIdx = decoded.indexOf(':');
+      if (colonIdx > 0) {
+        appLoginEmail = decoded.slice(0, colonIdx).trim();
+        appLoginPasswordMd5 = decoded.slice(colonIdx + 1).trim(); // already md5
+      }
+    } catch { /* ignore */ }
+    appLoginPasswordPlain = (env.MIGRATION_APP_LOGIN_PASSWORD || '').trim();
+
+    const crypto = require('crypto');
+    // ent = hostname of the legacy server (devemail.cloudfuze.com) — required by /app/login
+    const ent = (() => { try { return new URL(appLoginBase).host; } catch { return ''; } })();
+
+    const passwordsToTry = [];
+    // cfUser.getPassword() = dda0e3600... = second part of MIGRATION_API_BASIC_AUTH.
+    // /mail/login internally calls /app/login with exactly this value as the password.
+    // Try it first — it is the confirmed-correct credential for this server.
+    if (appLoginPasswordMd5) passwordsToTry.push({ label: 'md5', password: appLoginPasswordMd5 });
+    if (appLoginPasswordPlain) {
+      passwordsToTry.push({ label: 'plaintext', password: appLoginPasswordPlain });
+      // MD5 of the plaintext password — fallback in case verifyUser expects client-side hashing
+      const md5OfPlain = crypto.createHash('md5').update(appLoginPasswordPlain).digest('hex');
+      passwordsToTry.push({ label: 'md5-of-plain', password: md5OfPlain });
+    }
+
+    for (const { label, password } of passwordsToTry) {
+      if (!appLoginEmail || !password) continue;
+      try {
+        const body = { email: appLoginEmail, password };
+        if (ent) body.ent = ent;
+        const res = await retryWithBackoff(
+          () =>
+            axios.post(
+              `${appLoginBase}/app/login`,
+              body,
+              migrationAxiosConfig({ timeout: 30000 })
+            ),
+          { label: `CloudFuze /app/login (${label})`, maxRetries: 1 }
+        );
+        const raw = res.data;
+        logger.info(`CloudFuze /app/login (${label}) raw response: ${JSON.stringify(raw)}`);
+        const headerToken = (
+          res.headers?.['authorization'] || res.headers?.['x-auth-token'] || ''
+        ).replace(/^Bearer\s*/i, '').trim();
+        const token = (typeof raw === 'string' ? raw.replace(/^Bearer\s*/i, '').trim() : '') ||
+          raw?.token || raw?.accessToken || raw?.jwtToken || raw?.data?.token ||
+          raw?.userVO?.token || headerToken;
+        if (token) {
+          loginToken = token;
+          logger.info(`CloudFuze: auto-refreshed app-level JWT via POST /app/login (${label} password)`);
+          return loginToken;
+        }
+        logger.warn(`CloudFuze /app/login (${label}): 200 OK but no token in response — ${JSON.stringify(raw)}`);
+      } catch (appLoginErr) {
+        const status = appLoginErr?.response?.status;
+        const body = appLoginErr?.response?.data ? JSON.stringify(appLoginErr.response.data).slice(0, 200) : '';
+        logger.warn(`CloudFuze /app/login (${label}) failed (${status || appLoginErr.message})${body ? ': ' + body : ''}`);
+      }
+    }
+    if (passwordsToTry.length > 0) {
+      logger.warn('CloudFuze /app/login exhausted all password variants — falling back to /mail/login');
     }
   }
 
@@ -207,7 +293,6 @@ async function login() {
   }
 
   // Use runtime URL if set (legacy server override), otherwise fall back to env
-  const legacyBase = runtimeConfig?.baseUrl || env.MIGRATION_API_URL;
   const res = await retryWithBackoff(
     () =>
       axios.post(
@@ -224,7 +309,9 @@ async function login() {
   const tokenData = res.data;
   loginToken = typeof tokenData === 'string'
     ? tokenData.replace(/^Bearer\s*/i, '').trim()
-    : tokenData;
+    : (tokenData?.token || tokenData?.accessToken || tokenData?.jwtToken ||
+       tokenData?.sessionToken || tokenData?.authToken ||
+       String(tokenData || ''));
 
   logger.info('CloudFuze login successful');
   return loginToken;
@@ -357,21 +444,30 @@ function findCloudId(clouds, email) {
 // STEP 1→2 — GET /email/move/domains/{destCloudId}
 // ─────────────────────────────────────────────────────────────
 async function getDomains(destCloudId) {
-  const token = await login();
   const emailBase = getActiveEmailBaseUrl();
-  const res = await retryWithBackoff(
-    () =>
-      axios.get(
-        `${emailBase}/email/move/domains/${destCloudId}`,
-        migrationAxiosConfig({
-          headers: { Authorization: `Bearer ${token}` },
-          params: { _: Date.now() },
-          timeout: 30000,
-        })
-      ),
-    { label: 'CloudFuze getDomains', maxRetries: 2 }
-  );
-  return res.data;
+  const tokens = [await login(), bearerToken].filter(Boolean);
+  let lastErr;
+  for (const token of tokens) {
+    try {
+      const res = await retryWithBackoff(
+        () =>
+          axios.get(
+            `${emailBase}/email/move/domains/${destCloudId}`,
+            migrationAxiosConfig({
+              headers: { Authorization: `Bearer ${token}` },
+              params: { _: Date.now() },
+              timeout: 30000,
+            })
+          ),
+        { label: 'CloudFuze getDomains', maxRetries: 2 }
+      );
+      return res.data;
+    } catch (err) {
+      lastErr = err;
+      if (err?.response?.status !== 401) throw err;
+    }
+  }
+  throw lastErr;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -381,28 +477,33 @@ async function getDomains(destCloudId) {
 // Returns [{sourceEmail, destinationEmail}] or [] on failure.
 // ─────────────────────────────────────────────────────────────
 async function getPermissionMapping(sourceCloudId, destCloudId, { pageSize = 500 } = {}) {
-  const token = await login();
   const emailBase = getActiveEmailBaseUrl();
-  try {
-    const res = await axios.get(
-      `${emailBase}/email/user/cache/${sourceCloudId}/${destCloudId}`,
-      migrationAxiosConfig({
-        headers: { Authorization: `Bearer ${token}` },
-        params: { pageNo: 0, pageSize, _: Date.now() },
-        timeout: 30000,
-      })
-    );
-    const raw = Array.isArray(res.data) ? res.data : (res.data?.content || res.data?.data || []);
-    return raw
-      .map((item) => ({
-        sourceEmail: String(item.sourceEmail || item.fromMailId || item.fromEmail || item.source || '').trim().toLowerCase(),
-        destinationEmail: String(item.destinationEmail || item.toMailId || item.toEmail || item.destination || '').trim().toLowerCase(),
-      }))
-      .filter((p) => p.sourceEmail && p.destinationEmail);
-  } catch (err) {
-    logger.warn(`CloudFuze getPermissionMapping failed (${err.response?.status || err.message}) — skipping`);
-    return [];
+  const tokens = [await login(), bearerToken].filter(Boolean);
+  for (const token of tokens) {
+    try {
+      const res = await axios.get(
+        `${emailBase}/email/user/cache/${sourceCloudId}/${destCloudId}`,
+        migrationAxiosConfig({
+          headers: { Authorization: `Bearer ${token}` },
+          params: { pageNo: 0, pageSize, _: Date.now() },
+          timeout: 30000,
+        })
+      );
+      const raw = Array.isArray(res.data) ? res.data : (res.data?.content || res.data?.data || []);
+      return raw
+        .map((item) => ({
+          sourceEmail: String(item.sourceEmail || item.fromMailId || item.fromEmail || item.source || '').trim().toLowerCase(),
+          destinationEmail: String(item.destinationEmail || item.toMailId || item.toEmail || item.destination || '').trim().toLowerCase(),
+        }))
+        .filter((p) => p.sourceEmail && p.destinationEmail);
+    } catch (err) {
+      if (err?.response?.status === 401) continue;
+      logger.warn(`CloudFuze getPermissionMapping failed (${err.response?.status || err.message}) — skipping`);
+      return [];
+    }
   }
+  logger.warn('CloudFuze getPermissionMapping failed (401 on all tokens) — skipping');
+  return [];
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -410,7 +511,6 @@ async function getPermissionMapping(sourceCloudId, destCloudId, { pageSize = 500
 // Upload user mapping CSV (built from mappedPairs)
 // ─────────────────────────────────────────────────────────────
 async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
-  const token = await login();
   const emailBase = getActiveEmailBaseUrl();
 
   const csvLines = ['Source Email Address,Destination Email Address'];
@@ -419,22 +519,32 @@ async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
 
   logger.info(`CloudFuze uploadUserCSV body:\n${csvContent}`);
 
-  const res = await retryWithBackoff(
-    () =>
-      axios.post(
-        `${emailBase}/email/user/csv/${sourceCloudId}/${destCloudId}`,
-        csvContent,
-        migrationAxiosConfig({
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'text/csv',
-          },
-          timeout: 30000,
-        })
-      ),
-    { label: 'CloudFuze uploadUserCSV', maxRetries: 2 }
-  );
-  return res.data;
+  const tokens = [await login(), bearerToken].filter(Boolean);
+  let lastErr;
+  for (const token of tokens) {
+    try {
+      const res = await retryWithBackoff(
+        () =>
+          axios.post(
+            `${emailBase}/email/user/csv/${sourceCloudId}/${destCloudId}`,
+            csvContent,
+            migrationAxiosConfig({
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'text/csv',
+              },
+              timeout: 30000,
+            })
+          ),
+        { label: 'CloudFuze uploadUserCSV', maxRetries: 2 }
+      );
+      return res.data;
+    } catch (err) {
+      lastErr = err;
+      if (err?.response?.status !== 401) throw err;
+    }
+  }
+  throw lastErr;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -443,7 +553,6 @@ async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
 //   Legacy     → GET /mail/cache/{srcId}/{dstId}
 // ─────────────────────────────────────────────────────────────
 async function cacheUserMapping(sourceCloudId, destCloudId) {
-  const token = await login();
   const base = getActiveBaseUrl();
   const emailBase = getActiveEmailBaseUrl();
 
@@ -451,19 +560,29 @@ async function cacheUserMapping(sourceCloudId, destCloudId) {
     ? `${emailBase}/email/user/cache/${sourceCloudId}/${destCloudId}`
     : `${base}/mail/cache/${sourceCloudId}/${destCloudId}`;
 
-  const res = await retryWithBackoff(
-    () =>
-      axios.get(
-        cacheUrl,
-        migrationAxiosConfig({
-          headers: { Authorization: `Bearer ${token}` },
-          params: { pageNo: 0, pageSize: 20, _: Date.now() },
-          timeout: 30000,
-        })
-      ),
-    { label: 'CloudFuze cacheUserMapping', maxRetries: 2 }
-  );
-  return res.data;
+  const tokens = [await login(), bearerToken].filter(Boolean);
+  let lastErr;
+  for (const token of tokens) {
+    try {
+      const res = await retryWithBackoff(
+        () =>
+          axios.get(
+            cacheUrl,
+            migrationAxiosConfig({
+              headers: { Authorization: `Bearer ${token}` },
+              params: { pageNo: 0, pageSize: 20, _: Date.now() },
+              timeout: 30000,
+            })
+          ),
+        { label: 'CloudFuze cacheUserMapping', maxRetries: 2 }
+      );
+      return res.data;
+    } catch (err) {
+      lastErr = err;
+      if (err?.response?.status !== 401) throw err;
+    }
+  }
+  throw lastErr;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -636,22 +755,26 @@ async function pollReports(deltaMigration, fromMailId, {
     loginToken,
     bearerToken,
     !isNewServer() ? normalizeBearerFromEnv(env.MIGRATION_API_BEARER_TOKEN) : null,
-  ].filter(Boolean);
+  ].filter(Boolean).filter((t, i, a) => a.indexOf(t) === i); // deduplicate
 
   if (tokenCandidates.length === 0) {
     logger.warn('CloudFuze: no Bearer JWT for reports polling — falling back to Outlook polling');
     return null;
   }
 
-  let token = tokenCandidates.find((t) => !isJwtExpired(t)) || null;
-  if (!token) {
-    logger.warn('CloudFuze: all report tokens expired — falling back to Outlook polling');
-    return null;
-  }
+  // Legacy servers expose jobs at both /email/user/jobs and /mail/reports.
+  // Try /email/user/jobs first — it is more reliably populated on devemail.
+  const reportsUrlCandidates = isNewServer()
+    ? [`${getActiveEmailBaseUrl()}/email/user/jobs`]
+    : [`${getActiveEmailBaseUrl()}/email/user/jobs`, `${getActiveBaseUrl()}/mail/reports`];
+  let reportsUrl = reportsUrlCandidates[0];
+  let reportsUrlFallbackIdx = 1;
 
-  const reportsUrl = isNewServer()
-    ? `${getActiveEmailBaseUrl()}/email/user/jobs`
-    : `${getActiveBaseUrl()}/mail/reports`;
+  // Active token index — rotated on 401
+  let tokenIdx = 0;
+  let consecutiveAuthErrors = 0;
+  // After all Bearer tokens 401 persistently, try Basic auth on /mail/reports (legacy only)
+  let basicAuthExhausted = false;
 
   const maxPolls = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
   const executionService = require('../services/executionService');
@@ -667,11 +790,28 @@ async function pollReports(deltaMigration, fromMailId, {
     }
     if (executionId && executionService.isCancelled(executionId)) return 'CANCELLED';
 
+    const activeToken = tokenCandidates[tokenIdx] || null;
+
+    // Build request headers — rotate to Basic auth after all Bearer tokens fail
+    let authHeader;
+    if (activeToken && !isJwtExpired(activeToken)) {
+      authHeader = `Bearer ${activeToken}`;
+    } else if (!isNewServer() && !basicAuthExhausted) {
+      const basic = basicAuthPayload();
+      authHeader = basic ? `Basic ${basic}` : null;
+      basicAuthExhausted = true; // only try once
+    }
+
+    if (!authHeader) {
+      logger.warn('CloudFuze: all report tokens exhausted — falling back to Outlook polling');
+      return null;
+    }
+
     try {
       const res = await axios.get(
         reportsUrl,
         migrationAxiosConfig({
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: authHeader },
           params: { pageNo: 0, pageSize: 50, deltaMigration, _: Date.now() },
           timeout: 30000,
         })
@@ -697,6 +837,13 @@ async function pollReports(deltaMigration, fromMailId, {
       }
 
       if (!matchedJob) {
+        // If the current URL returned 0 jobs and a fallback URL exists, switch to it once
+        if (jobs.length === 0 && reportsUrlFallbackIdx < reportsUrlCandidates.length) {
+          const nextUrl = reportsUrlCandidates[reportsUrlFallbackIdx++];
+          logger.info(`CloudFuze reports poll ${attempt}: 0 jobs from ${reportsUrl} — switching to ${nextUrl}`);
+          reportsUrl = nextUrl;
+          continue;
+        }
         noMatchStreak++;
         if (attempt === 1 && jobs.length > 0) {
           const sample = jobs[0];
@@ -708,7 +855,7 @@ async function pollReports(deltaMigration, fromMailId, {
         }
         logger.info(
           `CloudFuze reports poll ${attempt}/${maxPolls}: job for ${fromMailId} not found ` +
-          `(${jobs.length} job(s) returned, no-match streak ${noMatchStreak}/${MAX_NO_MATCH})`
+          `(${jobs.length} job(s) returned via ${reportsUrl}, no-match streak ${noMatchStreak}/${MAX_NO_MATCH})`
         );
         if (noMatchStreak >= MAX_NO_MATCH) {
           logger.warn(
@@ -762,12 +909,144 @@ async function pollReports(deltaMigration, fromMailId, {
         return 'PROCESSED';
       }
     } catch (err) {
-      logger.warn(`CloudFuze reports poll ${attempt} error: ${err.message}`);
+      const status = err?.response?.status;
+      if (status === 401) {
+        consecutiveAuthErrors++;
+        // Rotate to next token
+        if (tokenIdx < tokenCandidates.length - 1) {
+          tokenIdx++;
+          logger.warn(`CloudFuze reports poll ${attempt}: 401 — rotating to token ${tokenIdx + 1}/${tokenCandidates.length}`);
+        } else {
+          // All Bearer tokens have failed — if we've had enough consecutive 401s, bail out
+          if (consecutiveAuthErrors >= tokenCandidates.length + 1) {
+            logger.warn(
+              `CloudFuze reports: ${consecutiveAuthErrors} consecutive 401s across all tokens — ` +
+              `falling back to Outlook polling`
+            );
+            return null;
+          }
+          // Reset to first token and try again next poll
+          tokenIdx = 0;
+          logger.warn(`CloudFuze reports poll ${attempt}: 401 on all tokens — will retry next cycle`);
+        }
+      } else {
+        consecutiveAuthErrors = 0;
+        logger.warn(`CloudFuze reports poll ${attempt} error: ${err.message}`);
+      }
     }
   }
 
   logger.warn(`CloudFuze reports: max wait (${maxMinutes} min) reached for ${fromMailId}`);
   return 'TIMEOUT';
+}
+
+/**
+ * Single-shot fetch of the current CloudFuze job status for a source email.
+ * Used by validation agents to populate the "CloudFuze Migration Status" table
+ * without running a polling loop — returns immediately with whatever the API
+ * currently reports, or null if the job cannot be found / auth fails.
+ *
+ * @param {string} fromMailId  Source (from) email to look up
+ * @returns {Promise<{workspaceId, totalCount, processedCount, cfStatus}|null>}
+ */
+async function fetchCurrentJobStatus(fromMailId) {
+  // Try cached tokens first; if all are expired or absent, auto-refresh via /mail/register
+  // so validation-only runs (no MigrationAgent in the same session) still get a valid token.
+  let token = [
+    loginToken,
+    bearerToken,
+    !isNewServer() ? normalizeBearerFromEnv(env.MIGRATION_API_BEARER_TOKEN) : null,
+  ].filter(Boolean).find((t) => !isJwtExpired(t)) || null;
+
+  if (!token) {
+    try {
+      token = await register();
+      logger.info('CloudFuze fetchCurrentJobStatus: refreshed JWT via /mail/register');
+    } catch (e) {
+      logger.warn(`CloudFuze fetchCurrentJobStatus: token refresh failed — ${e.message}`);
+      // Fall through to lastJobDetails fallback below
+    }
+  }
+
+  const reportsUrlList = isNewServer()
+    ? [`${getActiveEmailBaseUrl()}/email/user/jobs`]
+    : [`${getActiveEmailBaseUrl()}/email/user/jobs`, `${getActiveBaseUrl()}/mail/reports`];
+
+  if (token) {
+    try {
+      // Try both page sizes — some servers paginate; use 200 to capture more historical jobs
+      for (const reportsUrl of reportsUrlList) {
+      for (const pageSize of [50, 200]) {
+        const res = await axios.get(
+          reportsUrl,
+          migrationAxiosConfig({
+            headers: { Authorization: `Bearer ${token}` },
+            params: { pageNo: 0, pageSize, _: Date.now() },
+            timeout: 30000,
+          })
+        );
+
+        const jobs = Array.isArray(res.data) ? res.data : (res.data?.content || []);
+        if (jobs.length === 0 && pageSize === 50) continue; // try larger page
+        const normFrom = String(fromMailId || '').toLowerCase().trim();
+
+        let matchedJob = null;
+        let matchedDetail = null;
+        for (const j of jobs) {
+          if (String(j.fromMailId || j.fromEmail || '').toLowerCase() === normFrom) {
+            matchedJob = j;
+            break;
+          }
+          const details = j.mailMigrationDetails || j.details || j.pairs || [];
+          if (Array.isArray(details)) {
+            const d = details.find(
+              (d) => String(d.fromMailId || d.fromEmail || '').toLowerCase() === normFrom
+            );
+            if (d) { matchedJob = j; matchedDetail = d; break; }
+          }
+        }
+
+        if (!matchedJob) {
+          if (pageSize < 200) continue; // retry with bigger page
+          logger.info(`CloudFuze fetchCurrentJobStatus: no job for ${fromMailId} via ${reportsUrl} (${jobs.length} jobs)`);
+          break; // try next reportsUrl
+        }
+
+        const status = String(
+          matchedDetail?.syncStatus    || matchedDetail?.status          ||
+          matchedDetail?.processStatus || matchedDetail?.migrationStatus ||
+          matchedJob.syncStatus        || matchedJob.status              ||
+          matchedJob.processStatus     || matchedJob.migrationStatus      || ''
+        ).toUpperCase().trim();
+
+        const totalCount     = Number(matchedDetail?.totalCount     || matchedJob.totalCount     || 0) || null;
+        const processedCount = Number(matchedDetail?.processedCount || matchedJob.processedCount || 0) || null;
+        const workspaceId    = matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || matchedDetail?.workspaceId || null;
+
+        logger.info(`CloudFuze fetchCurrentJobStatus: ${fromMailId} → workspaceId=${workspaceId} status="${status}" ${processedCount}/${totalCount} (via ${reportsUrl})`);
+        return { workspaceId, totalCount, processedCount, cfStatus: status || null };
+      }
+      } // end for reportsUrl
+    } catch (err) {
+      logger.warn(`CloudFuze fetchCurrentJobStatus error: ${err.message}`);
+    }
+  }
+
+  // Fallback: use in-memory lastJobDetails populated by pollReports() during this session.
+  // This covers the case where /mail/reports returns empty (devemail legacy behaviour) but
+  // MigrationAgent already extracted job details while polling.
+  const cached = getLastJobDetails();
+  if (cached.workspaceId || cached.totalCount) {
+    logger.info(`CloudFuze fetchCurrentJobStatus: using cached lastJobDetails for ${fromMailId}`);
+    return {
+      workspaceId: cached.workspaceId,
+      totalCount: cached.totalCount,
+      processedCount: cached.processedCount,
+      cfStatus: null,
+    };
+  }
+
+  return null;
 }
 
 async function validateUser(email) {
@@ -808,5 +1087,6 @@ module.exports = {
   setRuntimeConfig,
   clearRuntimeConfig,
   getLastJobDetails,
+  fetchCurrentJobStatus,
   migrationAxiosConfig,
 };
