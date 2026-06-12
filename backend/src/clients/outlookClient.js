@@ -164,23 +164,13 @@ async function getMailFolders(userId) {
 
   const uid = graphUserPath(userId);
   const base = `${GRAPH_BASE}/users/${uid}/mailFolders?$top=100`;
-  const deepExpand = encodeURIComponent('childFolders($expand=childFolders($expand=childFolders))');
   const shallowExpand = encodeURIComponent('childFolders');
   let data;
   try {
-    const res = await graphGet(`${base}&$expand=${deepExpand}`, userId);
+    const res = await graphGet(`${base}&$expand=${shallowExpand}`, userId);
     data = res.data.value || [];
   } catch (err) {
-    const status = err.response?.status;
-    if (status === 400) {
-      logger.warn(
-        `getMailFolders: deep $expand returned 400 for ${userId}, retrying shallow childFolders expand`
-      );
-      const res = await graphGet(`${base}&$expand=${shallowExpand}`, userId);
-      data = res.data.value || [];
-    } else {
-      throw err;
-    }
+    throw err;
   }
 
   _folderCache.set(userId, { data, expiresAt: Date.now() + FOLDER_CACHE_TTL_MS });
@@ -192,20 +182,31 @@ function clearFolderCache(userId) {
   else _folderCache.clear();
 }
 
+async function getChildFolders(userId, folderId) {
+  const uid = graphUserPath(userId);
+  const url = `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/childFolders?$top=100&$expand=${encodeURIComponent('childFolders')}`;
+  const res = await graphGet(url, userId);
+  return res.data.value || [];
+}
+
 async function getAllFoldersFlat(userId) {
   const topFolders = await getMailFolders(userId);
   const all = [];
 
-  function flatten(folders) {
+  async function flatten(folders) {
     for (const f of folders) {
       all.push(f);
-      if (f.childFolders && f.childFolders.length > 0) {
-        flatten(f.childFolders);
+      let children = f.childFolders || [];
+      if ((f.childFolderCount || 0) > children.length && f.id) {
+        try { children = await getChildFolders(userId, f.id); } catch (_) {}
+      }
+      if (children.length > 0) {
+        await flatten(children);
       }
     }
   }
 
-  flatten(topFolders);
+  await flatten(topFolders);
   return all;
 }
 
@@ -822,7 +823,7 @@ async function deleteAllMailboxMessages(userId) {
     }
     lastCount = messages.length;
 
-    const batchSize = 20;
+    const batchSize = 50;
     const batches = [];
     for (let i = 0; i < messages.length; i += batchSize) {
       batches.push(messages.slice(i, i + batchSize).map((m) =>
@@ -1121,8 +1122,11 @@ async function cleanOutlookFoldersOnly(userId) {
         summary.foldersDeleted++;
         log.info(`[cleanFoldersOnly ${userId}] Deleted "${folder.displayName}"`);
       } catch (err) {
-        if (/404/.test(err.message)) {
+        const status = err.response?.status || err.message;
+        if (/404/.test(String(status))) {
           log.info(`[cleanFoldersOnly ${userId}] Folder "${folder.displayName}" already gone (404), skipping`);
+        } else if (/400/.test(String(status))) {
+          log.info(`[cleanFoldersOnly ${userId}] Folder "${folder.displayName}" is protected (400) — skipping`);
         } else {
           summary.errors.push(`Folder "${folder.displayName}": ${err.message}`);
         }
@@ -1135,13 +1139,16 @@ async function cleanOutlookFoldersOnly(userId) {
             await deleteFolder(userId, child.id);
             summary.foldersDeleted++;
           } catch (err) {
-            if (!/404/.test(err.message)) {
+            const status = err.response?.status || err.message;
+            if (/404|400/.test(String(status))) {
+              log.info(`[cleanFoldersOnly ${userId}] Child folder "${child.displayName}" skipped (${status})`);
+            } else {
               summary.errors.push(`Child folder "${child.displayName}": ${err.message}`);
             }
+          }
         }
       }
     }
-  }
   }
   log.info(`[cleanFoldersOnly ${userId}] Done — ${summary.foldersDeleted} folders deleted`);
   return summary;
@@ -1355,8 +1362,15 @@ async function cleanMailbox(userId) {
       summary.foldersDeleted++;
       log.info(`[clean ${userId}]   Deleted folder "${folder.displayName}"`);
     } catch (err) {
-      summary.errors.push(`Folder "${folder.displayName}": ${err.message}`);
-      log.warn(`[clean ${userId}]   Failed folder "${folder.displayName}": ${err.message}`);
+      const status = err.response?.status || err.message;
+      if (/404/.test(String(status))) {
+        log.info(`[clean ${userId}]   Folder "${folder.displayName}" already gone (404), skipping`);
+      } else if (/400/.test(String(status))) {
+        log.info(`[clean ${userId}]   Folder "${folder.displayName}" is protected (400) — skipping`);
+      } else {
+        summary.errors.push(`Folder "${folder.displayName}": ${err.message}`);
+        log.warn(`[clean ${userId}]   Failed folder "${folder.displayName}": ${err.message}`);
+      }
     }
   }
   log.info(`[clean ${userId}] Step 2 done — ${summary.foldersDeleted} folders deleted`);
@@ -1932,9 +1946,10 @@ async function createMessageInFolder(userId, folderId, messageBody) {
         if (hasAttachments && movedId) {
           for (const att of messageBody.attachments) {
             try {
+              const attBody = att['@odata.type'] ? att : { '@odata.type': '#microsoft.graph.fileAttachment', ...att };
               await axios.post(
                 `${GRAPH_BASE}/users/${uid2}/messages/${movedId}/attachments`,
-                att,
+                attBody,
                 { headers: { Authorization: `Bearer ${token2}`, 'Content-Type': 'application/json' }, timeout: 30000 }
               );
             } catch (attErr) {
@@ -1954,34 +1969,46 @@ async function createMessageInFolder(userId, folderId, messageBody) {
   const uid   = graphUserPath(userId);
   const token = await getAccessToken(userId);
   const body  = { ...messageBody };
-  // Strip read-only / EWS-only fields that Graph rejects with 400
+  // Strip fields that Graph rejects as read-only or EWS-only
   delete body.isDraft;
   delete body.internetMessageId;
   delete body.inReplyTo;
   delete body.references;
   delete body.receivedDateTime;
   delete body.sentDateTime;
+  // Graph requires @odata.type on each inline attachment or it returns UnableToDeserializePostBody
+  if (Array.isArray(body.attachments) && body.attachments.length > 0) {
+    body.attachments = body.attachments.map((att) =>
+      att['@odata.type'] ? att : { '@odata.type': '#microsoft.graph.fileAttachment', ...att }
+    );
+  }
   if (!isDraftFolder) {
     if (!body.sender && body.from) body.sender = body.from;
   }
-  const res = await axios.post(
-    `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/messages`,
-    body,
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 20000 }
-  );
-  const created = res.data;
-  const patch = {};
-  if (messageBody.flag)                                                         patch.flag       = messageBody.flag;
-  if (messageBody.importance && messageBody.importance !== 'normal')            patch.importance = messageBody.importance;
-  if (Array.isArray(messageBody.categories) && messageBody.categories.length)  patch.categories = messageBody.categories;
-  if (Object.keys(patch).length > 0 && created.id) {
-    await axios.patch(
-      `${GRAPH_BASE}/users/${uid}/messages/${created.id}`,
-      patch,
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-    );
+  // Inject MAPI extended properties into the POST body so Graph creates the message in one step:
+  //   PR_MESSAGE_FLAGS (0x0E07): 1=read/non-draft, 0=unread/non-draft — clears MSGFLAG_UNSENT
+  //   PR_MESSAGE_DELIVERY_TIME (0x0E06): backdated received timestamp
+  //   PR_CLIENT_SUBMIT_TIME  (0x0039): backdated sent timestamp
+  if (!isDraftFolder) {
+    const extProps = [];
+    extProps.push({ id: 'Integer 0x0e07', value: messageBody.isRead !== false ? '1' : '0' });
+    if (messageBody.receivedDateTime) extProps.push({ id: 'SystemTime 0x0e06', value: messageBody.receivedDateTime });
+    if (messageBody.sentDateTime)     extProps.push({ id: 'SystemTime 0x0039', value: messageBody.sentDateTime });
+    if (!body.singleValueExtendedProperties) {
+      body.singleValueExtendedProperties = extProps;
+    } else {
+      body.singleValueExtendedProperties = [...body.singleValueExtendedProperties, ...extProps];
+    }
   }
-  return created;
+  const res = await retryWithBackoff(
+    () => axios.post(
+      `${GRAPH_BASE}/users/${uid}/mailFolders/${encodeURIComponent(folderId)}/messages`,
+      body,
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+    ),
+    { maxRetries: 6, baseDelay: 2000, maxDelay: 60000, label: `Graph POST ${userId}/${folderId}` }
+  );
+  return res.data;
 }
 
 /**
@@ -2046,6 +2073,31 @@ async function createCalendarEvent(userId, calendarId, event) {
     : `${GRAPH_BASE}/users/${uid}/events`;
   const res = await graphPost(url, event, userId);
   return res.data;
+}
+
+async function updateCalendarEvent(userId, eventId, patch) {
+  const uid = graphUserPath(userId);
+  const token = await getAccessToken(userId);
+  const res = await retryWithBackoff(
+    () =>
+      axios.patch(
+        `${GRAPH_BASE}/users/${uid}/events/${eventId}`,
+        patch,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+      ),
+    { label: `Graph PATCH events/${eventId} for ${userId}`, maxRetries: 2 }
+  );
+  return res.data;
+}
+
+async function getCalendarEventInstances(userId, eventId, maxResults = 10) {
+  const uid = graphUserPath(userId);
+  const now = new Date();
+  const startDateTime = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+  const endDateTime   = new Date(now.getTime() + 90 * 24 * 3600 * 1000).toISOString();
+  const url = `${GRAPH_BASE}/users/${uid}/events/${eventId}/instances?startDateTime=${encodeURIComponent(startDateTime)}&endDateTime=${encodeURIComponent(endDateTime)}&$top=${maxResults}`;
+  const res = await graphGet(url, userId);
+  return res.data.value || [];
 }
 
 async function getOrCreateCalendar(userId, name) {
@@ -2810,10 +2862,40 @@ async function getConversationMessages(userId, conversationId) {
   }
 }
 
+/**
+ * Fetch mailbox-level settings for a user via Graph /mailboxSettings.
+ * Returns the raw Graph response data including automaticRepliesSetting, language, timeZone, etc.
+ * Returns null (with available:false) if the scope is not granted or the call fails.
+ *
+ * @param {string} userId
+ * @returns {Promise<{ settings: object|null, available: boolean, note?: string }>}
+ */
+async function getMailboxSettings(userId) {
+  const uid = graphUserPath(userId);
+  try {
+    const token = await getAppAccessToken(getMsTenant(userId));
+    const res = await axios.get(
+      `${GRAPH_BASE}/users/${uid}/mailboxSettings`,
+      { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+    );
+    return { settings: res.data || null, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    const scopeIssue = /scope|permission|403|401|forbidden|unauthorized/i.test(msg);
+    return {
+      settings: null,
+      available: false,
+      note: scopeIssue
+        ? 'MailboxSettings.Read scope not granted — enable in Azure AD app to include auto-reply check.'
+        : `Mailbox settings fetch failed: ${msg.substring(0, 120)}`,
+    };
+  }
+}
+
 async function getInboxRules(userId) {
   const uid = graphUserPath(userId);
   try {
-    const token = await getAccessToken(userId);
+    const token = await getAppAccessToken(getMsTenant(userId));
     const res = await axios.get(
       `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules`,
       { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
@@ -2834,19 +2916,33 @@ async function addEventAttachment(userId, eventId, attachment) {
 
 /**
  * Delete ALL inbox rules from a mailbox (not just QA-prefixed ones).
- * Returns the number of rules deleted.
+ * Uses getAppAccessToken directly — delegated OAuth tokens are NOT granted
+ * MailboxSettings.ReadWrite at login, so they silently 403 on messageRules DELETE.
+ * Returns the number of rules successfully listed for deletion.
  */
 async function deleteAllInboxRules(userId) {
   try {
-    const { rules, available } = await getInboxRules(userId);
-    if (!available || !rules || rules.length === 0) return 0;
-    await Promise.all(
-      rules.map((r) =>
-        deleteMessageRule(userId, r.id).catch((err) =>
-          logger.warn(`deleteAllInboxRules: "${r.displayName}" (${r.id}): ${err.message}`)
-        )
-      )
+    const token = await getAppAccessToken(getMsTenant(userId));
+    const uid   = graphUserPath(userId);
+    const listRes = await axios.get(
+      `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules`,
+      { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
     );
+    const rules = listRes.data.value || [];
+    if (rules.length === 0) {
+      logger.info(`deleteAllInboxRules(${userId}): no rules found`);
+      return 0;
+    }
+    for (const r of rules) {
+      try {
+        await axios.delete(
+          `${GRAPH_BASE}/users/${uid}/mailFolders/inbox/messageRules/${encodeURIComponent(r.id)}`,
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+        );
+      } catch (err) {
+        logger.warn(`deleteAllInboxRules: "${r.displayName}" (${r.id}): ${err.response?.status || err.message}`);
+      }
+    }
     logger.info(`deleteAllInboxRules(${userId}): deleted ${rules.length} rule(s)`);
     return rules.length;
   } catch (err) {
@@ -2979,21 +3075,39 @@ async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
     const status = firstErr?.response?.status;
     if (status !== 404) throw firstErr;
 
-    // 404 often means the OneDrive hasn't been provisioned yet for this user.
+    // 404 on the upload often means the OneDrive hasn't been provisioned yet for this user.
     // GET /drive triggers first-time activation; wait then retry once.
-    logger.info(`uploadFileAndCreateShareLink: 404 on first upload attempt for ${userId} — trying to provision OneDrive drive…`);
+    // NOTE: Graph also returns 404 (not 403) when the app lacks Files.ReadWrite.All permission —
+    // add that Application permission in Azure AD → API permissions if you see this error
+    // despite the user having OneDrive access at their SharePoint portal.
+    logger.info(`uploadFileAndCreateShareLink: 404 on first upload attempt for ${userId} — checking drive provisioning…`);
     try {
       await axios.get(`${GRAPH_BASE}/users/${uid}/drive`, {
         headers: { Authorization: `Bearer ${token}` },
         timeout: 15000,
       });
     } catch (provErr) {
-      if (provErr?.response?.status === 404) {
+      const s = provErr?.response?.status;
+      if (s === 404) {
         throw Object.assign(
-          new Error(`OneDrive not provisioned for ${userId} (tenant may not have SharePoint/OneDrive license)`),
+          new Error(
+            `OneDrive not provisioned for ${userId} (tenant may not have SharePoint/OneDrive license, ` +
+            `OR the app is missing Files.ReadWrite.All Application permission in Azure AD)`
+          ),
           { code: 'NO_ONEDRIVE', cause: provErr }
         );
       }
+      if (s === 403) {
+        throw Object.assign(
+          new Error(
+            `OneDrive access denied for ${userId} — app is missing Files.ReadWrite.All Application permission. ` +
+            `Add it in Azure Portal → App registrations → API permissions → Microsoft Graph → Files.ReadWrite.All → Grant admin consent.`
+          ),
+          { code: 'NO_ONEDRIVE', cause: provErr }
+        );
+      }
+      // Other errors (network, 5xx) — re-throw so they surface
+      throw provErr;
     }
     // Brief pause to let the newly-provisioned drive become available
     await new Promise(r => setTimeout(r, 3000));
@@ -3071,9 +3185,57 @@ async function getMailboxSizeBytes(userId) {
   return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: true };
 }
 
+/**
+ * Delete all Microsoft 365 Groups whose displayName starts with 'QA '.
+ * Uses an app-only token (tenant-level permission required: Group.ReadWrite.All).
+ * Lists groups via GET /groups?$filter=startswith(displayName,'QA ')&$select=id,displayName
+ * then issues DELETE /groups/{id} for each.
+ * Returns the total count of groups deleted. Catches and logs all errors (non-throwing).
+ */
+async function deleteQAGroups(userId = '') {
+  try {
+    const tenant = getMsTenant(userId);
+    const token  = await getAppAccessToken(tenant);
+    const filter = encodeURIComponent("startswith(displayName,'QA ')");
+    const url    = `${GRAPH_BASE}/groups?$filter=${filter}&$select=id,displayName&$top=999`;
+
+    const res    = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+      timeout: 20000,
+    });
+    const groups = res.data.value || [];
+
+    if (groups.length === 0) {
+      logger.info('[deleteQAGroups] No QA groups found');
+      return 0;
+    }
+
+    let deleted = 0;
+    for (const g of groups) {
+      try {
+        await axios.delete(`${GRAPH_BASE}/groups/${encodeURIComponent(g.id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 15000,
+        });
+        logger.info(`[deleteQAGroups] Deleted group "${g.displayName}" (${g.id})`);
+        deleted++;
+      } catch (err) {
+        logger.warn(`[deleteQAGroups] Failed to delete group "${g.displayName}" (${g.id}): ${err.response?.status || err.message}`);
+      }
+    }
+
+    logger.info(`[deleteQAGroups] Done — ${deleted}/${groups.length} group(s) deleted`);
+    return deleted;
+  } catch (err) {
+    logger.warn(`[deleteQAGroups] Listing/deleting QA groups failed: ${err.message}`);
+    return 0;
+  }
+}
+
 module.exports = {
   getAccessToken,
   getMailFolders,
+  getChildFolders,
   getMailFolderPathString,
   getAllFoldersFlat,
   getTotalMessageCount,
@@ -3116,6 +3278,8 @@ module.exports = {
   cleanOutlookEventsOnly,
   createContact,
   createCalendarEvent,
+  updateCalendarEvent,
+  getCalendarEventInstances,
   getOrCreateCalendar,
   shareCalendar,
   createGroup,
@@ -3128,6 +3292,7 @@ module.exports = {
   getContactsWithDetails,
   setContactPhoto,
   getConversationMessages,
+  getMailboxSettings,
   getInboxRules,
   addEventAttachment,
   uploadFileAndCreateShareLink,
@@ -3142,4 +3307,5 @@ module.exports = {
   deleteAllInboxRules,
   deleteAllConditionalFormattingRules,
   deleteAllSearchFolders,
+  deleteQAGroups,
 };

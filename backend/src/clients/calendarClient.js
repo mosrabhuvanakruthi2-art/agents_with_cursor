@@ -18,17 +18,46 @@ async function createCalendar(sourceEmail, summary) {
 }
 
 async function createEvent(sourceEmail, calendarId, event, options = {}) {
-  const { sendUpdates = 'none' } = options;
+  const { sendUpdates = 'none', conferenceDataVersion } = options;
+  const calendar = getCalendar(sourceEmail);
+  const params = { calendarId, requestBody: event, sendUpdates };
+  if (conferenceDataVersion !== undefined) params.conferenceDataVersion = conferenceDataVersion;
+  return retryWithBackoff(
+    () => calendar.events.insert(params),
+    { label: `Calendar createEvent for ${sourceEmail}` }
+  );
+}
+
+async function patchEvent(sourceEmail, calendarId, eventId, patch) {
   const calendar = getCalendar(sourceEmail);
   return retryWithBackoff(
     () =>
-      calendar.events.insert({
+      calendar.events.patch({
         calendarId,
-        requestBody: event,
-        sendUpdates,
+        eventId,
+        requestBody: patch,
       }),
-    { label: `Calendar createEvent for ${sourceEmail}` }
+    { label: `Calendar patchEvent ${eventId} for ${sourceEmail}` }
   );
+}
+
+async function listInstances(sourceEmail, calendarId, eventId, maxResults = 10) {
+  const calendar = getCalendar(sourceEmail);
+  const now = new Date();
+  const timeMin = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+  const timeMax = new Date(now.getTime() + 90 * 24 * 3600 * 1000).toISOString();
+  const res = await retryWithBackoff(
+    () =>
+      calendar.events.instances({
+        calendarId,
+        eventId,
+        maxResults,
+        timeMin,
+        timeMax,
+      }),
+    { label: `Calendar listInstances ${eventId} for ${sourceEmail}` }
+  );
+  return res.data.items || [];
 }
 
 async function listEvents(sourceEmail, calendarId, maxResults = 250) {
@@ -67,6 +96,8 @@ async function getEvent(sourceEmail, calendarId, eventId) {
 module.exports = {
   createCalendar,
   createEvent,
+  patchEvent,
+  listInstances,
   listEvents,
   listCalendars,
   getEvent,

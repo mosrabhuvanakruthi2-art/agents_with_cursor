@@ -202,6 +202,65 @@ async function tierBHashesGmail(sourceEmail, gmailFull, destUser, destMessageId,
   return { srcHashes, dstHashes };
 }
 
+async function tierBHashesOutlookToOutlook(srcUser, srcMessageId, graphAttSrc, destUser, destMessageId, graphAttDst, log) {
+  const hashMax = intEnv('MAIL_DEEP_HASH_MAX_BYTES', 10485760);
+  const srcHashes = [];
+  const dstHashes = [];
+  const axios = require('axios');
+
+  const srcToken = await outlookClient.getAccessToken(srcUser);
+  for (const att of graphAttachmentsToCompareList(graphAttSrc)) {
+    const meta = graphAttSrc.find((x) => (x.name || x.filename) === att.filename);
+    if (!meta?.id) continue;
+    let buf;
+    try {
+      const uid = encodeURIComponent(String(srcUser).trim());
+      const mid = encodeURIComponent(srcMessageId);
+      const aid = encodeURIComponent(meta.id);
+      const url = `https://graph.microsoft.com/v1.0/users/${uid}/messages/${mid}/attachments/${aid}/$value`;
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${srcToken}` },
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        maxContentLength: hashMax + 1,
+      });
+      buf = Buffer.from(res.data);
+    } catch (e) {
+      log.warn(`Tier B (O→O): source attachment read failed ${att.filename}: ${e.message}`);
+      continue;
+    }
+    if (buf.length > hashMax) continue;
+    srcHashes.push({ name: att.filename, sha256: sha256Hex(buf) });
+  }
+
+  const dstToken = await outlookClient.getAccessToken(destUser);
+  for (const att of graphAttachmentsToCompareList(graphAttDst)) {
+    const meta = graphAttDst.find((x) => (x.name || x.filename) === att.filename);
+    if (!meta?.id) continue;
+    let buf;
+    try {
+      const uid = encodeURIComponent(String(destUser).trim());
+      const mid = encodeURIComponent(destMessageId);
+      const aid = encodeURIComponent(meta.id);
+      const url = `https://graph.microsoft.com/v1.0/users/${uid}/messages/${mid}/attachments/${aid}/$value`;
+      const res = await axios.get(url, {
+        headers: { Authorization: `Bearer ${dstToken}` },
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        maxContentLength: hashMax + 1,
+      });
+      buf = Buffer.from(res.data);
+    } catch (e) {
+      log.warn(`Tier B (O→O): dest attachment read failed ${att.filename}: ${e.message}`);
+      continue;
+    }
+    if (buf.length > hashMax) continue;
+    dstHashes.push({ name: att.filename, sha256: sha256Hex(buf) });
+  }
+
+  return { srcHashes, dstHashes };
+}
+
 async function tierBHashesOutlookToGmail(srcUser, srcMessageId, graphAttachmentList, destUser, gmailFull, log) {
   const hashMax = intEnv('MAIL_DEEP_HASH_MAX_BYTES', 10485760);
   const srcHashes = [];
@@ -276,6 +335,8 @@ async function runDeepMailValidation(context, result, log) {
     // Enable Tier B attachment hash for O→G by default (env MAIL_DEEP_VALIDATE_ATTACHMENT_HASH_OG=false to disable)
     const tierBOG = tierB || boolEnv('MAIL_DEEP_VALIDATE_ATTACHMENT_HASH_OG', true);
     await validateOutlookToGmailDestination({ context, result, destUser, srcUser, maxMessages, subjectPrefix, tierB: tierBOG, tierC, log });
+  } else if (srcProvider === 'google' && dstProvider === 'google') {
+    await validateGmailToGmailSource({ context, result, destUser, srcUser, maxMessages, subjectPrefix, tierB, tierC, log });
   } else {
     throw new Error(`Deep validation: unsupported combination sourceProvider=${srcProvider} → destinationProvider=${dstProvider}`);
   }
@@ -448,6 +509,15 @@ async function validateGmailSource({
           unmatchedNote += ` Subject+time fallback (±${windowMin}m) also found no candidate.`;
         }
       }
+      const srcFolderLabelG2O = gmailClient.formatGmailLabelsForCompare(full.labelIds, labelIdToName);
+      const srcDateG2O = full.date || (full.internalDateMs ? new Date(Number(full.internalDateMs)).toUTCString() : '') || '';
+      const notFoundDiffsG2O = [
+        { field: 'notFoundReason', ok: false, displaySource: '—', displayDestination: unmatchedNote, severity: 'error' },
+        ...(full.subject ? [{ field: 'subject', ok: false, displaySource: full.subject, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFolderLabelG2O ? [{ field: 'folder', ok: false, displaySource: srcFolderLabelG2O, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(full.from ? [{ field: 'from', ok: false, displaySource: full.from, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcDateG2O ? [{ field: 'sentDateTime', ok: false, displaySource: srcDateG2O, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+      ];
       result.addDeepMailMessageResult({
         sourceMessageId: id,
         internetMessageId: mid,
@@ -455,7 +525,7 @@ async function validateGmailSource({
         subject: full.subject || '',
         pass: false,
         note: unmatchedNote,
-        diffs: [],
+        diffs: notFoundDiffsG2O,
       });
       continue;
     }
@@ -743,6 +813,19 @@ async function validateOutlookSource({
         }
       }
       result.deepMailValidation.unmatchedSourceIds.push(summary.id);
+      let srcFolderPathOO = '';
+      if (srcFull.parentFolderId) {
+        try { srcFolderPathOO = await outlookClient.getMailFolderPathString(srcUser, srcFull.parentFolderId); } catch (_) { /* skip */ }
+      }
+      const srcFromOO = srcFull.from?.emailAddress?.address || srcFull.from?.emailAddress?.name || '';
+      const srcDateOO = srcFull.sentDateTime || srcFull.receivedDateTime || '';
+      const notFoundDiffsOO = [
+        { field: 'notFoundReason', ok: false, displaySource: '—', displayDestination: noteOO, severity: 'error' },
+        ...(srcFull.subject ? [{ field: 'subject', ok: false, displaySource: srcFull.subject, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFolderPathOO ? [{ field: 'folder', ok: false, displaySource: srcFolderPathOO, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFromOO ? [{ field: 'from', ok: false, displaySource: srcFromOO, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcDateOO ? [{ field: 'sentDateTime', ok: false, displaySource: srcDateOO, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+      ];
       result.addDeepMailMessageResult({
         sourceMessageId: summary.id,
         internetMessageId: mid,
@@ -750,7 +833,7 @@ async function validateOutlookSource({
         subject: srcFull.subject || summary.subject || '',
         pass: false,
         note: noteOO,
-        diffs: [],
+        diffs: notFoundDiffsOO,
       });
       continue;
     }
@@ -789,6 +872,7 @@ async function validateOutlookSource({
       toEmails: graphRecipientsToEmails(srcFull.toRecipients),
       ccEmails: graphRecipientsToEmails(srcFull.ccRecipients),
       bccEmails: graphRecipientsToEmails(srcFull.bccRecipients),
+      replyTo: srcFull.replyTo,
       attachments: graphAttachmentsToCompareList(graphAttSrc).map((a) => ({
         filename: a.filename,
         size: a.size,
@@ -801,6 +885,7 @@ async function validateOutlookSource({
       toRecipients: destFull.toRecipients,
       ccRecipients: destFull.ccRecipients,
       bccRecipients: destFull.bccRecipients,
+      replyTo: destFull.replyTo,
       attachments: graphAttachmentsToCompareList(graphAttDst),
     };
 
@@ -857,6 +942,24 @@ async function validateOutlookSource({
       diffs = diffs.concat(compareSentDateTime(srcFull.sentDateTime, destFull.sentDateTime, toleranceMs));
     }
 
+    // Categories (warning)
+    {
+      const srcCats = (srcFull.categories || []).map(c => c.toLowerCase().trim()).sort();
+      const dstCats = (destFull.categories || []).map(c => c.toLowerCase().trim()).sort();
+      if (JSON.stringify(srcCats) !== JSON.stringify(dstCats)) {
+        diffs.push({ field: 'categories', ok: false, expected: srcCats.join(', ') || '(none)', actual: dstCats.join(', ') || '(none)', displaySource: srcCats.join(', ') || '(none)', displayDestination: dstCats.join(', ') || '(none)', severity: 'warning' });
+      }
+    }
+
+    // Sensitivity (warning)
+    {
+      const srcSens = String(srcFull.sensitivity || 'normal').toLowerCase();
+      const dstSens = String(destFull.sensitivity || 'normal').toLowerCase();
+      if (srcSens !== dstSens) {
+        diffs.push({ field: 'sensitivity', ok: false, expected: srcSens, actual: dstSens, displaySource: srcSens, displayDestination: dstSens, severity: 'warning' });
+      }
+    }
+
     if (tierC) {
       const bodyMaxOO = intEnv('MAIL_DEEP_BODY_MAX_CHARS', 500000);
       const plainSrcOO = normalizeMailBodyPlain(
@@ -872,8 +975,37 @@ async function validateOutlookSource({
       );
     }
 
-    if (tierB) {
-      log.warn('Tier B attachment hash for Outlook→Outlook is not implemented in v1; skipping.');
+    // Zoom link check — runs regardless of tierC flag
+    {
+      const srcBodyRawOO = srcFull.body?.content || srcFull.bodyPreview || '';
+      const dstBodyRawOO = destFull.body?.content || destFull.bodyPreview || '';
+      diffs = diffs.concat(compareZoomLinks(srcBodyRawOO, dstBodyRawOO));
+      // OneDrive / SharePoint link check
+      diffs = diffs.concat(compareOneDriveLinks(srcBodyRawOO, dstBodyRawOO));
+    }
+
+    if (tierB && (graphAttSrc || []).length > 0) {
+      try {
+        const { srcHashes, dstHashes } = await tierBHashesOutlookToOutlook(
+          srcUser, summary.id, graphAttSrc,
+          destUser, destSummary.id, graphAttDst,
+          log
+        );
+        const tierBDiffs = compareTierBHashes(srcHashes, dstHashes);
+        // When all hashes match, content is verified — downgrade size-discrepancy warnings to info
+        if (tierBDiffs.every((d) => d.ok !== false)) {
+          for (const d of diffs) {
+            if (d.field?.startsWith('attachmentSize:') && d.severity === 'warning') {
+              d.severity = 'info';
+              d.ok = true;
+              d.note = '[Tier B hash verified — content is identical] ' + (d.note || '');
+            }
+          }
+        }
+        diffs = diffs.concat(tierBDiffs);
+      } catch (e) {
+        log.warn(`Tier B (O→O) hash: ${e.message}`);
+      }
     }
 
     const hasError = diffs.some((d) => d.severity === 'error');
@@ -884,8 +1016,16 @@ async function validateOutlookSource({
       subject: srcFull.subject || summary.subject || '',
       pass: !hasError,
       diffs,
+      _conversationId: srcFull.conversationId || null,
     });
   }
+
+  // Full thread chain validation: positional pairing of all messages in each O→O conversation
+  await validateOutlookToOutlookThreadChains(result, srcUser, destUser, log, {
+    tierC,
+    tierB,
+    tierAOpts,
+  });
 }
 
 /**
@@ -1090,7 +1230,12 @@ async function validateOutlookToGmailThreadChains(result, srcUser, destUser, log
   result.deepMailValidation.threadChainResults = [];
   log.info(`Thread chain validation: ${candidates.length} Outlook conversation(s) to check`);
 
-  for (const [convId, { gmailThreadIds, pairedEntries }] of candidates) {
+  const THREAD_BATCH = 10;
+  const candidateEntries = [...candidates];
+
+  for (let bi = 0; bi < candidateEntries.length; bi += THREAD_BATCH) {
+    const batchResults = await Promise.all(
+      candidateEntries.slice(bi, bi + THREAD_BATCH).map(async ([convId, { gmailThreadIds, pairedEntries }]) => {
     // Pick the most-common Gmail threadId (handles occasional split messages)
     const threadIdCounts = new Map();
     for (const tid of gmailThreadIds) threadIdCounts.set(tid, (threadIdCounts.get(tid) || 0) + 1);
@@ -1316,7 +1461,7 @@ async function validateOutlookToGmailThreadChains(result, srcUser, destUser, log
     const pairErrors = messageComparisons.filter((mc) => !mc.pass).length;
     const pass = structuralErrors === 0 && pairErrors === 0;
 
-    result.deepMailValidation.threadChainResults.push({
+    return {
       conversationId: convId,
       primaryGmailThreadId,
       allGmailThreadIds: [...gmailThreadIds],
@@ -1330,13 +1475,18 @@ async function validateOutlookToGmailThreadChains(result, srcUser, destUser, log
       messageComparisons,
       outlookSubjects: outlookMsgs.map((m) => m.subject),
       gmailSubjects: gmailMsgs.map((m) => m.subject),
-    });
-
-    if (!pass) {
-      log.warn(
-        `Thread chain FAIL: "${rootSubject}" — Outlook=${outlookCount} Gmail=${gmailCount} ` +
-        `split=${gmailThreadIds.size > 1} structuralErrors=${structuralErrors} pairErrors=${pairErrors}`
-      );
+    };
+  }));
+    for (const chainResult of batchResults) {
+      result.deepMailValidation.threadChainResults.push(chainResult);
+      if (!chainResult.pass) {
+        const structuralErrors = chainResult.mismatches.filter((m) => m.severity === 'error').length;
+        const pairErrors = chainResult.messageComparisons.filter((mc) => !mc.pass).length;
+        log.warn(
+          `Thread chain FAIL: "${chainResult.rootSubject}" — Outlook=${chainResult.outlookMessageCount} Gmail=${chainResult.gmailMessageCount} ` +
+          `split=${chainResult.threadSplit} structuralErrors=${structuralErrors} pairErrors=${pairErrors}`
+        );
+      }
     }
   }
 
@@ -1344,6 +1494,440 @@ async function validateOutlookToGmailThreadChains(result, srcUser, destUser, log
   const total = result.deepMailValidation.threadChainResults.length;
   if (total > 0) {
     log.info(`Thread chain validation complete: ${total} conversation(s) checked, ${failed} failed`);
+  }
+}
+
+/**
+ * Validate Outlook→Outlook thread chains using POSITIONAL PAIRING.
+ *
+ * For each Outlook source conversation that has ≥2 messages with a paired destination entry:
+ *   1. Fetch the FULL source conversation from Outlook (sorted by sentDateTime ASC)
+ *   2. Collect destination message IDs: use already-resolved destMessageId from messageResults
+ *      where available; for messages the main scan missed (RE: replies), resolve by internetMessageId.
+ *   3. Sort destination messages by sentDateTime ASC (fetch summary if needed)
+ *   4. Verify: same count; same order (internetMessageIds at matching positions)
+ *   5. Verify: inReplyTo chain — each message[i].inReplyTo (from internetMessageHeaders)
+ *      should match message[i-1].internetMessageId in destination
+ *   6. Run Tier A/B/C per-position comparisons for each pair
+ *   7. UPDATE existing messageResults entries; ADD new entries for reply messages skipped by main scan
+ *   8. Record results in result.deepMailValidation.threadChainResults
+ *
+ * opts: { tierC, tierB, tierAOpts }
+ */
+async function validateOutlookToOutlookThreadChains(result, srcUser, destUser, log, opts = {}) {
+  const {
+    tierC = false,
+    tierB = false,
+    tierAOpts = {},
+  } = opts;
+
+  // Build conversationId → { pairedEntries: [], knownDestIds: Map<srcMsgId, destMsgId> }
+  const convMap = new Map();
+  for (const entry of result.deepMailValidation.messageResults) {
+    if (!entry._conversationId) continue;
+    if (!convMap.has(entry._conversationId)) {
+      convMap.set(entry._conversationId, { pairedEntries: [], knownDestIds: new Map() });
+    }
+    const slot = convMap.get(entry._conversationId);
+    slot.pairedEntries.push(entry);
+    if (entry.destMessageId) {
+      slot.knownDestIds.set(entry.sourceMessageId, entry.destMessageId);
+    }
+  }
+
+  // Only process conversations with ≥2 messages in the source conversation
+  // (single-message conversations have no thread chain to validate)
+  const candidates = [...convMap.entries()].filter(([, v]) => v.pairedEntries.length > 0);
+  if (candidates.length === 0) return;
+
+  result.deepMailValidation.threadChainResults = result.deepMailValidation.threadChainResults || [];
+  log.info(`Thread chain validation (O→O): ${candidates.length} Outlook conversation(s) to check`);
+
+  /** Select that includes internetMessageHeaders so we can extract In-Reply-To */
+  const SELECT_WITH_HEADERS =
+    'internetMessageId,subject,bodyPreview,body,hasAttachments,receivedDateTime,sentDateTime,' +
+    'toRecipients,ccRecipients,bccRecipients,replyTo,from,parentFolderId,flag,importance,' +
+    'isRead,categories,conversationId,internetMessageHeaders';
+
+  for (const [convId, { pairedEntries, knownDestIds }] of candidates) {
+    // 1. Fetch full source conversation (sorted ASC by sentDateTime)
+    let srcMsgs = [];
+    let srcAvailable = false;
+    try {
+      const oc = await outlookClient.getConversationMessages(srcUser, convId);
+      srcMsgs = oc.messages || [];
+      srcAvailable = oc.available;
+      if (!srcAvailable) log.warn(`Thread chain (O→O): source conversation ${convId}: ${oc.note}`);
+    } catch (e) {
+      log.warn(`Thread chain (O→O): source conversation ${convId} fetch failed: ${e.message}`);
+    }
+    srcMsgs.sort((a, b) => new Date(a.sentDateTime || 0) - new Date(b.sentDateTime || 0));
+
+    // Skip single-message conversations — nothing positional to validate
+    if (srcMsgs.length < 2 && pairedEntries.length < 2) continue;
+
+    // 2. Build the destination message list.
+    //    For source messages already resolved in the main loop: use knownDestIds.
+    //    For others (RE: replies the main scan skipped): resolve fresh by internetMessageId.
+    const scanMaxOO = intEnv('DEEP_VALIDATION_SCAN_MAX', 3000);
+    const dstMsgSummaries = []; // { srcId, dstId, sentDateTime, internetMessageId }
+
+    for (const sm of srcMsgs) {
+      const srcId = sm.id;
+      const srcMid = sm.internetMessageId || '';
+
+      // Check if already resolved by main loop
+      let dstId = knownDestIds.get(srcId) || null;
+
+      // If not, try to resolve by internetMessageId
+      if (!dstId && srcMid) {
+        try {
+          const resolved = await outlookClient.resolveDestinationByInternetMessageId(destUser, srcMid, {
+            maxScan: scanMaxOO,
+          });
+          if (resolved.matches.length > 0) {
+            dstId = resolved.matches[0].id;
+          }
+        } catch (e) {
+          log.warn(`Thread chain (O→O): resolve dest for ${srcId}: ${e.message}`);
+        }
+      }
+
+      dstMsgSummaries.push({
+        srcId,
+        dstId,
+        srcInternetMessageId: srcMid,
+        srcSentDateTime: sm.sentDateTime,
+      });
+    }
+
+    // 3. Sort destination summaries by sentDateTime (fetch sentDateTime for newly resolved msgs)
+    //    For entries where dstId is known but sentDateTime isn't, do a lightweight fetch.
+    for (const entry of dstMsgSummaries) {
+      if (!entry.dstId || entry.dstSentDateTime) continue;
+      try {
+        const dstSummary = await outlookClient.getMessageById(
+          destUser, entry.dstId,
+          'id,sentDateTime,internetMessageId'
+        );
+        entry.dstSentDateTime = dstSummary.sentDateTime || null;
+        entry.dstInternetMessageId = dstSummary.internetMessageId || '';
+      } catch (e) {
+        log.warn(`Thread chain (O→O): fetch dest summary ${entry.dstId}: ${e.message}`);
+      }
+    }
+
+    // Sort by destination sentDateTime ASC (nulls last)
+    const dstSorted = [...dstMsgSummaries]
+      .filter((e) => e.dstId)
+      .sort((a, b) => {
+        const ta = a.dstSentDateTime ? new Date(a.dstSentDateTime).getTime() : Infinity;
+        const tb = b.dstSentDateTime ? new Date(b.dstSentDateTime).getTime() : Infinity;
+        return ta - tb;
+      });
+
+    const srcCount = srcMsgs.length;
+    const dstCount = dstSorted.length;
+    const mismatches = [];
+
+    // 3a. Message count mismatch
+    if (srcAvailable && srcCount !== dstCount) {
+      const missing = srcCount - dstCount;
+      mismatches.push({
+        field: 'threadCount',
+        ok: false,
+        expected: `${srcCount} message(s) in destination (matching source conversation)`,
+        actual: `${dstCount} message(s) found in destination`,
+        displaySource: `Source: ${srcCount} message(s)`,
+        displayDestination: `Destination: ${dstCount} message(s)${missing > 0 ? ` — ${missing} missing` : ` — ${-missing} extra`}`,
+        severity: 'error',
+      });
+    }
+
+    // 4. POSITIONAL PAIRING: src[i] ↔ dst[i], fetch full bodies and validate each pair
+    const messageComparisons = [];
+    if (srcAvailable && srcMsgs.length > 0 && dstSorted.length > 0) {
+      const pairLen = Math.min(srcMsgs.length, dstSorted.length);
+
+      // Pre-fetch full messages (with internetMessageHeaders) for inReplyTo chain check
+      // We fetch as we go per-pair to keep memory bounded
+
+      for (let i = 0; i < pairLen; i++) {
+        const smSummary = srcMsgs[i];
+        const dmEntry = dstSorted[i];
+
+        let smFull = null;
+        try {
+          smFull = await outlookClient.getMessageById(srcUser, smSummary.id, SELECT_WITH_HEADERS);
+        } catch (e) {
+          log.warn(`Thread chain (O→O) pos ${i}: src getMessageById ${smSummary.id} failed: ${e.message}`);
+        }
+
+        let dmFull = null;
+        try {
+          dmFull = await outlookClient.getMessageById(destUser, dmEntry.dstId, SELECT_WITH_HEADERS);
+        } catch (e) {
+          log.warn(`Thread chain (O→O) pos ${i}: dst getMessageById ${dmEntry.dstId} failed: ${e.message}`);
+        }
+
+        if (!smFull || !dmFull) {
+          messageComparisons.push({
+            position: i,
+            srcOutlookId: smSummary.id,
+            dstOutlookId: dmEntry.dstId,
+            pass: false,
+            diffs: [],
+            note: 'Failed to fetch full message content',
+          });
+          continue;
+        }
+
+        let graphAttSrc = [];
+        try {
+          graphAttSrc = await outlookClient.getAttachments(srcUser, smSummary.id);
+        } catch (e) {
+          log.warn(`Thread chain (O→O) pos ${i}: src attachments for ${smSummary.id}: ${e.message}`);
+        }
+
+        let graphAttDst = [];
+        try {
+          graphAttDst = await outlookClient.getAttachments(destUser, dmEntry.dstId);
+        } catch (e) {
+          log.warn(`Thread chain (O→O) pos ${i}: dst attachments for ${dmEntry.dstId}: ${e.message}`);
+        }
+
+        const sourceForTierA = {
+          subject: smFull.subject,
+          from: smFull.from,
+          toEmails: graphRecipientsToEmails(smFull.toRecipients),
+          ccEmails: graphRecipientsToEmails(smFull.ccRecipients),
+          bccEmails: graphRecipientsToEmails(smFull.bccRecipients),
+          replyTo: smFull.replyTo,
+          attachments: graphAttachmentsToCompareList(graphAttSrc).map((a) => ({ filename: a.filename, size: a.size })),
+        };
+        const destForTierA = {
+          subject: dmFull.subject,
+          from: dmFull.from,
+          toRecipients: dmFull.toRecipients,
+          ccRecipients: dmFull.ccRecipients,
+          bccRecipients: dmFull.bccRecipients,
+          replyTo: dmFull.replyTo,
+          attachments: graphAttachmentsToCompareList(graphAttDst),
+        };
+
+        let diffs = compareTierA(sourceForTierA, destForTierA, tierAOpts);
+        diffs = diffs.concat(
+          compareAttachmentSizesWithTolerance(sourceForTierA.attachments, destForTierA.attachments, 'outlook_to_outlook')
+        );
+
+        // Folder placement
+        let srcFolderStr = '';
+        if (smFull.parentFolderId) {
+          try {
+            srcFolderStr = await outlookClient.getMailFolderPathString(srcUser, smFull.parentFolderId);
+          } catch (e) {
+            log.warn(`Thread chain (O→O) pos ${i}: src folder path: ${e.message}`);
+          }
+        }
+        let dstFolderStr = '';
+        if (dmFull.parentFolderId) {
+          try {
+            dstFolderStr = await outlookClient.getMailFolderPathString(destUser, dmFull.parentFolderId);
+          } catch (e) {
+            log.warn(`Thread chain (O→O) pos ${i}: dst folder path: ${e.message}`);
+          }
+        }
+        const folderOptsOO =
+          boolEnv('MAIL_DEEP_FOLDER_WARNING_ONLY', false) === true ? { folderMismatchSeverity: 'warning' } : {};
+        diffs = diffs.concat(compareFolderPlacement(srcFolderStr, dstFolderStr, folderOptsOO));
+
+        // Read / flag / importance
+        diffs = diffs.concat(compareReadState(smFull.isRead, dmFull.isRead));
+        diffs = diffs.concat(compareFlagState(smFull.flag, dmFull.flag));
+        diffs = diffs.concat(compareImportanceOutlookToOutlook(smFull.importance, dmFull.importance));
+
+        // sentDateTime
+        {
+          const toleranceMs = intEnv('DEEP_VALIDATION_SENT_TIME_TOLERANCE_MINUTES', 5) * 60000;
+          diffs = diffs.concat(compareSentDateTime(smFull.sentDateTime, dmFull.sentDateTime, toleranceMs));
+        }
+
+        // inReplyTo chain check (only for reply messages, i > 0)
+        if (i > 0) {
+          // Extract In-Reply-To header from destination message's internetMessageHeaders
+          const dstHeaders = Array.isArray(dmFull.internetMessageHeaders) ? dmFull.internetMessageHeaders : [];
+          const dstInReplyToHeader = dstHeaders.find(
+            (h) => String(h.name || '').toLowerCase() === 'in-reply-to'
+          );
+          const dstInReplyTo = (dstInReplyToHeader?.value || '').trim();
+
+          // The expected inReplyTo value is the internetMessageId of the previous destination message.
+          // dstSorted[i-1].dstInternetMessageId was populated during the lightweight fetch above;
+          // if not, fall back to the value captured in the previous iteration's messageComparisons entry.
+          const prevDmEntry = dstSorted[i - 1];
+          let prevDstInternetMessageId = prevDmEntry?.dstInternetMessageId || '';
+          if (!prevDstInternetMessageId && messageComparisons[i - 1]?.dstInternetMessageId) {
+            prevDstInternetMessageId = messageComparisons[i - 1].dstInternetMessageId;
+          }
+
+          if (prevDstInternetMessageId && dstInReplyTo) {
+            // Normalize angle brackets for comparison
+            const normalise = (id) => String(id || '').replace(/^<|>$/g, '').trim();
+            const expectedInReplyTo = normalise(prevDstInternetMessageId);
+            const actualInReplyTo = normalise(dstInReplyTo);
+            if (expectedInReplyTo && actualInReplyTo && expectedInReplyTo !== actualInReplyTo) {
+              diffs.push({
+                field: 'inReplyTo',
+                ok: false,
+                expected: `<${expectedInReplyTo}> (internetMessageId of position ${i - 1})`,
+                actual: `<${actualInReplyTo}>`,
+                displaySource: `<${expectedInReplyTo}>`,
+                displayDestination: `<${actualInReplyTo}>`,
+                severity: 'warning',
+                note: `In-Reply-To header at position ${i} does not reference the immediately preceding message in the destination thread.`,
+              });
+            }
+          } else if (prevDstInternetMessageId && !dstInReplyTo) {
+            // Reply message is missing its In-Reply-To header entirely
+            diffs.push({
+              field: 'inReplyTo',
+              ok: false,
+              expected: `<${prevDstInternetMessageId}> (internetMessageId of position ${i - 1})`,
+              actual: '(missing)',
+              displaySource: `<${prevDstInternetMessageId}>`,
+              displayDestination: '(missing)',
+              severity: 'warning',
+              note: `In-Reply-To header missing on destination reply message at position ${i}. Thread chain linkage may be broken.`,
+            });
+          }
+        }
+
+        // Tier C body: strip quoted lines for replies (i > 0) to avoid false positives
+        if (tierC) {
+          const srcBodyRaw = smFull.body?.content || smFull.bodyPreview || '';
+          const dstBodyRaw = dmFull.body?.content || dmFull.bodyPreview || '';
+          const srcBodyNorm = normalizeMailBodyPlain(htmlToPlainLoose(srcBodyRaw) || srcBodyRaw);
+          const dstBodyNorm = normalizeMailBodyPlain(htmlToPlainLoose(dstBodyRaw) || dstBodyRaw);
+          const isReply = i > 0;
+          const srcBodyCmp = isReply ? stripQuotedLines(srcBodyNorm) : srcBodyNorm;
+          const dstBodyCmp = isReply ? stripQuotedLines(dstBodyNorm) : dstBodyNorm;
+          const bodyMax = intEnv('MAIL_DEEP_BODY_MAX_CHARS', 500000);
+          diffs = diffs.concat(compareTierC(srcBodyCmp, dstBodyCmp, {
+            bodyMismatchSeverity: 'error', maxChars: bodyMax,
+            hasAttachments: graphAttSrc.length > 0,
+            destHasAttachments: graphAttDst.length > 0,
+          }));
+        }
+
+        // Zoom / OneDrive link checks
+        {
+          const srcBodyRaw = smFull.body?.content || smFull.bodyPreview || '';
+          const dstBodyRaw = dmFull.body?.content || dmFull.bodyPreview || '';
+          diffs = diffs.concat(compareZoomLinks(srcBodyRaw, dstBodyRaw));
+          diffs = diffs.concat(compareOneDriveLinks(srcBodyRaw, dstBodyRaw));
+        }
+
+        // Tier B attachment hash
+        if (tierB && graphAttSrc.length > 0) {
+          try {
+            const { srcHashes, dstHashes } = await tierBHashesOutlookToOutlook(
+              srcUser, smSummary.id, graphAttSrc,
+              destUser, dmEntry.dstId, graphAttDst,
+              log
+            );
+            const tierBDiffs = compareTierBHashes(srcHashes, dstHashes);
+            if (tierBDiffs.every((d) => d.ok !== false)) {
+              for (const d of diffs) {
+                if (d.field?.startsWith('attachmentSize:') && d.severity === 'warning') {
+                  d.severity = 'info'; d.ok = true;
+                  d.note = '[Tier B hash verified — content is identical] ' + (d.note || '');
+                }
+              }
+            }
+            diffs = diffs.concat(tierBDiffs);
+          } catch (e) {
+            log.warn(`Thread chain (O→O) pos ${i}: Tier B hash: ${e.message}`);
+          }
+        }
+
+        const hasError = diffs.some((d) => d.severity === 'error');
+        messageComparisons.push({
+          position: i,
+          srcOutlookId: smSummary.id,
+          dstOutlookId: dmEntry.dstId,
+          srcInternetMessageId: smFull.internetMessageId || smSummary.internetMessageId || '',
+          dstInternetMessageId: dmFull.internetMessageId || dmEntry.dstInternetMessageId || '',
+          subject: smFull.subject || '',
+          pass: !hasError,
+          diffs,
+        });
+
+        // UPDATE existing entry (root/scanned message) with re-computed diffs,
+        // or ADD a new entry for reply messages the main scan never visited (RE: subjects)
+        const existingEntry = pairedEntries.find((e) => e.sourceMessageId === smSummary.id);
+        if (existingEntry) {
+          const oldDestId = existingEntry.destMessageId;
+          existingEntry.destMessageId = dmEntry.dstId;
+          existingEntry.diffs = diffs;
+          existingEntry.pass = !hasError;
+          if (oldDestId && oldDestId !== dmEntry.dstId) {
+            log.info(
+              `Thread chain (O→O): corrected pairing pos ${i} "${smFull.subject}": ` +
+              `dest ${oldDestId} → ${dmEntry.dstId}`
+            );
+          }
+        } else {
+          result.addDeepMailMessageResult({
+            sourceMessageId: smSummary.id,
+            internetMessageId: smFull.internetMessageId || smSummary.internetMessageId || '',
+            destMessageId: dmEntry.dstId,
+            subject: smFull.subject || smSummary.subject || '',
+            pass: !hasError,
+            diffs,
+            _conversationId: convId,
+            _threadPosition: i,
+          });
+        }
+      }
+    }
+
+    const rootSubject = srcMsgs[0]?.subject || pairedEntries[0]?.subject || '(unknown)';
+    const structuralErrors = mismatches.filter((m) => m.severity === 'error').length;
+    const pairErrors = messageComparisons.filter((mc) => !mc.pass).length;
+    const pass = structuralErrors === 0 && pairErrors === 0;
+
+    result.deepMailValidation.threadChainResults.push({
+      conversationId: convId,
+      rootSubject,
+      srcMessageCount: srcCount,
+      dstMessageCount: dstCount,
+      // Use the same field names as O→G results so PDF/UI rendering is compatible
+      outlookMessageCount: srcCount,
+      gmailMessageCount: dstCount,
+      countMatch: srcCount === dstCount,
+      threadSplit: false,
+      pass,
+      mismatches,
+      messageComparisons,
+      srcSubjects: srcMsgs.map((m) => m.subject),
+      dstSubjects: dstSorted.map((e) => {
+        const mc = messageComparisons.find((c) => c.dstOutlookId === e.dstId);
+        return mc?.subject || '';
+      }),
+    });
+
+    if (!pass) {
+      log.warn(
+        `Thread chain (O→O) FAIL: "${rootSubject}" — src=${srcCount} dst=${dstCount} ` +
+        `structuralErrors=${structuralErrors} pairErrors=${pairErrors}`
+      );
+    }
+  }
+
+  const failed = result.deepMailValidation.threadChainResults.filter((t) => !t.pass).length;
+  const total = result.deepMailValidation.threadChainResults.length;
+  if (total > 0) {
+    log.info(`Thread chain validation (O→O) complete: ${total} conversation(s) checked, ${failed} failed`);
   }
 }
 
@@ -1484,12 +2068,26 @@ async function validateOutlookToGmailDestination({
 
     if (gmailMatches.length === 0) {
       result.deepMailValidation.unmatchedSourceIds.push(summary.id);
+      const noteOG = `No Gmail message with matching Message-ID${boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true) ? `; subject+time fallback (±${windowMin}m) also found no candidate; subject-only fallback also found no match.` : ''}`;
+      let srcFolderPathOG = '';
+      if (srcFull.parentFolderId) {
+        try { srcFolderPathOG = await outlookClient.getMailFolderPathString(srcUser, srcFull.parentFolderId); } catch (_) { /* skip */ }
+      }
+      const srcFromOG = srcFull.from?.emailAddress?.address || srcFull.from?.emailAddress?.name || '';
+      const srcDateOG = srcFull.sentDateTime || srcFull.receivedDateTime || '';
+      const notFoundDiffsOG = [
+        { field: 'notFoundReason', ok: false, displaySource: '—', displayDestination: noteOG, severity: 'error' },
+        ...(srcFull.subject ? [{ field: 'subject', ok: false, displaySource: srcFull.subject, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFolderPathOG ? [{ field: 'folder', ok: false, displaySource: srcFolderPathOG, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFromOG ? [{ field: 'from', ok: false, displaySource: srcFromOG, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcDateOG ? [{ field: 'sentDateTime', ok: false, displaySource: srcDateOG, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+      ];
       result.addDeepMailMessageResult({
         sourceMessageId: summary.id, internetMessageId: mid,
         destMessageId: null, subject: srcFull.subject || summary.subject || '',
         pass: false,
-        note: `No Gmail message with matching Message-ID${boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true) ? `; subject+time fallback (±${windowMin}m) also found no candidate; subject-only fallback also found no match.` : ''}`,
-        diffs: [],
+        note: noteOG,
+        diffs: notFoundDiffsOG,
       });
       continue;
     }
@@ -1680,6 +2278,602 @@ async function validateOutlookToGmailDestination({
     folderSeverity,
     tierAOpts,
   });
+}
+
+/**
+ * Tier B attachment hash helper for Gmail→Gmail.
+ * Downloads attachment binary from BOTH source and destination Gmail and computes SHA-256.
+ */
+async function tierBHashesGmailToGmail(srcUser, srcFull, destUser, destFull, log) {
+  const hashMax = intEnv('MAIL_DEEP_HASH_MAX_BYTES', 10485760);
+  const srcHashes = [];
+  const dstHashes = [];
+
+  for (const att of srcFull.attachments || []) {
+    if (!att.filename || !att.attachmentId) continue;
+    let buf;
+    try {
+      buf = await gmailClient.getAttachmentData(srcUser, srcFull.id, att.attachmentId);
+    } catch (e) {
+      log.warn(`Tier B (G→G): source attachment read failed ${att.filename}: ${e.message}`);
+      continue;
+    }
+    if (buf.length > hashMax) continue;
+    srcHashes.push({ name: att.filename, sha256: sha256Hex(buf) });
+  }
+
+  for (const att of destFull.attachments || []) {
+    if (!att.filename || !att.attachmentId) continue;
+    let buf;
+    try {
+      buf = await gmailClient.getAttachmentData(destUser, destFull.id, att.attachmentId);
+    } catch (e) {
+      log.warn(`Tier B (G→G): dest attachment read failed ${att.filename}: ${e.message}`);
+      continue;
+    }
+    if (buf.length > hashMax) continue;
+    dstHashes.push({ name: att.filename, sha256: sha256Hex(buf) });
+  }
+
+  return { srcHashes, dstHashes };
+}
+
+/**
+ * Deep validation for Gmail→Gmail migrations.
+ *
+ * Strategy:
+ *   1. Scan source Gmail for QA-tagged messages (same label scanning as validateGmailSource)
+ *   2. For each source message: fetch full content via getMessageFullForValidation
+ *   3. Look up in destination Gmail by internetMessageId (rfc822msgid search)
+ *   4. Fallback: subject+time search, then subject-only search
+ *   5. If found: run Tier A comparison (subject, from, to, cc, bcc, attachments)
+ *                run Tier C body comparison
+ *                compare label placement (source labels vs destination labels)
+ *   6. If not found: record unmatched with not-found diffs (same pattern as validateGmailSource)
+ */
+async function validateGmailToGmailSource({
+  context,
+  result,
+  destUser,
+  srcUser,
+  maxMessages,
+  subjectPrefix,
+  tierB,
+  tierC,
+  log,
+}) {
+  // CloudFuze preserves original addresses; recipient mapping not applicable for G→G label-placement.
+  // But we still build it so any user-supplied userEmailMappings are honoured for header comparison.
+  const recipientMap = buildRecipientEmailMapping(context.userEmailMappings, {
+    sourceEmail: context.sourceEmail,
+    destinationEmail: context.destinationEmail,
+  });
+  const tierAOpts = {
+    compareBcc: true,
+    bccAsError: true,
+    recipientMapping: recipientMap.size > 0 ? recipientMap : null,
+    combination: 'gmail_to_gmail',
+  };
+
+  // Build source label id→name map for folder placement reporting
+  let srcLabelIdToName = new Map();
+  try {
+    const lbls = await gmailClient.listLabels(srcUser, 'me');
+    srcLabelIdToName = new Map((lbls || []).map((l) => [l.id, l.name]));
+  } catch (e) {
+    log.warn(`Deep validation (G→G): could not list source Gmail labels: ${e.message}`);
+  }
+
+  // Build destination label id→name map
+  let dstLabelIdToName = new Map();
+  try {
+    const lbls = await gmailClient.listLabels(destUser, 'me');
+    dstLabelIdToName = new Map((lbls || []).map((l) => [l.id, l.name]));
+  } catch (e) {
+    log.warn(`Deep validation (G→G): could not list dest Gmail labels: ${e.message}`);
+  }
+
+  // ── Collect source QA message IDs (same label scanning strategy as validateGmailSource) ──
+  let labelIds = gmailSystemLabelsForDeepValidation();
+  // ALL_CUSTOM: expand to every user-created label so nested/custom label messages are scanned
+  if (labelIds.includes('ALL_CUSTOM')) {
+    labelIds = labelIds.filter((id) => id !== 'ALL_CUSTOM');
+    try {
+      const allLabels = await gmailClient.listLabels(srcUser, 'me');
+      for (const lbl of allLabels || []) {
+        if (lbl.type !== 'system') labelIds.push(lbl.id);
+      }
+    } catch (e) {
+      log.warn(`Deep validation (G→G): could not expand ALL_CUSTOM labels: ${e.message}`);
+    }
+  }
+
+  const idCap = Math.min(maxMessages * 15, 7500);
+  const perLabelCap = Math.max(Math.ceil(idCap / Math.max(labelIds.length, 1)), 100);
+  const idSet = new Set();
+  for (const labelId of labelIds) {
+    try {
+      const chunk = await gmailClient.listMessageIdsForLabelUpTo(srcUser, labelId, perLabelCap);
+      for (const id of chunk) idSet.add(id);
+    } catch (e) {
+      log.warn(`Deep validation (G→G): could not list messages for Gmail label "${labelId}": ${e.message}`);
+    }
+  }
+  const allIds = [...idSet];
+
+  // Filter to QA-tagged messages
+  const qaIds = [];
+  for (const id of allIds) {
+    let meta;
+    try {
+      meta = await gmailClient.getMessageMetadata(srcUser, id, 'metadata');
+    } catch (e) {
+      log.warn(`Deep validation (G→G): metadata ${id}: ${e.message}`);
+      continue;
+    }
+    const sub = normalizeSubject(meta.subject);
+    if (!sub.startsWith(subjectPrefix) && !/^QA\b/i.test(sub)) continue;
+    qaIds.push(id);
+    if (qaIds.length >= maxMessages) break;
+  }
+
+  result.deepMailValidation.scannedSourceMessages = qaIds.length;
+  const windowMin = intEnv('DEEP_VALIDATION_SUBJECT_TIME_WINDOW_MINUTES', 120);
+
+  for (const id of qaIds) {
+    let full;
+    try {
+      full = await gmailClient.getMessageFullForValidation(srcUser, id);
+    } catch (e) {
+      result.addDeepMailMessageResult({
+        sourceMessageId: id,
+        internetMessageId: '',
+        destMessageId: null,
+        subject: '',
+        pass: false,
+        note: `Source Gmail full read failed: ${e.message}`,
+        diffs: [],
+      });
+      continue;
+    }
+
+    const mid = full.internetMessageId;
+    if (!mid) {
+      result.addDeepMailMessageResult({
+        sourceMessageId: id,
+        internetMessageId: '',
+        destMessageId: null,
+        subject: full.subject || '',
+        pass: false,
+        note: 'Missing Message-ID header on source',
+        diffs: [],
+      });
+      continue;
+    }
+
+    // ── Step 1: Look up in destination Gmail by internetMessageId ──
+    let gmailMatches = [];
+    let pairingStrategy = 'internetMessageId';
+    try {
+      gmailMatches = await gmailClient.findMessagesByInternetMessageId(destUser, mid);
+    } catch (e) {
+      log.warn(`Deep validation (G→G): Gmail MID lookup failed for ${id}: ${e.message}`);
+    }
+
+    // ── Step 2: Subject+time fallback ──
+    if (gmailMatches.length === 0 && boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true)) {
+      let anchorMs =
+        full.internalDateMs != null && Number.isFinite(Number(full.internalDateMs))
+          ? Number(full.internalDateMs)
+          : null;
+      if (anchorMs == null) {
+        const parsed = Date.parse(full.date || full.headers?.date || '');
+        anchorMs = Number.isFinite(parsed) ? parsed : null;
+      }
+      if (anchorMs != null) {
+        try {
+          const fb = await gmailClient.findMessagesBySubjectAndTime(
+            destUser, normalizeSubject(full.subject), anchorMs, windowMin
+          );
+          if (fb.length > 0) {
+            let best = fb[0];
+            if (fb.length > 1) {
+              const srcIsReply = /^re:/i.test((full.subject || '').trim());
+              for (const cand of fb) {
+                try {
+                  const meta = await gmailClient.getMessageMetadata(destUser, cand.id, 'metadata');
+                  const candIsReply = /^re:/i.test((meta.subject || '').trim());
+                  if (candIsReply === srcIsReply) { best = cand; break; }
+                } catch { /* skip */ }
+              }
+            }
+            gmailMatches = [best];
+            pairingStrategy = 'subject-time';
+          }
+        } catch (e) {
+          log.warn(`Deep validation (G→G): subject+time fallback failed: ${e.message}`);
+        }
+      }
+    }
+
+    // ── Step 3: Subject-only fallback (last resort) ──
+    if (gmailMatches.length === 0 && boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true)) {
+      try {
+        const subjectOnly = await gmailClient.findMessagesBySubject(destUser, normalizeSubject(full.subject));
+        if (subjectOnly.length === 1) {
+          gmailMatches = subjectOnly;
+          pairingStrategy = 'subject-only';
+        } else if (subjectOnly.length > 1) {
+          const srcIsReply = /^re:/i.test((full.subject || '').trim());
+          let best = null;
+          for (const cand of subjectOnly) {
+            try {
+              const meta = await gmailClient.getMessageMetadata(destUser, cand.id, 'metadata');
+              const candIsReply = /^re:/i.test((meta.subject || '').trim());
+              if (candIsReply === srcIsReply) { best = cand; break; }
+            } catch { /* skip */ }
+          }
+          if (best) {
+            gmailMatches = [best];
+            pairingStrategy = 'subject-only';
+          }
+        }
+      } catch (e) {
+        log.warn(`Deep validation (G→G): subject-only fallback failed: ${e.message}`);
+      }
+    }
+
+    // ── Not found ──
+    if (gmailMatches.length === 0) {
+      result.deepMailValidation.unmatchedSourceIds.push(id);
+      let unmatchedNote = `No destination Gmail message with matching Message-ID`;
+      let anchorMs =
+        full.internalDateMs != null && Number.isFinite(Number(full.internalDateMs))
+          ? Number(full.internalDateMs)
+          : null;
+      if (anchorMs == null) {
+        const parsed = Date.parse(full.date || full.headers?.date || '');
+        anchorMs = Number.isFinite(parsed) ? parsed : null;
+      }
+      if (boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true)) {
+        if (anchorMs == null) {
+          unmatchedNote += ' Subject+time fallback skipped (no Gmail internalDate / Date header).';
+        } else {
+          unmatchedNote += ` Subject+time fallback (±${windowMin}m) also found no candidate; subject-only fallback also found no match.`;
+        }
+      }
+      const srcFolderLabelG2G = gmailClient.formatGmailLabelsForCompare(full.labelIds, srcLabelIdToName);
+      const srcDateG2G = full.date || (full.internalDateMs ? new Date(Number(full.internalDateMs)).toUTCString() : '') || '';
+      const notFoundDiffsG2G = [
+        { field: 'notFoundReason', ok: false, displaySource: '—', displayDestination: unmatchedNote, severity: 'error' },
+        ...(full.subject ? [{ field: 'subject', ok: false, displaySource: full.subject, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcFolderLabelG2G ? [{ field: 'folder', ok: false, displaySource: srcFolderLabelG2G, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(full.from ? [{ field: 'from', ok: false, displaySource: full.from, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+        ...(srcDateG2G ? [{ field: 'sentDateTime', ok: false, displaySource: srcDateG2G, displayDestination: '— (not found in destination)', severity: 'info' }] : []),
+      ];
+      result.addDeepMailMessageResult({
+        sourceMessageId: id,
+        internetMessageId: mid,
+        destMessageId: null,
+        subject: full.subject || '',
+        pass: false,
+        note: unmatchedNote,
+        diffs: notFoundDiffsG2G,
+      });
+      continue;
+    }
+
+    if (gmailMatches.length > 1) {
+      result.deepMailValidation.ambiguousInternetMessageIds.push(mid);
+    }
+
+    // ── Fetch destination message full content ──
+    const destRef = gmailMatches[0];
+    let destFull;
+    try {
+      destFull = await gmailClient.getMessageFullForValidation(destUser, destRef.id);
+    } catch (e) {
+      result.addDeepMailMessageResult({
+        sourceMessageId: id,
+        internetMessageId: mid,
+        destMessageId: destRef.id,
+        subject: full.subject || '',
+        pass: false,
+        note: `Destination Gmail message load failed: ${e.message}`,
+        diffs: [],
+      });
+      continue;
+    }
+
+    // ── Tier A: header / envelope comparison ──
+    const sourceForTierA = {
+      subject: full.subject,
+      from: full.from,
+      to: full.to,
+      cc: full.cc,
+      bcc: full.bcc,
+      replyTo: full.replyTo || '',
+      attachments: (full.attachments || []).map((a) => ({
+        filename: a.filename,
+        size: a.size,
+      })),
+    };
+
+    const destForTierA = {
+      subject: destFull.subject,
+      from: destFull.from,
+      to: destFull.to,
+      cc: destFull.cc,
+      bcc: destFull.bcc,
+      replyTo: destFull.replyTo || '',
+      attachments: (destFull.attachments || []).map((a) => ({
+        filename: a.filename,
+        size: a.size,
+      })),
+    };
+
+    let diffs = [];
+    if (pairingStrategy === 'subject-time') {
+      diffs.push({
+        field: 'pairing', ok: true, expected: 'internetMessageId',
+        actual: `subject+time fallback (±${windowMin}m)`, severity: 'warning',
+      });
+    } else if (pairingStrategy === 'subject-only') {
+      diffs.push({
+        field: 'pairing', ok: true, expected: 'internetMessageId',
+        actual: 'subject-only fallback (no time constraint — internetMessageId not preserved)', severity: 'warning',
+      });
+    }
+    diffs = diffs.concat(compareTierA(sourceForTierA, destForTierA, tierAOpts));
+
+    // Attachment size comparison — both Gmail, so sizes should be near-identical (raw bytes)
+    diffs = diffs.concat(
+      compareAttachmentSizesWithTolerance(sourceForTierA.attachments, destForTierA.attachments, 'gmail_to_gmail')
+    );
+
+    // ── Label placement comparison ──
+    // For G→G, system labels should transfer 1-to-1 and custom labels by name.
+    // We compare the human-readable label string from source vs destination.
+    const srcLabelsStr = gmailClient.formatGmailLabelsForCompare(full.labelIds, srcLabelIdToName);
+    const dstLabelsStr = gmailClient.formatGmailLabelsForCompare(destFull.labelIds, dstLabelIdToName);
+
+    // Only flag label differences that are meaningful: exclude UNREAD/IMPORTANT/STARRED
+    // (those are client-state labels that may differ legitimately post-migration).
+    const SKIP_PLACEMENT_LABELS = new Set(['UNREAD', 'IMPORTANT', 'STARRED', 'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS', 'CHAT']);
+    const srcPlacementLabels = (full.labelIds || []).filter(l => !SKIP_PLACEMENT_LABELS.has(l));
+    const dstPlacementLabels = (destFull.labelIds || []).filter(l => !SKIP_PLACEMENT_LABELS.has(l));
+
+    const srcPlacementNames = srcPlacementLabels.map(id => (srcLabelIdToName.get(id) || id).toLowerCase()).sort();
+    const dstPlacementNames = dstPlacementLabels.map(id => (dstLabelIdToName.get(id) || id).toLowerCase()).sort();
+
+    if (srcPlacementNames.length > 0 && srcPlacementNames.join('|') !== dstPlacementNames.join('|')) {
+      const folderSeverity = boolEnv('MAIL_DEEP_FOLDER_WARNING_ONLY', false) ? 'warning' : 'error';
+      diffs.push({
+        field: 'folder',
+        ok: false,
+        expected: srcLabelsStr || '(no labels)',
+        actual: dstLabelsStr || '(no labels)',
+        displaySource: srcLabelsStr || '(no labels)',
+        displayDestination: dstLabelsStr || '(no labels)',
+        severity: folderSeverity,
+        note: 'Gmail label placement differs between source and destination',
+      });
+    }
+
+    // Read state: UNREAD label present in source but not destination (or vice versa) — warning
+    diffs = diffs.concat(compareGmailUnreadToOutlookIsRead(full.labelIds, !destFull.labelIds?.includes('UNREAD')));
+
+    // STARRED (G→G inscope): source STARRED label should be preserved in destination — warning
+    {
+      const srcStarred = (full.labelIds || []).includes('STARRED');
+      const dstStarred = (destFull.labelIds || []).includes('STARRED');
+      if (srcStarred !== dstStarred) {
+        diffs.push({
+          field: 'starred',
+          ok: false,
+          expected: srcStarred ? 'STARRED' : 'not STARRED',
+          actual: dstStarred ? 'STARRED' : 'not STARRED',
+          displaySource: srcStarred ? 'Starred' : 'Not starred',
+          displayDestination: dstStarred ? 'Starred' : 'Not starred',
+          severity: 'warning',
+          note: 'Gmail STARRED label should be preserved during G→G migration.',
+        });
+      }
+    }
+
+    // sentDateTime: Gmail Date header comparison between source and destination (warning)
+    {
+      const toleranceMs = intEnv('DEEP_VALIDATION_SENT_TIME_TOLERANCE_MINUTES', 5) * 60000;
+      diffs = diffs.concat(compareSentDateTime(full.date, destFull.date, toleranceMs));
+    }
+
+    // ── Tier C: body comparison ──
+    if (tierC) {
+      const srcHtml = gmailClient.extractHtmlBodyFromPayload(full.payload);
+      const srcBodyPlain = srcHtml
+        ? htmlToPlainLoose(srcHtml)
+        : gmailClient.extractPlainBodyFromPayload(full.payload) || full.snippet || '';
+
+      const dstHtml = gmailClient.extractHtmlBodyFromPayload(destFull.payload);
+      const dstBodyPlain = dstHtml
+        ? htmlToPlainLoose(dstHtml)
+        : gmailClient.extractPlainBodyFromPayload(destFull.payload) || destFull.snippet || '';
+
+      const bodyMax = intEnv('MAIL_DEEP_BODY_MAX_CHARS', 500000);
+      diffs = diffs.concat(
+        compareTierC(srcBodyPlain, dstBodyPlain, {
+          bodyMismatchSeverity: 'error',
+          maxChars: bodyMax,
+          hasAttachments: (full.attachments || []).length > 0,
+          destHasAttachments: (destFull.attachments || []).length > 0,
+        })
+      );
+    }
+
+    // ── Zoom link check (runs regardless of tierC) ──
+    {
+      const srcHtmlRaw = gmailClient.extractHtmlBodyFromPayload(full.payload);
+      const srcBodyRaw = srcHtmlRaw
+        ? htmlToPlainLoose(srcHtmlRaw)
+        : gmailClient.extractPlainBodyFromPayload(full.payload) || full.snippet || '';
+      const dstHtmlRaw = gmailClient.extractHtmlBodyFromPayload(destFull.payload);
+      const dstBodyRaw = dstHtmlRaw
+        ? htmlToPlainLoose(dstHtmlRaw)
+        : gmailClient.extractPlainBodyFromPayload(destFull.payload) || destFull.snippet || '';
+      diffs = diffs.concat(compareZoomLinks(srcBodyRaw, dstBodyRaw));
+    }
+
+    // ── Tier B: attachment hash comparison ──
+    if (tierB && (full.attachments || []).length > 0) {
+      try {
+        const { srcHashes, dstHashes } = await tierBHashesGmailToGmail(srcUser, full, destUser, destFull, log);
+        const tierBDiffs = compareTierBHashes(srcHashes, dstHashes);
+        // When all hashes match, downgrade size-discrepancy warnings to info
+        if (tierBDiffs.every((d) => d.ok !== false)) {
+          for (const d of diffs) {
+            if (d.field?.startsWith('attachmentSize:') && d.severity === 'warning') {
+              d.severity = 'info';
+              d.ok = true;
+              d.note = '[Tier B hash verified — content is identical] ' + (d.note || '');
+            }
+          }
+        }
+        diffs = diffs.concat(tierBDiffs);
+      } catch (e) {
+        log.warn(`Tier B (G→G) hash: ${e.message}`);
+      }
+    }
+
+    const hasError = diffs.some((d) => d.severity === 'error');
+    result.addDeepMailMessageResult({
+      sourceMessageId: id,
+      internetMessageId: mid,
+      destMessageId: destRef.id,
+      subject: full.subject || '',
+      pass: !hasError,
+      diffs,
+      _gmailThreadId: full.threadId || null,
+      _destGmailThreadId: destFull.threadId || null,
+    });
+  }
+
+  // ── Thread chain integrity validation (G→G, threads are inscope) ──────────
+  // For each source threadId that has ≥2 paired messages, verify that ALL messages
+  // in the source thread are found in the destination thread (same threadId or linked
+  // by In-Reply-To/References headers). Records results in threadChainResults.
+  try {
+    // Group paired messageResults by their source _gmailThreadId
+    const threadMap = new Map(); // srcThreadId → { srcMsgIds: [], destThreadIds: Set }
+    for (const entry of result.deepMailValidation.messageResults) {
+      const srcThreadId = entry._gmailThreadId;
+      if (!srcThreadId) continue;
+      if (!threadMap.has(srcThreadId)) {
+        threadMap.set(srcThreadId, { srcMsgIds: [], destThreadIds: new Set(), entries: [] });
+      }
+      const slot = threadMap.get(srcThreadId);
+      slot.srcMsgIds.push(entry.sourceMessageId);
+      slot.entries.push(entry);
+      if (entry._destGmailThreadId) {
+        slot.destThreadIds.add(entry._destGmailThreadId);
+      }
+    }
+
+    const threadCandidates = [...threadMap.entries()].filter(([, v]) => v.srcMsgIds.length >= 2);
+
+    if (threadCandidates.length > 0) {
+      result.deepMailValidation.threadChainResults = result.deepMailValidation.threadChainResults || [];
+      log.info(`Thread chain validation (G→G): ${threadCandidates.length} thread(s) with ≥2 messages`);
+
+      for (const [srcThreadId, { srcMsgIds, destThreadIds, entries }] of threadCandidates) {
+        // Fetch full source thread to get exact message count
+        let srcThread = null;
+        let srcMsgCount = srcMsgIds.length;
+        try {
+          srcThread = await gmailClient.getGmailThread(srcUser, srcThreadId);
+          srcMsgCount = (srcThread.messages || []).length;
+        } catch (e) {
+          log.warn(`Thread chain (G→G): source thread ${srcThreadId} fetch failed: ${e.message}`);
+        }
+
+        // Each destination message should land in its own dest threadId.
+        // For G→G the thread IDs will be different (new mailbox), so we count
+        // how many source messages were successfully paired (have a destMessageId).
+        const pairedCount = entries.filter(e => !!e.destMessageId).length;
+        const mismatches = [];
+        const threadMismatches = [];
+
+        // Check: if multiple dest threadIds — the source thread was split in destination
+        if (destThreadIds.size > 1) {
+          mismatches.push({
+            field: 'threadSplit',
+            ok: false,
+            expected: '1 destination thread for the entire source thread',
+            actual: `${destThreadIds.size} destination threadId(s) — thread may have been split during migration`,
+            displaySource: `Source threadId: ${srcThreadId}`,
+            displayDestination: `Dest threadIds: ${[...destThreadIds].join(', ')}`,
+            severity: 'error',
+          });
+        }
+
+        // Check: missing messages (source thread has more msgs than what was paired)
+        if (pairedCount < srcMsgCount) {
+          const missing = srcMsgCount - pairedCount;
+          mismatches.push({
+            field: 'threadCount',
+            ok: false,
+            expected: `${srcMsgCount} message(s) from source thread in destination`,
+            actual: `${pairedCount} message(s) paired`,
+            displaySource: `Source thread: ${srcMsgCount} message(s)`,
+            displayDestination: `Destination: ${pairedCount} message(s) found — ${missing} missing`,
+            severity: 'error',
+          });
+        }
+
+        // Check: per-message thread linkage — all paired dest messages should share a single threadId
+        const primaryDestThreadId = destThreadIds.size === 1 ? [...destThreadIds][0] : null;
+
+        const rootSubject = entries[0]?.subject || '(unknown)';
+        const structuralErrors = mismatches.filter(m => m.severity === 'error').length;
+        const pass = structuralErrors === 0;
+
+        result.deepMailValidation.threadChainResults.push({
+          srcThreadId,
+          primaryDestThreadId,
+          allDestThreadIds: [...destThreadIds],
+          rootSubject,
+          srcMessageCount: srcMsgCount,
+          pairedMessageCount: pairedCount,
+          threadSplit: destThreadIds.size > 1,
+          countMatch: pairedCount === srcMsgCount,
+          pass,
+          mismatches,
+          messageComparisons: [],
+          srcSubjects: entries.map(e => e.subject),
+        });
+
+        if (!pass) {
+          log.warn(
+            `Thread chain (G→G) FAIL: "${rootSubject}" — src=${srcMsgCount} paired=${pairedCount} ` +
+            `destThreadIds=${destThreadIds.size} structuralErrors=${structuralErrors}`
+          );
+        }
+      }
+
+      const failedChains = result.deepMailValidation.threadChainResults.filter(t => !t.pass).length;
+      const totalChains = result.deepMailValidation.threadChainResults.length;
+      log.info(`Thread chain validation (G→G) complete: ${totalChains} thread(s) checked, ${failedChains} failed`);
+    }
+  } catch (threadErr) {
+    log.warn(`Thread chain validation (G→G) failed (non-fatal): ${threadErr.message}`);
+  }
+
+  // ── Thread summary ──
+  const paired = result.deepMailValidation.messageResults.filter((r) => r.destMessageId).length;
+  const failed = result.deepMailValidation.messageResults.filter((r) => !r.pass).length;
+  log.info(
+    `Deep mail (G→G): scanned ${qaIds.length}, paired ${paired}, failed ${failed}, ` +
+    `unmatched ${result.deepMailValidation.unmatchedSourceIds.length}`
+  );
 }
 
 module.exports = { runDeepMailValidation };

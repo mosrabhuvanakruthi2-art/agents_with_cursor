@@ -8,6 +8,7 @@ const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
+const neutaraClient = require('../clients/neutaraClient');
 
 class AgentOrchestrator {
   /**
@@ -21,6 +22,7 @@ class AgentOrchestrator {
     log.info(`Bulk flow started for ${pairsData.length} pair(s) — phased: create → migrate → validate`);
 
     // Build a state object per pair so phases can share context without re-constructing
+    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
     const pairs = pairsData.map((pairData) => {
       const context = pairData instanceof MigrationContext ? pairData : new MigrationContext(pairData);
       context.validate();
@@ -30,11 +32,22 @@ class AgentOrchestrator {
       }
       const isOutlookSource = context.sourceProvider === 'microsoft';
       const isGmailDest     = context.destinationProvider === 'google';
+      const isGmailSource   = context.sourceProvider === 'google';
+
+      let outlookAgent;
+      if (isGmailDest && isGmailSource) {
+        outlookAgent = new GmailToGmailValidationAgent();
+      } else if (isGmailDest) {
+        outlookAgent = new GmailValidationAgent();
+      } else {
+        outlookAgent = new OutlookValidationAgent();
+      }
+
       return {
         context,
         dataAgent: isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent(),
         migrationAgent: new MigrationAgent(),
-        outlookAgent: isGmailDest ? new GmailValidationAgent() : new OutlookValidationAgent(),
+        outlookAgent,
         removeExecLogger,
         startTime: Date.now(),
         sourceData: null,
@@ -214,13 +227,22 @@ class AgentOrchestrator {
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
     const isGmailDest     = context.destinationProvider === 'google';
+    const isGmailSource   = context.sourceProvider === 'google';
     const dataAgent = isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent();
     const migrationAgent = new MigrationAgent();
-    const outlookAgent = isGmailDest ? new GmailValidationAgent() : new OutlookValidationAgent();
+    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
+    let outlookAgent;
+    if (isGmailDest && isGmailSource) {
+      outlookAgent = new GmailToGmailValidationAgent();
+    } else if (isGmailDest) {
+      outlookAgent = new GmailValidationAgent();
+    } else {
+      outlookAgent = new OutlookValidationAgent();
+    }
 
     try {
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure)
-      if (context.skipCleanup !== true) {
+      if (!context.skipCleanup) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: 'CleanupAgent',
@@ -236,27 +258,38 @@ class AgentOrchestrator {
       }
 
       // Step 1: Generate test data (Gmail or Outlook depending on source provider)
-      executionService.update(context.executionId, {
-        status: 'RUNNING',
-        currentAgent: dataAgent.getName(),
-        progress: isOutlookSource
-          ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
-          : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
-      });
-      log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
-      const sourceData = await dataAgent.run(context);
+      let sourceData = null;
+      if (!context.skipTestData) {
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          currentAgent: dataAgent.getName(),
+          progress: isOutlookSource
+            ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
+            : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
+        });
+        log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
+        sourceData = await dataAgent.run(context);
+      } else {
+        log.info(`Step 1: Skipping ${dataAgent.getName()} (already completed)`);
+      }
 
       if (executionService.isCancelled(context.executionId)) {
         throw new Error('Execution cancelled by user');
       }
 
       // Step 2: Trigger and monitor migration
-      executionService.update(context.executionId, {
-        currentAgent: migrationAgent.getName(),
-        progress: 'MigrationAgent: CloudFuze login, validate user, trigger move, poll destination…',
-      });
-      log.info('Step 2: Running MigrationAgent');
-      const migrationResult = await migrationAgent.run(context);
+      let migrationResult = null;
+      if (!context.skipMigration) {
+        executionService.update(context.executionId, {
+          currentAgent: migrationAgent.getName(),
+          progress: 'MigrationAgent: CloudFuze login, validate user, trigger move, poll destination…',
+        });
+        log.info('Step 2: Running MigrationAgent');
+        migrationResult = await migrationAgent.run(context);
+      } else {
+        log.info('Step 2: Skipping MigrationAgent (already completed)');
+        migrationResult = executionService.get(context.executionId)?.result?.migrationResult || null;
+      }
 
       if (executionService.isCancelled(context.executionId)) {
         throw new Error('Execution cancelled by user');
@@ -293,6 +326,23 @@ class AgentOrchestrator {
         completedAt: new Date().toISOString(),
       });
 
+      // Auto-raise Neutara bug on validation failure (fire-and-forget — never blocks the flow)
+      if (validationResult?.overallStatus === 'FAIL') {
+        const execRecord = executionService.get(context.executionId);
+        neutaraClient.createBug(execRecord).then((issue) => {
+          if (issue?.knownLimitationsOnly) {
+            const note = `All ${issue.count} mismatch(es) are known limitations — no bug raised`;
+            log.info(note);
+            executionService.update(context.executionId, { knownLimitationsNote: note });
+          } else if (issue) {
+            log.info(`Neutara bug raised: ${issue.key}  ${issue.url}`);
+            executionService.update(context.executionId, { jiraIssue: issue });
+          }
+        }).catch((err) => {
+          log.warn(`Neutara bug creation failed: ${err.message}`);
+        });
+      }
+
       log.info(`Full flow completed in ${duration}ms`);
       removeExecLogger();
       return result;
@@ -324,6 +374,49 @@ class AgentOrchestrator {
 
       removeExecLogger();
       return result;
+    }
+  }
+  /**
+   * Resume an INTERRUPTED execution from the last completed agent.
+   * Skips already-completed steps and reruns from the first incomplete one.
+   */
+  async resumeFlow(executionId) {
+    const exec = executionService.get(executionId);
+    if (!exec) throw new Error(`Execution ${executionId} not found`);
+    if (exec.status !== 'INTERRUPTED') throw new Error(`Execution ${executionId} is not in INTERRUPTED state (status: ${exec.status})`);
+
+    const context = new MigrationContext(exec.context);
+    const completedAgents = new Set((exec.result?.agentResults || []).map(a => a.name));
+
+    const log = logger.child({ executionId });
+    const removeExecLogger = createExecutionLogger(executionId);
+
+    log.info(`Resuming execution ${executionId} — completed agents: ${[...completedAgents].join(', ') || 'none'}`);
+
+    // Determine which step to resume from
+    const hasCleanup       = completedAgents.has('CleanupAgent');
+    const hasTestData      = completedAgents.has('OutlookTestDataAgent') || completedAgents.has('GmailTestDataAgent');
+    const hasMigration     = completedAgents.has('MigrationAgent');
+
+    // Inject skip flags into context so runFullFlow respects them
+    context.skipCleanup   = hasCleanup || hasTestData || hasMigration;
+    context.skipTestData  = hasTestData || hasMigration;
+    context.skipMigration = hasMigration;
+
+    executionService.update(executionId, {
+      status: 'RUNNING',
+      progress: 'Resuming from last completed step…',
+      completedAt: null,
+      error: null,
+    });
+
+    try {
+      const result = await this.runFullFlow(context);
+      removeExecLogger();
+      return result;
+    } catch (err) {
+      removeExecLogger();
+      throw err;
     }
   }
 }

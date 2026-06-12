@@ -248,8 +248,12 @@ function drawPageHeader(doc, execution, validation, context, result) {
 
   // Light meta band
   doc.save().fillColor('#f1f5f9').rect(0, 82, PAGE_WIDTH, 44).fill().restore();
+  // Full execution ID on its own row so it never gets truncated
+  const fullExecId = String(execution.executionId || '—');
+  doc.fontSize(7).font(F_REGULAR).fillColor(C.muted)
+    .text(`Exec: ${fullExecId}`, MARGIN, 88, { width: CONTENT_W, lineBreak: false });
+
   const metaItems = [
-    `Exec: ${String(execution.executionId || '—').slice(0, 20)}`,
     `${src} → ${dest}`,
     `Type: ${context?.testType || 'E2E'}`,
     `Migration: ${context?.migrationType === 'DELTA' ? 'DELTA' : 'FULL'}`,
@@ -258,15 +262,22 @@ function drawPageHeader(doc, execution, validation, context, result) {
   const metaColW = CONTENT_W / metaItems.length;
   doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt);
   metaItems.forEach((item, i) => {
-    doc.text(item, MARGIN + i * metaColW, 96, { width: metaColW - 6, lineBreak: false });
+    doc.text(item, MARGIN + i * metaColW, 100, { width: metaColW - 6, lineBreak: false });
   });
 
   doc.y = 140;
 }
 
 // ── CloudFuze Migration Status (before Section 1) ────────────────────────────
-function drawMigrationJobSection(doc, context) {
-  const migJob    = context?.migrationJobDetails;
+function drawMigrationJobSection(doc, context, result) {
+  // migrationJobDetails is set on context *during* the run but context is snapshotted at
+  // creation time, so it may be missing from the persisted record. Fall back to
+  // result.migrationResult and result.validationSummary which are saved after completion.
+  const migJob =
+    context?.migrationJobDetails ||
+    result?.migrationResult?.migrationJobDetails ||
+    result?.validationSummary?.migrationJobDetails ||
+    null;
   const srcEmail  = context?.sourceEmail      || '—';
   const dstEmail  = context?.destinationEmail || '—';
   const hasData   = migJob || srcEmail !== '—' || dstEmail !== '—';
@@ -274,14 +285,26 @@ function drawMigrationJobSection(doc, context) {
 
   drawSectionHeader(doc, 'CloudFuze Migration Status');
 
+  // ── Server URL strip ───────────────────────────────────────────────────────
+  const serverUrl = String(migJob?.serverUrl || context?.migrationServerUrl || '—');
+  if (serverUrl && serverUrl !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Server: ${serverUrl}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+
   // ── header row ─────────────────────────────────────────────────────────────
+  // Total / Processed counts come from the same CF reports API that provides workspaceId
+  const totalCount     = migJob?.totalCount     != null ? String(migJob.totalCount)     : '—';
+  const processedCount = migJob?.processedCount != null ? String(migJob.processedCount) : '—';
+
   const COLS = [
-    { label: 'Workspace ID', w: 100 },
-    { label: 'From Email',   w: 134 },
-    { label: 'To Email',     w: 134 },
-    { label: 'Total',        w:  54 },
-    { label: 'Processed',    w:  64 },
-    { label: 'Status',       w:  CONTENT_W - 100 - 134 - 134 - 54 - 64 },
+    { label: 'Workspace ID',  w:  95 },
+    { label: 'From Email',    w: 110 },
+    { label: 'To Email',      w: 110 },
+    { label: 'Total',         w:  52 },
+    { label: 'Processed',     w:  52 },
+    { label: 'CF Status',     w:  CONTENT_W - 95 - 110 - 110 - 52 - 52 },
   ];
   const TABLE_W = COLS.reduce((s, c) => s + c.w, 0);
   const HDR_H = 22;
@@ -302,20 +325,31 @@ function drawMigrationJobSection(doc, context) {
   y += HDR_H;
 
   // ── data row ───────────────────────────────────────────────────────────────
-  const workspaceId    = String(migJob?.workspaceId || context?.jobId || '—');
-  const totalCount     = migJob?.totalCount     != null ? String(migJob.totalCount)     : '—';
-  const processedCount = migJob?.processedCount != null ? String(migJob.processedCount) : '—';
-  const cfStatusRaw    = String(migJob?.cfStatus || '—');
-  const cfStatusLabel  = cfStatusRaw.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
-  const cfStatusUp     = cfStatusRaw.toUpperCase();
+  const workspaceId = String(migJob?.workspaceId || context?.jobId || '—');
+  const cfStatusRaw = String(migJob?.cfStatus || '—');
+  const cfStatusUp  = cfStatusRaw.toUpperCase();
+
+  // Shorten long status strings so they fit in the badge
+  const cfStatusLabel = (() => {
+    if (cfStatusUp === 'PROCESSED_WITH_CONFLICTS' || cfStatusUp === 'PROCESS_WITH_CONFLICTS') return 'Proc. w/ Conflicts';
+    if (/^PROCESS(ED)?$/.test(cfStatusUp)) return 'Processed';
+    if (cfStatusUp === 'COMPLETED')   return 'Completed';
+    if (cfStatusUp === 'IN_PROGRESS') return 'In Progress';
+    if (cfStatusUp === 'INITIATED')   return 'Initiated';
+    if (cfStatusUp === 'FAILED')      return 'Failed';
+    if (cfStatusUp === 'CANCELLED')   return 'Cancelled';
+    return cfStatusRaw.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+  })();
 
   let statusBg = '#f1f5f9', statusFg = C.subtle;
-  if (/^PROCESS(ED)?$/.test(cfStatusUp) || cfStatusUp === 'PROCESSED_WITH_CONFLICTS' || cfStatusUp === 'PROCESS_WITH_CONFLICTS') {
+  if (/^PROCESS(ED)?$/.test(cfStatusUp) || cfStatusUp === 'COMPLETED') {
     statusBg = C.passBg; statusFg = C.pass;
-  } else if (/FAIL|ERROR|CONFLICT/.test(cfStatusUp)) {
-    statusBg = C.failBg; statusFg = C.fail;
-  } else if (/PROGRESS|INPROG|QUEUE|INIT|RUN|PROCESS/.test(cfStatusUp)) {
+  } else if (cfStatusUp === 'PROCESSED_WITH_CONFLICTS' || cfStatusUp === 'PROCESS_WITH_CONFLICTS') {
     statusBg = C.warnBg; statusFg = C.warn;
+  } else if (/FAIL|ERROR/.test(cfStatusUp)) {
+    statusBg = C.failBg; statusFg = C.fail;
+  } else if (/PROGRESS|INPROG|QUEUE|INIT|RUN/.test(cfStatusUp)) {
+    statusBg = '#dbeafe'; statusFg = '#1d4ed8';
   }
 
   doc.save().fillColor('#fafafa').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
@@ -326,20 +360,20 @@ function drawMigrationJobSection(doc, context) {
     { text: dstEmail,       w: COLS[2].w },
     { text: totalCount,     w: COLS[3].w },
     { text: processedCount, w: COLS[4].w },
-    { text: null,           w: COLS[5].w },   // status badge handled separately
+    { text: null,           w: COLS[5].w },
   ];
 
   let rx = MARGIN;
   cells.forEach((cell, i) => {
     if (i < cells.length - 1) {
-      doc.fontSize(8).font(F_REGULAR).fillColor(C.text)
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text)
         .text(cell.text, rx + 5, y + 9, { width: cell.w - 10, lineBreak: false });
     } else {
-      // Status badge in last cell
-      const tagW = Math.min(cell.w - 10, 110);
-      doc.save().fillColor(statusBg).roundedRect(rx + 5, y + 8, tagW, 14, 3).fill().restore();
+      // Status badge — full width of remaining column
+      const tagW = cell.w - 10;
+      doc.save().fillColor(statusBg).roundedRect(rx + 5, y + 7, tagW, 16, 3).fill().restore();
       doc.fontSize(7.5).font(F_BOLD).fillColor(statusFg)
-        .text(cfStatusLabel, rx + 5, y + 10, { width: tagW, align: 'center', lineBreak: false });
+        .text(cfStatusLabel, rx + 5, y + 11, { width: tagW, align: 'center', lineBreak: false });
     }
     rx += cell.w;
   });
@@ -701,7 +735,10 @@ function drawSettingsValidationSection(doc, validation) {
   doc.y = y;
   doc.moveDown(0.8);
 
-  // ── Mailbox checks (section emails) ────────────────────────────────────────
+  // ── Mailbox checks (section emails) — only for O→O runs ─────────────────
+  // Skip when settingsValidation is not available (e.g. O→G, G→O, SMOKE runs)
+  if (!sv.available) return;
+
   doc.fontSize(9).font(F_BOLD).fillColor(C.dark).text('Test Email Verification', MARGIN, doc.y);
   doc.moveDown(0.3);
 
@@ -812,7 +849,14 @@ function drawKeyIssues(doc, validation) {
   const { results } = normalizeDeepMailResultsForPdf(validation);
   const failed = results.filter((r) => !r.pass);
 
-  drawSectionHeader(doc, failed.length === 0 ? '7 — Key Issues' : `7 — Key Issues (${failed.length} failed)`);
+  const bugCount   = failed.filter((r) => r.bugStatus !== 'known_limitation').length;
+  const limitCount = failed.filter((r) => r.bugStatus === 'known_limitation').length;
+  const issueLabel = failed.length === 0
+    ? '7 — Key Issues'
+    : limitCount > 0
+      ? `7 — Key Issues (${bugCount} bug${bugCount !== 1 ? 's' : ''}, ${limitCount} known limitation${limitCount !== 1 ? 's' : ''})`
+      : `7 — Key Issues (${bugCount} failed)`;
+  drawSectionHeader(doc, issueLabel);
 
   if (failed.length === 0) {
     ensureSpace(doc, 40);
@@ -831,10 +875,11 @@ function drawKeyIssues(doc, validation) {
 
   for (const r of failed) {
     const reason    = classifyDeepMailReason(r);
-    const severity  = reason.severity || 'warning';
-    const accentCol = severity === 'critical' ? C.fail : severity === 'warning' ? C.warn : C.muted;
-    const tagBg     = severity === 'critical' ? C.failBg : severity === 'warning' ? C.warnBg : '#f1f5f9';
-    const tagFg     = severity === 'critical' ? C.fail   : severity === 'warning' ? C.warn   : C.subtle;
+    const isKnownLimit = r.bugStatus === 'known_limitation';
+    const severity  = isKnownLimit ? 'known_limitation' : (reason.severity || 'warning');
+    const accentCol = isKnownLimit ? '#6b7280' : severity === 'critical' ? C.fail : severity === 'warning' ? C.warn : C.muted;
+    const tagBg     = isKnownLimit ? '#e5e7eb' : severity === 'critical' ? C.failBg : severity === 'warning' ? C.warnBg : '#f1f5f9';
+    const tagFg     = isKnownLimit ? '#374151' : severity === 'critical' ? C.fail   : severity === 'warning' ? C.warn   : C.subtle;
     const subj = String(r.subject || '(no subject)').trim();
     const ref  = truncateRef(r.internetMessageId || r.sourceMessageId || '—', 80);
     const rows = structuredRowsForDeepPdfRow(r);
@@ -849,8 +894,8 @@ function drawKeyIssues(doc, validation) {
     doc.save().fillColor(accentCol).rect(MARGIN, y, 5, cardHdrH).fill().restore();
 
     // Severity tag
-    const tagLabel = severity.toUpperCase();
-    const tagW     = 54;
+    const tagLabel = isKnownLimit ? 'KNOWN LIMIT' : severity.toUpperCase();
+    const tagW     = isKnownLimit ? 76 : 54;
     doc.save().fillColor(tagBg).roundedRect(MARGIN + CONTENT_W - tagW - 10, y + 10, tagW, 14, 3).fill().restore();
     doc.fontSize(7.5).font(F_BOLD).fillColor(tagFg)
       .text(tagLabel, MARGIN + CONTENT_W - tagW - 10, y + 12, { width: tagW, align: 'center' });
@@ -976,7 +1021,7 @@ function generateValidationPdf(execution, stream) {
     return;
   }
 
-  drawMigrationJobSection(doc, context);
+  drawMigrationJobSection(doc, context, result);
   drawSummarySection(doc, validation, context, result);
   drawFailureBreakdown(doc, validation);
 

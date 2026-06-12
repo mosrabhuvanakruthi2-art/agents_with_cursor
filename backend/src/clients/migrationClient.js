@@ -133,7 +133,7 @@ async function register() {
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${env.MIGRATION_API_URL}/mail/register`,
+        `${getActiveBaseUrl()}/mail/register`,
         null,
         migrationAxiosConfig({
           headers: { Authorization: `Basic ${basic}` },
@@ -212,6 +212,53 @@ async function login() {
   // Use legacyBase directly — it already includes /proxyservices/v1 after setRuntimeConfig normalisation.
   const appLoginBase = legacyBase.replace(/\/+$/, '');
 
+  // ── Runtime credentials from form (email + password) ──────────────────────
+  // Try multiple URL candidates for /app/login since the path varies by server build:
+  //   1. /proxyservices/v1/app/login  (legacy path prefix)
+  //   2. /app/login                   (root level, no prefix)
+  //   3. /proxyservices/v1/email/app/login  (email-API path variant)
+  if (runtimeConfig?.email && runtimeConfig?.password) {
+    const crypto = require('crypto');
+    const runtimeMd5 = crypto.createHash('md5').update(runtimeConfig.password).digest('hex');
+    // Root base = strip /proxyservices/... suffix so we can try root-level /app/login
+    const rootBase = appLoginBase.replace(/\/proxyservices\/.*/i, '');
+    const ent = (() => { try { return new URL(appLoginBase).host; } catch { return ''; } })();
+
+    const appLoginUrls = [
+      `${appLoginBase}/app/login`,                   // /proxyservices/v1/app/login
+      ...(rootBase !== appLoginBase ? [`${rootBase}/app/login`] : []),  // /app/login (root)
+      `${appLoginBase}/email/app/login`,             // /proxyservices/v1/email/app/login
+    ];
+
+    for (const loginUrl of appLoginUrls) {
+      try {
+        const body = { email: runtimeConfig.email, password: runtimeMd5 };
+        if (ent) body.ent = ent;
+        const res = await retryWithBackoff(
+          () => axios.post(loginUrl, body, migrationAxiosConfig({ timeout: 30000 })),
+          { label: `CloudFuze /app/login (runtime) @ ${loginUrl}`, maxRetries: 1 }
+        );
+        const raw = res.data;
+        const headerToken = (res.headers?.['authorization'] || res.headers?.['x-auth-token'] || '')
+          .replace(/^Bearer\s*/i, '').trim();
+        const token = (typeof raw === 'string' ? raw.replace(/^Bearer\s*/i, '').trim() : '') ||
+          raw?.token || raw?.accessToken || raw?.jwtToken || raw?.data?.token ||
+          raw?.userVO?.token || headerToken;
+        if (token) {
+          loginToken = token;
+          logger.info(`CloudFuze: logged in via /app/login (runtime credentials: ${runtimeConfig.email}) at ${loginUrl}`);
+          return loginToken;
+        }
+        logger.warn(`CloudFuze /app/login (runtime) @ ${loginUrl}: 200 OK but no token — ${JSON.stringify(raw)}`);
+      } catch (err) {
+        const status = err?.response?.status;
+        const body2 = err?.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : '';
+        logger.warn(`CloudFuze /app/login (runtime) @ ${loginUrl} failed (${status || err.message})${body2 ? ': ' + body2 : ''}`);
+      }
+    }
+    logger.warn('CloudFuze /app/login (runtime): all URL candidates failed — falling back to env credentials');
+  }
+
   // Try POST /app/login directly — same call that /mail/login makes internally.
   // /mail/login: authenticates Basic auth → cfUser → calls /app/login{ email, password: cfUser.getPassword(), ent }
   // cfUser.getPassword() == second part of MIGRATION_API_BASIC_AUTH == appLoginPasswordMd5 here.
@@ -281,8 +328,18 @@ async function login() {
       }
     }
     if (passwordsToTry.length > 0) {
-      logger.warn('CloudFuze /app/login exhausted all password variants — falling back to /mail/login');
+      logger.warn('CloudFuze /app/login exhausted all password variants — trying /mail/register JWT next');
     }
+  }
+
+  // Use the bearerToken obtained from POST /mail/register (Step 0 of MigrationAgent).
+  // This uses the same Basic auth credentials as MIGRATION_API_BEARER_TOKEN and should
+  // have identical permission scope — avoiding the wrong-scope /mail/login JWT that
+  // causes HTTP 500 on /mail/move/initiate.
+  if (!isNewServer() && bearerToken && !isJwtExpired(bearerToken)) {
+    loginToken = bearerToken;
+    logger.info('CloudFuze: using /mail/register JWT as loginToken for legacy server (auto-refresh, no manual step needed)');
+    return loginToken;
   }
 
   const basic = basicAuthPayload();
@@ -442,6 +499,9 @@ function findCloudId(clouds, email) {
 
 // ─────────────────────────────────────────────────────────────
 // STEP 1→2 — GET /email/move/domains/{destCloudId}
+// Same path on both devemail and newtestemail5 — only the base URL differs:
+//   devemail:      https://devemail.cloudfuze.com/proxyservices/v1/email/move/domains/{id}
+//   newtestemail5: https://newtestemail5.cloudfuze.com/email/move/domains/{id}
 // ─────────────────────────────────────────────────────────────
 async function getDomains(destCloudId) {
   const emailBase = getActiveEmailBaseUrl();
@@ -666,8 +726,12 @@ async function triggerMigration(context) {
         fromRootId: '/',
         toRootId: '/',
         deltaMigration: context.migrationType === 'DELTA',
-        onlineMove: false,
+        calendar: Boolean(context.includeCalendar),
         contacts: Boolean(context.includeContacts),
+        folder: true,
+        metadata: true,
+        onlineMove: false,
+        archive: context.sourceProvider === 'microsoft',
         drawings: false,
         backup: false,
         orphanWorkSpace: false,
@@ -762,11 +826,12 @@ async function pollReports(deltaMigration, fromMailId, {
     return null;
   }
 
-  // Legacy servers expose jobs at both /email/user/jobs and /mail/reports.
-  // Try /email/user/jobs first — it is more reliably populated on devemail.
+  // New server: only /email/user/jobs.
+  // Legacy (devemail): /mail/reports is the native endpoint — try it first.
+  // Fall back to /email/user/jobs in case the server also serves the new-API path.
   const reportsUrlCandidates = isNewServer()
     ? [`${getActiveEmailBaseUrl()}/email/user/jobs`]
-    : [`${getActiveEmailBaseUrl()}/email/user/jobs`, `${getActiveBaseUrl()}/mail/reports`];
+    : [`${getActiveBaseUrl()}/mail/reports`, `${getActiveEmailBaseUrl()}/email/user/jobs`];
   let reportsUrl = reportsUrlCandidates[0];
   let reportsUrlFallbackIdx = 1;
 
@@ -823,16 +888,29 @@ async function pollReports(deltaMigration, fromMailId, {
       let matchedDetail = null;
       let matchedJob = null;
       for (const j of jobs) {
-        if (String(j.fromMailId || j.fromEmail || '').toLowerCase() === normFrom) {
-          matchedJob = j;
-          break;
-        }
         const details = j.mailMigrationDetails || j.details || j.pairs || [];
-        if (Array.isArray(details)) {
+
+        // Step 1: find the detail row for this specific fromMailId.
+        // The detail row carries the actual per-user email counts (totalCount / processedCount)
+        // — these are the numbers shown in the CloudFuze Reports UI under each user pair.
+        // The job-level totalCount is always 1 (number of pairs), never email count.
+        if (Array.isArray(details) && details.length > 0) {
           const d = details.find(
             (d) => String(d.fromMailId || d.fromEmail || '').toLowerCase() === normFrom
           );
-          if (d) { matchedJob = j; matchedDetail = d; break; }
+          if (d) {
+            matchedJob    = j;
+            matchedDetail = d;   // counts MUST come from this row, never job-level
+            break;
+          }
+        }
+
+        // Step 2: some legacy servers put fromMailId at the job level with no details.
+        // Only match here if no detail row was found above.
+        if (String(j.fromMailId || j.fromEmail || '').toLowerCase() === normFrom) {
+          matchedJob = j;
+          // matchedDetail stays null — no per-user detail available, counts will be job-level
+          break;
         }
       }
 
@@ -970,7 +1048,7 @@ async function fetchCurrentJobStatus(fromMailId) {
 
   const reportsUrlList = isNewServer()
     ? [`${getActiveEmailBaseUrl()}/email/user/jobs`]
-    : [`${getActiveEmailBaseUrl()}/email/user/jobs`, `${getActiveBaseUrl()}/mail/reports`];
+    : [`${getActiveBaseUrl()}/mail/reports`, `${getActiveEmailBaseUrl()}/email/user/jobs`];
 
   if (token) {
     try {
@@ -993,16 +1071,22 @@ async function fetchCurrentJobStatus(fromMailId) {
         let matchedJob = null;
         let matchedDetail = null;
         for (const j of jobs) {
-          if (String(j.fromMailId || j.fromEmail || '').toLowerCase() === normFrom) {
-            matchedJob = j;
-            break;
-          }
           const details = j.mailMigrationDetails || j.details || j.pairs || [];
-          if (Array.isArray(details)) {
+          // Find the specific detail row for this fromMailId — counts come from here only
+          if (Array.isArray(details) && details.length > 0) {
             const d = details.find(
               (d) => String(d.fromMailId || d.fromEmail || '').toLowerCase() === normFrom
             );
-            if (d) { matchedJob = j; matchedDetail = d; break; }
+            if (d) {
+              matchedJob    = j;
+              matchedDetail = d;  // totalCount/processedCount MUST come from this row
+              break;
+            }
+          }
+          // Legacy fallback: fromMailId at job level with no details
+          if (String(j.fromMailId || j.fromEmail || '').toLowerCase() === normFrom) {
+            matchedJob = j;
+            break;
           }
         }
 
@@ -1087,6 +1171,8 @@ module.exports = {
   setRuntimeConfig,
   clearRuntimeConfig,
   getLastJobDetails,
+  getActiveBaseUrl,
+  isNewServer,
   fetchCurrentJobStatus,
   migrationAxiosConfig,
 };

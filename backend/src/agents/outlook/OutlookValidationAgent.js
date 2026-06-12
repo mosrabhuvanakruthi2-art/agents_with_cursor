@@ -1,11 +1,14 @@
 const { BaseAgent } = require('../core/BaseAgent');
+const agentBrain = require('../../ai/agentBrain');
 const outlookClient = require('../../clients/outlookClient');
 const gmailClient = require('../../clients/gmailClient');
 const calendarClient = require('../../clients/calendarClient');
 const migrationClient = require('../../clients/migrationClient');
+const { classifyMismatches, getCombination } = require('../../clients/cloudfuzeDocsClient');
 const ValidationResult = require('../../models/ValidationResult');
 const logger = require('../../utils/logger');
 const { findDestCustomFolder } = require('../../utils/gmailOutlookLabelMatch');
+const { parseRecipientEmails } = require('../../utils/mailMigrationComparator');
 
 const GMAIL_SYSTEM_LABELS = new Set([
   'INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM',
@@ -29,6 +32,7 @@ const OUTLOOK_TO_GMAIL_ID = {
   'Drafts': 'DRAFT',
   'Deleted Items': 'TRASH',
   'Junk Email': 'SPAM',
+  'Archive': 'Archive',
 };
 
 class OutlookValidationAgent extends BaseAgent {
@@ -44,6 +48,7 @@ class OutlookValidationAgent extends BaseAgent {
     const testType = context.testType || 'E2E';
 
     log.info(`Validating [${testType}]: ${sourceUser} → ${destUser} (sourceProvider=${context.sourceProvider || 'google'})`);
+    const _startTime = new Date();;
 
     // Fetch CloudFuze migration job status so the PDF report shows Workspace ID, total/processed
     // counts, and status. Only fetch if not already populated by MigrationAgent in this execution.
@@ -83,33 +88,236 @@ class OutlookValidationAgent extends BaseAgent {
       await this._validateCalendar(sourceUser, destUser, result, log, context.sourceProvider);
     }
 
+    // ── P2-6: Draft comparison for G→O ──────────────────────────────────────
+    if (context.sourceProvider !== 'microsoft' && context.includeMail !== false) {
+      await this._validateDrafts(sourceUser, destUser, result, log);
+    }
+
+    // ── P3-10: Gmail filters → Outlook rules comparison for G→O ──────────────
+    if (context.sourceProvider !== 'microsoft') {
+      await this._validateGmailFiltersAdvisory(sourceUser, destUser, result, log);
+    }
+
+    // ── Outscope feature advisories (G→O) ─────────────────────────────────────
+    if (context.sourceProvider !== 'microsoft' && context.includeMail !== false) {
+      await this._validateOutscopeAdvisories(sourceUser, result, log);
+    }
+
     if (context.sourceProvider === 'microsoft') {
       await this._validateMailboxSettings(sourceUser, destUser, result, log);
     }
 
     /**
-     * Best-effort contacts totals for the summary table. Always populated so the PDF shows 0
-     * rather than '—' when the scope isn't granted — keeps the 4-metric layout consistent.
-     * Errors/warnings are logged but do not fail validation.
+     * Contacts validation:
+     * - For G→O (sourceProvider !== 'microsoft'): full field-level comparison matching by
+     *   displayName (case-insensitive), comparing emailAddresses, phoneNumbers, organization,
+     *   and jobTitle.  Mirrors the pattern used in GmailValidationAgent for O→G.
+     * - For O→O (sourceProvider === 'microsoft'): count-only comparison.
+     * Always best-effort — errors/warnings are logged but do not fail validation.
      */
     try {
-      let srcContacts = { count: 0, available: false };
-      if (context.sourceProvider === 'microsoft') {
-        srcContacts = await outlookClient.getContactsCount(sourceUser);
+      if (context.sourceProvider !== 'microsoft') {
+        // ── G→O: full field-level contacts comparison ──────────────────────────
+        const [srcResult, dstResult] = await Promise.all([
+          gmailClient.getGmailContactsWithDetails(sourceUser),
+          outlookClient.getContactsWithDetails(destUser),
+        ]);
+
+        const srcContacts = srcResult.contacts || [];
+        const dstContacts = dstResult.contacts || [];
+
+        result.contactsValidation.sourceCount      = srcContacts.length;
+        result.contactsValidation.destinationCount = dstContacts.length;
+        result.contactsValidation.available        = srcResult.available || dstResult.available;
+        result.contactsValidation.countMatch       = srcContacts.length === dstContacts.length;
+
+        // Field-level comparison — match by normalised displayName (case-insensitive)
+        const fieldMismatches = [];
+
+        // Build a map of dest contacts keyed by lowercase displayName
+        const dstMap = new Map(
+          dstContacts
+            .filter((c) => c.displayName)
+            .map((c) => [c.displayName.toLowerCase().trim(), c])
+        );
+
+        for (const src of srcContacts) {
+          if (!src.displayName) continue;
+          const key = src.displayName.toLowerCase().trim();
+          const dst = dstMap.get(key);
+          if (!dst) continue; // unmatched contacts reported by count mismatch
+
+          // Email addresses
+          // Gmail source: emailAddresses is already a flat string[]
+          // Outlook dest:  emailAddresses is [{ address, name }] objects
+          const srcEmails = (src.emailAddresses || [])
+            .map((e) => String(e || '').toLowerCase())
+            .filter(Boolean)
+            .sort();
+          const dstEmails = (dst.emailAddresses || [])
+            .map((e) => ((e && e.address) ? e.address : String(e || '')).toLowerCase())
+            .filter(Boolean)
+            .sort();
+          if (srcEmails.length > 0 && dstEmails.length > 0 && srcEmails.join(',') !== dstEmails.join(',')) {
+            fieldMismatches.push({ contact: src.displayName, field: 'emailAddresses', source: srcEmails.join(', '), destination: dstEmails.join(', ') });
+          } else if (srcEmails.length > 0 && dstEmails.length === 0) {
+            fieldMismatches.push({ contact: src.displayName, field: 'emailAddresses', source: srcEmails.join(', '), destination: '(none)' });
+          }
+
+          // Phone numbers
+          // Gmail source: phoneNumbers is a flat string[]
+          // Outlook dest: businessPhones[] + mobilePhone
+          const srcPhones = (src.phoneNumbers || [])
+            .map((p) => String(p || '').replace(/\s/g, ''))
+            .filter(Boolean)
+            .sort();
+          const dstPhones = [
+            ...(dst.businessPhones || []),
+            dst.mobilePhone,
+          ]
+            .filter(Boolean)
+            .map((p) => String(p).replace(/\s/g, ''))
+            .sort();
+          if (srcPhones.length > 0 && dstPhones.length > 0 && srcPhones.join(',') !== dstPhones.join(',')) {
+            fieldMismatches.push({ contact: src.displayName, field: 'phoneNumbers', source: srcPhones.join(', '), destination: dstPhones.join(', ') });
+          }
+
+          // Organization / company name
+          // Gmail source: organization (string)
+          // Outlook dest: companyName (string)
+          const srcOrg = (src.organization || '').trim().toLowerCase();
+          const dstOrg = (dst.companyName || '').trim().toLowerCase();
+          if (srcOrg && dstOrg && srcOrg !== dstOrg) {
+            fieldMismatches.push({ contact: src.displayName, field: 'organization', source: src.organization, destination: dst.companyName });
+          }
+
+          // Job title
+          const srcTitle = (src.jobTitle || '').trim().toLowerCase();
+          const dstTitle = (dst.jobTitle || '').trim().toLowerCase();
+          if (srcTitle && dstTitle && srcTitle !== dstTitle) {
+            fieldMismatches.push({ contact: src.displayName, field: 'jobTitle', source: src.jobTitle, destination: dst.jobTitle });
+          }
+        }
+
+        result.contactsValidation.fieldMismatches = fieldMismatches;
+
+        // ── Contact labels → Outlook categories (G→O inscope) ────────────────
+        // Gmail contact labels/groups should appear as Outlook contact categories.
+        // Best-effort: list source Gmail contact groups and check that each group
+        // name has a corresponding category in at least one destination Outlook contact.
+        try {
+          const groupsResult = await gmailClient.getGmailContactGroups(sourceUser);
+          const srcGroups = (groupsResult.groups || []).map(g => g.toLowerCase().trim());
+
+          if (!groupsResult.available) {
+            result.contactsValidation.contactLabelsMigration = { available: false, note: groupsResult.note || 'Could not list Gmail contact groups' };
+            log.info(`Contact labels→categories: skipped — ${groupsResult.note || 'People API unavailable'}`);
+          } else if (srcGroups.length === 0) {
+            result.contactsValidation.contactLabelsMigration = { available: true, sourceGroupCount: 0, note: 'No user-created Gmail contact groups found at source' };
+            log.info('Contact labels→categories: no user-created Gmail contact groups found at source');
+          } else {
+            // Collect all Outlook contact categories from destination contacts
+            const dstCategories = new Set();
+            for (const c of dstContacts) {
+              for (const cat of (c.categories || [])) {
+                dstCategories.add((cat || '').toLowerCase().trim());
+              }
+            }
+            const missingGroups = srcGroups.filter(g => !dstCategories.has(g));
+            result.contactsValidation.contactLabelsMigration = {
+              available: true,
+              sourceGroupCount: srcGroups.length,
+              sourceGroups: srcGroups,
+              destinationCategoryCount: dstCategories.size,
+              missingInDestination: missingGroups,
+            };
+            if (missingGroups.length > 0) {
+              log.warn(`Contact labels→categories: ${missingGroups.length} Gmail group(s) not found as Outlook categories: ${missingGroups.join(', ')}`);
+            } else {
+              log.info(`Contact labels→categories: all ${srcGroups.length} Gmail contact group(s) found as Outlook categories`);
+            }
+          }
+        } catch (labelsErr) {
+          log.warn(`Contact labels→categories check failed (non-fatal): ${labelsErr.message}`);
+          result.contactsValidation.contactLabelsMigration = { available: false, note: labelsErr.message };
+        }
+
+        log.info(
+          `Contacts (G→O): src=${srcContacts.length} dst=${dstContacts.length} ` +
+          `fieldMismatches=${fieldMismatches.length}` +
+          (srcResult.note ? ` [src: ${srcResult.note}]` : '') +
+          (dstResult.note ? ` [dst: ${dstResult.note}]` : '')
+        );
       } else {
-        srcContacts = await gmailClient.getGmailContactsCount(sourceUser);
+        // ── O→O: count-only comparison ─────────────────────────────────────────
+        const [srcContacts, dstContacts] = await Promise.all([
+          outlookClient.getContactsCount(sourceUser),
+          outlookClient.getContactsCount(destUser),
+        ]);
+        result.contactsValidation.sourceCount      = Number(srcContacts?.count) || 0;
+        result.contactsValidation.destinationCount = Number(dstContacts?.count) || 0;
+        result.contactsValidation.available        = Boolean(srcContacts?.available || dstContacts?.available);
+        result.contactsValidation.countMatch       =
+          result.contactsValidation.sourceCount === result.contactsValidation.destinationCount;
+        log.info(
+          `Contacts (O→O): source=${result.contactsValidation.sourceCount} dest=${result.contactsValidation.destinationCount}` +
+          (srcContacts?.note ? ` [src: ${srcContacts.note}]` : '') +
+          (dstContacts?.note ? ` [dst: ${dstContacts.note}]` : '')
+        );
       }
-      const dstContacts = await outlookClient.getContactsCount(destUser);
-      result.contactsValidation.sourceCount = Number(srcContacts?.count) || 0;
-      result.contactsValidation.destinationCount = Number(dstContacts?.count) || 0;
-      result.contactsValidation.available = Boolean(srcContacts?.available || dstContacts?.available);
-      result.contactsValidation.countMatch =
-        result.contactsValidation.sourceCount === result.contactsValidation.destinationCount;
-      log.info(
-        `Contacts: source=${result.contactsValidation.sourceCount} dest=${result.contactsValidation.destinationCount}${srcContacts?.note ? ` [src: ${srcContacts.note}]` : ''}${dstContacts?.note ? ` [dst: ${dstContacts.note}]` : ''}`
-      );
     } catch (contactsErr) {
-      log.warn(`Contacts count failed: ${contactsErr.message}`);
+      log.warn(`Contacts validation failed: ${contactsErr.message}`);
+    }
+
+    // ── Migrate Archives check (G→O inscope) ─────────────────────────────────
+    // Archived Gmail messages (messages in All Mail that have no INBOX label, i.e. no primary
+    // label other than system labels) should appear in the destination Outlook Archive folder.
+    // Best-effort: compare total archived message count (source) vs Outlook Archive folder count.
+    if (context.sourceProvider !== 'microsoft' && context.includeMail !== false) {
+      try {
+        // Count Gmail messages that are archived (in All Mail but not in INBOX, SENT, DRAFT, TRASH, SPAM)
+        // Use label INBOX count and total to derive archive count.
+        const allMailCount  = result.mailValidation.sourceCount || 0;
+        const inboxLabel    = result.sourceData.defaultLabels.find(l => l.id === 'INBOX');
+        const sentLabel     = result.sourceData.defaultLabels.find(l => l.id === 'SENT');
+        const draftLabel    = result.sourceData.defaultLabels.find(l => l.id === 'DRAFT');
+        const trashLabel    = result.sourceData.defaultLabels.find(l => l.id === 'TRASH');
+        const spamLabel     = result.sourceData.defaultLabels.find(l => l.id === 'SPAM');
+        const systemSum     = (inboxLabel?.messageCount || 0) + (sentLabel?.messageCount || 0)
+                            + (draftLabel?.messageCount || 0) + (trashLabel?.messageCount || 0)
+                            + (spamLabel?.messageCount || 0);
+        const srcArchiveEst = Math.max(0, allMailCount - systemSum);
+
+        // Find destination Outlook Archive folder
+        const dstArchiveFolder = result.destinationData.defaultFolders.find(
+          f => String(f.name || '').toLowerCase() === 'archive'
+        ) || result.destinationData.customFolders.find(
+          f => String(f.name || '').toLowerCase() === 'archive'
+        );
+        const dstArchiveCount = dstArchiveFolder?.messageCount || 0;
+
+        result.archiveMigration = {
+          available: true,
+          sourceArchivedEstimate: srcArchiveEst,
+          destinationArchiveCount: dstArchiveCount,
+          note: dstArchiveFolder
+            ? `Source estimated archived messages: ${srcArchiveEst} (All Mail minus system folders). Destination Outlook Archive folder: ${dstArchiveCount} messages.`
+            : `Source estimated archived messages: ${srcArchiveEst}. No Outlook Archive folder found in destination.`,
+        };
+
+        if (!dstArchiveFolder && srcArchiveEst > 0) {
+          log.warn(`Archive migration: ~${srcArchiveEst} archived Gmail messages but no Outlook Archive folder found at destination`);
+          result.addMismatch(
+            'mail', 'archiveFolderMissing',
+            `${srcArchiveEst} archived messages`, 'Outlook Archive folder not found',
+            { severity: 'warning', message: `Gmail archived messages (~${srcArchiveEst}) may not have been migrated to an Outlook Archive folder. Verify archive migration in the CloudFuze job settings.` }
+          );
+        } else {
+          log.info(`Archive migration: source estimated ~${srcArchiveEst} archived, dest Archive folder has ${dstArchiveCount} messages`);
+        }
+      } catch (archErr) {
+        log.warn(`Archive migration check failed (non-fatal): ${archErr.message}`);
+      }
     }
 
     // Compare source vs destination
@@ -143,7 +351,53 @@ class OutlookValidationAgent extends BaseAgent {
     }
 
     result.computeOverallStatus();
+
+    // Classify each mismatch as bug | known_limitation | unknown via CloudFuze docs API
+    try {
+      const srcProvider = context.sourceProvider || 'google';
+      const combination = getCombination(srcProvider, 'microsoft');
+      result.mismatches = await classifyMismatches(result.mismatches, combination);
+      const bugCount   = result.mismatches.filter((m) => m.bugStatus === 'bug' || m.bugStatus === 'unknown').length;
+      const limitCount = result.mismatches.filter((m) => m.bugStatus === 'known_limitation').length;
+      log.info(`Mismatch classification [${combination}]: ${bugCount} bug(s), ${limitCount} known limitation(s)`);
+    } catch (err) {
+      log.warn(`Mismatch classification failed (non-fatal): ${err.message}`);
+    }
+
     log.info(`Validation complete [${testType}]: ${result.overallStatus} (${result.mismatches.length} mismatches)`);
+
+    if (result.mismatches.length > 0) {
+      try {
+        const slim = {
+          overallStatus: result.overallStatus,
+          mismatches: result.mismatches,
+          mailValidation: { sourceCount: result.mailValidation.sourceCount, destinationCount: result.mailValidation.destinationCount },
+          comparison: result.comparison,
+          migrationJobDetails: context.migrationJobDetails || null,
+        };
+        const srcProvider = context.sourceProvider || 'google';
+        const aiContext = {
+          testType,
+          direction: srcProvider === 'microsoft' ? 'outlook_to_outlook' : 'gmail_to_outlook',
+          sourceProvider: srcProvider,
+          destinationProvider: 'microsoft',
+          sourceEmail: context.sourceEmail,
+          destinationEmail: context.destinationEmail,
+          migrationJobDetails: context.migrationJobDetails || null,
+        };
+        const topMismatches = result.mismatches.slice(0, 5);
+        const [analysis, ...fixes] = await Promise.all([
+          agentBrain.analyzeMigrationLogs(slim, aiContext, context.executionId, _startTime, new Date()),
+          ...topMismatches.map(m => agentBrain.suggestFix(m)),
+        ]);
+        result.aiAnalysis = analysis;
+        topMismatches.forEach((m, i) => { m.fixSuggestion = fixes[i]; });
+        log.info(`AI analysis: ${analysis.rootCause} | faultSource=${analysis.faultSource} [confidence=${analysis.confidence}]`);
+      } catch (err) {
+        log.warn(`AI analysis failed (non-fatal): ${err.message}`);
+      }
+    }
+
     return result.toJSON();
   }
 
@@ -207,7 +461,7 @@ class OutlookValidationAgent extends BaseAgent {
       result.sourceData.defaultLabels = [];
       result.sourceData.customLabels = [];
 
-      this._walkOutlookSourceFolders(folders, defaults, '', result.sourceData.defaultLabels, result.sourceData.customLabels);
+      await this._walkOutlookSourceFolders(folders, defaults, '', result.sourceData.defaultLabels, result.sourceData.customLabels, sourceUser, log);
 
       const totalSource = result.sourceData.defaultLabels.reduce((s, l) => s + l.messageCount, 0)
         + result.sourceData.customLabels.reduce((s, l) => s + l.messageCount, 0);
@@ -218,7 +472,7 @@ class OutlookValidationAgent extends BaseAgent {
     }
   }
 
-  _walkOutlookSourceFolders(folders, defaults, parentPath, defaultLabels, customLabels) {
+  async _walkOutlookSourceFolders(folders, defaults, parentPath, defaultLabels, customLabels, userId, log) {
     if (!folders?.length) return;
     for (const folder of folders) {
       const segment = (folder.displayName || '').trim();
@@ -230,16 +484,22 @@ class OutlookValidationAgent extends BaseAgent {
         if (gmailId) {
           defaultLabels.push({ id: gmailId, name: segment, messageCount: count });
         } else {
-          // Default folder has no Gmail ID equivalent (e.g. Calendar, Contacts) — skip to avoid
-          // injecting invalid IDs like "SENT ITEMS" into the comparison
-          log.warn(`OutlookValidationAgent: skipping default folder with no Gmail ID mapping: "${segment}"`);
+          if (log) log.warn(`OutlookValidationAgent: skipping default folder with no Gmail ID mapping: "${segment}"`);
         }
       } else {
         customLabels.push({ id: fullPath, name: fullPath, messageCount: count });
       }
 
-      if (folder.childFolders?.length) {
-        this._walkOutlookSourceFolders(folder.childFolders, defaults, fullPath, defaultLabels, customLabels);
+      let children = folder.childFolders || [];
+      if ((folder.childFolderCount || 0) > children.length && userId && folder.id) {
+        try {
+          children = await outlookClient.getChildFolders(userId, folder.id);
+        } catch (_) {
+          // use what we have
+        }
+      }
+      if (children.length) {
+        await this._walkOutlookSourceFolders(children, defaults, fullPath, defaultLabels, customLabels, userId, log);
       }
     }
   }
@@ -252,7 +512,7 @@ class OutlookValidationAgent extends BaseAgent {
 
       result.destinationData.defaultFolders = [];
       result.destinationData.customFolders = [];
-      this._walkOutlookFolders(folders, defaults, '', result.destinationData.defaultFolders, result.destinationData.customFolders);
+      await this._walkOutlookFolders(folders, defaults, '', result.destinationData.defaultFolders, result.destinationData.customFolders, destUser);
 
       log.info(`Destination: ${result.destinationData.defaultFolders.length} default folders, ${result.destinationData.customFolders.length} custom folders`);
     } catch (err) {
@@ -265,7 +525,7 @@ class OutlookValidationAgent extends BaseAgent {
    * Outlook uses parent/child folders with separate displayNames.
    * Build slash-separated paths for custom folders so comparison matches Gmail.
    */
-  _walkOutlookFolders(folders, defaults, parentPath, defaultFolders, customFolders) {
+  async _walkOutlookFolders(folders, defaults, parentPath, defaultFolders, customFolders, userId) {
     if (!folders?.length) return;
     for (const folder of folders) {
       const segment = (folder.displayName || '').trim();
@@ -277,8 +537,16 @@ class OutlookValidationAgent extends BaseAgent {
         customFolders.push({ name: fullPath, messageCount: folder.totalItemCount || 0 });
       }
 
-      if (folder.childFolders?.length) {
-        this._walkOutlookFolders(folder.childFolders, defaults, fullPath, defaultFolders, customFolders);
+      let children = folder.childFolders || [];
+      if ((folder.childFolderCount || 0) > children.length && userId && folder.id) {
+        try {
+          children = await outlookClient.getChildFolders(userId, folder.id);
+        } catch (_) {
+          // use what we have
+        }
+      }
+      if (children.length) {
+        await this._walkOutlookFolders(children, defaults, fullPath, defaultFolders, customFolders, userId);
       }
     }
   }
@@ -414,6 +682,9 @@ class OutlookValidationAgent extends BaseAgent {
     log.info('E2E: Validating calendar...');
     try {
       let sourceTotal = 0;
+      // For G→O: keep source events for per-event detail comparison (P2-5)
+      const sourceEventsForDetail = [];
+
       try {
         if (sourceProvider === 'microsoft') {
           const srcCals = await outlookClient.getCalendars(sourceUser);
@@ -430,6 +701,16 @@ class OutlookValidationAgent extends BaseAgent {
             if (!calId) continue;
             const items = await calendarClient.listEvents(sourceUser, calId, 250);
             sourceTotal += items.length;
+            // Capture event metadata for per-event detail comparison
+            for (const ev of items) {
+              sourceEventsForDetail.push({
+                subject: ev.summary || ev.title || '(no title)',
+                startDateTime: ev.start?.dateTime || null,
+                startDate: ev.start?.date || null,
+                isAllDay: !!(ev.start && !ev.start.dateTime),
+                attendeeCount: (ev.attendees || []).length,
+              });
+            }
           }
           result.calendarValidation.sourceEventCount = sourceTotal;
           log.info(`  Source Gmail: ${sourceTotal} events (sampled, up to 250 per calendar)`);
@@ -448,7 +729,15 @@ class OutlookValidationAgent extends BaseAgent {
         const events = await outlookClient.getEvents(destUser, cal.id);
         totalEvents += events.length;
         for (const event of events) {
-          result.calendarValidation.eventDetails.push({ subject: event.subject, calendarName: cal.name, isRecurring: !!event.recurrence, isAllDay: event.isAllDay, start: event.start, end: event.end });
+          result.calendarValidation.eventDetails.push({
+            subject: event.subject,
+            calendarName: cal.name,
+            isRecurring: !!event.recurrence,
+            isAllDay: event.isAllDay,
+            start: event.start,
+            end: event.end,
+            attendeeCount: (event.attendees || []).length,
+          });
           if (event.recurrence) {
             result.calendarValidation.recurringEvents.push({ subject: event.subject, recurrencePattern: event.recurrence.pattern?.type });
           }
@@ -456,11 +745,299 @@ class OutlookValidationAgent extends BaseAgent {
         log.info(`  Calendar: ${cal.name} — ${events.length} events`);
       }
       result.calendarValidation.destinationEventCount = totalEvents;
+
+      // ── P2-5: Per-event detail comparison for G→O ─────────────────────────
+      if (sourceProvider !== 'microsoft' && sourceEventsForDetail.length > 0) {
+        try {
+          result.calendarValidation.eventDetailMismatches = [];
+
+          // Approximate start-time matching: compare date portion only (YYYY-MM-DD)
+          const getDateKey = (ev) => {
+            if (ev.startDate) return ev.startDate;
+            if (ev.startDateTime) return ev.startDateTime.substring(0, 10);
+            return null;
+          };
+
+          for (const srcEv of sourceEventsForDetail) {
+            const evSubjectLower = (srcEv.subject || '').toLowerCase().trim();
+            const srcDateKey = getDateKey(srcEv);
+
+            // Match by subject (case-insensitive) + approximate start date when available
+            const destEv = result.calendarValidation.eventDetails.find((d) => {
+              if ((d.subject || '').toLowerCase().trim() !== evSubjectLower) return false;
+              if (!srcDateKey) return true; // no date info — match by subject only
+              const destStart = d.start?.dateTime || d.start?.date || null;
+              if (!destStart) return true;
+              return destStart.substring(0, 10) === srcDateKey;
+            });
+
+            if (!destEv) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject,
+                issue: 'Event not found in destination Outlook calendar by subject',
+                severity: 'error',
+              });
+              continue;
+            }
+
+            // Attendee count check
+            if (srcEv.attendeeCount > 0 && srcEv.attendeeCount !== (destEv.attendeeCount || 0)) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject,
+                issue: `Attendee count differs: source=${srcEv.attendeeCount} dest=${destEv.attendeeCount || 0}`,
+                severity: 'warning',
+              });
+            }
+
+            // All-day flag check
+            if (srcEv.isAllDay !== destEv.isAllDay) {
+              result.calendarValidation.eventDetailMismatches.push({
+                subject: srcEv.subject,
+                issue: `All-day status differs: source=${srcEv.isAllDay} dest=${destEv.isAllDay}`,
+                severity: 'warning',
+              });
+            }
+          }
+
+          if (result.calendarValidation.eventDetailMismatches.length > 0) {
+            log.warn(`Calendar event detail mismatches: ${result.calendarValidation.eventDetailMismatches.length}`);
+          } else {
+            log.info('Calendar event detail comparison: no mismatches found');
+          }
+        } catch (detailErr) {
+          log.warn(`Calendar per-event detail check failed (non-fatal): ${detailErr.message}`);
+        }
+      }
     } catch (err) {
       log.error(`E2E: Calendar validation failed: ${err.message}`);
       result.addMismatch('calendar', 'overall', 'accessible', err.message);
     }
   }
+  /**
+   * P2-6: Draft comparison for G→O.
+   * Fetches source Gmail drafts and destination Outlook Drafts folder messages,
+   * matches by subject (case-insensitive), and compares To-recipients.
+   */
+  async _validateDrafts(sourceUser, destUser, result, log) {
+    log.info('Draft comparison (G→O): comparing source Gmail drafts vs destination Outlook Drafts...');
+    try {
+      const [gmailDraftsResult, outlookDraftsRaw] = await Promise.all([
+        gmailClient.getGmailDraftDetails(sourceUser, 200),
+        outlookClient.listMessagesInFolderPaged(
+          destUser, 'drafts', 200,
+          'id,subject,toRecipients,ccRecipients,isDraft'
+        ).catch(() => []),
+      ]);
+
+      const gmailDrafts = gmailDraftsResult.drafts || [];
+      const outlookDrafts = (outlookDraftsRaw || []).filter((m) => m.isDraft !== false);
+
+      result.draftComparison = {
+        available: true,
+        sourceCount: gmailDrafts.length,
+        destinationCount: outlookDrafts.length,
+        countMatch: gmailDrafts.length === outlookDrafts.length,
+        subjectMismatches: [],
+      };
+
+      // Match by normalized subject (case-insensitive, strip Re:/Fwd: prefix)
+      const normalizeS = (s) =>
+        String(s || '').toLowerCase().replace(/^re:|^fwd?:/i, '').replace(/\s+/g, ' ').trim();
+
+      const outlookDraftMap = new Map(
+        outlookDrafts.map((d) => [normalizeS(d.subject), d])
+      );
+
+      for (const gd of gmailDrafts) {
+        const nk = normalizeS(gd.subject);
+        const od = outlookDraftMap.get(nk);
+        if (!od) {
+          result.draftComparison.subjectMismatches.push({
+            subject: gd.subject || '(no subject)',
+            issue: 'Draft not found in Outlook Drafts folder by subject',
+          });
+          continue;
+        }
+
+        // Compare To-recipients
+        const srcTo = parseRecipientEmails(gd.to).join(',');
+        const dstTo = (od.toRecipients || [])
+          .map((r) => (r.emailAddress?.address || '').toLowerCase())
+          .sort()
+          .join(',');
+        if (srcTo && dstTo && srcTo !== dstTo) {
+          result.draftComparison.subjectMismatches.push({
+            subject: gd.subject || '(no subject)',
+            issue: `To recipients differ: Gmail=[${srcTo}] Outlook=[${dstTo}]`,
+          });
+        }
+      }
+
+      log.info(
+        `Draft comparison: src(Gmail)=${gmailDrafts.length} dst(Outlook)=${outlookDrafts.length} ` +
+        `mismatches=${result.draftComparison.subjectMismatches.length}`
+      );
+
+      if (!result.draftComparison.countMatch) {
+        result.addMismatch('mail', 'draftCount', gmailDrafts.length, outlookDrafts.length);
+      }
+    } catch (err) {
+      log.warn(`Draft comparison failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  /**
+   * P3-10 (updated): Gmail filters → Outlook inbox rules comparison for G→O.
+   * Gmail filters ARE inscoped for G→O migration by CloudFuze — they should be
+   * migrated as Outlook inbox rules.  Compare source filter count vs destination
+   * Outlook inbox rule count and flag discrepancies as a warning advisory.
+   *
+   * @param {string} sourceUser   - Source Gmail address
+   * @param {string} destUser     - Destination Outlook address
+   * @param {ValidationResult} result
+   * @param {object} log
+   */
+  async _validateGmailFiltersAdvisory(sourceUser, destUser, result, log) {
+    log.info('Gmail filters → Outlook rules (G→O): comparing source filters vs destination inbox rules...');
+    try {
+      const [filtersResult, dstRulesResult] = await Promise.all([
+        gmailClient.getGmailFilters(sourceUser),
+        outlookClient.getInboxRules(destUser).catch(() => ({ rules: [], available: false })),
+      ]);
+      const filters  = filtersResult.filters || [];
+      const dstRules = dstRulesResult.rules   || [];
+
+      result.rulesAdvisory = {
+        available: filtersResult.available,
+        count: filters.length,
+        gmailFiltersCount: filters.length,
+        gmailFiltersAvailable: filtersResult.available,
+        outlookRulesCount: dstRules.length,
+        outlookRulesAvailable: dstRulesResult.available,
+        note: filters.length > 0
+          ? `${filters.length} Gmail filter(s) at source — CloudFuze migrates Gmail filters as Outlook inbox rules (inscope). Destination has ${dstRules.length} inbox rule(s).`
+          : `No Gmail filters detected at source. Destination has ${dstRules.length} inbox rule(s).`,
+      };
+
+      log.info(`Gmail filters → Outlook rules: source=${filters.length} filters, dest=${dstRules.length} inbox rules`);
+
+      if (filters.length > 0 && dstRulesResult.available && filters.length !== dstRules.length) {
+        result.addMismatch(
+          'settings', 'gmailFiltersToOutlookRules',
+          filters.length, dstRules.length,
+          {
+            severity: 'warning',
+            message: `Source has ${filters.length} Gmail filter(s) but destination has ${dstRules.length} Outlook inbox rule(s). CloudFuze should migrate Gmail filters as Outlook rules — verify the migration included filter migration.`,
+          }
+        );
+      }
+    } catch (err) {
+      log.warn(`Gmail filters advisory failed (non-fatal): ${err.message}`);
+      result.rulesAdvisory = { available: false, count: 0, note: `Filter advisory check failed: ${err.message}` };
+    }
+  }
+
+  // ── Outscope advisories (G→O) ─────────────────────────────────────────────
+
+  /**
+   * Inspect the source Gmail mailbox for features that are documented as outscope
+   * for Gmail→Outlook migration and add informational advisory notes.
+   *
+   * These are severity:'info'/'warning' notices — they do NOT count as mismatches or failures.
+   * They are appended to result.settingsValidation.advisories so the PDF report
+   * can surface them in a dedicated advisory section.
+   *
+   * Checks:
+   *   1. Gmail CATEGORY_* labels on messages — purchase/promotional category labels have no
+   *      Outlook equivalent and are not migrated.
+   *   2. Gmail filters — already covered by _validateGmailFiltersAdvisory, but we add a
+   *      structured advisory entry here too if filters exist.
+   */
+  async _validateOutscopeAdvisories(srcUser, result, log) {
+    log.info('Outscope advisories (G→O): inspecting source Gmail mailbox…');
+
+    if (!result.settingsValidation) {
+      result.settingsValidation = { available: true, advisories: [] };
+    }
+    if (!Array.isArray(result.settingsValidation.advisories)) {
+      result.settingsValidation.advisories = [];
+    }
+
+    const addAdvisory = (message, severity = 'info') => {
+      result.settingsValidation.advisories.push({ severity, message });
+      if (result.rulesAdvisory && typeof result.rulesAdvisory === 'object' && !Array.isArray(result.rulesAdvisory)) {
+        if (!Array.isArray(result.rulesAdvisory.outscopeNotes)) result.rulesAdvisory.outscopeNotes = [];
+        result.rulesAdvisory.outscopeNotes.push(message);
+      }
+    };
+
+    // ── 1. Gmail CATEGORY_* labels ────────────────────────────────────────────
+    // CATEGORY_PERSONAL, CATEGORY_SOCIAL, CATEGORY_PROMOTIONS, CATEGORY_UPDATES, CATEGORY_FORUMS
+    // are Gmail-only inbox-categorisation tabs — they have no Outlook equivalent.
+    try {
+      const labels = await gmailClient.listLabels(srcUser, 'me');
+      const categoryLabels = (labels || []).filter(
+        (l) => /^CATEGORY_/i.test(l.id || '')
+      );
+
+      if (categoryLabels.length > 0) {
+        // Count messages across all CATEGORY_* labels (best-effort, may overlap)
+        let totalCategoryMessages = 0;
+        const categoryNames = [];
+        for (const lbl of categoryLabels) {
+          categoryNames.push(lbl.name || lbl.id);
+          try {
+            const count = await gmailClient.getMessageCount(srcUser, 'me', lbl.id);
+            totalCategoryMessages += count || 0;
+          } catch { /* best-effort */ }
+        }
+
+        if (totalCategoryMessages > 0) {
+          const catList = categoryNames.join(', ');
+          const msg =
+            `Source Gmail has ${totalCategoryMessages} message(s) across Gmail category labels ` +
+            `(${catList}). ` +
+            `Gmail category/inbox-tab labels (CATEGORY_PERSONAL, CATEGORY_SOCIAL, etc.) are NOT migrated ` +
+            `to Outlook as categories or folders (outscope). ` +
+            `Messages will appear in the appropriate Outlook default folders (Inbox, Junk, etc.) ` +
+            `without these category tags.`;
+          addAdvisory(msg, 'info');
+          log.info(
+            `Outscope advisory: ${totalCategoryMessages} message(s) in Gmail CATEGORY_* labels — not migrated as Outlook categories`
+          );
+        }
+      }
+    } catch (err) {
+      log.warn(`Outscope advisory: CATEGORY_* labels check failed (non-fatal): ${err.message}`);
+    }
+
+    // ── 2. Gmail filters advisory (structured entry) ──────────────────────────
+    // _validateGmailFiltersAdvisory already runs before this, but we add a structured
+    // advisory entry here in case settingsValidation.advisories is the primary display surface.
+    try {
+      const filterCount = result.rulesAdvisory?.gmailFiltersCount ?? result.rulesAdvisory?.count ?? 0;
+      if (filterCount > 0) {
+        const msg =
+          `${filterCount} Gmail filter(s) found at source. ` +
+          `Gmail filters are NOT migrated to Outlook inbox rules (outscope). ` +
+          `Recreate equivalent Outlook inbox rules manually after migration.`;
+        // Only add if not already present to avoid duplication
+        const alreadyPresent = result.settingsValidation.advisories.some(
+          (a) => a.message && a.message.includes('Gmail filter') && a.message.includes('inbox rule')
+        );
+        if (!alreadyPresent) {
+          addAdvisory(msg, 'warning');
+        }
+      }
+    } catch (err) {
+      log.warn(`Outscope advisory: filters structured advisory failed (non-fatal): ${err.message}`);
+    }
+
+    log.info(
+      `Outscope advisories (G→O) complete: ${result.settingsValidation.advisories.length} total advisory item(s)`
+    );
+  }
+
   /**
    * Outlook→Outlook only: compare QA inbox rules, conditional formatting rules, and search
    * folders between source and destination, and verify that section-40/41/42 test emails
@@ -501,6 +1078,33 @@ class OutlookValidationAgent extends BaseAgent {
       log.info(
         `Settings: inbox rules — source QA: ${srcQaRules.length}, dest QA: ${dstQaRules.length}, missing: ${sv.inboxRules.missing.length}`
       );
+
+      // ── O→O Filters/Rules: all-rules mismatch (inscope for O→O) ─────────────
+      // Filters/rules is INSCOPE for O→O migration — Outlook inbox rules should
+      // be migrated to the destination. If source has rules but destination has none,
+      // flag it as a warning advisory.
+      const srcAllRules = srcRulesResult.rules || [];
+      const dstAllRules = dstRulesResult.rules || [];
+      if (
+        srcRulesResult.available !== false &&
+        dstRulesResult.available !== false &&
+        srcAllRules.length > 0 &&
+        dstAllRules.length === 0
+      ) {
+        result.addMismatch(
+          'settings',
+          'outlookInboxRules',
+          srcAllRules.length,
+          0,
+          {
+            severity: 'warning',
+            message: `${srcAllRules.length} Outlook inbox rule(s) at source — NOT found at destination. Filters/rules migration may have failed. Verify that the CloudFuze job version supports Outlook inbox rule migration.`,
+          }
+        );
+        log.warn(
+          `Settings: O→O inbox rules mismatch — source has ${srcAllRules.length} rule(s) but destination has 0`
+        );
+      }
     } catch (err) {
       log.warn(`Settings: inbox rules check failed: ${err.message}`);
     }

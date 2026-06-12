@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getExecutions, getExecutionLogs, cancelExecution } from '../services/api';
+import { getExecutions, getExecutionLogs, cancelExecution, resumeExecution } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
 import LogViewer from '../components/LogViewer';
 
@@ -12,6 +12,7 @@ export default function ExecutionLogs() {
   const [loading, setLoading] = useState(true);
   const [logsLoading, setLogsLoading] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
 
   const selectedExec = executions.find((e) => e.executionId === selectedId);
 
@@ -43,6 +44,19 @@ export default function ExecutionLogs() {
       // API may not be running
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResume() {
+    if (!selectedId || resuming) return;
+    setResuming(true);
+    try {
+      await resumeExecution(selectedId);
+      await loadExecutions();
+    } catch (err) {
+      alert(err?.response?.data?.error || err.message);
+    } finally {
+      setResuming(false);
     }
   }
 
@@ -139,6 +153,20 @@ export default function ExecutionLogs() {
                         <><svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Stopping…</>
                       ) : (
                         <><svg className="w-3 h-3" fill="currentColor" viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>Stop</>
+                      )}
+                    </button>
+                  )}
+                  {selectedExec.status === 'INTERRUPTED' && (
+                    <button
+                      type="button"
+                      onClick={handleResume}
+                      disabled={resuming}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {resuming ? (
+                        <><svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Resuming…</>
+                      ) : (
+                        <>▶ Resume</>
                       )}
                     </button>
                   )}

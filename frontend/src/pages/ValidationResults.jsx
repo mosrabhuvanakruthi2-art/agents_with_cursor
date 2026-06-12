@@ -8,6 +8,8 @@ export default function ValidationResults() {
   const [selectedId, setSelectedId] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchStatus, setSearchStatus] = useState(null); // 'found' | 'not_found' | null
 
   useEffect(() => {
     loadExecutions();
@@ -16,13 +18,28 @@ export default function ValidationResults() {
   async function loadExecutions() {
     try {
       const { data } = await getExecutions();
-      const completed = data.filter((e) => e.result?.validationSummary);
+      // Include ALL executions that have any result, not just validationSummary
+      const completed = data.filter((e) => e.result?.validationSummary || e.result?.status);
       setExecutions(completed);
       if (completed.length > 0) setSelectedId(completed[0].executionId);
     } catch {
       // API may not be running
     } finally {
       setLoading(false);
+    }
+  }
+
+  function handleSearch(q) {
+    setSearchQuery(q);
+    if (!q.trim()) { setSearchStatus(null); return; }
+    const match = executions.find((ex) =>
+      ex.executionId.toLowerCase().includes(q.trim().toLowerCase())
+    );
+    if (match) {
+      setSelectedId(match.executionId);
+      setSearchStatus('found');
+    } else {
+      setSearchStatus('not_found');
     }
   }
 
@@ -85,26 +102,150 @@ export default function ValidationResults() {
         )}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select Execution</label>
-        {loading ? (
-          <p className="text-sm text-gray-400">Loading...</p>
-        ) : executions.length === 0 ? (
-          <p className="text-sm text-gray-500">No completed executions with validation data</p>
-        ) : (
-          <select
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
-            className="w-full max-w-lg px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
-          >
-            {executions.map((exec) => (
-              <option key={exec.executionId} value={exec.executionId}>
-                {exec.executionId.slice(0, 8)}... | {exec.context?.sourceEmail} → {exec.context?.destinationEmail} | {new Date(exec.createdAt).toLocaleString()}
-              </option>
-            ))}
-          </select>
-        )}
+      <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row gap-4">
+          {/* Search by Execution ID */}
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Search by Execution ID</label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 15.803a7.5 7.5 0 0 0 10.607 0Z" />
+                </svg>
+              </div>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                placeholder="Paste or type execution ID…"
+                className={`w-full pl-9 pr-10 py-2.5 border rounded-lg text-sm focus:ring-2 outline-none transition-colors ${
+                  searchStatus === 'found'     ? 'border-green-400 focus:ring-green-300 bg-green-50' :
+                  searchStatus === 'not_found' ? 'border-red-400 focus:ring-red-300 bg-red-50' :
+                  'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'
+                }`}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => { setSearchQuery(''); setSearchStatus(null); }}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {/* Search feedback */}
+            {searchStatus === 'found' && (() => {
+              const match = executions.find((ex) => ex.executionId.toLowerCase().includes(searchQuery.trim().toLowerCase()));
+              return (
+                <div className="mt-2 flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                  <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                  </svg>
+                  <span>
+                    <span className="font-semibold font-mono">{match?.executionId}</span>
+                    {' '}— {match?.context?.sourceEmail} → {match?.context?.destinationEmail}
+                    {' '}| {match?.result?.validationSummary?.overallStatus || match?.result?.status}
+                    {' '}| {new Date(match?.createdAt).toLocaleString()}
+                  </span>
+                </div>
+              );
+            })()}
+            {searchStatus === 'not_found' && (
+              <div className="mt-2 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                </svg>
+                <span>No execution found matching <span className="font-mono font-semibold">"{searchQuery}"</span></span>
+              </div>
+            )}
+          </div>
+
+          {/* OR divider */}
+          <div className="flex sm:flex-col items-center gap-2 text-xs text-gray-400 font-medium pt-7">
+            <div className="flex-1 sm:w-px sm:h-full w-full h-px bg-gray-200" />
+            OR
+            <div className="flex-1 sm:w-px sm:h-full w-full h-px bg-gray-200" />
+          </div>
+
+          {/* Execution dropdown */}
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Browse Executions</label>
+            {loading ? (
+              <p className="text-sm text-gray-400">Loading...</p>
+            ) : executions.length === 0 ? (
+              <p className="text-sm text-gray-500">No completed executions found</p>
+            ) : (
+              <select
+                value={selectedId}
+                onChange={(e) => { setSelectedId(e.target.value); setSearchQuery(''); setSearchStatus(null); }}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
+              >
+                {executions.map((exec) => (
+                  <option key={exec.executionId} value={exec.executionId}>
+                    {exec.executionId} | {exec.context?.sourceEmail} → {exec.context?.destinationEmail} | {new Date(exec.createdAt).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* No validation data — execution failed before validation ran */}
+      {selected && !validation && (
+        <div className="bg-white rounded-xl border border-orange-200 p-6">
+          <div className="flex items-start gap-4">
+            <div className="shrink-0 w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center">
+              <svg className="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="text-base font-semibold text-gray-900 mb-1">No Validation Data Available</h3>
+              <p className="text-sm text-gray-600 mb-3">
+                This execution did not complete the validation step. It likely failed during migration or was cancelled before validation ran.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">Execution ID</p>
+                  <p className="font-mono text-xs text-gray-800 break-all">{selected.executionId}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">Status</p>
+                  <span className={`inline-flex px-2 py-0.5 rounded text-xs font-semibold ${
+                    selected.status === 'FAILED'    ? 'bg-red-100 text-red-700' :
+                    selected.status === 'CANCELLED' ? 'bg-yellow-100 text-yellow-700' :
+                    selected.status === 'RUNNING'   ? 'bg-blue-100 text-blue-700' :
+                    'bg-gray-100 text-gray-700'
+                  }`}>{selected.status}</span>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">Direction</p>
+                  <p className="text-xs text-gray-800">{selected.context?.sourceEmail} → {selected.context?.destinationEmail}</p>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500 mb-1">Created</p>
+                  <p className="text-xs text-gray-800">{new Date(selected.createdAt).toLocaleString()}</p>
+                </div>
+              </div>
+              {selected.error && (
+                <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3">
+                  <p className="text-xs font-semibold text-red-700 mb-1">Error</p>
+                  <p className="text-xs text-red-600 font-mono break-all">{selected.error}</p>
+                </div>
+              )}
+              {selected.progress && (
+                <div className="mt-2 text-xs text-gray-500">
+                  Last progress: <span className="font-medium text-gray-700">{selected.progress}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {validation && (
         <div className="space-y-6">
@@ -116,6 +257,12 @@ export default function ValidationResults() {
             </div>
             {validation.mismatches?.length === 0 && (
               <p className="text-sm text-green-600">All validations passed — source and destination data match.</p>
+            )}
+            {selected?.knownLimitationsNote && (
+              <div className="mt-3 flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                <span className="text-gray-500">ℹ️</span>
+                <p className="text-sm text-gray-600">{selected.knownLimitationsNote}</p>
+              </div>
             )}
           </div>
 
@@ -144,7 +291,7 @@ export default function ValidationResults() {
                 title="Default Labels / Folders"
                 sourceItems={sourceData.defaultLabels || []}
                 destItems={destData.defaultFolders || []}
-                mapping={{ INBOX: 'Inbox', SENT: 'Sent Items', DRAFT: 'Drafts', TRASH: 'Deleted Items', SPAM: 'Junk Email' }}
+                mapping={{ INBOX: 'Inbox', SENT: 'Sent Items', DRAFT: 'Drafts', TRASH: 'Deleted Items', SPAM: 'Junk Email', 'Archive[Gmail]': 'Archive' }}
               />
 
               {/* Custom Labels Comparison Table */}
@@ -269,7 +416,7 @@ export default function ValidationResults() {
 function ComparisonTable({ title, sourceItems, destItems, mapping }) {
   const rows = Object.entries(mapping).map(([gmailId, outlookName]) => {
     const src = sourceItems.find((l) => l.id === gmailId || l.name === gmailId);
-    const dest = destItems.find((f) => f.name === outlookName);
+    const dest = destItems.find((f) => f.name === outlookName || f.name === gmailId || f.id === gmailId);
     const srcCount = src?.messageCount || 0;
     const destCount = dest?.messageCount || 0;
     return { label: `${gmailId} → ${outlookName}`, srcCount, destCount, match: srcCount === destCount };

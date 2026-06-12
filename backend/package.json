@@ -26,6 +26,7 @@
     "googleapis": "^144.0.0",
     "mongodb": "^7.1.1",
     "node-cron": "^3.0.3",
+    "openai": "^6.39.0",
     "pdfkit": "^0.18.0",
     "uuid": "^11.0.5",
     "winston": "^3.17.0",

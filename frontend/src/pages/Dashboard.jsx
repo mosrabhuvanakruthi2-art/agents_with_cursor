@@ -25,7 +25,7 @@ export default function Dashboard() {
   const stats = {
     total: executions.length,
     completed: executions.filter((e) => e.status === 'COMPLETED').length,
-    failed: executions.filter((e) => e.status === 'FAILED').length,
+    failed: executions.filter((e) => e.status === 'FAILED' || e.status === 'INTERRUPTED').length,
     running: executions.filter((e) => e.status === 'RUNNING').length,
     successRate: executions.length > 0
       ? Math.round((executions.filter((e) => e.status === 'COMPLETED').length / executions.length) * 100)

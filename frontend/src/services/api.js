@@ -223,9 +223,20 @@ export function cancelExecution(id) {
   return api.post(`/agents/executions/${id}/cancel`);
 }
 
+export function resumeExecution(id) {
+  return api.post(`/agents/executions/${id}/resume`);
+}
+
 export function createTestData(payload) {
   return api.post('/agents/create-test-data', payload, { timeout: 0 });
 }
+
+// ─── Docs Sync ────────────────────────────────────────────────────────────────
+
+export const runDocsSync = () => api.post('/agents/docs-sync');
+export const getDocsSyncStatus = () => api.get('/agents/docs-sync/status');
+export const markFeatureImplemented = (featureId) =>
+  api.patch('/agents/docs-sync/feature/' + featureId, { status: 'implemented' });
 
 export default api;
 

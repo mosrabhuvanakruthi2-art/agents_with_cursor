@@ -1,5 +1,8 @@
 const { BaseAgent } = require('../core/BaseAgent');
 const migrationClient = require('../../clients/migrationClient');
+// devemail uses separate auth flow:
+// POST /auth/user → App JWT → POST /mail/register → Mail JWT → POST /mail/move/initiate
+const devemailClient = require('../../clients/devemailClient');
 const outlookClient = require('../../clients/outlookClient');
 const gmailClient = require('../../clients/gmailClient');
 const env = require('../../config/env');
@@ -7,7 +10,7 @@ const logger = require('../../utils/logger');
 const executionService = require('../../services/executionService');
 
 const MAX_POLL_MINUTES = parseInt(process.env.MIGRATION_MAX_WAIT_MINUTES, 10) || 30;
-const POLL_INTERVAL_MS = 60000;
+const POLL_INTERVAL_MS = 30000;
 const STABLE_CHECKS_NEEDED = 3;
 
 class MigrationAgent extends BaseAgent {
@@ -38,17 +41,34 @@ class MigrationAgent extends BaseAgent {
       migrationClient.clearRuntimeConfig();
     }
 
+    // Detect devemail server: isNewServer() returns false for devemail URLs.
+    // When useDevemail=true, auth + triggerMigration + pollReports go through
+    // devemailClient (correct /auth/user → /mail/register flow).
+    // When useDevemail=false (newtestemail5), migrationClient handles everything as before.
+    const activeUrl = (context.migrationServerUrl || env.MIGRATION_API_URL || '').toLowerCase();
+    const useDevemail = !migrationClient.isNewServer() && activeUrl.includes('devemail');
+
     try {
     // ── Step 0 — Register / Login ─────────────────────────────────
     log.info('CloudFuze: obtaining fresh Bearer JWT…');
     bump('MigrationAgent: authenticating with migration server…');
-    try {
-      await migrationClient.register();
-      log.info('CloudFuze: Bearer JWT refreshed');
-    } catch (err) {
-      log.warn(`CloudFuze register failed (${err.message}) — falling back to login()`);
-      bump('MigrationAgent: register failed, falling back to login…');
-      await migrationClient.login();
+    if (useDevemail) {
+      // devemail: POST /auth/user → App JWT, then POST /mail/register → Mail JWT
+      const devEmail = context.migrationServerEmail || env.CLOUDFUZE_OWNER_EMAIL || '';
+      const devPassword = context.migrationServerPassword || env.MIGRATION_APP_LOGIN_PASSWORD || '';
+      await devemailClient.authenticate(devEmail, devPassword, {
+        baseUrl: context.migrationServerUrl || env.MIGRATION_API_URL,
+      });
+      log.info('CloudFuze devemail: authenticated via /auth/user → /mail/register (correct API flow)');
+    } else {
+      try {
+        await migrationClient.register();
+        log.info('CloudFuze: Bearer JWT refreshed');
+      } catch (err) {
+        log.warn(`CloudFuze register failed (${err.message}) — falling back to login()`);
+        bump('MigrationAgent: register failed, falling back to login…');
+        await migrationClient.login();
+      }
     }
 
     // ── Validate subscriber (optional) ───────────────────────────
@@ -97,16 +117,60 @@ class MigrationAgent extends BaseAgent {
     const isOutlookSrc = context.sourceProvider === 'microsoft';
     const isGmailDst   = context.destinationProvider === 'google';
 
-    if (env.CLOUDFUZE_GMAIL_CLOUD_ID && env.CLOUDFUZE_OUTLOOK_CLOUD_ID) {
-      // Direction-aware IDs — correct for BOTH Gmail→Outlook and Outlook→Gmail.
-      const gmailId   = env.CLOUDFUZE_GMAIL_CLOUD_ID;
+    if (useDevemail) {
+      // devemail Step 1: resolve cloud IDs
+      // Priority 1 — use devemail-specific env vars (set once, no API call needed)
+      // GET /users/{userId}/get/all/cloud requires App JWT (🔵) but we only have
+      // Mail JWT (🟣) from /mail/login — that endpoint returns 401 for App-scoped calls.
+      if (env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID && env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID) {
+        sourceCloud = isOutlookSrc
+          ? { id: env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID, cloudName: 'OUTLOOK' }
+          : { id: env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID,   cloudName: 'GMAIL'   };
+        destCloud = isGmailDst
+          ? { id: env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID,   cloudName: 'GMAIL'   }
+          : { id: env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID, cloudName: 'OUTLOOK' };
+        log.info(`CloudFuze devemail: cloud IDs from env — source: ${sourceCloud.id} (${sourceCloud.cloudName}), dest: ${destCloud.id} (${destCloud.cloudName})`);
+        bump('MigrationAgent: cloud IDs loaded from devemail env vars...');
+      } else {
+        // Priority 2 — try live getClouds() (requires App JWT; may return 401)
+        bump('MigrationAgent: fetching cloud accounts from devemail user account...');
+        log.info('CloudFuze devemail: GET /users/{userId}/get/all/cloud');
+        try {
+          const clouds = await devemailClient.getClouds();
+          // Use whatever admin is selected in Run Agent first — that drives the cloud selection.
+          // Fall back to env vars only if the context doesn't have admin emails.
+          const sourceLookup = context.sourceAdminEmail || env.CLOUDFUZE_SOURCE_ADMIN_EMAIL || context.sourceEmail;
+          const destLookup   = context.destAdminEmail   || env.CLOUDFUZE_DEST_ADMIN_EMAIL   || context.destinationEmail;
+          log.info(`CloudFuze devemail: looking up source="${sourceLookup}" dest="${destLookup}" in ${clouds.length} clouds`);
+          const srcResult  = devemailClient.findCloudId(clouds, sourceLookup);
+          const dstResult  = devemailClient.findCloudId(clouds, destLookup);
+          if (!srcResult) throw new Error(`devemail: source cloud not found for ${sourceLookup}`);
+          if (!dstResult) throw new Error(`devemail: destination cloud not found for ${destLookup}`);
+          sourceCloud = srcResult;
+          destCloud   = dstResult;
+          log.info(`CloudFuze devemail: cloud IDs — source: ${sourceCloud.id} (${sourceCloud.cloudName}), dest: ${destCloud.id} (${destCloud.cloudName})`);
+        } catch (err) {
+          throw new Error(`[Step 1 devemail getClouds] ${err.message} — set CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID and CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID in .env to bypass this`);
+        }
+      }
+    } else if (env.CLOUDFUZE_GMAIL_CLOUD_ID && env.CLOUDFUZE_OUTLOOK_CLOUD_ID) {
+      // Direction-aware IDs — correct for all 4 combinations.
+      // G→G cross-tenant uses CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID / CLOUDFUZE_GMAIL_DEST_CLOUD_ID
+      // when set; otherwise both sides fall back to CLOUDFUZE_GMAIL_CLOUD_ID.
+      const isGmailToGmail = !isOutlookSrc && isGmailDst;
+      const gmailSrcId = (isGmailToGmail && env.CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID)
+        ? env.CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID
+        : env.CLOUDFUZE_GMAIL_CLOUD_ID;
+      const gmailDstId = (isGmailToGmail && env.CLOUDFUZE_GMAIL_DEST_CLOUD_ID)
+        ? env.CLOUDFUZE_GMAIL_DEST_CLOUD_ID
+        : env.CLOUDFUZE_GMAIL_CLOUD_ID;
       const outlookId = env.CLOUDFUZE_OUTLOOK_CLOUD_ID;
       sourceCloud = isOutlookSrc
-        ? { id: outlookId, cloudName: 'OUTLOOK' }
-        : { id: gmailId,   cloudName: 'GMAIL'   };
+        ? { id: outlookId,  cloudName: 'OUTLOOK' }
+        : { id: gmailSrcId, cloudName: 'GMAIL'   };
       destCloud = isGmailDst
-        ? { id: gmailId,   cloudName: 'GMAIL'   }
-        : { id: outlookId, cloudName: 'OUTLOOK' };
+        ? { id: gmailDstId, cloudName: 'GMAIL'   }
+        : { id: outlookId,  cloudName: 'OUTLOOK' };
       log.info(`CloudFuze: direction-aware cloud IDs — source: ${sourceCloud.id} (${sourceCloud.cloudName}), dest: ${destCloud.id} (${destCloud.cloudName})`);
       bump('MigrationAgent: cloud IDs loaded from env…');
     } else if (env.CLOUDFUZE_SOURCE_CLOUD_ID && env.CLOUDFUZE_DEST_CLOUD_ID) {
@@ -165,7 +229,9 @@ class MigrationAgent extends BaseAgent {
     bump('MigrationAgent: loading destination domains…');
     log.info(`CloudFuze: GET /email/move/domains/${destCloud.id}`);
     try {
-      const domains = await migrationClient.getDomains(destCloud.id);
+      const domains = useDevemail
+        ? await devemailClient.getDomains(destCloud.id)
+        : await migrationClient.getDomains(destCloud.id);
       const domainList = Array.isArray(domains) ? domains : (domains?.content || []);
       log.info(`CloudFuze: ${domainList.length} domain(s) for destination cloud`);
     } catch (err) {
@@ -173,103 +239,56 @@ class MigrationAgent extends BaseAgent {
     }
 
     // ── Step 3 — Upload user mapping CSV (Mapping page) ──────────
-    // Merge env-level USER_EMAIL_MAPPINGS (all cross-domain pairs) with any
-    // per-run context.userEmailMappings. This ensures the server rewrites
-    // From/To/Cc/Bcc for every user — not just the primary migration pair.
-    const envMappings = Array.isArray(env.userEmailMappings) ? env.userEmailMappings : [];
+    // The CSV must contain ONLY the pairs explicitly mapped in the Run Agent
+    // "Mapped Pairs" section — exactly what the user selected, mirroring what
+    // the CloudFuze UI Mapping page shows before clicking Next.
+    //
+    // context.userEmailMappings comes directly from the Run Agent form:
+    //   e.g. [{ sourceEmail: "Alex@qatestagent.com", destinationEmail: "alex@migrationn.com" }]
+    //
+    // We do NOT add env-level USER_EMAIL_MAPPINGS or auto-derived OUTLOOK_ACCOUNTS
+    // pairs — those are for Permission Mapping (Step 4), not the user-to-user CSV.
     const contextMappings = Array.isArray(context.userEmailMappings) ? context.userEmailMappings : [];
-    // Merge: start with env mappings, add any context pairs not already covered (dedup by sourceEmail)
-    const mergedMappings = [...envMappings];
+
+    // Build CSV from only the mapped pairs. Always ensure the primary pair is present.
+    const seenSources = new Set();
+    const csvPairs = [];
     for (const m of contextMappings) {
       const normSrc = String(m.sourceEmail || '').toLowerCase();
-      if (!mergedMappings.find((e) => e.sourceEmail === normSrc)) {
-        mergedMappings.push({ sourceEmail: normSrc, destinationEmail: String(m.destinationEmail || '').toLowerCase() });
+      if (normSrc && !seenSources.has(normSrc)) {
+        seenSources.add(normSrc);
+        csvPairs.push({ sourceEmail: normSrc, destinationEmail: String(m.destinationEmail || '').toLowerCase() });
       }
     }
-    // Always ensure the primary migration pair is present
+    // Fallback: ensure primary migration pair is always in the CSV
     const primarySrc = context.sourceEmail.toLowerCase();
-    if (!mergedMappings.find((e) => e.sourceEmail === primarySrc)) {
-      mergedMappings.push({ sourceEmail: primarySrc, destinationEmail: context.destinationEmail.toLowerCase() });
+    if (!seenSources.has(primarySrc)) {
+      csvPairs.push({ sourceEmail: primarySrc, destinationEmail: context.destinationEmail.toLowerCase() });
     }
 
-    // Auto-derive mappings for all same-domain OUTLOOK_ACCOUNTS users by replacing the source
-    // domain with the destination domain. This ensures that inbound senders like Dan@qatestagent.com
-    // and Ben@qatestagent.com — which are internal tenant users, not external — are included in the
-    // CSV so CloudFuze remaps their FROM/TO/CC/BCC addresses correctly.
-    if (isOutlookSrc && Array.isArray(env.outlookAccounts) && env.outlookAccounts.length > 0) {
-      const srcDomain = context.sourceEmail.toLowerCase().split('@')[1];
-      const dstDomain = context.destinationEmail.toLowerCase().split('@')[1];
-      if (srcDomain && dstDomain && srcDomain !== dstDomain) {
-        let autoAdded = 0;
-        for (const account of env.outlookAccounts) {
-          const acct = account.toLowerCase().trim();
-          if (!acct.endsWith('@' + srcDomain)) continue;
-          if (mergedMappings.find((e) => e.sourceEmail === acct)) continue;
-          mergedMappings.push({
-            sourceEmail: acct,
-            destinationEmail: acct.replace('@' + srcDomain, '@' + dstDomain),
-          });
-          autoAdded++;
-        }
-        if (autoAdded > 0) {
-          log.info(
-            `MigrationAgent: auto-derived ${autoAdded} additional user mapping(s) from OUTLOOK_ACCOUNTS ` +
-            `(${srcDomain} → ${dstDomain})`
-          );
-        }
-      }
-    }
-
-    const csvPairs = mergedMappings.length > 0
-      ? mergedMappings
-      : [{ sourceEmail: context.sourceEmail, destinationEmail: context.destinationEmail }];
+    log.info(`MigrationAgent: CSV contains ${csvPairs.length} mapped pair(s) from Run Agent`);
     context.csvPairsUploaded = csvPairs.length;
     bump(`MigrationAgent: uploading user mapping CSV (${csvPairs.length} pair(s))…`);
     log.info(`CloudFuze: POST /email/user/csv/${sourceCloud.id}/${destCloud.id} (${csvPairs.length} pair(s))`);
     let mappingSrcId = sourceCloud.id;
     let mappingDstId = destCloud.id;
     try {
-      const csvResult = await migrationClient.uploadUserCSV(mappingSrcId, mappingDstId, csvPairs);
+      const csvResult = useDevemail
+        ? await devemailClient.uploadUserCSV(mappingSrcId, mappingDstId, csvPairs)
+        : await migrationClient.uploadUserCSV(mappingSrcId, mappingDstId, csvPairs);
       log.info(`CloudFuze: CSV upload response — ${JSON.stringify(csvResult)}`);
     } catch (err) {
       const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
-      const isCloudIdError = err.response?.status === 400 &&
-        (String(errBody).toLowerCase().includes('cloud id') || String(errBody).toLowerCase().includes('cloudid'));
-      if (isCloudIdError) {
-        // Env var IDs may be stale/wrong type for the CSV endpoint — re-fetch live cloud list and retry
-        log.warn(`CloudFuze uploadUserCSV: cloud ID rejected (HTTP 400) — fetching live cloud list and retrying`);
-        try {
-          const liveClouds = await migrationClient.getClouds();
-          const liveSrc = migrationClient.findCloudId(
-            liveClouds,
-            env.CLOUDFUZE_SOURCE_ADMIN_EMAIL || context.sourceAdminEmail || context.sourceEmail
-          );
-          const liveDst = migrationClient.findCloudId(
-            liveClouds,
-            env.CLOUDFUZE_DEST_ADMIN_EMAIL || context.destAdminEmail || context.destinationEmail
-          );
-          if (liveSrc && liveDst) {
-            mappingSrcId = liveSrc.id;
-            mappingDstId = liveDst.id;
-            log.info(`CloudFuze: CSV retry with live IDs — src: ${mappingSrcId}, dst: ${mappingDstId}`);
-            const csvRetry = await migrationClient.uploadUserCSV(mappingSrcId, mappingDstId, csvPairs);
-            log.info(`CloudFuze: CSV upload retry response — ${JSON.stringify(csvRetry)}`);
-          } else {
-            log.warn(`CloudFuze: live getClouds() could not resolve src/dst for CSV — skipping mapping upload`);
-          }
-        } catch (retryErr) {
-          log.warn(`CloudFuze uploadUserCSV retry failed (${retryErr.message}) — continuing without mapping upload`);
-        }
-      } else {
-        log.warn(`CloudFuze uploadUserCSV failed (${err.message}) — error body: ${errBody} — continuing to cache step`);
-      }
+      log.warn(`CloudFuze uploadUserCSV failed (${err.message}) — error body: ${errBody} — continuing to cache step`);
     }
 
     // ── Step 3b — Confirm user mapping (Select all → Next) ───────
     bump('MigrationAgent: confirming user mapping selection…');
     log.info(`CloudFuze: cache mapping ${mappingSrcId}/${mappingDstId}`);
     try {
-      const cacheResult = await migrationClient.cacheUserMapping(mappingSrcId, mappingDstId);
+      const cacheResult = useDevemail
+        ? await devemailClient.cacheUserMapping(mappingSrcId, mappingDstId)
+        : await migrationClient.cacheUserMapping(mappingSrcId, mappingDstId);
       log.info(`CloudFuze: cache mapping response — ${JSON.stringify(cacheResult)}`);
     } catch (err) {
       log.warn(`CloudFuze cacheUserMapping failed (${err.message}) — continuing to permission step`);
@@ -282,7 +301,9 @@ class MigrationAgent extends BaseAgent {
     bump('MigrationAgent: reading permission mapping for deep validation…');
     log.info(`CloudFuze: GET /email/user/cache/${mappingSrcId}/${mappingDstId}`);
     try {
-      const serverMapping = await migrationClient.getPermissionMapping(mappingSrcId, mappingDstId);
+      const serverMapping = useDevemail
+        ? await devemailClient.getPermissionMapping(mappingSrcId, mappingDstId)
+        : await migrationClient.getPermissionMapping(mappingSrcId, mappingDstId);
       if (serverMapping.length > 0) {
         context.userEmailMappings = serverMapping;
         log.info(`CloudFuze: ${serverMapping.length} permission mapping(s) stored for From/To/CC/BCC validation`);
@@ -318,6 +339,18 @@ class MigrationAgent extends BaseAgent {
       } catch (err) {
         log.warn(`Pre-migration snapshot failed (${err.message}) — continuing`);
       }
+    } else if (context.sourceProvider === 'google') {
+      bump('MigrationAgent: taking pre-migration Gmail source snapshot…');
+      try {
+        const srcStats = await gmailClient.getGmailMailboxStats(context.sourceEmail);
+        context.preMigrationSnapshot = {
+          timestamp: new Date().toISOString(),
+          totalMessages: Number(srcStats?.mailCount ?? srcStats?.totalMessages) || 0,
+        };
+        log.info(`Pre-migration Gmail source snapshot: ${context.preMigrationSnapshot.totalMessages} messages`);
+      } catch (err) {
+        log.warn(`Pre-migration Gmail source snapshot failed (${err.message}) — continuing`);
+      }
     }
 
     // Capture Gmail destination baseline for Outlook→Gmail so validation can distinguish
@@ -336,6 +369,22 @@ class MigrationAgent extends BaseAgent {
       }
     }
 
+    // ── Step 4b — Pre-scan (new server only) ─────────────────────
+    // Indexes source mailbox folder structure so /email/move/initiate can
+    // resolve sub-folder IDs. Without this, only root-level folders migrate
+    // and all sub-folder messages end up in PROCESSED_WITH_CONFLICTS.
+    if (migrationClient.isNewServer()) {
+      bump('MigrationAgent: triggering pre-scan for folder indexing…');
+      log.info('CloudFuze: POST /email/mail/move/initiate/preScan');
+      try {
+        await migrationClient.triggerPreScan(context.sourceEmail, context.sourceCloudName);
+        log.info('CloudFuze: pre-scan triggered — waiting 8s for folder indexing');
+        await new Promise((r) => setTimeout(r, 8000));
+      } catch (err) {
+        log.warn(`CloudFuze pre-scan failed (${err.message}) — continuing without pre-scan`);
+      }
+    }
+
     // ── Step 5 — Options & Preview → Start Migration ─────────────
     // One Time: deltaMigration=false, folder=true (labels as folders), calendar=false, contacts=false
     // Delta:    deltaMigration=true,  folder=true, calendar=true, contacts=true
@@ -345,7 +394,11 @@ class MigrationAgent extends BaseAgent {
     log.info(`CloudFuze: triggering migration for ${context.sourceEmail} → ${context.destinationEmail}`);
     let triggerResult;
     try {
-      triggerResult = await migrationClient.triggerMigration(context);
+      // devemail: use Mail JWT via devemailClient (correct auth scope for /mail/move/initiate)
+      // newtestemail5: use migrationClient as before
+      triggerResult = useDevemail
+        ? await devemailClient.triggerMigration(context)
+        : await migrationClient.triggerMigration(context);
     } catch (err) {
       throw new Error(`[Step 5 POST initiate] ${err.response?.status ? `HTTP ${err.response.status}: ` : ''}${err.message}`);
     }
@@ -363,20 +416,37 @@ class MigrationAgent extends BaseAgent {
     );
     log.info(`CloudFuze: polling reports (deltaMigration=${deltaMigration})`);
 
-    const cfStatus = await migrationClient.pollReports(deltaMigration, context.sourceEmail, {
-      maxMinutes: MAX_POLL_MINUTES,
-      intervalMs: POLL_INTERVAL_MS,
-      executionId: context.executionId,
-      onProgress: (attempt, maxPolls, status) => {
-        bump(
-          `MigrationAgent: /mail/reports poll ${attempt}/${maxPolls}` +
-          (status ? ` — ${status}` : ' — job not yet visible')
-        );
-      },
-    });
+    // devemail: poll via devemailClient using Mail JWT (/mail/reports)
+    // newtestemail5: poll via migrationClient as before (/email/user/jobs)
+    const cfStatus = useDevemail
+      ? await devemailClient.pollReports(
+          context.sourceEmail,
+          MAX_POLL_MINUTES,
+          POLL_INTERVAL_MS,
+          (attempt, maxPolls, status) => {
+            bump(
+              `MigrationAgent: /mail/reports poll ${attempt}/${maxPolls}` +
+              (status ? ` — ${status}` : ' — job not yet visible')
+            );
+          },
+          context.executionId
+        )
+      : await migrationClient.pollReports(deltaMigration, context.sourceEmail, {
+          maxMinutes: MAX_POLL_MINUTES,
+          intervalMs: POLL_INTERVAL_MS,
+          executionId: context.executionId,
+          onProgress: (attempt, maxPolls, status) => {
+            bump(
+              `MigrationAgent: /mail/reports poll ${attempt}/${maxPolls}` +
+              (status ? ` — ${status}` : ' — job not yet visible')
+            );
+          },
+        });
 
     // Capture workspace ID + counts from the last matched job (available after pollReports)
-    const polledJobDetails = migrationClient.getLastJobDetails();
+    const polledJobDetails = useDevemail
+      ? devemailClient.getLastJobDetails()
+      : migrationClient.getLastJobDetails();
 
     let finalStatus;
     if (cfStatus === 'CANCELLED') {
@@ -407,7 +477,8 @@ class MigrationAgent extends BaseAgent {
 
     // Store migration job details in context so PDF generator can show them
     context.migrationJobDetails = {
-      workspaceId: polledJobDetails.workspaceId || this.jobId || null,
+      serverUrl: useDevemail ? devemailClient.BASE_URL : migrationClient.getActiveBaseUrl(),
+      workspaceId: polledJobDetails.workspaceId || null,
       totalCount: polledJobDetails.totalCount,
       processedCount: polledJobDetails.processedCount,
       cfStatus: finalStatus,
@@ -436,6 +507,7 @@ class MigrationAgent extends BaseAgent {
     } finally {
       // Always clear the runtime config so subsequent runs use env defaults
       migrationClient.clearRuntimeConfig();
+      devemailClient.clearState();
     }
   }
 

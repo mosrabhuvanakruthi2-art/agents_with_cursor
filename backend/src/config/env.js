@@ -296,8 +296,12 @@ module.exports = {
    * MigrationAgent picks source/dest automatically based on sourceProvider/destinationProvider,
    * so the same IDs work for both Gmail→Outlook AND Outlook→Gmail without any env change.
    */
-  CLOUDFUZE_GMAIL_CLOUD_ID:   (process.env.CLOUDFUZE_GMAIL_CLOUD_ID   || '').trim(),
-  CLOUDFUZE_OUTLOOK_CLOUD_ID: (process.env.CLOUDFUZE_OUTLOOK_CLOUD_ID || '').trim(),
+  CLOUDFUZE_GMAIL_CLOUD_ID:        (process.env.CLOUDFUZE_GMAIL_CLOUD_ID        || '').trim(),
+  CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID: (process.env.CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID || '').trim(),
+  CLOUDFUZE_GMAIL_DEST_CLOUD_ID:   (process.env.CLOUDFUZE_GMAIL_DEST_CLOUD_ID   || '').trim(),
+  CLOUDFUZE_OUTLOOK_CLOUD_ID:           (process.env.CLOUDFUZE_OUTLOOK_CLOUD_ID           || '').trim(),
+  CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID:  (process.env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID  || '').trim(),
+  CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID:    (process.env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID    || '').trim(),
   SCHEDULER_ENABLED: process.env.SCHEDULER_ENABLED === 'true',
   DEFAULT_SOURCE_EMAIL: process.env.DEFAULT_SOURCE_EMAIL || '',
   DEFAULT_DEST_EMAIL: process.env.DEFAULT_DEST_EMAIL || '',
@@ -312,6 +316,21 @@ module.exports = {
   JIRA_API_TOKEN: cleanEnvValue(process.env.JIRA_API_TOKEN),
   /** Default project key for Test Repository import when not passed in POST body */
   JIRA_PROJECT_KEY: (process.env.JIRA_PROJECT_KEY || '').trim(),
+  /** Jira issue type used when auto-raising migration QA bugs (default: Bug) */
+  JIRA_BUG_ISSUE_TYPE: (process.env.JIRA_BUG_ISSUE_TYPE || 'Bug').trim(),
+  /** Jira accountId to set as reporter on auto-raised bugs (find via GET /rest/api/3/myself or /rest/api/3/user/search?query=email) */
+  JIRA_REPORTER_ACCOUNT_ID: (process.env.JIRA_REPORTER_ACCOUNT_ID || '').trim(),
+  /** Neutara Ticketing — new bug tracker replacing Jira for QA bug creation */
+  NEUTARA_BASE_URL: (process.env.NEUTARA_BASE_URL || 'https://neutaraticketing.cftools.live').trim(),
+  NEUTARA_API_KEY:  (process.env.NEUTARA_API_KEY  || '').trim(),
+  NEUTARA_SPACE:    (process.env.NEUTARA_SPACE     || 'AQ').trim(),
+  /** Grafana base URL for log queries (default: http://logwatch.cloudfuze.com) */
+  GRAFANA_BASE_URL: (process.env.GRAFANA_BASE_URL || 'http://logwatch.cloudfuze.com').trim(),
+  /** Grafana Service Account Bearer token for programmatic API access */
+  GRAFANA_TOKEN: (process.env.GRAFANA_TOKEN || '').trim(),
+  /** Grafana basic auth (alternative to token) */
+  GRAFANA_USER: (process.env.GRAFANA_USER || '').trim(),
+  GRAFANA_PASSWORD: (process.env.GRAFANA_PASSWORD || '').trim(),
   /** Optional Xray folder path prefill (e.g. /Box For Business…/Selective Versions) for GET /api/test-repository/defaults */
   TEST_REPOSITORY_ROOT_PATH: (process.env.TEST_REPOSITORY_ROOT_PATH || '').trim(),
   /**

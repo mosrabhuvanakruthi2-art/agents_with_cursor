@@ -1,6 +1,7 @@
 ﻿const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/agentController');
+const docsSyncController = require('../controllers/docsSyncController');
 
 router.post('/run', controller.runAgents);
 router.get('/executions', controller.getExecutions);
@@ -28,6 +29,12 @@ router.post('/clean-destination-events', controller.cleanDestinationEvents);
 router.post('/create-outlook-data', controller.createOutlookData);
 router.post('/create-test-data', controller.createTestData);
 router.post('/executions/:id/cancel', controller.cancelExecution);
+router.post('/executions/:id/resume', controller.resumeExecution);
+
+// ── Docs sync ─────────────────────────────────────────────────────────────────
+router.post('/docs-sync', docsSyncController.runDocsSync);
+router.get('/docs-sync/status', docsSyncController.getDocsSyncStatus);
+router.get('/docs-sync/snapshot', docsSyncController.getDocsSyncSnapshot);
 
 module.exports = router;
 

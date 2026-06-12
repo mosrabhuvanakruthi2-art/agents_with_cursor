@@ -26,10 +26,10 @@ const outlookClient = require('../src/clients/outlookClient');
 const XLSX = require('xlsx');
 
 const TARGET      = 'ron@qatestagent.com';
-const FOLDER      = 'inbox';
-const TOTAL_OLD   = 9900;
-const TOTAL_NEW   = 100;
-const CONCURRENCY = 4;
+const FOLDER      = 'deletedItems';
+const TOTAL_OLD   = 1800;
+const TOTAL_NEW   = 200;
+const CONCURRENCY = 2;
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 const U = {
@@ -452,14 +452,13 @@ function buildMsgDef(globalIndex, opts = {}) {
 }
 
 // ─── Generate thread chains (300 chains × 3-8 messages) ──────────────────────
-const RUN_ID = Date.now().toString(36); // unique per run — prevents duplicate Message-IDs on re-runs
 function generateThreadChains(chainCount, startIndex) {
   const all = [];
   let idx = startIndex;
   const chainLengths = [3,4,5,6,7,8,5,4,6,7]; // rotates
   for (let c = 0; c < chainCount; c++) {
     const len     = chainLengths[c % chainLengths.length];
-    const chainId = `${RUN_ID}-chain-${c+1}`;
+    const chainId = `chain-${c+1}`;
     const ids     = Array.from({length: len}, (_, m) => `<${chainId}-m${m+1}@qatestagent.com>`);
     const rootSubject = pick(SUBJECT_TEMPLATES, idx)(idx);
     // Anchor: spread 300 chains evenly across 2019-2024
@@ -519,7 +518,7 @@ async function main() {
   console.log(`Generating ${TOTAL} message definitions…`);
 
   // 1. Thread chains (~1,650 messages for 300 chains × avg 5.5)
-  const { messages: threadMsgs, nextIndex } = generateThreadChains(300, 0);
+  const { messages: threadMsgs, nextIndex } = generateThreadChains(160, 0);
   console.log(`  ${threadMsgs.length} thread messages (300 chains)`);
 
   // 2. Old standalone messages (fills up to TOTAL_OLD)

@@ -61,11 +61,20 @@
  *   - Mixed-language body (Latin + Cyrillic + CJK + Arabic)
  *   - Draft with no recipients
  *   - ICS attachment email (meeting invite as mail item)
+ *   - Large body email standalone (~50 KB, subject: QA E2E - Large Body Email (~50KB))
+ *   - Draft with no recipients standalone (empty To/CC/BCC, subject: QA E2E - Draft With No Recipients)
+ *   - DOCX attachment email (minimal valid DOCX, subject: QA E2E - DOCX Attachment Test)
+ *   - Shared mailbox email simulation (From: sharedmailbox@qatestagent.com, section 46)
+ *   - Distribution list email (TO: qa-dist-list@qatestagent.com, section 47)
+ *   - Signature in body email (HTML signature block at bottom, section 48)
  *
- *   DELTA only (sections D-Cal, D-SharedCal, D-Contacts, D1-D8):
+ *   DELTA only (sections D-Cal, D-Cal-Single, D-Cal-Delegate, D-Cal-Busy, D-SharedCal, D-Contacts, D-Contacts-Partial, D1-D8):
  *   - Calendar events: past, all-day, future, weekly recurring, multi-day,
  *     with attendees, with description, shared calendar
- *   - Contacts (6 one-time-equivalent + 3 new delta contacts)
+ *   - Single instance calendar event (non-recurring, subject: QA E2E - Single Instance Calendar Event)
+ *   - Calendar delegate event marker (showAs subject: QA E2E - Calendar Delegate Event Test)
+ *   - Busy status calendar event (showAs=busy, subject: QA E2E - Busy Status Calendar Event)
+ *   - Contacts (6 one-time-equivalent + 3 new delta contacts + 1 partial contact name+email only)
  *   - New incremental emails in all default + custom folders
  */
 
@@ -189,6 +198,26 @@ const FALLBACK_CASES = [
 ];
 
 /**
+ * SMOKE tier: 10 essential cases for a quick QA check.
+ * Covers all critical folder types + key mail attributes in one fast run.
+ */
+const SMOKE_CASES = [
+  { subject: 'QA Smoke - Inbox Basic',         textBody: 'Basic inbox email migration check.',                          folder: 'Inbox',        isRead: true  },
+  { subject: 'QA Smoke - Inbox Unread',        textBody: 'Unread inbox email migration check.',                         folder: 'Inbox',        isRead: false },
+  { subject: 'QA Smoke - Inbox Attachment',    textBody: 'Inbox email with attachment.',                                 folder: 'Inbox',        isRead: true,
+    attachments: [{ name: 'smoke-test.txt', contentType: 'text/plain', content: 'U21va2UgUUEgZmlsZQ==' }] },
+  { subject: 'QA Smoke - Inbox Flagged',       textBody: 'Flagged inbox email (maps to Starred in Gmail).',             folder: 'Inbox',        isRead: true,
+    flag: { flagStatus: 'flagged' } },
+  { subject: 'QA Smoke - Inbox High Priority', textBody: 'High importance email migration check.',                      folder: 'Inbox',        isRead: false,
+    importance: 'high' },
+  { subject: 'QA Smoke - Sent Items',          textBody: 'Sent items folder migration check.',                          folder: 'Sent Items',   isRead: true  },
+  { subject: 'QA Smoke - Drafts',              textBody: 'Draft email migration check.',                                folder: 'Drafts',       isRead: false },
+  { subject: 'QA Smoke - Junk Email',          textBody: 'Junk/Spam folder migration check.',                           folder: 'Junk Email',   isRead: false },
+  { subject: 'QA Smoke - Deleted Items',       textBody: 'Deleted items (Trash) migration check.',                      folder: 'Deleted Items',isRead: true  },
+  { subject: 'QA Smoke - Custom Folder',       textBody: 'Custom folder migration check.',                              folder: 'QA-Smoke-Folder', isRead: true },
+];
+
+/**
  * SANITY tier: ~20 messages covering all key folder types + marker states.
  * Designed to be a superset of SMOKE (5 msgs) with broader folder + state coverage.
  */
@@ -242,6 +271,11 @@ function loadTestCases(testType, log) {
     const key   = testType.toLowerCase();
     // Filter out extended-source entries — those are handled by _createExtendedTestData
     // with full Graph API attributes. Keeping them here would create plain-text duplicates.
+    // SMOKE always uses the built-in 10-case set for a fast, consistent quick check
+    if (key === 'smoke') {
+      log.info(`SMOKE test type — using built-in SMOKE_CASES (${SMOKE_CASES.length} cases) for quick QA run`);
+      return SMOKE_CASES;
+    }
     const cases = (data[key] || []).filter(c => c.source !== 'extended');
     if (cases.length > 0) {
       log.info(`Loaded ${cases.length} custom test case(s) from Agent Repo for ${testType}`);
@@ -376,43 +410,50 @@ class OutlookTestDataAgent extends BaseAgent {
 
     const customFolderCache = {};
 
-    for (let i = 0; i < testCases.length; i++) {
+    // Pre-create all unique custom folders sequentially (avoids race conditions)
+    for (const tc of testCases) {
+      const folderId = resolveFolderId(tc);
+      if (!Object.values(FOLDER_MAP).includes(folderId) && !customFolderCache[folderId]) {
+        try {
+          customFolderCache[folderId] = await outlookClient.getOrCreateMailFolder(userEmail, folderId);
+        } catch (err) {
+          log.warn(`Could not create custom folder "${folderId}": ${err.message} — placing in Inbox`);
+          customFolderCache[folderId] = 'inbox';
+        }
+      }
+    }
+
+    // Create messages in parallel batches of 5 for speed
+    const BATCH_SIZE = 5;
+    for (let b = 0; b < testCases.length; b += BATCH_SIZE) {
       if (context.executionId && executionService.isCancelled(context.executionId)) {
         log.info('Data creation cancelled by user');
         break;
       }
 
-      const tc = testCases[i];
-
-      let folderId = resolveFolderId(tc);
-      const folderDisplay = tc.folder || folderId;
-
-      if (!Object.values(FOLDER_MAP).includes(folderId)) {
-        if (!customFolderCache[folderId]) {
-          try {
-            customFolderCache[folderId] = await outlookClient.getOrCreateMailFolder(userEmail, folderId);
-          } catch (err) {
-            log.warn(`Could not create custom folder "${folderId}": ${err.message} — placing in Inbox`);
-            customFolderCache[folderId] = 'inbox';
+      const batch = testCases.slice(b, b + BATCH_SIZE);
+      await Promise.all(batch.map(async (tc, idx) => {
+        const i = b + idx;
+        let folderId = resolveFolderId(tc);
+        const folderDisplay = tc.folder || folderId;
+        if (!Object.values(FOLDER_MAP).includes(folderId)) {
+          folderId = customFolderCache[folderId] || 'inbox';
+        }
+        try {
+          const msgBody = buildGraphMessage(tc, i, userEmail, senderRotation);
+          await outlookClient.createMessageInFolder(userEmail, folderId, msgBody);
+          summary.messagesCreated++;
+          if (!summary.foldersPopulated.includes(folderDisplay)) {
+            summary.foldersPopulated.push(folderDisplay);
           }
+          log.info(`✓ [${i + 1}/${testCases.length}] "${tc.subject}" → ${folderDisplay}`);
+        } catch (err) {
+          log.error(`✗ [${i + 1}] "${tc.subject}": ${err.message}`);
+          summary.errors.push(`${tc.subject}: ${err.message}`);
         }
-        folderId = customFolderCache[folderId];
-      }
+      }));
 
-      try {
-        const msgBody = buildGraphMessage(tc, i, userEmail, senderRotation);
-        await outlookClient.createMessageInFolder(userEmail, folderId, msgBody);
-        summary.messagesCreated++;
-        if (!summary.foldersPopulated.includes(folderDisplay)) {
-          summary.foldersPopulated.push(folderDisplay);
-        }
-        log.info(`✓ [${i + 1}/${testCases.length}] "${tc.subject}" → ${folderDisplay}`);
-      } catch (err) {
-        log.error(`✗ [${i + 1}] "${tc.subject}": ${err.message}`);
-        summary.errors.push(`${tc.subject}: ${err.message}`);
-      }
-
-      if (context.executionId && i % 10 === 9) {
+      if (context.executionId) {
         executionService.update(context.executionId, {
           progress: `OutlookTestDataAgent: ${summary.messagesCreated}/${testCases.length} messages created…`,
         });
@@ -552,104 +593,124 @@ class OutlookTestDataAgent extends BaseAgent {
     // Outlook shows a dialog for files in the ~10–33 MB range. The user picked OneDrive link.
     // Exchange stores a referenceAttachment; no binary data is in the message.
     // We upload a real XLSX to the user's OneDrive and use the real share URL so the link resolves.
-    try {
-      const wb26 = XLSX_LIB.utils.book_new();
-      XLSX_LIB.utils.book_append_sheet(
-        wb26,
-        XLSX_LIB.utils.aoa_to_sheet([
-          ['QA Large File', '26 MB OneDrive Link Test'],
-          ['Scenario', 'User selected "Upload and share as a OneDrive link" in Outlook'],
-          ['Size class', '~26 MB (user-chosen link, Outlook 10–33 MB dialog)'],
-        ]),
-        'QA',
-      );
-      const buf26 = Buffer.from(XLSX_LIB.write(wb26, { type: 'base64', bookType: 'xlsx' }), 'base64');
-      const { shareUrl: shareUrl26 } = await outlookClient.uploadFileAndCreateShareLink(
-        userEmail, 'qa-large-file-26mb.xlsx', buf26,
-      );
-      const created3b = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
-        subject: 'QA E2E 3b - Attachment OneDrive Link (26 MB)',
-        body: {
-          contentType: 'HTML',
-          content: '<html><body>'
-            + '<p>Email sharing a 26 MB file via OneDrive link — user selected '
-            + '<em>"Upload and share as a OneDrive link"</em> in Outlook.</p>'
-            + '<p><strong>qa-large-file-26mb.xlsx</strong> (26 MB):</p>'
-            + `<p><a href="${shareUrl26}">View on OneDrive</a></p></body></html>`,
-        },
-        from: { emailAddress: externalSender },
-        toRecipients: [{ emailAddress: { address: userEmail } }],
-        isRead: false, isDraft: false,
-      });
-      let msgId3b = created3b?.id;
-      if (!msgId3b && created3b?.internetMessageId) {
-        msgId3b = await outlookClient.getGraphIdByInternetMessageId(userEmail, 'inbox', created3b.internetMessageId);
+    // Fallback: if OneDrive is not provisioned, create the same email structure with a placeholder
+    // share URL so the referenceAttachment type is still tested by CloudFuze migration.
+    await (async () => {
+      let shareUrl26 = null;
+      try {
+        const wb26 = XLSX_LIB.utils.book_new();
+        XLSX_LIB.utils.book_append_sheet(
+          wb26,
+          XLSX_LIB.utils.aoa_to_sheet([
+            ['QA Large File', '26 MB OneDrive Link Test'],
+            ['Scenario', 'User selected "Upload and share as a OneDrive link" in Outlook'],
+            ['Size class', '~26 MB (user-chosen link, Outlook 10–33 MB dialog)'],
+          ]),
+          'QA',
+        );
+        const buf26 = Buffer.from(XLSX_LIB.write(wb26, { type: 'base64', bookType: 'xlsx' }), 'base64');
+        ({ shareUrl: shareUrl26 } = await outlookClient.uploadFileAndCreateShareLink(
+          userEmail, 'qa-large-file-26mb.xlsx', buf26,
+        ));
+      } catch (uploadErr) {
+        // OneDrive not provisioned — fall back to a placeholder URL so the referenceAttachment
+        // email structure (which is what CloudFuze needs to migrate) is still created.
+        log.warn(`Attachment Scenario B: OneDrive upload unavailable (${uploadErr.message}) — using placeholder URL fallback`);
+        shareUrl26 = 'https://1drv.ms/x/s!QAPlaceholder-26mb-OneDriveLink';
       }
-      if (msgId3b) {
-        await addReferenceAttachment(userEmail, msgId3b, {
-          name: 'qa-large-file-26mb.xlsx',
-          sourceUrl: shareUrl26,
+      try {
+        const created3b = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+          subject: 'QA E2E 3b - Attachment OneDrive Link (26 MB)',
+          body: {
+            contentType: 'HTML',
+            content: '<html><body>'
+              + '<p>Email sharing a 26 MB file via OneDrive link — user selected '
+              + '<em>"Upload and share as a OneDrive link"</em> in Outlook.</p>'
+              + '<p><strong>qa-large-file-26mb.xlsx</strong> (26 MB):</p>'
+              + `<p><a href="${shareUrl26}">View on OneDrive</a></p></body></html>`,
+          },
+          from: { emailAddress: externalSender },
+          toRecipients: [{ emailAddress: { address: userEmail } }],
+          isRead: false, isDraft: false,
         });
+        let msgId3b = created3b?.id;
+        if (!msgId3b && created3b?.internetMessageId) {
+          msgId3b = await outlookClient.getGraphIdByInternetMessageId(userEmail, 'inbox', created3b.internetMessageId);
+        }
+        if (msgId3b) {
+          await addReferenceAttachment(userEmail, msgId3b, {
+            name: 'qa-large-file-26mb.xlsx',
+            sourceUrl: shareUrl26,
+          });
+        }
+        summary.messagesCreated++;
+        const isFallback = shareUrl26.includes('Placeholder');
+        log.info(`✓ Attachment Scenario B created (26 MB OneDrive link${isFallback ? ' — placeholder URL, no live OneDrive' : ''})`);
+      } catch (err) {
+        log.warn(`Attachment Scenario B failed: ${err.message}`);
+        summary.errors.push(`Attachment Scenario B (OneDrive link 26MB): ${err.message}`);
       }
-      summary.messagesCreated++;
-      log.info('✓ Attachment Scenario B created (26 MB OneDrive link — user chose link option)');
-    } catch (err) {
-      const noOd = err.code === 'NO_ONEDRIVE';
-      log.warn(`Attachment Scenario B failed: ${err.message}${noOd ? ' — OneDrive/SharePoint license may not be enabled for this tenant' : ''}`);
-      summary.errors.push(`Attachment Scenario B (OneDrive link 26MB): ${err.message}`);
-    }
+    })();
 
     // Scenario C: 35 MB — forced OneDrive link (>33 MB, Outlook gives NO "Attach as a copy" option)
     // Tests that CloudFuze migrates reference attachments created under the forced-link path,
     // where Exchange only ever stores a referenceAttachment (never a binary fileAttachment).
-    // We upload a real XLSX to the user's OneDrive and use the real share URL so the link resolves.
-    try {
-      const wb35 = XLSX_LIB.utils.book_new();
-      XLSX_LIB.utils.book_append_sheet(
-        wb35,
-        XLSX_LIB.utils.aoa_to_sheet([
-          ['QA Large File', '35 MB Forced OneDrive Link Test'],
-          ['Scenario', 'Outlook forced OneDrive link — files >33 MB have no "Attach as a copy" option'],
-          ['Size class', '~35 MB (forced link path)'],
-        ]),
-        'QA',
-      );
-      const buf35 = Buffer.from(XLSX_LIB.write(wb35, { type: 'base64', bookType: 'xlsx' }), 'base64');
-      const { shareUrl: shareUrl35 } = await outlookClient.uploadFileAndCreateShareLink(
-        userEmail, 'qa-large-file-35mb.xlsx', buf35,
-      );
-      const created3c = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
-        subject: 'QA E2E 3c - Attachment Forced OneDrive Link (35 MB)',
-        body: {
-          contentType: 'HTML',
-          content: '<html><body>'
-            + '<p>Email sharing a 35 MB file via OneDrive link — for files >33 MB, Outlook '
-            + '<strong>does not offer "Attach as a copy"</strong>. Only the OneDrive link '
-            + 'option is available.</p>'
-            + '<p><strong>qa-large-file-35mb.xlsx</strong> (35 MB):</p>'
-            + `<p><a href="${shareUrl35}">View on OneDrive</a></p></body></html>`,
-        },
-        from: { emailAddress: externalSender },
-        toRecipients: [{ emailAddress: { address: userEmail } }],
-        isRead: false, isDraft: false,
-      });
-      let msgId3c = created3c?.id;
-      if (!msgId3c && created3c?.internetMessageId) {
-        msgId3c = await outlookClient.getGraphIdByInternetMessageId(userEmail, 'inbox', created3c.internetMessageId);
+    // Fallback: same placeholder URL strategy as Scenario B when OneDrive is not provisioned.
+    await (async () => {
+      let shareUrl35 = null;
+      try {
+        const wb35 = XLSX_LIB.utils.book_new();
+        XLSX_LIB.utils.book_append_sheet(
+          wb35,
+          XLSX_LIB.utils.aoa_to_sheet([
+            ['QA Large File', '35 MB Forced OneDrive Link Test'],
+            ['Scenario', 'Outlook forced OneDrive link — files >33 MB have no "Attach as a copy" option'],
+            ['Size class', '~35 MB (forced link path)'],
+          ]),
+          'QA',
+        );
+        const buf35 = Buffer.from(XLSX_LIB.write(wb35, { type: 'base64', bookType: 'xlsx' }), 'base64');
+        ({ shareUrl: shareUrl35 } = await outlookClient.uploadFileAndCreateShareLink(
+          userEmail, 'qa-large-file-35mb.xlsx', buf35,
+        ));
+      } catch (uploadErr) {
+        log.warn(`Attachment Scenario C: OneDrive upload unavailable (${uploadErr.message}) — using placeholder URL fallback`);
+        shareUrl35 = 'https://1drv.ms/x/s!QAPlaceholder-35mb-ForcedOneDriveLink';
       }
-      if (msgId3c) {
-        await addReferenceAttachment(userEmail, msgId3c, {
-          name: 'qa-large-file-35mb.xlsx',
-          sourceUrl: shareUrl35,
+      try {
+        const created3c = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+          subject: 'QA E2E 3c - Attachment Forced OneDrive Link (35 MB)',
+          body: {
+            contentType: 'HTML',
+            content: '<html><body>'
+              + '<p>Email sharing a 35 MB file via OneDrive link — for files >33 MB, Outlook '
+              + '<strong>does not offer "Attach as a copy"</strong>. Only the OneDrive link '
+              + 'option is available.</p>'
+              + '<p><strong>qa-large-file-35mb.xlsx</strong> (35 MB):</p>'
+              + `<p><a href="${shareUrl35}">View on OneDrive</a></p></body></html>`,
+          },
+          from: { emailAddress: externalSender },
+          toRecipients: [{ emailAddress: { address: userEmail } }],
+          isRead: false, isDraft: false,
         });
+        let msgId3c = created3c?.id;
+        if (!msgId3c && created3c?.internetMessageId) {
+          msgId3c = await outlookClient.getGraphIdByInternetMessageId(userEmail, 'inbox', created3c.internetMessageId);
+        }
+        if (msgId3c) {
+          await addReferenceAttachment(userEmail, msgId3c, {
+            name: 'qa-large-file-35mb.xlsx',
+            sourceUrl: shareUrl35,
+          });
+        }
+        summary.messagesCreated++;
+        const isFallback = shareUrl35.includes('Placeholder');
+        log.info(`✓ Attachment Scenario C created (35 MB forced OneDrive link${isFallback ? ' — placeholder URL, no live OneDrive' : ''})`);
+      } catch (err) {
+        log.warn(`Attachment Scenario C failed: ${err.message}`);
+        summary.errors.push(`Attachment Scenario C (forced OneDrive link 35MB): ${err.message}`);
       }
-      summary.messagesCreated++;
-      log.info('✓ Attachment Scenario C created (35 MB forced OneDrive link — >33 MB, no binary option)');
-    } catch (err) {
-      const noOd = err.code === 'NO_ONEDRIVE';
-      log.warn(`Attachment Scenario C failed: ${err.message}${noOd ? ' — OneDrive/SharePoint license may not be enabled for this tenant' : ''}`);
-      summary.errors.push(`Attachment Scenario C (forced OneDrive link 35MB): ${err.message}`);
-    }
+    })();
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
@@ -1734,10 +1795,10 @@ class OutlookTestDataAgent extends BaseAgent {
         log.info(`✓ ${subSubName}: 3 emails`);
       }
 
-      // ── QA-Sub-Q2 through QA-Sub-Q5 — 3 emails each ────────────────────────
-      const q2to5 = ['QA-Sub-Q2', 'QA-Sub-Q3', 'QA-Sub-Q4', 'QA-Sub-Q5'];
-      for (let si = 0; si < q2to5.length; si++) {
-        const sfName = q2to5[si];
+      // ── QA-Sub-Q2 through QA-Sub-Q10 — 3 emails each (10 total sub-folders under root) ──
+      const q2to10 = ['QA-Sub-Q2', 'QA-Sub-Q3', 'QA-Sub-Q4', 'QA-Sub-Q5', 'QA-Sub-Q6', 'QA-Sub-Q7', 'QA-Sub-Q8', 'QA-Sub-Q9', 'QA-Sub-Q10'];
+      for (let si = 0; si < q2to10.length; si++) {
+        const sfName = q2to10[si];
         const sfId   = await outlookClient.createChildFolder(userEmail, rootId, sfName);
         await addMsg(sfId, { subject: `QA E2E 23 - ${sfName} Received Unread`,    body: { contentType: 'text', content: `Unread received email in sub-folder ${sfName} — tests sibling sub-folder migration.` },                                                       from: { emailAddress: pick(si) },     toRecipients: [{ emailAddress: { address: userEmail } }], isRead: false, isDraft: false });
         await addMsg(sfId, { subject: `QA E2E 23 - ${sfName} Received Read HTML`, body: { contentType: 'HTML', content: `<html><body><p>Read HTML email in sub-folder <strong>${sfName}</strong>.</p><p>Tests HTML body in nested folder.</p></body></html>` },         from: { emailAddress: pick(si + 1) }, toRecipients: [{ emailAddress: { address: userEmail } }], isRead: true,  isDraft: false });
@@ -3126,14 +3187,860 @@ console.log('Migration status:', result.status); // ✅ completed
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
-    // ── DELTA-only scenarios ────────────────────────────────────────────────
-    if ((context.migrationType || 'FULL').toUpperCase() !== 'DELTA') {
-      return;
+    // ── 43. Additional inbox rule condition: sentToAddresses ─────────────────
+    // Complements sections 24A/24B (From-based routing) with a recipient-based
+    // inbox rule that triggers when mail is addressed TO a specific address.
+    // Covers the sentToAddresses condition type in Microsoft Graph inbox rules.
+    log.info('E2E: creating SentTo inbox rule + test data (Section 43)…');
+    try {
+      const sentToFolder = 'QA-SentTo-Rule-Target';
+      const sentToFolderId = await outlookClient.getOrCreateMailFolder(userEmail, sentToFolder);
+
+      const sentToRule = await outlookClient.createInboxRule(userEmail, {
+        displayName: `QA - SentTo Rule: route mail addressed to ${userEmail} → ${sentToFolder}`,
+        sequence:    102,
+        isEnabled:   true,
+        conditions:  { sentToAddresses: [{ emailAddress: { address: userEmail, name: userEmail.split('@')[0] } }] },
+        actions:     { moveToFolder: sentToFolderId, stopProcessingRules: false },
+      });
+      log.info(`✓ Rule 43 created: "${sentToRule.displayName}" → ${sentToFolder}`);
+      if (!summary.foldersPopulated.includes(sentToFolder)) summary.foldersPopulated.push(sentToFolder);
+
+      const sentToEmails = [
+        {
+          subject: `QA E2E 43 - SentTo Rule: Addressed-To Email #1`,
+          body:    { contentType: 'text', content: `Email with To: ${userEmail} — should match sentToAddresses condition and be routed to ${sentToFolder}.` },
+          from:    { emailAddress: externalSender },
+          isRead:  false,
+        },
+        {
+          subject: `QA E2E 43 - SentTo Rule: Addressed-To Email #2`,
+          body:    { contentType: 'html', content: `<html><body><p>Second email directly addressed to <strong>${userEmail}</strong> — validates sentToAddresses rule routing.</p></body></html>` },
+          from:    { emailAddress: toSenderObject(senderRotation.length > 0 ? senderRotation[0] : FALLBACK_EXTERNAL_SENDERS[0]) },
+          isRead:  true,
+        },
+        {
+          subject: `QA E2E 43 - SentTo Rule: Addressed-To with Attachment`,
+          body:    { contentType: 'text', content: `Email with attachment addressed to ${userEmail} — tests sentToAddresses rule with attachment.` },
+          from:    { emailAddress: externalSender },
+          isRead:  false,
+          attachments: [{
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name:          'qa-sentto-attachment.txt',
+            contentType:   'text/plain',
+            contentBytes:  Buffer.from('QA sentToAddresses rule test attachment — section 43.').toString('base64'),
+          }],
+        },
+      ];
+
+      for (const em of sentToEmails) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, sentToFolderId, {
+            ...em,
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isDraft: false,
+          });
+          summary.messagesCreated++;
+          log.info(`✓ 43: inserted "${em.subject}"`);
+        } catch (e) {
+          log.warn(`Section 43 email "${em.subject}" failed: ${e.message}`);
+          summary.errors.push(`Section 43 "${em.subject}": ${e.message}`);
+        }
+      }
+      log.info(`✓ Section 43 complete — sentToAddresses rule + ${sentToEmails.length} matching emails`);
+    } catch (err) {
+      log.warn(`SentTo inbox rule section 43 failed: ${err.message}`);
+      summary.errors.push(`Section 43 sentToAddresses rule: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 44. Deep thread chain (8-level, 4 participants, all system folders) ──
+    // 10 messages total: 2 Inbox + 3 Sent Items + 1 Drafts + 1 Junk + 1 Deleted + 1 Archive + 1 Custom
+    // Each message is linked via In-Reply-To + References headers so Exchange/Gmail
+    // groups them into a single conversation thread for migration validation.
+    log.info('E2E: creating deep thread chain — 10 messages, 4 participants, all folders (Section 44)…');
+    try {
+      const dtSubject = 'QA E2E 44 - Deep Thread Chain (Multi-Participant All Folders)';
+      const dtRe      = `RE: ${dtSubject}`;
+      const selfAddr44 = { address: userEmail, name: userEmail.split('@')[0] };
+      const p1 = externalSender;   // pick(0) — primary sender
+      const p2 = pick(1);          // second participant (CC early, TO later)
+      const p3 = pick(2);          // third participant
+      const p4 = pick(3);          // fourth participant — joins mid-thread
+
+      const msgIds = [];
+      const refs   = () => msgIds.filter(Boolean).join(' ');
+
+      // ── Msg 1: Inbox — p1 opens thread, CC: p2, p3
+      const m1 = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      dtSubject,
+        body:         { contentType: 'HTML', content: '<p><b>Thread start</b> — please review and share thoughts. CC-ing the team.</p>' },
+        from:         { emailAddress: p1 },
+        toRecipients: [{ emailAddress: selfAddr44 }],
+        ccRecipients: [{ emailAddress: p2 }, { emailAddress: p3 }],
+        isRead: true, isDraft: false,
+      });
+      summary.messagesCreated++;
+      msgIds.push(m1.internetMessageId || '');
+
+      // ── Msg 2: Sent Items — user replies to all, adds p4 to CC
+      const m2 = await outlookClient.createMessageInFolder(userEmail, 'sentitems', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>Thanks — adding Granger to the loop. Inline comments below.</p>' },
+        from:         { emailAddress: selfAddr44 },
+        toRecipients: [{ emailAddress: p1 }, { emailAddress: p2 }],
+        ccRecipients: [{ emailAddress: p3 }, { emailAddress: p4 }],
+        isRead: true, isDraft: false,
+        inReplyTo:  msgIds[0],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+      msgIds.push(m2.internetMessageId || '');
+
+      // ── Msg 3: Inbox — p1 replies to all, now full group in TO
+      const m3 = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>Agreed. Can someone confirm the Q3 timeline? See attached notes.</p>' },
+        from:         { emailAddress: p1 },
+        toRecipients: [{ emailAddress: selfAddr44 }, { emailAddress: p2 }, { emailAddress: p3 }],
+        ccRecipients: [{ emailAddress: p4 }],
+        isRead: true, isDraft: false,
+        inReplyTo:  msgIds[1],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+      msgIds.push(m3.internetMessageId || '');
+
+      // ── Msg 4: Sent Items — user confirms timeline, TO: all 3 external
+      const m4 = await outlookClient.createMessageInFolder(userEmail, 'sentitems', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>Timeline confirmed for Q3. Kick-off scheduled for first Monday. Let me know if conflicts.</p>' },
+        from:         { emailAddress: selfAddr44 },
+        toRecipients: [{ emailAddress: p1 }, { emailAddress: p2 }, { emailAddress: p3 }],
+        ccRecipients: [{ emailAddress: p4 }],
+        isRead: true, isDraft: false,
+        inReplyTo:  msgIds[2],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+      msgIds.push(m4.internetMessageId || '');
+
+      // ── Msg 5: Sent Items — user sends follow-up with attachment ref
+      const m5 = await outlookClient.createMessageInFolder(userEmail, 'sentitems', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>Follow-up: agenda doc attached for kick-off review.</p>' },
+        from:         { emailAddress: selfAddr44 },
+        toRecipients: [{ emailAddress: p1 }, { emailAddress: p2 }, { emailAddress: p3 }, { emailAddress: p4 }],
+        ccRecipients: [],
+        isRead: true, isDraft: false,
+        inReplyTo:  msgIds[3],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+      msgIds.push(m5.internetMessageId || '');
+
+      // ── Msg 6: Inbox — p2 moves to TO, replies with approval
+      const m6 = await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>Q3 works for us — agenda looks good. Confirmed on our end.</p>' },
+        from:         { emailAddress: p2 },
+        toRecipients: [{ emailAddress: selfAddr44 }, { emailAddress: p1 }, { emailAddress: p3 }],
+        ccRecipients: [{ emailAddress: p4 }],
+        isRead: false, isDraft: false,
+        inReplyTo:  msgIds[4],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+      msgIds.push(m6.internetMessageId || '');
+
+      // ── Msg 7: Drafts — user started reply 7 but never sent it
+      await outlookClient.createMessageInFolder(userEmail, 'drafts', {
+        subject:      dtRe,
+        body:         { contentType: 'HTML', content: '<p>One more thing I wanted to clarify before closing — </p>' },
+        from:         { emailAddress: selfAddr44 },
+        toRecipients: [{ emailAddress: p1 }, { emailAddress: p2 }],
+        ccRecipients: [{ emailAddress: p3 }, { emailAddress: p4 }],
+        isRead: true, isDraft: true,
+        inReplyTo:  msgIds[5],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+
+      // ── Msg 8: Junk Email — p3 reply auto-filtered to junk
+      await outlookClient.createMessageInFolder(userEmail, 'junkemail', {
+        subject:      dtRe,
+        body:         { contentType: 'text', content: 'Forwarding the agenda link — got auto-filtered to Junk. Should appear in Gmail Spam.' },
+        from:         { emailAddress: p3 },
+        toRecipients: [{ emailAddress: selfAddr44 }],
+        ccRecipients: [{ emailAddress: p1 }, { emailAddress: p2 }],
+        isRead: false, isDraft: false,
+        inReplyTo:  msgIds[3],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+
+      // ── Msg 9: Deleted Items — p4 mid-thread reply that user deleted
+      await outlookClient.createMessageInFolder(userEmail, 'deleteditems', {
+        subject:      dtRe,
+        body:         { contentType: 'text', content: 'Deleted mid-thread reply — should appear in Gmail Trash after migration.' },
+        from:         { emailAddress: p4 },
+        toRecipients: [{ emailAddress: selfAddr44 }, { emailAddress: p1 }],
+        ccRecipients: [{ emailAddress: p2 }],
+        isRead: true, isDraft: false,
+        inReplyTo:  msgIds[1],
+        references: refs(),
+      });
+      summary.messagesCreated++;
+
+      // ── Msg 10: Archive — user archived the original message
+      await outlookClient.createMessageInFolder(userEmail, 'archive', {
+        subject:      dtSubject,
+        body:         { contentType: 'text', content: 'Archived copy of thread opening email — tests thread migration across Archive folder.' },
+        from:         { emailAddress: p1 },
+        toRecipients: [{ emailAddress: selfAddr44 }],
+        ccRecipients: [{ emailAddress: p2 }, { emailAddress: p3 }],
+        isRead: true, isDraft: false,
+      });
+      summary.messagesCreated++;
+
+      log.info('✓ Section 44 complete — 10-message deep thread chain across Inbox×2, Sent×3, Drafts, Junk, Deleted, Archive with 4 participants');
+    } catch (err) {
+      log.warn(`Section 44 deep thread chain failed: ${err.message}`);
+      summary.errors.push(`Section 44 deep thread chain: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 45. Quality coverage — system folder attachment/flag/importance gaps ─
+    log.info('E2E: section 45 — quality coverage for Sent, Archive, Drafts, Junk, Deleted…');
+    try {
+      const s45Self   = { address: userEmail, name: userEmail.split('@')[0] };
+      const s45Ext    = pick(0);
+      const s45Ext2   = pick(1);
+      const s45Ext3   = pick(2);
+      const b64s45    = (s) => Buffer.from(s).toString('base64');
+
+      const s45Pdf  = { '@odata.type': '#microsoft.graph.fileAttachment', name: 'qa-report.pdf',    contentType: 'application/pdf',    contentBytes: MINIMAL_PDF_B64 };
+      const s45Docx = { '@odata.type': '#microsoft.graph.fileAttachment', name: 'qa-document.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', contentBytes: MINIMAL_DOCX_B64 };
+      const s45Xlsx = () => {
+        const wb = XLSX_LIB.utils.book_new();
+        XLSX_LIB.utils.book_append_sheet(wb, XLSX_LIB.utils.aoa_to_sheet([['ID','Subject','Status'],[1,'QA Row 1','Pass'],[2,'QA Row 2','Pass']]), 'QA');
+        return { '@odata.type': '#microsoft.graph.fileAttachment', name: 'qa-data.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', contentBytes: XLSX_LIB.write(wb, { type: 'base64', bookType: 'xlsx' }) };
+      };
+      const s45Txt  = { '@odata.type': '#microsoft.graph.fileAttachment', name: 'qa-notes.txt', contentType: 'text/plain', contentBytes: b64s45('QA migration test attachment — plain text notes for verification.') };
+      const s45Png  = { '@odata.type': '#microsoft.graph.fileAttachment', name: 'qa-inline.png',  contentType: 'image/png', contentBytes: makeSolidColorPng(0, 120, 215), contentId: 'qa-inline-45@test', isInline: true };
+
+      // ── 45a. Sent Items gaps ──────────────────────────────────────────────
+      const sentCases45 = [
+        {
+          label: 'Sent PDF Attachment',
+          msg: {
+            subject: 'QA E2E 45a-1 - Sent With PDF Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p>Sent email with <strong>PDF attachment</strong>. Migration QA — verifies attachment survives in Sent Items → Gmail Sent.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            isRead: true, isDraft: false,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Sent DOCX+XLSX Multi-Attach with CC',
+          msg: {
+            subject: 'QA E2E 45a-2 - Sent Multiple Attachments (DOCX+XLSX) With CC',
+            body: { contentType: 'HTML', content: '<html><body><p>Sent email with <em>multiple attachments</em> (Word + Excel) and a CC recipient.</p><p>Tests multi-attachment preservation and CC in Sent Items.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            ccRecipients: [{ emailAddress: s45Ext2 }],
+            isRead: true, isDraft: false,
+            attachments: [s45Docx, s45Xlsx()],
+          },
+        },
+        {
+          label: 'Sent BCC-Only (no TO)',
+          msg: {
+            subject: 'QA E2E 45a-3 - Sent BCC Only (Empty TO)',
+            body: { contentType: 'text', content: 'Sent email with only BCC recipients — TO field is empty. Tests BCC-only sent email migration to Gmail.' },
+            from: { emailAddress: s45Self },
+            toRecipients: [],
+            bccRecipients: [{ emailAddress: s45Ext }, { emailAddress: s45Ext2 }],
+            isRead: true, isDraft: false,
+          },
+        },
+        {
+          label: 'Sent Flagged + High Importance',
+          msg: {
+            subject: 'QA E2E 45a-4 - Sent Flagged High Importance',
+            body: { contentType: 'text', content: 'Sent email marked as flagged and high importance. Verifies importance + flag state migrate from Sent Items.' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            isRead: true, isDraft: false,
+            flag: { flagStatus: 'flagged' },
+            importance: 'high',
+          },
+        },
+        {
+          label: 'Sent Reply With PDF Attachment',
+          msg: {
+            subject: 'Re: QA E2E 45a-5 - Sent Reply With Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p>Reply sent with a PDF attachment. Tests that replied-sent emails with attachments migrate correctly.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            ccRecipients: [{ emailAddress: s45Ext2 }],
+            isRead: true, isDraft: false,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Sent Forward With DOCX Attachment',
+          msg: {
+            subject: 'Fwd: QA E2E 45a-6 - Sent Forward With Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p>Forwarded sent email with a DOCX attachment.</p><p>Tests Fwd: subject prefix and attachment preservation in Sent Items.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: true, isDraft: false,
+            attachments: [s45Docx],
+          },
+        },
+        {
+          label: 'Sent HTML Inline Image',
+          msg: {
+            subject: 'QA E2E 45a-7 - Sent HTML With Inline Image',
+            body: { contentType: 'HTML', content: '<html><body><p>Sent email with inline image embedded in body.</p><img src="cid:qa-inline-45@test" alt="QA inline" style="width:80px;height:80px;"/><p>Tests inline image CID migration in Sent Items.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            isRead: true, isDraft: false,
+            attachments: [s45Png],
+          },
+        },
+        {
+          label: 'Sent High Importance Multiple TO + Attachment',
+          msg: {
+            subject: 'QA E2E 45a-8 - Sent High Importance Multiple TO With Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p><strong>HIGH IMPORTANCE</strong> — sent to multiple recipients with a PDF attachment.</p><p>Tests importance flag + multi-TO + attachment combo in Sent Items.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }, { emailAddress: s45Ext2 }, { emailAddress: s45Ext3 }],
+            isRead: true, isDraft: false,
+            importance: 'high',
+            attachments: [s45Pdf, s45Txt],
+          },
+        },
+      ];
+
+      for (const tc of sentCases45) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'sentitems', tc.msg);
+          summary.messagesCreated++;
+          log.info(`✓ 45a Sent: "${tc.label}"`);
+        } catch (err) {
+          log.warn(`45a Sent "${tc.label}" failed: ${err.message}`);
+          summary.errors.push(`45a Sent "${tc.label}": ${err.message}`);
+        }
+      }
+
+      if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+      // ── 45b. Archive gaps ─────────────────────────────────────────────────
+      const archiveCases45 = [
+        {
+          label: 'Archive PDF + HTML',
+          msg: {
+            subject: 'QA E2E 45b-1 - Archive PDF Attachment HTML Body',
+            body: { contentType: 'HTML', content: '<html><body><p>Archived email with <strong>PDF attachment</strong> and HTML body. Tests attachment preservation in Archive folder.</p></body></html>' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: true, isDraft: false,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Archive CC + BCC',
+          msg: {
+            subject: 'QA E2E 45b-2 - Archive With CC and BCC',
+            body: { contentType: 'text', content: 'Archived email with CC and BCC recipients. Tests recipient field preservation in Archive folder migration.' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients:  [{ emailAddress: s45Ext2 }],
+            bccRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: true, isDraft: false,
+          },
+        },
+        {
+          label: 'Archive High Importance Flagged',
+          msg: {
+            subject: 'QA E2E 45b-3 - Archive High Importance Flagged',
+            body: { contentType: 'text', content: 'Archived email with high importance flag. Tests importance and flag state in Archive folder.' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: true, isDraft: false,
+            flag: { flagStatus: 'flagged' },
+            importance: 'high',
+          },
+        },
+        {
+          label: 'Archive Multiple Attachments PDF+DOCX',
+          msg: {
+            subject: 'QA E2E 45b-4 - Archive Multiple Attachments (PDF+DOCX)',
+            body: { contentType: 'HTML', content: '<html><body><p>Archived email with <em>multiple attachment types</em> (PDF + Word document).</p><p>Tests multi-attachment count and type fidelity in Archive.</p></body></html>' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: true, isDraft: false,
+            attachments: [s45Pdf, s45Docx],
+          },
+        },
+        {
+          label: 'Archive Reply Chain With Attachment',
+          msg: {
+            subject: 'Re: QA E2E 45b-5 - Archive Reply With Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p>Archived reply email with a TXT attachment.</p><p>Tests Re: subject prefix + attachment in Archive folder.</p></body></html>' },
+            from: { emailAddress: s45Ext3 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients: [{ emailAddress: s45Ext }],
+            isRead: true, isDraft: false,
+            attachments: [s45Txt],
+          },
+        },
+        {
+          label: 'Archive Unread With XLSX',
+          msg: {
+            subject: 'QA E2E 45b-6 - Archive Unread XLSX Attachment',
+            body: { contentType: 'text', content: 'Archived unread email with an Excel spreadsheet attachment.' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            attachments: [s45Xlsx()],
+          },
+        },
+      ];
+
+      for (const tc of archiveCases45) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'archive', tc.msg);
+          summary.messagesCreated++;
+          if (!summary.foldersPopulated.includes('Archive')) summary.foldersPopulated.push('Archive');
+          log.info(`✓ 45b Archive: "${tc.label}"`);
+        } catch (err) {
+          log.warn(`45b Archive "${tc.label}" failed: ${err.message}`);
+          summary.errors.push(`45b Archive "${tc.label}": ${err.message}`);
+        }
+      }
+
+      if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+      // ── 45c. Drafts gaps ──────────────────────────────────────────────────
+      const draftCases45 = [
+        {
+          label: 'Draft PDF Attachment',
+          msg: {
+            subject: 'QA E2E 45c-1 - Draft With PDF Attachment',
+            body: { contentType: 'HTML', content: '<html><body><p>Draft email with a <strong>PDF attachment</strong>. Tests attachment preservation in Drafts folder.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            isRead: false, isDraft: true,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Draft Multiple Attachments DOCX+PDF',
+          msg: {
+            subject: 'QA E2E 45c-2 - Draft Multiple Attachments (DOCX+PDF)',
+            body: { contentType: 'HTML', content: '<html><body><p>Draft with multiple attachment types (Word + PDF). Tests multi-type attachment in Drafts.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            ccRecipients: [{ emailAddress: s45Ext2 }],
+            isRead: false, isDraft: true,
+            attachments: [s45Docx, s45Pdf],
+          },
+        },
+        {
+          label: 'Draft CC + TXT Attachment',
+          msg: {
+            subject: 'QA E2E 45c-3 - Draft CC With TXT Attachment',
+            body: { contentType: 'text', content: 'Draft email with CC and a plain text attachment. Tests CC recipient + attachment combo in Drafts.' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            ccRecipients: [{ emailAddress: s45Ext2 }, { emailAddress: s45Ext3 }],
+            isRead: false, isDraft: true,
+            attachments: [s45Txt],
+          },
+        },
+        {
+          label: 'Draft High Importance',
+          msg: {
+            subject: 'QA E2E 45c-4 - Draft High Importance',
+            body: { contentType: 'HTML', content: '<html><body><p><strong>High importance</strong> draft email. Tests importance flag on drafts migrating to Gmail.</p></body></html>' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            isRead: false, isDraft: true,
+            importance: 'high',
+          },
+        },
+        {
+          label: 'Draft BCC + XLSX Attachment',
+          msg: {
+            subject: 'QA E2E 45c-5 - Draft BCC With XLSX Attachment',
+            body: { contentType: 'text', content: 'Draft with BCC recipients and an Excel spreadsheet attachment. Tests BCC + attachment preservation in Drafts.' },
+            from: { emailAddress: s45Self },
+            toRecipients: [{ emailAddress: s45Ext }],
+            bccRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: false, isDraft: true,
+            attachments: [s45Xlsx()],
+          },
+        },
+      ];
+
+      for (const tc of draftCases45) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'drafts', tc.msg);
+          summary.messagesCreated++;
+          log.info(`✓ 45c Draft: "${tc.label}"`);
+        } catch (err) {
+          log.warn(`45c Draft "${tc.label}" failed: ${err.message}`);
+          summary.errors.push(`45c Draft "${tc.label}": ${err.message}`);
+        }
+      }
+
+      if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+      // ── 45d. Junk Email gaps ──────────────────────────────────────────────
+      const junkCases45 = [
+        {
+          label: 'Junk PDF + HTML',
+          msg: {
+            subject: 'QA E2E 45d-1 - Junk PDF Attachment HTML Body',
+            body: { contentType: 'HTML', content: '<html><body><p>Junk/spam email with <strong>PDF attachment</strong> and HTML body.</p><p>Tests attachment preservation in Junk Email → Gmail Spam.</p></body></html>' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Junk With CC Recipients',
+          msg: {
+            subject: 'QA E2E 45d-2 - Junk With CC Recipients',
+            body: { contentType: 'text', content: 'Junk email with CC recipients — tests CC preservation in Junk/Spam folder migration.' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: false, isDraft: false,
+          },
+        },
+        {
+          label: 'Junk High Importance (False Positive)',
+          msg: {
+            subject: 'QA E2E 45d-3 - Junk High Importance False Positive',
+            body: { contentType: 'HTML', content: '<html><body><p>Junk email marked as <strong>high importance</strong> — simulates false-positive spam classification.</p><p>Tests importance flag in Junk folder migration.</p></body></html>' },
+            from: { emailAddress: s45Ext3 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            importance: 'high',
+          },
+        },
+        {
+          label: 'Junk DOCX Attachment',
+          msg: {
+            subject: 'QA E2E 45d-4 - Junk DOCX Attachment',
+            body: { contentType: 'text', content: 'Junk email with a Word document attachment. Tests DOCX attachment preservation in Junk → Gmail Spam.' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: true, isDraft: false,
+            attachments: [s45Docx],
+          },
+        },
+        {
+          label: 'Junk Multiple Attachments PDF+TXT',
+          msg: {
+            subject: 'QA E2E 45d-5 - Junk Multiple Attachments (PDF+TXT)',
+            body: { contentType: 'HTML', content: '<html><body><p>Junk email with multiple attachments (PDF + TXT). Tests multi-attachment count in Junk Email folder.</p></body></html>' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: false, isDraft: false,
+            attachments: [s45Pdf, s45Txt],
+          },
+        },
+      ];
+
+      for (const tc of junkCases45) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'junkemail', tc.msg);
+          summary.messagesCreated++;
+          log.info(`✓ 45d Junk: "${tc.label}"`);
+        } catch (err) {
+          log.warn(`45d Junk "${tc.label}" failed: ${err.message}`);
+          summary.errors.push(`45d Junk "${tc.label}": ${err.message}`);
+        }
+      }
+
+      if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+      // ── 45e. Deleted Items gaps ───────────────────────────────────────────
+      const deletedCases45 = [
+        {
+          label: 'Deleted PDF + HTML',
+          msg: {
+            subject: 'QA E2E 45e-1 - Deleted PDF Attachment HTML Body',
+            body: { contentType: 'HTML', content: '<html><body><p>Deleted email with <strong>PDF attachment</strong> and HTML body.</p><p>Tests attachment preservation in Deleted Items → Gmail Trash.</p></body></html>' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: true, isDraft: false,
+            attachments: [s45Pdf],
+          },
+        },
+        {
+          label: 'Deleted With CC',
+          msg: {
+            subject: 'QA E2E 45e-2 - Deleted With CC Recipients',
+            body: { contentType: 'text', content: 'Deleted email with CC recipients. Tests CC field preservation in Deleted Items → Gmail Trash migration.' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients: [{ emailAddress: s45Ext3 }, { emailAddress: s45Ext }],
+            isRead: true, isDraft: false,
+          },
+        },
+        {
+          label: 'Deleted High Importance',
+          msg: {
+            subject: 'QA E2E 45e-3 - Deleted High Importance',
+            body: { contentType: 'HTML', content: '<html><body><p><strong>High importance</strong> deleted email. Tests importance preservation in Deleted Items folder.</p></body></html>' },
+            from: { emailAddress: s45Ext3 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            importance: 'high',
+          },
+        },
+        {
+          label: 'Deleted Multiple Attachments DOCX+XLSX',
+          msg: {
+            subject: 'QA E2E 45e-4 - Deleted Multiple Attachments (DOCX+XLSX)',
+            body: { contentType: 'HTML', content: '<html><body><p>Deleted email with multiple attachments (Word + Excel).</p><p>Tests multi-attachment count and type in Deleted Items → Trash migration.</p></body></html>' },
+            from: { emailAddress: s45Ext },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            isRead: false, isDraft: false,
+            attachments: [s45Docx, s45Xlsx()],
+          },
+        },
+        {
+          label: 'Deleted Flagged With TXT Attachment',
+          msg: {
+            subject: 'QA E2E 45e-5 - Deleted Flagged With TXT Attachment',
+            body: { contentType: 'text', content: 'Deleted email that was flagged before deletion, with a text attachment. Tests flag state + attachment in Deleted Items.' },
+            from: { emailAddress: s45Ext2 },
+            toRecipients: [{ emailAddress: { address: userEmail } }],
+            ccRecipients: [{ emailAddress: s45Ext3 }],
+            isRead: true, isDraft: false,
+            flag: { flagStatus: 'flagged' },
+            attachments: [s45Txt],
+          },
+        },
+      ];
+
+      for (const tc of deletedCases45) {
+        try {
+          await outlookClient.createMessageInFolder(userEmail, 'deleteditems', tc.msg);
+          summary.messagesCreated++;
+          log.info(`✓ 45e Deleted: "${tc.label}"`);
+        } catch (err) {
+          log.warn(`45e Deleted "${tc.label}" failed: ${err.message}`);
+          summary.errors.push(`45e Deleted "${tc.label}": ${err.message}`);
+        }
+      }
+
+      log.info('✓ Section 45 complete — 29 quality-coverage emails added (8 Sent, 6 Archive, 5 Drafts, 5 Junk, 5 Deleted)');
+    } catch (err) {
+      log.warn(`Section 45 quality coverage failed: ${err.message}`);
+      summary.errors.push(`Section 45: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── Missing scenario 1: Large body email (~50 KB) ────────────────────────
+    log.info('E2E: creating large body email (~50 KB)…');
+    try {
+      const largeParagraph = 'Migration QA large body paragraph. ' +
+        'This email contains approximately fifty thousand characters of body text to exercise body size handling. ' +
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. ';
+      const largeBodyText = largeParagraph.repeat(Math.ceil(50000 / largeParagraph.length)).slice(0, 50000);
+      await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      'QA E2E - Large Body Email (~50KB)',
+        body:         { contentType: 'text', content: largeBodyText },
+        from:         { emailAddress: externalSender },
+        toRecipients: [{ emailAddress: { address: userEmail } }],
+        isRead: false, isDraft: false,
+      });
+      summary.messagesCreated++;
+      log.info(`✓ Large body email (~50 KB) created (body length=${largeBodyText.length} chars)`);
+    } catch (err) {
+      log.warn(`Large body email (~50 KB) failed: ${err.message}`);
+      summary.errors.push(`Large body email (~50KB): ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── Missing scenario 2: Draft with no recipients ─────────────────────────
+    log.info('E2E: creating draft with no recipients…');
+    try {
+      await outlookClient.createMessageInFolder(userEmail, 'drafts', {
+        subject:       'QA E2E - Draft With No Recipients',
+        body:          { contentType: 'text', content: 'Draft email with no To/CC/BCC recipients — tests incomplete draft migration where recipient fields are empty.' },
+        from:          { emailAddress: { address: userEmail } },
+        toRecipients:  [],
+        ccRecipients:  [],
+        bccRecipients: [],
+        isRead: false, isDraft: true,
+      });
+      summary.messagesCreated++;
+      log.info('✓ Draft with no recipients created');
+    } catch (err) {
+      log.warn(`Draft with no recipients failed: ${err.message}`);
+      summary.errors.push(`Draft with no recipients: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── Missing scenario 3: DOCX attachment email ────────────────────────────
+    log.info('E2E: creating DOCX attachment email…');
+    try {
+      await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      'QA E2E - DOCX Attachment Test',
+        body:         { contentType: 'text', content: 'Email with a Word document (.docx) attachment — tests DOCX attachment type migration.' },
+        from:         { emailAddress: externalSender },
+        toRecipients: [{ emailAddress: { address: userEmail } }],
+        isRead: false, isDraft: false,
+        attachments: [{
+          '@odata.type': '#microsoft.graph.fileAttachment',
+          name: 'qa-migration-document.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          contentBytes: MINIMAL_DOCX_B64,
+        }],
+      });
+      summary.messagesCreated++;
+      log.info('✓ DOCX attachment email created');
+    } catch (err) {
+      log.warn(`DOCX attachment email failed: ${err.message}`);
+      summary.errors.push(`DOCX attachment email: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 46. Shared Mailbox email simulation ──────────────────────────────────
+    // Seeds a message FROM a shared mailbox address to validate that content
+    // originating in a shared mailbox migrates correctly. We cannot configure
+    // a real shared mailbox in this test harness, so we place a message whose
+    // From address matches a known shared mailbox to simulate the scenario.
+    log.info('E2E: creating shared mailbox email simulation (Section 46)…');
+    try {
+      await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      'QA E2E - Shared Mailbox Email Test',
+        body: {
+          contentType: 'HTML',
+          content: '<html><body>'
+            + '<p>This email simulates a message received from a shared mailbox.</p>'
+            + '<p><strong>Shared Mailbox:</strong> sharedmailbox@qatestagent.com</p>'
+            + '<p>Migration QA — verifies that emails originating from a shared mailbox address '
+            + 'are migrated with the correct From header, body, and folder placement.</p>'
+            + '</body></html>',
+        },
+        from:         { emailAddress: { address: 'sharedmailbox@qatestagent.com', name: 'Shared Mailbox QA' } },
+        toRecipients: [{ emailAddress: { address: userEmail } }],
+        isRead: false,
+        isDraft: false,
+      });
+      summary.messagesCreated++;
+      log.info('✓ Shared mailbox email simulation created (sharedmailbox@qatestagent.com → Inbox)');
+    } catch (err) {
+      log.warn(`Shared mailbox email failed: ${err.message}`);
+      summary.errors.push(`Shared mailbox email: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 47. Distribution List / Group email ─────────────────────────────────
+    // Section 21 creates M365 Groups but does not seed an email addressed TO a
+    // distribution list address. This message covers that gap — it is addressed
+    // to a DL address so migration tooling can verify recipient field preservation.
+    log.info('E2E: creating distribution list email (Section 47)…');
+    try {
+      await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject:      'QA E2E - Distribution List Email Test',
+        body: {
+          contentType: 'HTML',
+          content: '<html><body>'
+            + '<p>This email was sent to a distribution list address.</p>'
+            + '<p><strong>Distribution List:</strong> qa-dist-list@qatestagent.com</p>'
+            + '<p>Migration QA — verifies that emails addressed to distribution list / group '
+            + 'addresses are migrated with the original To/CC fields intact.</p>'
+            + '</body></html>',
+        },
+        from:         { emailAddress: externalSender },
+        toRecipients: [{ emailAddress: { address: 'qa-dist-list@qatestagent.com', name: 'QA Distribution List' } }],
+        ccRecipients: [{ emailAddress: { address: userEmail } }],
+        isRead: false,
+        isDraft: false,
+      });
+      summary.messagesCreated++;
+      log.info('✓ Distribution list email created (TO: qa-dist-list@qatestagent.com, CC: user)');
+    } catch (err) {
+      log.warn(`Distribution list email failed: ${err.message}`);
+      summary.errors.push(`Distribution list email: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── 48. Email with HTML signature block in body ──────────────────────────
+    // Tests that a full HTML email signature embedded at the bottom of the body
+    // migrates correctly — fonts, colors, links, and formatting all preserved.
+    log.info('E2E: creating email with HTML signature block in body (Section 48)…');
+    try {
+      await outlookClient.createMessageInFolder(userEmail, 'inbox', {
+        subject: 'QA E2E - Signature in Body Test',
+        body: {
+          contentType: 'HTML',
+          content: '<html><body style="font-family:Arial,sans-serif;font-size:14px;">'
+            + '<p>Hi,</p>'
+            + '<p>Please find the details you requested in the attachment.</p>'
+            + '<p>Let me know if you have any questions.</p>'
+            + '<p>Best regards,</p>'
+            + '<br/>'
+            + '<table cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,sans-serif;font-size:13px;color:#333;">'
+            + '  <tr>'
+            + '    <td style="border-right:3px solid #1a56db;padding-right:12px;vertical-align:top;">'
+            + '      <strong style="font-size:15px;color:#1a56db;">John Q. Tester</strong><br/>'
+            + '      <span style="color:#555;">Senior QA Engineer</span><br/>'
+            + '      <span style="color:#555;">CloudFuze, Inc.</span>'
+            + '    </td>'
+            + '    <td style="padding-left:12px;vertical-align:top;">'
+            + '      &#128222; <a href="tel:+15550001234" style="color:#333;text-decoration:none;">+1 (555) 000-1234</a><br/>'
+            + '      &#9993; <a href="mailto:john.tester@qatestagent.com" style="color:#1a56db;">john.tester@qatestagent.com</a><br/>'
+            + '      &#127758; <a href="https://www.cloudfuze.com" style="color:#1a56db;">www.cloudfuze.com</a>'
+            + '    </td>'
+            + '  </tr>'
+            + '  <tr>'
+            + '    <td colspan="2" style="padding-top:8px;font-size:10px;color:#999;">'
+            + '      This email and any attachments are for the exclusive and confidential use of the intended recipient. '
+            + '      If you are not the intended recipient, please do not read, distribute or take action in reliance upon this message.'
+            + '    </td>'
+            + '  </tr>'
+            + '</table>'
+            + '</body></html>',
+        },
+        from:         { emailAddress: externalSender },
+        toRecipients: [{ emailAddress: { address: userEmail } }],
+        isRead: false,
+        isDraft: false,
+      });
+      summary.messagesCreated++;
+      log.info('✓ Email with HTML signature block in body created');
+    } catch (err) {
+      log.warn(`Signature in body email failed: ${err.message}`);
+      summary.errors.push(`Signature in body email: ${err.message}`);
     }
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
     // ── D-Cal. Calendar events (DELTA only) ────────────────────────────────
+    if (context.migrationType === 'DELTA') {
     log.info('E2E (DELTA): creating calendar events…');
     const defaultCalId = null;
 
@@ -3224,6 +4131,16 @@ console.log('Migration status:', result.status); // ✅ completed
           isAllDay: false,
         },
       },
+      {
+        label: 'non-UTC timezone event (America/New_York)',
+        body: {
+          subject:  'QA E2E - Eastern Time Zone Event (America/New_York)',
+          start:    { dateTime: futureStart.toISOString().replace('Z', ''), timeZone: 'Eastern Standard Time' },
+          end:      { dateTime: futureEnd.toISOString().replace('Z', ''),   timeZone: 'Eastern Standard Time' },
+          body:     { contentType: 'text', content: 'Non-UTC timezone event using Eastern Standard Time (America/New_York equivalent) — validates timezone preservation across Outlook→Gmail migration.' },
+          isAllDay: false,
+        },
+      },
     ];
 
     for (const ev of calEvents) {
@@ -3235,6 +4152,50 @@ console.log('Migration status:', result.status); // ✅ completed
         log.warn(`Calendar event (${ev.label}) failed: ${err.message}`);
         summary.errors.push(`Calendar event "${ev.label}": ${err.message}`);
       }
+    }
+
+    // ── D-Cal-Exception. Recurring event with a single modified occurrence ────
+    // Creates a weekly recurring series, then patches the second occurrence to
+    // have a different subject/body — tests exception handling in migration.
+    log.info('E2E (DELTA): creating recurring event with exception…');
+    try {
+      const exStart = new Date(now); exStart.setDate(exStart.getDate() + 30);
+      const exEnd   = new Date(exStart); exEnd.setHours(exEnd.getHours() + 1);
+      const baseSeries = await outlookClient.createCalendarEvent(userEmail, defaultCalId, {
+        subject:  'QA E2E - Recurring Weekly (Exception Series)',
+        start:    { dateTime: exStart.toISOString(), timeZone: 'UTC' },
+        end:      { dateTime: exEnd.toISOString(),   timeZone: 'UTC' },
+        body:     { contentType: 'text', content: 'Base recurring series — second occurrence will be modified as an exception for migration QA.' },
+        isAllDay: false,
+        recurrence: {
+          pattern: { type: 'weekly', interval: 1, daysOfWeek: [['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][exStart.getDay()]] },
+          range:   { type: 'numbered', startDate: exStart.toISOString().split('T')[0], numberOfOccurrences: 4 },
+        },
+      });
+      summary.calendarEventsCreated++;
+      log.info(`✓ D-Cal-Exception: base recurring series created (id=${baseSeries?.id})`);
+
+      if (baseSeries?.id) {
+        try {
+          const instances = await outlookClient.getCalendarEventInstances(userEmail, baseSeries.id, 5);
+          const secondInstance = instances[1] || instances[0];
+          if (secondInstance?.id) {
+            await outlookClient.updateCalendarEvent(userEmail, secondInstance.id, {
+              subject: 'QA E2E - Recurring Weekly (Exception: 2nd Occurrence Modified)',
+              body:    { contentType: 'text', content: 'Exception occurrence: this instance of the recurring series was individually modified — tests recurring event exception migration from Outlook to Gmail.' },
+            });
+            log.info(`✓ D-Cal-Exception: second occurrence patched (id=${secondInstance.id})`);
+          } else {
+            log.warn('D-Cal-Exception: no second instance found — exception patch skipped');
+          }
+        } catch (err) {
+          log.warn(`D-Cal-Exception patch failed (non-fatal): ${err.message}`);
+          summary.errors.push(`D-Cal-Exception patch: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      log.warn(`D-Cal-Exception series creation failed: ${err.message}`);
+      summary.errors.push(`D-Cal-Exception: ${err.message}`);
     }
 
     // ── D-Cal-Attach. Calendar event with file attachment ───────────────────
@@ -3266,6 +4227,90 @@ console.log('Migration status:', result.status); // ✅ completed
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
 
+    // ── D-Cal-Single. Single instance (non-recurring) calendar event ─────────
+    // Explicitly creates one non-recurring event with the canonical subject used
+    // in inscope feature verification. The future-event in D-Cal is also a single
+    // instance, but this entry carries a distinctive subject for precise matching.
+    log.info('E2E (DELTA): creating single instance calendar event…');
+    try {
+      const siStart = new Date(futureStart); siStart.setDate(siStart.getDate() + 5);
+      const siEnd   = new Date(siStart); siEnd.setHours(siEnd.getHours() + 1);
+      await outlookClient.createCalendarEvent(userEmail, defaultCalId, {
+        subject:  'QA E2E - Single Instance Calendar Event',
+        start:    { dateTime: siStart.toISOString(), timeZone: 'UTC' },
+        end:      { dateTime: siEnd.toISOString(),   timeZone: 'UTC' },
+        body:     { contentType: 'text', content: 'Single non-recurring calendar event — inscope feature: single instance calendar. Tests that a one-time event migrates with correct start/end times, no recurrence pattern.' },
+        isAllDay: false,
+      });
+      summary.calendarEventsCreated++;
+      log.info('✓ Single instance calendar event created');
+    } catch (err) {
+      log.warn(`Single instance calendar event failed: ${err.message}`);
+      summary.errors.push(`Single instance calendar event: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── D-Cal-Delegate. Calendar delegate / permissions event ───────────────
+    // Microsoft Graph does not expose a direct "add calendar delegate" endpoint
+    // in the delegated-permission flow available to test agents. Instead we create
+    // a clearly labelled calendar event and log a note so QA can manually verify
+    // delegate configuration if needed. The event subject matches the inscope
+    // feature name for automated result correlation.
+    log.info('E2E (DELTA): creating calendar delegate event marker…');
+    try {
+      const delStart = new Date(futureStart); delStart.setDate(delStart.getDate() + 6);
+      const delEnd   = new Date(delStart); delEnd.setHours(delEnd.getHours() + 1);
+      await outlookClient.createCalendarEvent(userEmail, defaultCalId, {
+        subject:  'QA E2E - Calendar Delegate Event Test',
+        start:    { dateTime: delStart.toISOString(), timeZone: 'UTC' },
+        end:      { dateTime: delEnd.toISOString(),   timeZone: 'UTC' },
+        body: {
+          contentType: 'HTML',
+          content: '<html><body>'
+            + '<p><strong>Calendar Delegate / Permissions Test</strong></p>'
+            + '<p>This event is a marker for the Calendar Permissions / Delegates inscope feature.</p>'
+            + '<p>To fully exercise this scenario, a delegate must be manually configured in '
+            + 'Outlook (File → Account Settings → Delegate Access) and granted editor permissions '
+            + 'on the calendar. The migration tooling should then preserve delegate access after migration.</p>'
+            + '<p>Migration QA — inscope feature: Calendar Permissions / Delegates.</p>'
+            + '</body></html>',
+        },
+        isAllDay: false,
+      });
+      summary.calendarEventsCreated++;
+      log.info('✓ Calendar delegate event marker created (note: manual delegate config required for full scenario)');
+    } catch (err) {
+      log.warn(`Calendar delegate event failed: ${err.message}`);
+      summary.errors.push(`Calendar delegate event: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
+    // ── D-Cal-Busy. Calendar event with showAs='busy' ───────────────────────
+    // Explicitly sets the showAs property to 'busy' to verify that free/busy
+    // status is preserved during migration (inscope: Busy Status in Calendar event).
+    log.info('E2E (DELTA): creating calendar event with busy showAs…');
+    try {
+      const busyStart = new Date(futureStart); busyStart.setDate(busyStart.getDate() + 8);
+      const busyEnd   = new Date(busyStart); busyEnd.setHours(busyEnd.getHours() + 1);
+      await outlookClient.createCalendarEvent(userEmail, defaultCalId, {
+        subject:  'QA E2E - Busy Status Calendar Event',
+        start:    { dateTime: busyStart.toISOString(), timeZone: 'UTC' },
+        end:      { dateTime: busyEnd.toISOString(),   timeZone: 'UTC' },
+        body:     { contentType: 'text', content: 'Calendar event with showAs=busy — inscope feature: Busy Status in Calendar event. Tests that the free/busy indicator migrates correctly.' },
+        isAllDay: false,
+        showAs:   'busy',
+      });
+      summary.calendarEventsCreated++;
+      log.info('✓ Busy status calendar event created (showAs=busy)');
+    } catch (err) {
+      log.warn(`Busy status calendar event failed: ${err.message}`);
+      summary.errors.push(`Busy status calendar event: ${err.message}`);
+    }
+
+    if (context.executionId && executionService.isCancelled(context.executionId)) return;
+
     // ── D-SharedCal. Shared calendar (DELTA only) ───────────────────────────
     log.info('E2E (DELTA): creating shared calendar…');
     try {
@@ -3278,11 +4323,16 @@ console.log('Migration status:', result.status); // ✅ completed
         subject:  'QA E2E - Shared Calendar Event',
         start:    { dateTime: sharedEvStart.toISOString(), timeZone: 'UTC' },
         end:      { dateTime: sharedEvEnd.toISOString(),   timeZone: 'UTC' },
-        body:     { contentType: 'text', content: 'Event in shared calendar for migration QA.' },
+        body:     { contentType: 'text', content: 'Event in shared calendar for migration QA. Tests that shared calendar events migrate with proper attendee data.' },
         isAllDay: false,
+        attendees: [
+          { emailAddress: { address: shareWith, name: shareWith.split('@')[0] }, type: 'required' },
+          { emailAddress: { address: 'qa-attendee-1@qatestagent.com', name: 'QA Attendee One' }, type: 'required' },
+          { emailAddress: { address: 'qa-attendee-2@qatestagent.com', name: 'QA Attendee Two' }, type: 'optional' },
+        ],
       });
       summary.calendarEventsCreated++;
-      log.info(`✓ Shared calendar "${sharedCal.name}" created and shared with ${shareWith}`);
+      log.info(`✓ Shared calendar "${sharedCal.name}" created and shared with ${shareWith} (3 attendees)`);
     } catch (err) {
       log.warn(`Shared calendar failed: ${err.message}`);
       summary.errors.push(`Shared calendar: ${err.message}`);
@@ -3375,6 +4425,28 @@ console.log('Migration status:', result.status); // ✅ completed
         log.warn(`Contact photo set failed: ${err.message}`);
       }
       break;
+    }
+
+    // ── D-Contacts-Partial. Contact with empty/missing optional fields ─────────
+    // Inscope feature: "Contacts with any one empty field" — verifies that partial
+    // contacts (only name + email, all other fields absent) migrate without errors
+    // or data corruption. Some migration tools skip contacts where optional fields
+    // are null; this seeds one such contact to expose that failure mode.
+    log.info('E2E (DELTA): creating partial contact (name + email only)…');
+    try {
+      await outlookClient.createContact(userEmail, {
+        displayName: 'QA Contact Partial (Name+Email Only)',
+        givenName:   'QA',
+        surname:     'Partial',
+        emailAddresses: [{ address: 'qa.partial@external-test.com', name: 'QA Partial' }],
+        // businessPhones, companyName, jobTitle, homeAddress, personalNotes intentionally absent
+        // — tests that a contact with only name+email migrates correctly
+      });
+      summary.contactsCreated++;
+      log.info('✓ Partial contact (name + email only) created');
+    } catch (err) {
+      log.warn(`Partial contact failed: ${err.message}`);
+      summary.errors.push(`Partial contact: ${err.message}`);
     }
 
     if (context.executionId && executionService.isCancelled(context.executionId)) return;
@@ -3691,6 +4763,7 @@ console.log('Migration status:', result.status); // ✅ completed
       }
     }
 
+    } // end if (context.migrationType === 'DELTA')
   }
 }
 

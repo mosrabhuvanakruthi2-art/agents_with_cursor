@@ -52,7 +52,8 @@ export default function UserMapping({ onMappingComplete }) {
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState(null);
   const [googleTenant, setGoogleTenant] = useState('1');
-  const [msTenant, setMsTenant] = useState('1');
+  const [srcMsTenant, setSrcMsTenant] = useState('1');
+  const [dstMsTenant, setDstMsTenant] = useState('1');
   const [dwdEmail, setDwdEmail] = useState('admin@migrationn.com');
   const pollRef = useRef(null);
   const popupRef = useRef(null);
@@ -134,6 +135,7 @@ export default function UserMapping({ onMappingComplete }) {
     setOauthLoading(true);
     try {
       const getFn = providerKey === 'google' ? getGoogleOAuthUrl : getMicrosoftOAuthUrl;
+      const msTenant = target === 'source' ? srcMsTenant : dstMsTenant;
       const tenant = providerKey === 'google' ? googleTenant : msTenant;
       const res = await getFn('popup', tenant);
       popupRef.current = openOAuthPopup(res.data.url);
@@ -395,8 +397,8 @@ export default function UserMapping({ onMappingComplete }) {
           error={oauthError}
           googleTenant={googleTenant}
           onGoogleTenantChange={setGoogleTenant}
-          msTenant={msTenant}
-          onMsTenantChange={setMsTenant}
+          msTenant={loginTarget === 'source' ? srcMsTenant : dstMsTenant}
+          onMsTenantChange={loginTarget === 'source' ? setSrcMsTenant : setDstMsTenant}
           dwdEmail={dwdEmail}
           onDwdEmailChange={setDwdEmail}
           onConnect={() => handleLogin(loginTarget)}

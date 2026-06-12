@@ -22,6 +22,7 @@ const SERVICE_ACCOUNT_SCOPES = [
   'https://www.googleapis.com/auth/admin.directory.user.readonly',
   'https://www.googleapis.com/auth/contacts.readonly',
   'https://www.googleapis.com/auth/admin.directory.group.readonly',
+  'https://www.googleapis.com/auth/gmail.settings.basic', // vacation, signature, filters
 ];
 
 // Superset scopes required for permanent delete (batchDelete/messages.delete).
@@ -196,10 +197,15 @@ function buildRawMessage({
   subject,
   cc,
   bcc,
+  replyTo,
   textBody,
   htmlBody,
   attachments = [],
   inlineImages = [],
+  date,
+  inReplyTo,
+  references,
+  messageId,
 }) {
   const ts = Date.now();
   const altBoundary = `alt_${ts}`;
@@ -213,6 +219,10 @@ function buildRawMessage({
   // migration importer) don't collapse bare \n into spaces.
   const plainBody = normalizeCRLF(textBody);
 
+  // Use provided date (for historical emails) or current time
+  const dateStr = date ? (date instanceof Date ? date.toUTCString() : new Date(date).toUTCString()) : rfc2822Date();
+  const msgId = messageId || `<${ts}-${Math.random().toString(36).slice(2)}@cloudfuze.qa>`;
+
   let message = '';
   message += `From: ${from}\r\n`;
   message += `To: ${to}\r\n`;
@@ -220,9 +230,12 @@ function buildRawMessage({
   if (ccLine) message += `Cc: ${ccLine}\r\n`;
   const bccLine = formatAddressList(bcc);
   if (bccLine) message += `Bcc: ${bccLine}\r\n`;
+  if (replyTo) message += `Reply-To: ${replyTo}\r\n`;
   message += `Subject: ${encodeSubject(subject)}\r\n`;
-  message += `Date: ${rfc2822Date()}\r\n`;
-  message += `Message-ID: <${ts}-${Math.random().toString(36).slice(2)}@cloudfuze.qa>\r\n`;
+  message += `Date: ${dateStr}\r\n`;
+  message += `Message-ID: ${msgId}\r\n`;
+  if (inReplyTo) message += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) message += `References: ${references}\r\n`;
   message += `MIME-Version: 1.0\r\n`;
 
   // Helper: emit the multipart/related block (html + inline images)
@@ -321,15 +334,13 @@ function buildRawMessage({
 async function insertEmail(sourceEmail, userId, rawMessage, labelIds = ['INBOX'], opts = {}) {
   const gmail = getGmailForEmail(sourceEmail);
   const requestBody = { raw: rawMessage, labelIds };
-  if (opts.threadId) {
-    requestBody.threadId = opts.threadId;
-  }
+  if (opts.threadId) requestBody.threadId = opts.threadId;
+  // internalDate sets the historical timestamp (epoch ms string) — used for old-dated emails
+  const params = { userId, requestBody };
+  if (opts.internalDate) params.internalDateSource = 'dateHeader';
   const res = await retryWithBackoff(
     () =>
-      gmail.users.messages.insert({
-        userId,
-        requestBody,
-      }),
+      gmail.users.messages.insert(params),
     { label: `Gmail insertEmail (${sourceEmail})` }
   );
   return res.data;
@@ -993,14 +1004,17 @@ async function cleanGmailMailbox(sourceEmail) {
   log.info('[clean-gmail ' + sourceEmail + '] Step 1: Deleting custom labels...');
   try {
     const labelsRes = await gmail.users.labels.list({ userId: 'me' });
-    for (const label of labelsRes.data.labels || []) {
-      if (!GMAIL_SYSTEM_LABEL_IDS.has(label.id) && label.type === 'user') {
+    const userLabels = (labelsRes.data.labels || []).filter(l => !GMAIL_SYSTEM_LABEL_IDS.has(l.id) && l.type === 'user');
+    // Delete labels in parallel batches of 10
+    const LABEL_BATCH = 10;
+    for (let i = 0; i < userLabels.length; i += LABEL_BATCH) {
+      await Promise.all(userLabels.slice(i, i + LABEL_BATCH).map(async label => {
         try {
           await gmail.users.labels.delete({ userId: 'me', id: label.id });
           summary.foldersDeleted++;
           log.info('[clean-gmail ' + sourceEmail + ']   Deleted label "' + label.name + '"');
         } catch (err) { summary.errors.push('Label "' + label.name + '": ' + err.message); }
-      }
+      }));
     }
   } catch (err) { summary.errors.push('Labels: ' + err.message); }
 
@@ -1361,6 +1375,152 @@ async function getGmailFilters(userEmail) {
   }
 }
 
+/**
+ * Create a Gmail filter rule using the Settings Filters API.
+ *
+ * @param {string} userEmail
+ * @param {{ from?: string, to?: string, subject?: string, query?: string }} criteria
+ * @param {{ addLabelIds?: string[], removeLabelIds?: string[], markAsRead?: boolean, neverSpam?: boolean }} action
+ * @returns {Promise<object>} The created filter resource.
+ */
+async function createGmailFilter(userEmail, criteria, action) {
+  const gmail = getGmailForEmail(userEmail);
+  const requestBody = { criteria: {}, action: {} };
+  if (criteria.from)    requestBody.criteria.from    = criteria.from;
+  if (criteria.to)      requestBody.criteria.to      = criteria.to;
+  if (criteria.subject) requestBody.criteria.subject = criteria.subject;
+  if (criteria.query)   requestBody.criteria.query   = criteria.query;
+  if (action.addLabelIds?.length)    requestBody.action.addLabelIds    = action.addLabelIds;
+  if (action.removeLabelIds?.length) requestBody.action.removeLabelIds = action.removeLabelIds;
+  if (action.markAsRead)  requestBody.action.removeLabelIds = [...(requestBody.action.removeLabelIds || []), 'UNREAD'];
+  if (action.neverSpam)   requestBody.action.removeLabelIds = [...(requestBody.action.removeLabelIds || []), 'SPAM'];
+  const res = await retryWithBackoff(
+    () => gmail.users.settings.filters.create({ userId: 'me', requestBody }),
+    { label: `Gmail createFilter (${userEmail})` }
+  );
+  return res.data;
+}
+
+/**
+ * Create a Google Contacts contact group (label/group for contact labeling).
+ *
+ * @param {string} userEmail
+ * @param {string} groupName  - Display name for the contact group.
+ * @returns {Promise<object>} The created contactGroups resource.
+ */
+async function createContactGroup(userEmail, groupName) {
+  const auth = hasServiceAccount(getGoogleTenant(userEmail))
+    ? getServiceAccountAuth(userEmail)
+    : getAuthForToken(getRefreshTokenForEmail(userEmail), userEmail);
+  const people = google.people({ version: 'v1', auth });
+  const res = await retryWithBackoff(
+    () => people.contactGroups.create({ requestBody: { contactGroup: { name: groupName } } }),
+    { label: `People createContactGroup(${groupName}) for ${userEmail}` }
+  );
+  return res.data;
+}
+
+/**
+ * Add a People API person (resourceName) to an existing contact group (resourceName).
+ *
+ * @param {string} userEmail
+ * @param {string} groupResourceName  - e.g. "contactGroups/abc123"
+ * @param {string[]} memberResourceNames  - e.g. ["people/xyz"]
+ * @returns {Promise<object>}
+ */
+async function addContactsToGroup(userEmail, groupResourceName, memberResourceNames) {
+  const auth = hasServiceAccount(getGoogleTenant(userEmail))
+    ? getServiceAccountAuth(userEmail)
+    : getAuthForToken(getRefreshTokenForEmail(userEmail), userEmail);
+  const people = google.people({ version: 'v1', auth });
+  const res = await retryWithBackoff(
+    () =>
+      people.contactGroups.members.modify({
+        resourceName: groupResourceName,
+        requestBody: { resourceNamesToAdd: memberResourceNames },
+      }),
+    { label: `People contactGroups.members.modify for ${userEmail}` }
+  );
+  return res.data;
+}
+
+/**
+ * List user-created (non-system) contact groups (labels) for a Gmail account.
+ * Uses the People API contactGroups.list endpoint.
+ *
+ * @param {string} userEmail
+ * @returns {Promise<{ groups: string[], available: boolean, note?: string }>}
+ *   groups — display names of all USER_CONTACT_GROUP entries
+ */
+async function getGmailContactGroups(userEmail) {
+  try {
+    const auth = hasServiceAccount(getGoogleTenant(userEmail))
+      ? getServiceAccountAuth(userEmail)
+      : getAuthForToken(getRefreshTokenForEmail(userEmail), userEmail);
+    const people = google.people({ version: 'v1', auth });
+    const res = await retryWithBackoff(
+      () => people.contactGroups.list({ pageSize: 200 }),
+      { label: `People contactGroups.list for ${userEmail}` }
+    );
+    const groups = (res.data.contactGroups || [])
+      .filter(g => g.groupType === 'USER_CONTACT_GROUP' && g.name)
+      .map(g => g.name);
+    return { groups, available: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    return { groups: [], available: false, note: `getGmailContactGroups failed: ${msg.substring(0, 160)}` };
+  }
+}
+
+/**
+ * Create a contact in the authenticated user's Google Contacts via the People API.
+ *
+ * @param {string} userEmail  - The Gmail account to create the contact in.
+ * @param {{ displayName: string, email?: string, phone?: string, company?: string, title?: string }} contactData
+ * @returns {Promise<object>} The created People API person resource.
+ */
+async function createGmailContact(userEmail, contactData) {
+  const auth = hasServiceAccount(getGoogleTenant(userEmail))
+    ? getServiceAccountAuth(userEmail)
+    : getAuthForToken(getRefreshTokenForEmail(userEmail), userEmail);
+  const people = google.people({ version: 'v1', auth });
+
+  const person = {};
+
+  // Names
+  if (contactData.displayName) {
+    const parts = String(contactData.displayName).trim().split(/\s+/);
+    const givenName = parts[0] || '';
+    const familyName = parts.slice(1).join(' ') || '';
+    person.names = [{ givenName, familyName, displayName: contactData.displayName }];
+  }
+
+  // Email addresses
+  if (contactData.email) {
+    person.emailAddresses = [{ value: contactData.email, type: 'work' }];
+  }
+
+  // Phone numbers
+  if (contactData.phone) {
+    person.phoneNumbers = [{ value: contactData.phone, type: 'work' }];
+  }
+
+  // Organization (company + title)
+  if (contactData.company || contactData.title) {
+    person.organizations = [{
+      name: contactData.company || '',
+      title: contactData.title || '',
+      type: 'work',
+    }];
+  }
+
+  const res = await retryWithBackoff(
+    () => people.people.createContact({ requestBody: person }),
+    { label: `People createContact (${userEmail})` }
+  );
+  return res.data;
+}
+
 async function getGmailDraftDetails(userEmail, maxDrafts = 100) {
   try {
     const gmail = getGmailForEmail(userEmail);
@@ -1392,6 +1552,51 @@ async function getGmailDraftDetails(userEmail, maxDrafts = 100) {
   } catch (e) {
     return { drafts: [], available: false, note: `Gmail drafts fetch failed: ${String(e.message).substring(0, 120)}` };
   }
+}
+
+/**
+ * Stub: fetch Gmail vacation auto-reply (out-of-office) settings for a user.
+ *
+ * The Gmail Settings API endpoint is users.settings.getVacation
+ * (GET /gmail/v1/users/{userId}/settings/vacation).
+ * This stub returns null because the current service-account DWD scopes do not include
+ * https://www.googleapis.com/auth/gmail.settings.basic, which is required for settings reads.
+ * When that scope is added to DWD, replace this stub with a real implementation that calls
+ * gmail.users.settings.getVacation({ userId: 'me' }) and maps res.data.enableAutoReply.
+ *
+ * @param {string} userEmail
+ * @returns {Promise<{ enabled: boolean|null, available: false, note: string }>}
+ */
+async function getVacationSettings(userEmail) {
+  logger.warn(`getVacationSettings: not yet implemented for ${userEmail} — gmail.settings.basic scope not in DWD`);
+  return {
+    enabled: null,
+    available: false,
+    note: 'Vacation/auto-reply settings not available — gmail.settings.basic scope not configured in DWD.',
+  };
+}
+
+/**
+ * Stub: fetch Gmail SendAs / signature settings for a user.
+ *
+ * The Gmail Settings API endpoint is users.settings.sendAs.list
+ * (GET /gmail/v1/users/{userId}/settings/sendAs).
+ * Returns an array where each sendAs entry has a `signature` field.
+ * This stub returns null because the current service-account DWD scopes do not include
+ * https://www.googleapis.com/auth/gmail.settings.basic.
+ * When that scope is added to DWD, replace this stub with a real implementation that calls
+ * gmail.users.settings.sendAs.list({ userId: 'me' }) and returns res.data.sendAs.
+ *
+ * @param {string} userEmail
+ * @returns {Promise<{ sendAs: Array|null, available: false, note: string }>}
+ */
+async function getSendAsSettings(userEmail) {
+  logger.warn(`getSendAsSettings: not yet implemented for ${userEmail} — gmail.settings.basic scope not in DWD`);
+  return {
+    sendAs: null,
+    available: false,
+    note: 'SendAs/signature settings not available — gmail.settings.basic scope not configured in DWD.',
+  };
 }
 
 module.exports = {
@@ -1433,5 +1638,12 @@ module.exports = {
   getGmailThread,
   getGmailFilters,
   getGmailDraftDetails,
+  createGmailContact,
+  createGmailFilter,
+  createContactGroup,
+  addContactsToGroup,
+  getGmailContactGroups,
+  getVacationSettings,
+  getSendAsSettings,
   GMAIL_SYSTEM_LABEL_IDS,
 };

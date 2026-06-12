@@ -96,6 +96,14 @@ class CleanupAgent extends BaseAgent {
       }
       outlookClient.clearFolderCache(context.sourceEmail);
 
+      // Delete all M365 Groups whose displayName starts with 'QA ' (tenant-level cleanup)
+      try {
+        const groupsDeleted = await outlookClient.deleteQAGroups(context.sourceEmail);
+        log.info(`CleanupAgent [${context.sourceEmail}]: deleted ${groupsDeleted} QA M365 group(s)`);
+      } catch (err) {
+        log.warn(`CleanupAgent [${context.sourceEmail}]: QA groups cleanup failed (non-blocking): ${err.message}`);
+      }
+
     } else if (!isOutlookSrc && context.sourceEmail) {
       // Gmail source (Gmail→Outlook or Gmail→Gmail)
       // cleanGmailMailbox performs a full wipe incl. filters (step 5)

@@ -116,7 +116,22 @@ function getExecution(req, res) {
   if (!execution) {
     return res.status(404).json({ error: 'Execution not found' });
   }
-  res.json(execution);
+  try {
+    res.json(execution);
+  } catch (err) {
+    // Circular reference in result — return safe status subset so frontend stays responsive
+    logger.warn(`getExecution serialization error (${req.params.id}): ${err.message}`);
+    res.json({
+      executionId: execution.executionId,
+      status: execution.status,
+      currentAgent: execution.currentAgent,
+      progress: execution.progress,
+      error: execution.error,
+      createdAt: execution.createdAt,
+      completedAt: execution.completedAt,
+      _serializationError: 'Result contains non-serializable data — restart server to clear',
+    });
+  }
 }
 
 function getExecutionLogs(req, res) {
@@ -879,6 +894,25 @@ async function createTestData(req, res) {
   }
 }
 
+async function resumeExecution(req, res) {
+  try {
+    const { id } = req.params;
+    const execution = executionService.get(id);
+    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (execution.status !== 'INTERRUPTED') {
+      return res.status(400).json({ error: `Execution cannot be resumed (status: ${execution.status})` });
+    }
+    res.json({ ok: true, executionId: id, message: 'Resuming execution…' });
+    const orchestrator = require('../orchestrator/AgentOrchestrator');
+    orchestrator.resumeFlow(id).catch((err) => {
+      logger.error(`Resume execution ${id} failed: ${err.message}`);
+    });
+  } catch (err) {
+    logger.error(`resumeExecution error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -887,6 +921,6 @@ module.exports = {
   cleanDestinationEmails, cleanDestinationFolders, cleanDestinationEvents,
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
-  createOutlookData, cancelExecution, createTestData,
+  createOutlookData, cancelExecution, createTestData, resumeExecution,
 };
 

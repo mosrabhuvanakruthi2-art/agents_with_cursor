@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const logger = require('../utils/logger');
 
 const dataDir = path.resolve(__dirname, '../../data');
 const executionsFile = path.join(dataDir, 'executions.json');
@@ -23,20 +24,24 @@ function loadExecutions() {
 
 function saveExecutions(executions) {
   const arr = Array.from(executions.values());
-  fs.writeFileSync(executionsFile, JSON.stringify(arr, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(executionsFile, JSON.stringify(arr, null, 2), 'utf-8');
+  } catch (err) {
+    logger.error(`[executionService] saveExecutions failed: ${err.message}`);
+  }
 }
 
 const executions = loadExecutions();
 
 // On startup: any execution still marked RUNNING or PENDING was orphaned by a server
-// restart/crash — the background job is dead, so mark them as FAILED immediately.
+// restart/crash — mark as INTERRUPTED so the UI can offer a Resume option.
 let _orphansFixed = false;
 for (const exec of executions.values()) {
   if (exec.status === 'RUNNING' || exec.status === 'PENDING') {
     Object.assign(exec, {
-      status: 'FAILED',
+      status: 'INTERRUPTED',
       error: 'Server restarted while execution was in progress',
-      progress: 'Interrupted — server was restarted',
+      progress: 'Interrupted — server was restarted. Click Resume to continue.',
       completedAt: new Date().toISOString(),
     });
     _orphansFixed = true;

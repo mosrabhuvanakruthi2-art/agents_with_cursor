@@ -42,7 +42,7 @@ function startPolling(executionId) {
       const { data } = await getExecution(executionId);
       store.execution = data;
       notify();
-      if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+      if (data.status === 'COMPLETED' || data.status === 'FAILED' || data.status === 'INTERRUPTED' || data.status === 'CANCELLED') {
         stopPolling();
       }
     } catch {

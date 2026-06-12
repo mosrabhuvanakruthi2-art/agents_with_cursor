@@ -1,7 +1,9 @@
 import { Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
 import AgentForm from '../components/AgentForm';
 import StatusBadge from '../components/StatusBadge';
 import useAgentExecution from '../hooks/useAgentExecution';
+import { runDocsSync, getDocsSyncStatus } from '../services/api';
 
 /** Merge stored execution row with nested `result` once the run finishes (GET /executions/:id shape). */
 function normalizeRunResult(exec) {
@@ -18,16 +20,81 @@ function normalizeRunResult(exec) {
 
 export default function RunAgent() {
   const { execution, loading, error, run } = useAgentExecution();
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
 
   const isBulk = execution?.bulk;
   const isRunning = execution && !isBulk && execution.status === 'RUNNING';
   const runView = normalizeRunResult(execution);
 
+  // Load last sync status on mount
+  useEffect(() => {
+    getDocsSyncStatus().then(({ data }) => setSyncStatus(data)).catch(() => {});
+  }, []);
+
+  async function handleDocsSync() {
+    setSyncing(true);
+    try {
+      const { data } = await runDocsSync();
+      setSyncStatus(data);
+    } catch (e) {
+      // silent — non-blocking
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const newInscope  = syncStatus?.newInscopeFeatures?.length  || 0;
+  const newOutscope = syncStatus?.newOutscopeFeatures?.length || 0;
+  const hasNew      = newInscope + newOutscope > 0;
+
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Run Agent</h1>
-        <p className="text-sm text-gray-500 mt-1">Configure and trigger a migration QA flow</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Run Agent</h1>
+          <p className="text-sm text-gray-500 mt-1">Configure and trigger a migration QA flow</p>
+        </div>
+
+        {/* ── Docs Sync widget ── */}
+        <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-2.5 shadow-sm">
+          <div className="text-xs text-gray-500 leading-tight">
+            <p className="font-medium text-gray-700">Docs Sync</p>
+            {syncStatus?.lastSyncAt ? (
+              <p>{new Date(syncStatus.lastSyncAt).toLocaleString()}</p>
+            ) : (
+              <p>Never synced</p>
+            )}
+          </div>
+          {hasNew ? (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold bg-amber-100 text-amber-700 border border-amber-200 rounded-full px-2 py-0.5">
+              {newInscope + newOutscope} new
+            </span>
+          ) : syncStatus ? (
+            <span className="inline-flex items-center gap-1 text-xs text-green-600">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+              </svg>
+              Up to date
+            </span>
+          ) : null}
+          <button
+            onClick={handleDocsSync}
+            disabled={syncing}
+            title="Sync CloudFuze documentation"
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          >
+            <svg className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+            </svg>
+            {syncing ? 'Syncing…' : 'Sync'}
+          </button>
+          {hasNew && (
+            <span className="text-xs text-amber-700 font-medium whitespace-nowrap">
+              ↑ New features detected
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">

@@ -42,6 +42,7 @@ function buildStructuredDiffRowsFromDiffs(diffs, fallbackNote) {
     oneDriveLink: 'OneDrive link',
     zoomLink: 'Zoom link',
     threadGrouping: 'Thread grouping',
+    notFoundReason: 'Not Found Reason',
   };
   const RECIPIENT_FIELDS = new Set(['from', 'to', 'cc', 'bcc']);
   const rows = [];
@@ -227,6 +228,8 @@ class ValidationResult {
     };
     this.mismatches = [];
     this.overallStatus = 'PENDING';
+    /** AI-generated failure analysis (populated by AgentBrain after validation, only on FAIL) */
+    this.aiAnalysis = null;
     /** Deep source↔destination mail comparison (optional) */
     this.deepMailValidation = {
       enabled: false,
@@ -293,6 +296,7 @@ class ValidationResult {
     if (this.deepMailValidation.enabled && Array.isArray(this.deepMailValidation.threadChainResults)) {
       for (const t of this.deepMailValidation.threadChainResults) {
         if (t.pass) continue;
+        if (t.bugStatus === 'known_limitation') continue;
         const errMismatches = (t.mismatches || []).filter((m) => m.severity === 'error');
         this.mismatches.push({
           category: 'deepMail',
@@ -320,6 +324,7 @@ class ValidationResult {
     if (this.deepMailValidation.enabled && Array.isArray(this.deepMailValidation.messageResults)) {
       for (const r of this.deepMailValidation.messageResults) {
         if (r.pass) continue;
+        if (r.bugStatus === 'known_limitation') continue;
         const errDiffs = (r.diffs || []).filter((d) => d.severity === 'error');
         const detail = errDiffs.length
           ? errDiffs.map((d) => `${d.field}: expected ${d.expected ?? ''} / actual ${d.actual ?? ''}`).join('; ')
@@ -362,6 +367,11 @@ class ValidationResult {
       deepMailValidation: this.deepMailValidation,
       mismatches: this.mismatches,
       overallStatus: this.overallStatus,
+      aiAnalysis: this.aiAnalysis,
+      // Inscope feature validations (added for docs API coverage)
+      ...(this.starredValidation         !== undefined && { starredValidation: this.starredValidation }),
+      ...(this.groupCalendarValidation   !== undefined && { groupCalendarValidation: this.groupCalendarValidation }),
+      ...(this.archiveMigration          !== undefined && { archiveMigration: this.archiveMigration }),
     };
   }
 }

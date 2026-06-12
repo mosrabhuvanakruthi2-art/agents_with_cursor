@@ -7,6 +7,7 @@ const statusConfig = {
   FAILED: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
   FAIL: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
   CANCELLED: { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
+  INTERRUPTED: { bg: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-500' },
 };
 
 export default function StatusBadge({ status }) {

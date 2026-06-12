@@ -75,8 +75,8 @@ export default function AgentForm({ onSubmit, loading }) {
         ...payloadBase,
         sourceEmail: mappedPairs[0].sourceEmail,
         destinationEmail: mappedPairs[0].destinationEmail,
-        sourceProvider: mappedPairs[0].sourceProvider || 'google',
-        destinationProvider: mappedPairs[0].destinationProvider || 'microsoft',
+        sourceProvider: mappedPairs[0]?.sourceProvider ?? (console.warn('[AgentForm] sourceProvider not set on pair — defaulting to google') || 'google'),
+        destinationProvider: mappedPairs[0]?.destinationProvider ?? (console.warn('[AgentForm] destinationProvider not set on pair — defaulting to microsoft') || 'microsoft'),
         userEmailMappings: mappingPayload,
       });
     } else {
@@ -144,44 +144,53 @@ export default function AgentForm({ onSubmit, loading }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Email <span className="text-gray-400 font-normal">(new server only)</span>
+              Email <span className="text-gray-400 font-normal">(optional for devemail)</span>
             </label>
             <input
               type="email"
               value={migrationServerEmail}
               onChange={(e) => setMigrationServerEmail(e.target.value)}
-              placeholder="Leave empty for devemail"
+              placeholder="e.g. bhuvana.mosra@cloudfuze.com"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Password <span className="text-gray-400 font-normal">(new server only)</span>
+              Password <span className="text-gray-400 font-normal">(optional for devemail)</span>
             </label>
             <input
               type="password"
               value={migrationServerPassword}
               onChange={(e) => setMigrationServerPassword(e.target.value)}
-              placeholder="Leave empty for devemail"
+              placeholder="Your CloudFuze login password"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white"
             />
           </div>
         </div>
 
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700 space-y-0.5">
-          <p><span className="font-semibold">devemail (legacy):</span> use URL <code className="bg-blue-100 px-1 rounded">https://devemail.cloudfuze.com/proxyservices/v1</code> — leave Email &amp; Password empty. Auth uses Basic credentials from <code className="bg-blue-100 px-1 rounded">.env</code>.</p>
-          <p><span className="font-semibold">newtestemail5 (new):</span> use URL <code className="bg-blue-100 px-1 rounded">https://newtestemail5.cloudfuze.com</code> — fill in Email &amp; Password.</p>
+          <p><span className="font-semibold">devemail:</span> use URL <code className="bg-blue-100 px-1 rounded">https://devemail.cloudfuze.com/proxyservices/v1</code> — fill in your CloudFuze email &amp; password (e.g. bhuvana.mosra@cloudfuze.com) for auto-auth. Leave empty to use Basic credentials from <code className="bg-blue-100 px-1 rounded">.env</code>.</p>
+          <p><span className="font-semibold">newtestemail5:</span> use URL <code className="bg-blue-100 px-1 rounded">https://newtestemail5.cloudfuze.com</code> — Email &amp; Password required.</p>
         </div>
       </div>
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">Test Type</label>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {[
-            { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
-            { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
-            { value: 'E2E', label: 'E2E', desc: 'Full Gmail seed + calendar (slow)' },
-          ].map((opt) => (
+        {(() => {
+          const srcLabel = (mappedPairs?.[0]?.sourceProvider === 'microsoft') ? 'Outlook' : 'Gmail';
+          const dstLabel = (mappedPairs?.[0]?.destinationProvider === 'google') ? 'Gmail' : 'Outlook';
+          const e2eDesc = srcLabel === 'Outlook' ? 'Full Outlook seed + calendar (slow)' : 'Full Gmail seed + calendar (slow)';
+          return (
+            <>
+              {mappedPairs && (
+                <p className="text-xs text-gray-400 mb-2">Active combination: {srcLabel} → {dstLabel}</p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {[
+                  { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
+                  { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
+                  { value: 'E2E', label: 'E2E', desc: e2eDesc },
+                ].map((opt) => (
             <button
               key={opt.value}
               type="button"
@@ -199,9 +208,12 @@ export default function AgentForm({ onSubmit, loading }) {
               {form.testType === opt.value && (
                 <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-indigo-500" />
               )}
-            </button>
-          ))}
-        </div>
+                </button>
+                ))}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <div className="space-y-2">

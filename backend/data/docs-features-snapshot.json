@@ -1,0 +1,2237 @@
+{
+  "createdAt": "2026-06-03T15:24:51.061Z",
+  "combinations": {
+    "Outlook to Gmail": {
+      "inscope": [
+        {
+          "id": "69e5fdab03fd6d85bfce42ed",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "One time migration",
+          "description": "The One-Time Migration performs the initial transfer of all existing Outlook data to Gmail, including emails, folders, threads, and metadata.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/One_time_migration_1_1776682334058.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-04-20T10:19:23.379Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42ee",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Delta migration",
+          "description": "Delta Migration transfers only newly added or modified data after the One-Time Migration.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Delta_migration_1_1776682335144.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-04-20T10:19:23.392Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42ef",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Inbox",
+          "description": "The Inbox contains all received emails from internal and external users.\nRead / Unread: Email read and unread status is preserved\nFiles: Attachments are migrated with the email\nText Formatting: Bold, italic, underline, bullet list, ordered list, and inline formatting are preserved\nHeaders: To, From, CC, BCC, Subject fields are retained\nExternal Emails: Sending and receiving emails to/from external users is supported\nMentions: User mentions are retained where supported\nFlag / Mark as Unread: Message flags and unread indicators are preserved",
+          "family": "Default Folders",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Inbox_1_1776682337109.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-04-20T10:19:23.394Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Sent",
+          "description": "The Sent Items folder stores all emails successfully sent by the user. Sent emails are migrated with recipients, timestamps, and content intact.",
+          "family": "Default Folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Sent_1_1776682339319.png"
+          ],
+          "order": 4,
+          "createdAt": "2026-04-20T10:19:23.397Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f1",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Drafts",
+          "description": "Emails composed but not sent are migrated and stored in the Drafts folder for further editing.",
+          "family": "Default Folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Drafts_1_1776682340714.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-04-20T10:19:23.399Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f2",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Junk",
+          "description": "Unwanted or spam emails are migrated into the Spam folder in Gmail.",
+          "family": "Default Folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Junk_Spam_1_1776682342907.png"
+          ],
+          "order": 6,
+          "createdAt": "2026-04-20T10:19:23.401Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f3",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Deleted items",
+          "description": "Emails deleted by users are migrated into the Trash folder in Gmail.",
+          "family": "Default Folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Deleted_Trash_1_1776682344524.png"
+          ],
+          "order": 7,
+          "createdAt": "2026-04-20T10:19:23.404Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f4",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Flagged",
+          "description": "Emails marked as Flagged in Outlook are migrated as Important or Starred in Gmail.",
+          "family": "Default Folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Flagged_1_1779456243151.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-04-20T10:19:23.406Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f5",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Custom Folders (Labels)",
+          "description": "User-created folders are migrated as Gmail labels with hierarchy preserved.\n Root Folder: Top-level folders are migrated\nChild / Nested Folder: Subfolders maintain their structure\nRules: Outlook rules are applied and emails are placed into corresponding labels",
+          "family": "Custom Folders",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Custom_Folders_Labels_1_1776682345904.png"
+          ],
+          "order": 9,
+          "createdAt": "2026-04-20T10:19:23.408Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f6",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Threads",
+          "description": "Email conversations are migrated and maintained as threaded conversations in Gmail.",
+          "family": "Threads",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Threads_1_1776682347823.png"
+          ],
+          "order": 10,
+          "createdAt": "2026-04-20T10:19:23.410Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Timestamp",
+          "description": "Original sent and received timestamps are preserved for all migrated emails.",
+          "family": "Timestamp",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Timestamp_1_1776682349183.png"
+          ],
+          "order": 11,
+          "createdAt": "2026-04-20T10:19:23.412Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42f8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Archive",
+          "description": "Email conversations are migrated and maintained as threaded conversations in Gmail.\nThe mails which are archived in outlook will migrate to as Archive [Gmail] while migration tool itself create this folder at destination in Gmail.",
+          "family": "Archive",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Archive_1_1776682351179.png"
+          ],
+          "order": 12,
+          "createdAt": "2026-04-20T10:19:23.414Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42fa",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Distribution Lists / Groups",
+          "description": "Emails sent to Outlook distribution lists are migrated and delivered to corresponding Gmail groups, but members are not migrated at destination",
+          "family": "Distribution Lists / Groups",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Distribution_Lists_Groups_1_1779456244779.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Distribution_Lists_Groups_2_1779456244787.png"
+          ],
+          "order": 14,
+          "createdAt": "2026-04-20T10:19:23.418Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42fb",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Calendars",
+          "description": "Recurring Events: Location, attachments, guests, and recurrence patterns are preserved\n Non-Recurring Events: Single-instance events are migrated\n Past / Present / Future Events: All event timelines are supported",
+          "family": "Calendars",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendars_1_1776682352651.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendars_2_1776682352652.png"
+          ],
+          "order": 15,
+          "createdAt": "2026-04-20T10:19:23.420Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42fc",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Contacts",
+          "description": "Contact Details: Name, phone numbers, email addresses, and notes are migrated\nContact Photos: Photos are not migrated; all other details are preserved",
+          "family": "Contacts",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Contacts_1_1776682353514.png"
+          ],
+          "order": 16,
+          "createdAt": "2026-04-20T10:19:23.422Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42fd",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Shared Mailbox",
+          "description": "Shared mailboxes accessible by multiple users are migrated while preserving shared access.",
+          "family": "Shared Mailbox",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Shared_Mailbox_1_1779456857579.png"
+          ],
+          "order": 17,
+          "createdAt": "2026-04-20T10:19:23.424Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42fe",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Shared Calendars",
+          "description": "Shared calendars are migrated with permissions, allowing users to add events and manage access.",
+          "family": "Shared Calendars",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Shared_Calendars_1_1779977395105.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Shared_Calendars_2_1779977395109.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Shared_Calendars_3_1779977395110.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Shared_Calendars_4_1779977395111.png"
+          ],
+          "order": 18,
+          "createdAt": "2026-04-20T10:19:23.426Z"
+        },
+        {
+          "id": "69e5fdab03fd6d85bfce42ff",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Group Calendars",
+          "description": "Group calendars are migrated with sharing permissions, allowing users to add events and manage access.",
+          "family": "Group Calendars",
+          "screenshots": [],
+          "order": 19,
+          "createdAt": "2026-04-20T10:19:23.428Z"
+        },
+        {
+          "id": "69e607e603fd6d85bfce43a8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Read / Unread Functionality",
+          "description": "Read and Unread status of emails is fully preserved during migration. Emails marked as read in Outlook will appear as read in Gmail, and unread emails remain unread. This status is also maintained during Delta Migration.",
+          "family": "Read / Unread Functionality",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Read_Unread_Functionality_1_1776682982262.png"
+          ],
+          "order": 20,
+          "createdAt": "2026-04-20T11:03:02.574Z"
+        },
+        {
+          "id": "6a105fd3f376ed8d021391af",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "signature",
+          "description": "we support signature for Outlook to Gmail",
+          "family": "signature",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/signature_1_1779458000438.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/signature_2_1779458000471.png"
+          ],
+          "order": 21,
+          "createdAt": "2026-05-22T13:53:23.174Z"
+        },
+        {
+          "id": "6a105fd3f376ed8d021391b0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "primary calendar",
+          "description": "primary calendar is the default calendar tied to your mailbox/account. When someone sends you a meeting, it lands in your primary calendar. Your availability (free/busy) is taken from the primary calendar. we can create events in the primary calendar.",
+          "family": "primary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/primary_calendar_1_1779458001653.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/primary_calendar_2_1779458001658.png"
+          ],
+          "order": 22,
+          "createdAt": "2026-05-22T13:53:23.175Z"
+        },
+        {
+          "id": "6a105fd3f376ed8d021391b1",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Secondary calendar",
+          "description": "A secondary calendar is A calendar you create manually or add from another source, separate from your main (primary) calendar and used for organization, categorization, or sharing. we can create events in the secondary calendar as well.",
+          "family": "Secondary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Secondary_calendar_1_1779458002899.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Secondary_calendar_2_1779458002903.png"
+          ],
+          "order": 23,
+          "createdAt": "2026-05-22T13:53:23.175Z"
+        },
+        {
+          "id": "6a107116f376ed8d021393bd",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Recipient Writing",
+          "description": "Recipients are the people who receive an email (To, Cc, and Bcc). During migration, recipient details are preserved because they are part of the email data. After migration, the recipient addresses are mapped and associated with the destination domain usernames, ensuring proper identification and communication in the new environment.",
+          "family": "Recipient Writing",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Recipient_Writing_1_1779462418997.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Recipient_Writing_2_1779462419042.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Recipient_Writing_3_1779462419111.png"
+          ],
+          "order": 24,
+          "createdAt": "2026-05-22T15:07:02.132Z"
+        },
+        {
+          "id": "6a107116f376ed8d021393be",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "single instance calendar",
+          "description": "single instance calendar in both primary and secondary calendar it is migrated perfectly and the status response is also stored \nafter migration we have equivalent attendees with destination domain user, Teams links are converted to Google Meet links, attendee response states are preserved \n, attachments, location and attendees are migrated successfully.",
+          "family": "single instance calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/single_instance_calendar_1_1779462420236.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/single_instance_calendar_2_1779462420237.png"
+          ],
+          "order": 25,
+          "createdAt": "2026-05-22T15:07:02.153Z"
+        },
+        {
+          "id": "6a107116f376ed8d021393bf",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Calendar — Permissions / Delegates",
+          "description": "Calendar permissions and delegates allow users to access and manage another user’s calendar. During migration, delegate permissions are mapped to Google Calendar’s “Make changes and manage sharing,” though some advanced features may not fully transfer, and we can access private event also which is created by organizer",
+          "family": "Calendar — Permissions / Delegates",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Permissions_Delegates_1_1779462421382.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Permissions_Delegates_2_1779462421405.png"
+          ],
+          "order": 26,
+          "createdAt": "2026-05-22T15:07:02.157Z"
+        },
+        {
+          "id": "6a108169f376ed8d0213946c",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Attachments associated with past calendar invites",
+          "description": "we support attachments associated with past calendar invites",
+          "family": "Attachments associated with past calendar invites",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attachments_associated_with_past_calendar_invites_1_1779466601059.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attachments_associated_with_past_calendar_invites_2_1779466601153.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attachments_associated_with_past_calendar_invites_3_1779466601171.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attachments_associated_with_past_calendar_invites_4_1779466601231.png"
+          ],
+          "order": 27,
+          "createdAt": "2026-05-22T16:16:41.546Z"
+        },
+        {
+          "id": "6a1824d7a571393f2c78d440",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Busy Status in Calendar event",
+          "description": "we migrated busy status from outlook to Gmail and if we are selecting other status like free, out of office, tentative, working elsewhere these are migrated as with status busy only, and we don't migrate deleted events",
+          "family": "Busy Status in Calendar event",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_1_1779967191255.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_2_1779967191406.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_3_1779967191410.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_4_1779967191415.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_5_1779967191420.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_6_1779967191421.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_7_1779967191423.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_8_1779967191426.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Busy_Status_in_Calendar_event_9_1779967191430.png"
+          ],
+          "order": 28,
+          "createdAt": "2026-05-28T11:19:52.030Z"
+        },
+        {
+          "id": "6a1826a6a571393f2c78d449",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "Contacts with any one empty field",
+          "description": "In contacts by giving one field and remaining fields as empty we are migrating",
+          "family": "Contacts with any one empty field",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Contacts_with_any_one_empty_field_1_1779967653796.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Contacts_with_any_one_empty_field_2_1779967653797.png"
+          ],
+          "order": 29,
+          "createdAt": "2026-05-28T11:27:34.075Z"
+        },
+        {
+          "id": "6a184a20a571393f2c78d4eb",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Gmail",
+          "name": "High-importance emails",
+          "description": "high-importance emails from Outlook are seamlessly migrated to Gmail and are appropriately labeled under the ‘Important’ category to maintain their priority.",
+          "family": "High-importance emails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/High-importance_emails_1_1779976735386.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/High-importance_emails_2_1779976735425.png"
+          ],
+          "order": 30,
+          "createdAt": "2026-05-28T13:58:56.205Z"
+        }
+      ],
+      "outscope": [
+        {
+          "id": "69e73d5603fd6d85bfce49f7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Categories not Preserved",
+          "description": "Emails are migrated, but category information is completely lost, and no corresponding labels are created in Gmail.",
+          "family": "Categories",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Categories_not_Preserved_1_1776762195178.png"
+          ],
+          "order": 0,
+          "createdAt": "2026-04-21T09:03:18.037Z"
+        },
+        {
+          "id": "69e73d5603fd6d85bfce49f8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Sensitivity Labels / Information Protection Labels",
+          "description": "The Sensitivity / classification value shown in Outlook is not returned by Microsoft Graph API for this message.\nOutlook may display this tag based on internal Exchange or Purview metadata that is not exposed through the API.\n\nBecause the value is not available in the API response, it cannot be retrieved or migrated.\nThis is a Microsoft Graph API limitation.",
+          "family": "Labels (confidential, public, internal )",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Labels_like_confidential_public_internal_are_not_migrated_to_destination_1_1776762196359.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Labels_like_confidential_public_internal_are_not_migrated_to_destination_2_1776762196367.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Labels_like_confidential_public_internal_are_not_migrated_to_destination_3_1776762196376.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-04-21T09:03:18.037Z"
+        },
+        {
+          "id": "69e73d5603fd6d85bfce49f9",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "emoji folder name not preserved",
+          "description": "Gmail API has a length limitation for label names (approximately 225 characters). The source label contains a large number of Unicode emoji characters, which exceeds the maximum size allowed by Gmail. When this limit is exceeded, the Gmail API may return a backend error instead of creating the label. Because of this API limitation, very long label names cannot be created in Gmail and must be shortened during migration.",
+          "family": "Folders with Emojis",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Folders_with_Emojis_Going_into_Conflict_During_Migration_1_1776762196859.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-04-21T09:03:18.037Z"
+        },
+        {
+          "id": "69e73d5603fd6d85bfce49fa",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Conversation History folder not preserved",
+          "description": "This folder contains chat history and communication logs from applications such as Skype, Teams, or Lync, and does not store regular email messages. Since the migration process only supports standard email folders, the Conversation History folder is excluded from migration.",
+          "family": "Conversation History",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Outlook_Conversation_History_folder_not_migrated_as_a_label_in_Gmail_1_1776762197328.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-04-21T09:03:18.038Z"
+        },
+        {
+          "id": "69e73d5603fd6d85bfce49fb",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Notes migration is not preserved",
+          "description": "Notes are not migrated when Outlook is used as the source. This is because Notes in Outlook do not contain emails. They are personal notes created by the user and are not part of the mailbox data. The migration process only supports email and mailbox-related items, so Notes are not included in the migration.",
+          "family": "Notes",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Outlook_Notes_folder_not_migrated_to_Gmail_after_mailbox_migration_1_1776762197795.png"
+          ],
+          "order": 4,
+          "createdAt": "2026-04-21T09:03:18.038Z"
+        },
+        {
+          "id": "6a106921f376ed8d02139310",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "contact categories",
+          "description": "Contact categories in Outlook are not retrievable through Microsoft's API — the category tag information assigned to contacts is not exposed as part of the contact data returned by the API.",
+          "family": "contact categories",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/contact_categories_1_1779460384967.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/contact_categories_2_1779460384969.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-05-22T14:33:05.711Z"
+        },
+        {
+          "id": "6a106921f376ed8d02139311",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "contact lists/groups",
+          "description": "Google Contacts does not support contact group structures, meaning there is no feature or equivalent in Google Contacts that can hold or represent a collection of contacts as a group. This is a Google-side limitation that prevents contact groups from being migrated to the destination.",
+          "family": "contact lists/groups",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/contact_listsgroups_1_1779460385457.png"
+          ],
+          "order": 6,
+          "createdAt": "2026-05-22T14:33:05.712Z"
+        },
+        {
+          "id": "6a10741ff376ed8d02139407",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "pinned mails",
+          "description": "Pinned emails will be migrated, but they will not remain pinned in the destination ​",
+          "family": "pinned mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/pinned_mails_1_1779463199367.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/pinned_mails_2_1779463199404.png"
+          ],
+          "order": 7,
+          "createdAt": "2026-05-22T15:19:59.727Z"
+        },
+        {
+          "id": "6a10804ff376ed8d02139464",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Notes",
+          "description": "Outlook Notes are not migrated because Gmail does not have an equivalent feature to store them, and migration tools do not support transferring note items",
+          "family": "Notes",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Notes_1_1779466317858.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-05-22T16:11:59.100Z"
+        },
+        {
+          "id": "6a10804ff376ed8d02139465",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Encrypted and non-encrypted",
+          "description": "Encrypted and non‑encrypted mail tags indicate the security status of emails in Outlook. Although the emails are migrated, these tags are not preserved because they are part of Microsoft’s encryption system, which is platform-specific and has no equivalent in Gmail.",
+          "family": "Encrypted and non-encrypted mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Encrypted_and_non-encrypted_mails_1_1779466318573.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Encrypted_and_non-encrypted_mails_2_1779466318574.png"
+          ],
+          "order": 9,
+          "createdAt": "2026-05-22T16:11:59.100Z"
+        },
+        {
+          "id": "6a10804ff376ed8d02139466",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "To Do list",
+          "description": "Outlook To‑Do list (tasks) is not migrated because Gmail does not have an equivalent task structure and migration tools do not support transferring task items.",
+          "family": "To Do list",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/To_Do_list_1_1779466318806.png"
+          ],
+          "order": 10,
+          "createdAt": "2026-05-22T16:11:59.101Z"
+        },
+        {
+          "id": "6a10824bf376ed8d02139472",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Any invites created by external users",
+          "description": "When migrating calendar events where an external user is the organizer or creator, the system automatically triggers a notification to that external user because calendar protocols (such as iCalendar/RFC 5545) treat any change to an event's data — including moving it to a new system — as a modification to the original event. Since the external user is the legitimate owner of that event, the calendar system is designed to alert them whenever their event is altered by another party, even if the change is purely administrative like a migration. This is a built-in protection mechanism of calendar platforms (Google Calendar, Outlook, etc.) to ensure event owners are always informed of any changes made to events they organize or created, and it cannot be bypassed without either excluding such events from the migration scope or suppressing outbound notifications at the system level during the migration window.",
+          "family": "Any invites created by external users",
+          "screenshots": [],
+          "order": 11,
+          "createdAt": "2026-05-22T16:20:27.829Z"
+        },
+        {
+          "id": "6a10824bf376ed8d02139473",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Attendees will not receive calendar events for past events after migration",
+          "description": "When migrating past non-recurring calendar events, attendees will not receive the migrated event on their calendars because these events are intentionally migrated only for the creator/organizer, not for the attendees. Since the event has already occurred and will not repeat in the future, sending calendar invites to attendees' post-migration would serve no practical purpose and would instead cause confusion by delivering notifications or calendar entries for events that have already passed. To avoid unnecessary disruption and inbox clutter for attendees, the migration tool is designed to restore past, non-recurring events solely to the creator's calendar as a historical record, while attendees' calendars are left unchanged.",
+          "family": "Attendees will not receive calendar events for past events after migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attendees_will_not_receive_calendar_events_for_past_events_after_migration_1_1779800052233.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attendees_will_not_receive_calendar_events_for_past_events_after_migration_2_1779800052235.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attendees_will_not_receive_calendar_events_for_past_events_after_migration_3_1779800052236.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Attendees_will_not_receive_calendar_events_for_past_events_after_migration_4_1779800052237.png"
+          ],
+          "order": 12,
+          "createdAt": "2026-05-22T16:20:27.829Z"
+        },
+        {
+          "id": "6a10824bf376ed8d02139474",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Legal Hold data",
+          "description": "Legal Hold emails cannot be migrated with their complete metadata because the API does not provide access to metadata for emails that are under Legal Hold. Legal Hold is a compliance and legal preservation mechanism that restricts and locks down data to prevent any alteration, access, or extraction beyond what is legally permitted, and as a result, the email platform's API deliberately blocks metadata retrieval for such emails to maintain the integrity of the legal preservation process. Since the migration tool relies entirely on API access to fetch and transfer email data including its metadata (such as timestamps, sender/receiver details, and headers), it is technically unable to retrieve or migrate this information for Legal Hold emails, and this is a platform-level restriction that is outside the scope of the migration tool's control.",
+          "family": "Legal Hold data",
+          "screenshots": [],
+          "order": 13,
+          "createdAt": "2026-05-22T16:20:27.830Z"
+        },
+        {
+          "id": "6a10824bf376ed8d02139475",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Admin or user settings",
+          "description": "Admin and user settings will not be migrated to the destination system because Microsoft's API does not provide access to or expose these configurations in a way that can be extracted and transferred. Settings such as mailbox preferences, rules, permissions, and other administrative or user-level configurations are managed internally by Microsoft and are not available through their API for migration purposes.",
+          "family": "Admin or user settings",
+          "screenshots": [],
+          "order": 14,
+          "createdAt": "2026-05-22T16:20:27.830Z"
+        },
+        {
+          "id": "6a108fe9f376ed8d02139553",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Calendar owner scope",
+          "description": "For a calendar event to be migrated successfully, the calendar owner must be included in the scope of the migration. Events belonging to users outside the migration scope will not be transferred.",
+          "family": "Calendar owner scope",
+          "screenshots": [],
+          "order": 15,
+          "createdAt": "2026-05-22T17:18:33.258Z"
+        },
+        {
+          "id": "6a108fe9f376ed8d02139554",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Calendar attachment size varies",
+          "description": "Attachment sizes in Google are determined by Google's own storage and encoding mechanisms. In some cases, the attachment size in the destination may be larger than in the source or vice versa, resulting in a size difference between the two environments. This is expected behavior and not an indication of data loss or corruption.",
+          "family": "Calendar attachment size varies",
+          "screenshots": [],
+          "order": 16,
+          "createdAt": "2026-05-22T17:18:33.258Z"
+        },
+        {
+          "id": "6a108fe9f376ed8d02139555",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Mailbox policy",
+          "description": "If a policy is applied to a mailbox, emails and their attachments will not be migrated or shared. Ensure that any such policies are reviewed and handled before initiating the migration to avoid data being skipped.",
+          "family": "Mailbox policy",
+          "screenshots": [],
+          "order": 17,
+          "createdAt": "2026-05-22T17:18:33.259Z"
+        },
+        {
+          "id": "6a108fe9f376ed8d02139556",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Group Members",
+          "description": "In distribution list groups will be migrated but members are not created at destination",
+          "family": "Group Members",
+          "screenshots": [],
+          "order": 18,
+          "createdAt": "2026-05-22T17:18:33.259Z"
+        },
+        {
+          "id": "6a109c73f376ed8d02139607",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "In place Achieve",
+          "description": "In-Place Archive in Outlook is a secondary mailbox feature in Microsoft 365 (Exchange) that gives users extra storage for older or less frequently accessed emails — without leaving Outlook.",
+          "family": "In place Achieve",
+          "screenshots": [],
+          "order": 19,
+          "createdAt": "2026-05-22T18:12:03.498Z"
+        },
+        {
+          "id": "6a109c73f376ed8d02139608",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Rooms/ Resources",
+          "description": "A Room in Outlook Calendar is a resource mailbox that allows users to book and manage meeting rooms automatically, preventing scheduling conflicts.",
+          "family": "Rooms/ Resources",
+          "screenshots": [],
+          "order": 20,
+          "createdAt": "2026-05-22T18:12:03.511Z"
+        },
+        {
+          "id": "6a1570ccf376ed8d021396c7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Calendar — Recurring Series​",
+          "description": "In recurring meeting where we have modified one occurrence and deleted another, then performed migration. After migration, the modified occurrence did not show the changes and the deleted occurrence reappeared in Google Calendar.\nAs per the developer, this happens because Outlook stores such changes and deletions as exceptions within the recurring series, but Google Calendar does not support an equivalent structure. Due to this platform mismatch, modified and deleted occurrences cannot be mapped correctly during migration.",
+          "family": "Calendar — Recurring Series​",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_1_1779790025845.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_2_1779790025949.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_3_1779790026005.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_4_1779790026064.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_5_1779790026087.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Calendar_Recurring_Series_6_1779790026122.png"
+          ],
+          "order": 21,
+          "createdAt": "2026-05-26T10:07:08.307Z"
+        },
+        {
+          "id": "6a1570ccf376ed8d021396c8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Email rules and forwarding rules",
+          "description": "We don’t support migration of email rules and forwarding settings from Outlook to Gmail. This is because Microsoft APIs do not expose rule and forwarding configurations, so the migration tool cannot access this data. Additionally, Outlook and Gmail use completely different rule engines with no direct mapping between them. Hence, due to both API limitations and platform incompatibility, these settings cannot be migrated and must be recreated manually in Gmail.",
+          "family": "Email rules and forwarding rules",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_1_1779790028018.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_2_1779790028019.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_3_1779790028020.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_4_1779790028021.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_5_1779790028021.png",
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Email_rules_and_forwarding_rules_6_1779790028022.png"
+          ],
+          "order": 22,
+          "createdAt": "2026-05-26T10:07:08.308Z"
+        },
+        {
+          "id": "6a15a2c7f376ed8d02139752",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Contact pictures",
+          "description": "we don't support contact pictures",
+          "family": "Contact pictures",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Gmail/Contact_pictures_1_1779802823562.png"
+          ],
+          "order": 23,
+          "createdAt": "2026-05-26T13:40:23.830Z"
+        },
+        {
+          "id": "6a16ad71a571393f2c78d1ec",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Gmail",
+          "name": "Attachment with link is migrated as source link",
+          "description": "Attachment with link which is migrated from source is opened in the Microsoft only it won't open in the Gmail because we are just copying attachment from the source it does not open in the google drive",
+          "family": "Attachment with is migrated as source link",
+          "screenshots": [],
+          "order": 24,
+          "createdAt": "2026-05-27T08:38:09.398Z"
+        }
+      ]
+    },
+    "Gmail to Outlook": {
+      "inscope": [
+        {
+          "id": "69c5283f4b338312963a0b62",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "One time migration",
+          "description": "The One-Time Migration performs the initial transfer of all existing Gmail data to Outlook, including emails, folders (labels), threads, and metadata.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/general/general/One_time_migration_1_1774528565419.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-03-26T12:36:15.969Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b63",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "delta migration",
+          "description": "Delta Migration transfers only newly added or modified data along with contacts and calendars after the One-Time Migration.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/general/general/delta_migration_1_1774528566043.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-03-26T12:36:15.969Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b64",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Inbox",
+          "description": "The Inbox contains all received emails from internal and external users.  \n Read / Unread: Email read and unread status is preserved \n Files: Attachments are migrated with the email  \nText Formatting: Bold, italic, underline, bullet list, ordered list, and inline formatting are preserved \nHeaders: To, From, CC, BCC, Subject fields are retained  \nExternal Emails: Sending and receiving emails to/from external users is supported Mentions: User mentions are retained where supported . \nPin / Flag / Mark as Unread: Message flags and unread indicators are preserved.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Inbox_1_1776851133236.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-03-26T12:36:15.970Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b65",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Sent",
+          "description": "The Sent Items folder stores all emails successfully sent by the user. Sent emails are migrated with recipients, timestamps, and content intact.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Sent_1_1776855568701.png"
+          ],
+          "order": 4,
+          "createdAt": "2026-03-26T12:36:15.970Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b66",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Drafts",
+          "description": "Emails composed but not sent are migrated and stored in the Drafts folder for further editing.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Drafts_1_1776855569899.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-03-26T12:36:15.970Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b67",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Spam",
+          "description": "Unwanted or spam emails are stored into spam folder in Gmail, and those spam mails from Gmail are migrated to junk folder in outlook.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Spam_1_1776855571426.png"
+          ],
+          "order": 6,
+          "createdAt": "2026-03-26T12:36:15.970Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b68",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Trash",
+          "description": "Emails deleted by users are stored in trash folder in Gmail and those are migrated from Gmail to outlook in deleted folder.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Trash_1_1776855572591.png"
+          ],
+          "order": 7,
+          "createdAt": "2026-03-26T12:36:15.971Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b69",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Important",
+          "description": "important folder means A folder that contains emails marked as important either by Gmail automatically or by the user, representing high-priority messages.\nEmails which are moved to Important folder in Gmail are migrated to its original folder with exclamatory mark in Outlook.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Important_1_1776849921481.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-03-26T12:36:15.971Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b6a",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Custom Folders (Labels)",
+          "description": "A custom label in Gmail is a way to group similar emails into categories, so they are easy to find and manage later.\nIn Gmail, custom labels are a way to organize emails in a hierarchical structure. The “types” mainly refer to how labels are arranged, not different features.\nRoot label (Main label): Top-level label.\nNested label (Sub-label): A label created inside a root label, used to divide main categories further.\nChild label (Sub-sub label): A label inside a nested label, more specific level of organization.",
+          "family": "Custom labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Custom_Folders_Labels_1_1776866983179.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Custom_Folders_Labels_2_1776866983183.png"
+          ],
+          "order": 9,
+          "createdAt": "2026-03-26T12:36:15.971Z"
+        },
+        {
+          "id": "69c5283f4b338312963a0b6b",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Threads",
+          "description": "Email conversations with multiple replies are migrated as threaded conversations to maintain continuity.",
+          "family": "Threads",
+          "screenshots": [],
+          "order": 10,
+          "createdAt": "2026-03-26T12:36:15.971Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca516c",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Timestamp",
+          "description": "A record of the exact date and time when an event happened, such as when an email was sent or received.\nOriginal sent and received timestamps are preserved for all migrated emails.",
+          "family": "Timestamp",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Timestamp_1_1776867204643.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Timestamp_1_1776867335475.png"
+          ],
+          "order": 12,
+          "createdAt": "2026-03-27T12:12:10.690Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca516d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "All Mail (Gmail Only)",
+          "description": "All Mail in Gmail is a folder that contains every email in your account except spam and trash, including inbox, sent, archived, and even labeled emails, so labels do not remove emails from All Mail but only categorize them for easy viewing.",
+          "family": "All Mail (Gmail Only)",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/All_Mail_Gmail_Only_1_1776767890915.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/All_Mail_Gmail_Only_1_1776866986603.png"
+          ],
+          "order": 13,
+          "createdAt": "2026-03-27T12:12:10.690Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca516e",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Calendars",
+          "description": "Calendars and events are migrating incrementally. \n\nRecurring Events: Location, attachments, guests, and recurrence patterns are preserved \n\nNon-Recurring Events: Single-instance events are migrated \n\nPast / Present / Future Events: All event timelines are supported",
+          "family": "Calendars",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Calendars_1_1777022116444.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Calendars_2_1777022116448.png"
+          ],
+          "order": 14,
+          "createdAt": "2026-03-27T12:12:10.690Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca516f",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Contacts",
+          "description": "Contacts are migrated with detailed attributes. \n\nContact Details: Name, phone numbers, email addresses, and notes are migrated \n\nContact Photos: Photos are not migrated; all other details are preserved",
+          "family": "Contacts",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contacts_1_1777024079261.png"
+          ],
+          "order": 15,
+          "createdAt": "2026-03-27T12:12:10.691Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca5170",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Shared Mailbox",
+          "description": "A shared mailbox is a mailbox that multiple users can access and use together, instead of belonging to just one person. We migrate it as normal migration.",
+          "family": "Shared Mailbox",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Shared_Mailbox_1_1777027200081.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Shared_Mailbox_2_1777027200147.png"
+          ],
+          "order": 16,
+          "createdAt": "2026-03-27T12:12:10.691Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca5171",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Group Mail Migration",
+          "description": "Emails sent to Google Groups are migrated and delivered to all group members in Outlook. Group will be created ay destination with destination domain name",
+          "family": "Group Mail Migration",
+          "screenshots": [],
+          "order": 17,
+          "createdAt": "2026-03-27T12:12:10.691Z"
+        },
+        {
+          "id": "69c6741ad7865ab186ca5172",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "sharing calendar with group of people",
+          "description": "Group calendars are migrated with sharing permissions, allowing users to add events and manage access.",
+          "family": "Group Calendars",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/sharing_calendar_with_group_of_people_1_1777047424962.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/sharing_calendar_with_group_of_people_2_1777047424966.png"
+          ],
+          "order": 18,
+          "createdAt": "2026-03-27T12:12:10.691Z"
+        },
+        {
+          "id": "69e752e603fd6d85bfce4c34",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Read / Unread Functionality",
+          "description": "Read and Unread status of emails is fully preserved during migration. Emails marked as read in Gmail will appear as read in Outlook, and unread emails remain unread. This status is also maintained during Delta Migration.",
+          "family": "Read / Unread Functionality",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Read_Unread_Functionality_1_1776767717860.png"
+          ],
+          "order": 19,
+          "createdAt": "2026-04-21T10:35:18.452Z"
+        },
+        {
+          "id": "69e752e603fd6d85bfce4c35",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Shared Calendars",
+          "description": "Shared calendars are migrated with permissions, allowing users to add events and manage access.",
+          "family": "Shared Calendars",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Shared_Calendars_1_1777047180572.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Shared_Calendars_2_1777047180583.png"
+          ],
+          "order": 20,
+          "createdAt": "2026-04-21T10:35:18.462Z"
+        },
+        {
+          "id": "69e7803203fd6d85bfce4e5c",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Migrate Archives",
+          "description": "migrate archives enabled then only Gmail all mail folder is created at destination",
+          "family": "Migrate Archives",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Migrate_Archives_1_1776872012785.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Migrate_Archives_2_1776872012787.png"
+          ],
+          "order": 21,
+          "createdAt": "2026-04-21T13:48:34.258Z"
+        },
+        {
+          "id": "69e7803203fd6d85bfce4e5d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Migrate Orphaned Labels",
+          "description": "A “no label” email is created by removing from Inbox and all labels, by making it archive so that the email exists only in All Mail. Emails that exist only under custom labels or in All Mail without any labels and are not part of default folders like Inbox or Sent in Gmail, are migrated into corresponding folders in Microsoft Outlook so that no emails are missed during migration only by enabling Migrate Orphaned Labels.",
+          "family": "Orphaned Labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Migrate_Orphaned_Labels_1_1776849264114.png"
+          ],
+          "order": 22,
+          "createdAt": "2026-04-21T13:48:34.259Z"
+        },
+        {
+          "id": "69e8912e03fd6d85bfce5085",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Starred",
+          "description": "A symbol used to mark an email for easy access later, acting like a bookmark or reminder.\nThe mails which are marked as starred in Gmail will be migrated to outlook as flags by creating a folder name as yellow star and also moves to its original folder as marking it with flags",
+          "family": "default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Starred_1_1777542505761.png"
+          ],
+          "order": 23,
+          "createdAt": "2026-04-22T09:13:18.896Z"
+        },
+        {
+          "id": "69ea1b6403fd6d85bfce5726",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "primary calendar",
+          "description": "primary calendar is the default calendar tied to your mailbox/account.\nWhen someone sends you a meeting, it lands in your primary calendar.\nYour availability (free/busy) is taken from the primary calendar.\nwe can create events in the primary calendar.",
+          "family": "primary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/primary_calendar_1_1777022118869.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/primary_calendar_2_1777022118885.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/primary_calendar_3_1777022118892.png"
+          ],
+          "order": 24,
+          "createdAt": "2026-04-23T13:15:16.844Z"
+        },
+        {
+          "id": "69ea1b6403fd6d85bfce5727",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Secondary calendar",
+          "description": "A secondary calendar is A calendar you create manually or add from another source, separate from your main (primary) calendar and used for organization, categorization, or sharing.\nwe can create events in the secondary calendar as well.",
+          "family": "Secondary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Secondary_calendar_1_1776950110819.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Secondary_calendar_2_1776950110824.png"
+          ],
+          "order": 25,
+          "createdAt": "2026-04-23T13:15:16.846Z"
+        },
+        {
+          "id": "69ea1b6403fd6d85bfce5728",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "calendar meeting rooms",
+          "description": "A calendar room is a bookable resource calendar that represents a physical location.",
+          "family": "calendar rooms",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/calendar_meeting_rooms_1_1776950113097.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/calendar_meeting_rooms_2_1776950113128.png"
+          ],
+          "order": 26,
+          "createdAt": "2026-04-23T13:15:16.847Z"
+        },
+        {
+          "id": "69ea1b6403fd6d85bfce5729",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "calendar notes",
+          "description": "calendar notes are basically the same as a “description” field in a calendar event .\nThey contain the extra details like agenda, instructions, links, etc., inside the event.",
+          "family": "calendar notes",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/calendar_notes_1_1776950116224.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/calendar_notes_2_1776950116251.png"
+          ],
+          "order": 27,
+          "createdAt": "2026-04-23T13:15:16.848Z"
+        },
+        {
+          "id": "69ef281398b71409f8beec6d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Contact labels",
+          "description": "Contact labels are used to categorize and organize contacts into specific groups based on their type or purpose.\nGmail contact labels are migrated as categories in Outlook, where each label becomes a category tag assigned to the respective contacts.",
+          "family": "Contact labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contact_labels_1_1777281043578.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contact_labels_2_1777281043585.png"
+          ],
+          "order": 28,
+          "createdAt": "2026-04-27T09:10:43.914Z"
+        },
+        {
+          "id": "69ef3f7598b71409f8beed8b",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Categories",
+          "description": "Categories in Gmail are used to automatically organize emails into grouped sections so users can quickly find similar types of messages. When migrating to Microsoft Outlook, these categories are usually converted into folders because Outlook handles organization differently.",
+          "family": "Categories",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Categories_1_1777287028350.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Categories_2_1777287028430.png"
+          ],
+          "order": 29,
+          "createdAt": "2026-04-27T10:50:29.248Z"
+        },
+        {
+          "id": "69ef504198b71409f8beee7d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Filters/rules",
+          "description": "In an email migration scenario, if filters are configured for particular “From” or “To” addresses, incoming emails that match those conditions are automatically moved to a designated label or folder. During migration from Gmail to Microsoft Outlook, the emails themselves are migrated to the destination mailbox. If those emails appear under the correct folder or label after migration, they are considered successfully migrated. The filter only controls organization and does not affect the migration status of the emails.",
+          "family": "Filters/rules",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Filtersrules_1_1777291329398.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Filtersrules_2_1777291329399.png"
+          ],
+          "order": 30,
+          "createdAt": "2026-04-27T12:02:09.731Z"
+        },
+        {
+          "id": "69ef8e4398b71409f8beef43",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Outlook",
+          "name": "Signature",
+          "description": "we support signature for Gmail to outlook",
+          "family": "Signature",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Signature_1_1777307203503.png"
+          ],
+          "order": 31,
+          "createdAt": "2026-04-27T16:26:43.915Z"
+        }
+      ],
+      "outscope": [
+        {
+          "id": "69e7430403fd6d85bfce4aae",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Scheduled",
+          "description": "Scheduled emails in Gmail are system-managed pending messages, not actual folder-based emails, so they are migrated only after they are sent or moved to a standard folder.",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Scheduled_1_1777376386598.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-04-21T09:27:32.940Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4aaf",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "snoozed",
+          "description": "Snoozing means temporarily hiding an email, it will reappear in the inbox at a chosen date/time.\nSnoozed emails are not migrated because snooze is a temporary, time-based feature in Gmail and there is no equivalent feature in Outlook to map it",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/snoozed_1_1777291176587.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-04-21T09:27:32.940Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "purchase",
+          "description": "In Gmail \"purchase\" label will not be migrated but the mails inside purchase folder will be migrated to their original folders in outlook but it doesn't create a separate folder in outlook.",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/purchase_1_1777376387386.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-04-21T09:27:32.940Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab1",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Multiple delta",
+          "description": "We will not support Multiple deltas, if we perform second delta Calendar, Contacts will duplicate OR it will go to conflict, we support multiple deltas only for incremental mails",
+          "family": "Migration",
+          "screenshots": [],
+          "order": 4,
+          "createdAt": "2026-04-21T09:27:32.940Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab2",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "External user in groups",
+          "description": "In Gmail in \"Groups\" while creating group we cannot add the external user we can add only user from the same organization, if we add external user it shows error.",
+          "family": "External user in groups",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/External_user_in_groups_1_1777375986475.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/External_user_in_groups_2_1777375986485.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-04-21T09:27:32.941Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab3",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Group members",
+          "description": "group members are not added in destination group",
+          "family": "Group members",
+          "screenshots": [],
+          "order": 6,
+          "createdAt": "2026-04-21T09:27:32.941Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab5",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Contact photos",
+          "description": "Contact photos in Gmail are often profile-based or externally linked images (Google profile pictures) rather than being stored as standard contact photo attachments inside the contact record. During migration, tools typically transfer only structured contact fields (name, email, phone, etc.), not externally referenced images.",
+          "family": "Contact photos",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contact_photos_1_1777024310340.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-04-21T09:27:32.941Z"
+        },
+        {
+          "id": "69e7430403fd6d85bfce4ab6",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "All Mail",
+          "description": "“All Mail” in Gmail is not a real folder—it is a collection view of all emails across labels (Inbox, Sent, Archive, etc.). Since migration tools work on actual folders/labels, there is no direct “All Mail” folder to migrate.",
+          "family": "All Mail",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/All_Mail_1_1777376388749.png"
+          ],
+          "order": 9,
+          "createdAt": "2026-04-21T09:27:32.941Z"
+        },
+        {
+          "id": "69eb459503fd6d85bfce587d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "past calendar events",
+          "description": "Past calendar events are simply calendar entries whose scheduled date and time are already over relative to the current moment.\nPast events aren’t migrated, because APIs and tools prioritize future usability, Past data adds complexity and risk, Migration setups often exclude it intentionally.",
+          "family": "past calendar events",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/past_calendar_events_1_1777026453328.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/past_calendar_events_2_1777026453351.png"
+          ],
+          "order": 10,
+          "createdAt": "2026-04-24T10:27:33.905Z"
+        },
+        {
+          "id": "69ef8cbb98b71409f8beef3d",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Encrypted mails",
+          "description": "Gmail Confidential Mode emails are migrated as regular emails, and encryption, expiry, and access restrictions are not preserved.",
+          "family": "Encrypted mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Encrypted_mails_1_1777306810953.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Encrypted_mails_2_1777306810955.png"
+          ],
+          "order": 11,
+          "createdAt": "2026-04-27T16:20:11.251Z"
+        },
+        {
+          "id": "69f095ae98b71409f8beef8b",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Gmail to Outlook",
+          "name": "Contact Directory",
+          "description": "Contact Directory is a centralized list of all users and shared contacts in the organization. The main goal is easy communication inside an organization.",
+          "family": "Contact Directory",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contact_Directory_1_1777374638671.png",
+            "/assets/screenshots/Mail/Gmail_to_Outlook/Contact_Directory_2_1777374638673.png"
+          ],
+          "order": 12,
+          "createdAt": "2026-04-28T11:10:38.988Z"
+        }
+      ]
+    },
+    "Outlook to Outlook": {
+      "inscope": [
+        {
+          "id": "6a01c987b78df3d1544043d7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "One time migration",
+          "description": "The One-Time Migration performs the initial transfer of all existing Outlook data to Outlook, including emails, folders (labels), threads, and metadata.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/One_time_migration_1_1778502021996.png"
+          ],
+          "order": 20,
+          "createdAt": "2026-05-11T12:20:23.042Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043d8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Delta migration",
+          "description": "Delta Migration transfers only newly added or modified data along with contacts and calendars after the One-Time Migration.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Delta_migration_1_1778510462960.png"
+          ],
+          "order": 21,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043d9",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Inbox",
+          "description": "The Inbox contains all received emails from internal and external users. Read / Unread: Email read and unread status is preserved Files: Attachments are migrated with the email Text Formatting: Bold, italic, underline, bullet list, ordered list, and inline formatting are preserved Headers: To, From, CC, BCC, Subject fields are retained External Emails: Sending and receiving emails to/from external users is supported Mentions: User mentions are retained where supported . Pin / Flag / Mark as Unread: Message flags and unread indicators are preserved.",
+          "family": "Default labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Inbox_1_1778502022746.png"
+          ],
+          "order": 22,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043da",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Sent items",
+          "description": "The Sent Items folder stores all emails successfully sent by the user. Sent emails are migrated with recipients, timestamps, and content intact.",
+          "family": "Default labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Sent_items_1_1778505738819.png"
+          ],
+          "order": 23,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043db",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Drafts",
+          "description": "Emails composed but not sent are migrated and stored in the Drafts folder for further editing.",
+          "family": "Default labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Drafts_1_1778505740022.png"
+          ],
+          "order": 24,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043dc",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "junk",
+          "description": "Unwanted or spam emails are stored into spam folder in Outlook, and those junk mails from Outlook are migrated to junk folder in outlook.",
+          "family": "Default labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/junk_1_1778505740868.png"
+          ],
+          "order": 25,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043dd",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Deleted items",
+          "description": "Emails deleted by users are stored in deleted items folder in Outlook and those are migrated from Outlook to outlook in deleted folder.",
+          "family": "Default labels",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Deleted_items_1_1778505741840.png"
+          ],
+          "order": 26,
+          "createdAt": "2026-05-11T12:20:23.048Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043de",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "High Importance",
+          "description": "Emails with exclamatory mark in Outlook are treated as high importance and those are migrated from Outlook to outlook with exclamatory mark .",
+          "family": "High Importance",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/High_Importance_1_1778505742668.png"
+          ],
+          "order": 27,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043df",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Low Importance",
+          "description": "Emails with down arrow mark in Outlook are treated as low importance and those are migrated from Outlook to outlook with down arrow mark.",
+          "family": "Low Importance",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Low_Importance_1_1778505743524.png"
+          ],
+          "order": 28,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Custom Folders",
+          "description": "A custom folder in Outlook is a way to group similar emails into categories, so they are easy to find and manage later. In Outlook, custom folders are a way to organize emails in a hierarchical structure. The “types” mainly refer to how folders are arranged, not different features. Root folder (Main folder): Top-level folder, Nested folder (Sub-folder): A folder created inside a root folder, used to divide main categories further. Child folder (Sub-sub folder): A folder inside a nested folder, more specific level of organization.",
+          "family": "Custom Folders",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Custom_Folders_1_1778505744447.png"
+          ],
+          "order": 29,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e1",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Threads",
+          "description": "Email conversations with multiple replies are migrated as threaded conversations to maintain continuity.",
+          "family": "Threads",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Threads_1_1778505745354.png"
+          ],
+          "order": 30,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e2",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Timestamp",
+          "description": "A record of the exact date and time when an event happened, such as when an email was sent or received. Original sent and received timestamps are preserved for all migrated emails.",
+          "family": "Timestamp",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Timestamp_1_1778505746287.png"
+          ],
+          "order": 31,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e3",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Archive folder",
+          "description": "The Archive folder in Outlook is a mailbox folder used to safely store old or less frequently used emails outside the Inbox for organization, retention, and future reference without deleting the emails. Archive mails from outlook are migrated to archive folder in outlook.",
+          "family": "Archive folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Archive_folder_1_1778505747152.png"
+          ],
+          "order": 32,
+          "createdAt": "2026-05-11T12:20:23.049Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e4",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Read / Unread Functionality",
+          "description": "Read and Unread status of emails is fully preserved during migration. Emails marked as read in Outlook will appear as read in Outlook, and unread emails remain unread. This status is also maintained during Delta Migration.",
+          "family": "Read / Unread Functionality",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Read_Unread_Functionality_1_1778505748049.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Read_Unread_Functionality_2_1778505748091.png"
+          ],
+          "order": 33,
+          "createdAt": "2026-05-11T12:20:23.050Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e5",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "flagged mails",
+          "description": "A flag in Microsoft Outlook is a follow-up marker applied to emails to indicate pending action or importance, and during Outlook-to-Outlook migration, flagged emails along with their follow-up metadata and status are generally preserved and migrated successfully.",
+          "family": "flagged mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/flagged_mails_1_1778505749064.png"
+          ],
+          "order": 34,
+          "createdAt": "2026-05-11T12:20:23.050Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e6",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Filters/rules",
+          "description": "In an email migration scenario, if filters are configured for particular “From” or “To” addresses, incoming emails that match those conditions are automatically moved to a designated folder. During migration from Outlook to Microsoft Outlook, the emails themselves are migrated to the destination mailbox. If those emails appear under the correct folder after migration, they are considered successfully migrated. The filter only controls organization and does not affect the migration status of the emails.",
+          "family": "Filters/rules",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Filtersrules_1_1778505749977.png"
+          ],
+          "order": 35,
+          "createdAt": "2026-05-11T12:20:23.050Z"
+        },
+        {
+          "id": "6a01c987b78df3d1544043e7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Signature",
+          "description": "we support signature for Outlook to outlook",
+          "family": "Signature",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Signature_1_1778505750908.png"
+          ],
+          "order": 36,
+          "createdAt": "2026-05-11T12:20:23.050Z"
+        },
+        {
+          "id": "6a01e9d7b78df3d154404491",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Contacts",
+          "description": "Contacts are migrated with detailed attributes. Contact Details: Name, phone numbers, email addresses, and notes are migrated Contact Photos: Photos are not migrated; all other details are preserved",
+          "family": "Contacts",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Contacts_1_1778510292803.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Contacts_2_1778510292824.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Contacts_3_1778510292832.png"
+          ],
+          "order": 37,
+          "createdAt": "2026-05-11T14:38:15.537Z"
+        },
+        {
+          "id": "6a01e9d7b78df3d154404492",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "primary calendar",
+          "description": "primary calendar is the default calendar tied to your mailbox/account. When someone sends you a meeting, it lands in your primary calendar. Your availability (free/busy) is taken from the primary calendar. we can create events in the primary calendar.",
+          "family": "primary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/primary_calendar_1_1778510293791.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/primary_calendar_2_1778510293794.png"
+          ],
+          "order": 38,
+          "createdAt": "2026-05-11T14:38:15.550Z"
+        },
+        {
+          "id": "6a01e9d7b78df3d154404493",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Secondary calendar",
+          "description": "A secondary calendar is A calendar you create manually or add from another source, separate from your main (primary) calendar and used for organization, categorization, or sharing. we can create events in the secondary calendar as well.",
+          "family": "Secondary calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Secondary_calendar_1_1778510294485.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Secondary_calendar_2_1778510294486.png"
+          ],
+          "order": 39,
+          "createdAt": "2026-05-11T14:38:15.553Z"
+        },
+        {
+          "id": "6a01e9d7b78df3d154404494",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Group Mail Migration",
+          "description": "Groups are a feature in Outlook that allows multiple people to work together in one common space. the group will be migrated with destination domain name .",
+          "family": "Group Mail Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Group_Mail_Migration_1_1778510294979.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Group_Mail_Migration_2_1778510294992.png"
+          ],
+          "order": 40,
+          "createdAt": "2026-05-11T14:38:15.556Z"
+        },
+        {
+          "id": "6a01fe13b78df3d1544044ef",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Shared Mailbox",
+          "description": "A shared mailbox is a mailbox that multiple users can access and use together, instead of belonging to just one person. We migrate it as normal migration.",
+          "family": "Shared Mailbox",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Shared_Mailbox_1_1778769201879.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Shared_Mailbox_2_1778769201886.png"
+          ],
+          "order": 41,
+          "createdAt": "2026-05-11T16:04:35.355Z"
+        },
+        {
+          "id": "6a01fe13b78df3d1544044f0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Outlook to Outlook",
+          "name": "Shared calendar",
+          "description": "A Shared Calendar in Microsoft Outlook is a calendar that multiple users can access and use together. we migrate shared calendars along with its members (guest users or attendees)",
+          "family": "Shared calendar",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Shared_calendar_1_1778749248115.png",
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Shared_calendar_2_1778749248129.png"
+          ],
+          "order": 42,
+          "createdAt": "2026-05-11T16:04:35.356Z"
+        }
+      ],
+      "outscope": [
+        {
+          "id": "6a01fff4b78df3d1544044fe",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "pinned mails",
+          "description": "Pinned emails from Microsoft Outlook were migrated successfully during Outlook-to-Outlook migration, but the pin status was not preserved and the emails appeared as normal mails in the destination mailbox due to pinning being a client/UI-specific property that is not supported by migration metadata mapping.",
+          "family": "pinned mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/pinned_mails_1_1778515954519.png"
+          ],
+          "order": 0,
+          "createdAt": "2026-05-11T16:12:36.278Z"
+        },
+        {
+          "id": "6a01fff4b78df3d1544044ff",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Group members",
+          "description": "In group mail migration group members are not added at destination after the migration",
+          "family": "Group members",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Group_members_1_1778515955679.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-05-11T16:12:36.289Z"
+        },
+        {
+          "id": "6a058dc8f376ed8d021382c3",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "categories in mails",
+          "description": "Categories are color-based organizational tags in Outlook, and they may not migrate because they are stored as mailbox metadata rather than actual email content.",
+          "family": "categories in mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/categories_in_mails_1_1778748870720.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-05-14T08:54:32.368Z"
+        },
+        {
+          "id": "6a058dc8f376ed8d021382c4",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "contact photos",
+          "description": "Contact photos are not migrated because profile images are usually stored separately from standard contact data and are not fully supported through migration APIs.",
+          "family": "contact photos",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/contact_photos_1_1778748871186.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-05-14T08:54:32.370Z"
+        },
+        {
+          "id": "6a058dc8f376ed8d021382c5",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Contact categories",
+          "description": "Contact categories are not migrated because Outlook stores categories as user-specific mailbox metadata, which is not fully supported through migration APIs.",
+          "family": "Contact categories",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Contact_categories_1_1778748871645.png"
+          ],
+          "order": 4,
+          "createdAt": "2026-05-14T08:54:32.370Z"
+        },
+        {
+          "id": "6a058dc8f376ed8d021382c6",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Contact directories",
+          "description": "Contact directories are not migrated because they are organization-level Global Address List data managed by Exchange/Microsoft 365, not individual mailbox content.",
+          "family": "Contact directories",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Contact_directories_1_1778748872123.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-05-14T08:54:32.370Z"
+        },
+        {
+          "id": "6a0593b4f376ed8d02138342",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Group Mails",
+          "description": "In group mail migration the mails will be sent to all the users present in the group and the mails which are sent to the group will be migrated as normal mails, but we don't migrate the mails which are present in group.",
+          "family": "Group Mails",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Group_Mails_1_1778750388547.png"
+          ],
+          "order": 6,
+          "createdAt": "2026-05-14T09:19:48.825Z"
+        },
+        {
+          "id": "6a05a192f376ed8d02138393",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Multiple delta",
+          "description": "We will not support Multiple deltas, if we perform second delta Calendar, Contacts will duplicate OR it will go to conflict, we support multiple deltas only for incremental mails",
+          "family": "Multiple delta",
+          "screenshots": [],
+          "order": 7,
+          "createdAt": "2026-05-14T10:18:58.291Z"
+        },
+        {
+          "id": "6a05a192f376ed8d02138394",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "past calendar events",
+          "description": "Past calendar events are simply calendar entries whose scheduled date and time are already over relative to the current moment. Past events aren’t migrated, because APIs and tools prioritize future usability, Past data adds complexity and risk, Migration setups often exclude it intentionally.",
+          "family": "past calendar events",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/past_calendar_events_1_1778753937997.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-05-14T10:18:58.293Z"
+        },
+        {
+          "id": "6a05a36cf376ed8d021383a9",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "Notes folder",
+          "description": "Outlook Notes are usually not migrated because they are special mailbox items with limited API support and are not treated as core mailbox data.",
+          "family": "Notes folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Outlook_to_Outlook/Notes_folder_1_1778754412641.png"
+          ],
+          "order": 9,
+          "createdAt": "2026-05-14T10:26:52.972Z"
+        },
+        {
+          "id": "6a05dcdff376ed8d02138452",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "outscope",
+          "combination": "Outlook to Outlook",
+          "name": "copy attachment",
+          "description": "for outlook as a source, we don't support copy attachment from size of 36mb .it will be as a copy if any changes made by anyone it does affect in the original file.",
+          "family": "copy attachment",
+          "screenshots": [],
+          "order": 10,
+          "createdAt": "2026-05-14T14:31:59.247Z"
+        }
+      ]
+    },
+    "Gmail to Gmail": {
+      "inscope": [
+        {
+          "id": "69e0c81903fd6d85bfce33bb",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "One time migration",
+          "description": "The One-Time Migration performs the initial transfer of all existing Gmail data to another Gmail account, including emails, labels, threads, and metadata.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/One_time_migration_1_1776339754801.png"
+          ],
+          "order": 1,
+          "createdAt": "2026-04-16T11:29:29.220Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33bc",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Delta migration",
+          "description": "Delta Migration transfers only newly added or modified data after the One-Time Migration between Gmail accounts.",
+          "family": "Migration",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Delta_migration_1_1776339755643.png"
+          ],
+          "order": 2,
+          "createdAt": "2026-04-16T11:29:29.220Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33bd",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Inbox",
+          "description": "Read / Unread: Email read and unread status is preserved.\n        Files: Attachments are migrated with the email.\n       Text Formatting: Bold, italic, underline, bullet list, ordered list, and inline formatting are preserved.\n       Headers: To, From, CC, BCC, Subject fields are retained.\n       External Emails: Sending and receiving emails to/from external users is supported.\n       Mentions: User mentions are retained where supported.\n       Flag / Star / Mark as Unread: Message indicators are preserved.",
+          "family": "Default folders",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Inbox_1_1776766960266.png"
+          ],
+          "order": 3,
+          "createdAt": "2026-04-16T11:29:29.220Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33be",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Sent",
+          "description": "Sent emails are migrated with recipients, timestamps, and content intact.",
+          "family": "Default folders",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Sent_1_1776766961286.png"
+          ],
+          "order": 4,
+          "createdAt": "2026-04-16T11:29:29.220Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33bf",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Drafts",
+          "description": "Draft emails are migrated and stored for further editing.",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Drafts_1_1776766962019.png"
+          ],
+          "order": 5,
+          "createdAt": "2026-04-16T11:29:29.220Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c0",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Junk / Spam",
+          "description": "Unwanted or spam emails are migrated to the Junk/Spam folder.",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Junk_Spam_1_1776766962753.png"
+          ],
+          "order": 6,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c1",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Deleted / Trash",
+          "description": "Deleted emails are migrated to the Deleted/Trash folder.",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Deleted_Trash_1_1776766963485.png"
+          ],
+          "order": 7,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c2",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Starred",
+          "description": "Starred mails are migrated to starred folders .",
+          "family": "Default folder",
+          "screenshots": [
+            "/assets/screenshots/Mail/Gmail_to_Gmail/Starred_1_1776766964225.png"
+          ],
+          "order": 8,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c3",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Custom Folders (Labels)",
+          "description": "Root Folder: Top-level custom folders are migrated.\n       Child / Nested Folder: Subfolders maintain their parent-child structure.\n       Rules / Filters: Existing rules or filters are applied where supported.",
+          "family": "Custom Folders (Labels)",
+          "screenshots": [],
+          "order": 9,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c4",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Threads",
+          "description": "Email conversations with multiple replies are migrated as threaded conversations to maintain continuity.",
+          "family": "Threads",
+          "screenshots": [],
+          "order": 10,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c5",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Timestamp",
+          "description": "Original sent and received timestamps are preserved for all migrated emails.",
+          "family": "Timestamp",
+          "screenshots": [],
+          "order": 11,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c6",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "All Mail (Gmail Only)",
+          "description": "The Gmail-specific “All Mail” view is migrated while preserving email visibility across folders.",
+          "family": "All Mail (Gmail Only)",
+          "screenshots": [],
+          "order": 12,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c7",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Calendars",
+          "description": "Recurring Events: Location, attachments, guests, and recurrence patterns are preserved.\n        Non-Recurring Events: Single-instance events are migrated.\n        Past / Present / Future Events: All event timelines are supported.",
+          "family": "Calendars",
+          "screenshots": [],
+          "order": 13,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c8",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Contacts",
+          "description": "Contact Details: Name, phone numbers, email addresses, and notes are migrated.\n       Contact Photos: Photos are migrated if supported.",
+          "family": "Contacts",
+          "screenshots": [],
+          "order": 14,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33c9",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Shared Mailbox",
+          "description": "Shared or delegated mailboxes are migrated while preserving access permissions where supported.",
+          "family": "Shared Mailbox",
+          "screenshots": [],
+          "order": 15,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33ca",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Group Mail Migration",
+          "description": "Emails sent to groups are migrated and delivered to all group members in the destination environment.",
+          "family": "Group Mail Migration",
+          "screenshots": [],
+          "order": 16,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        },
+        {
+          "id": "69e0c81903fd6d85bfce33cb",
+          "productType": "Mail",
+          "categorySlug": "Mail",
+          "scope": "inscope",
+          "combination": "Gmail to Gmail",
+          "name": "Group Calendars",
+          "description": "Group calendars are migrated with sharing permissions, allowing users to add events and manage access.",
+          "family": "Group Calendars",
+          "screenshots": [],
+          "order": 17,
+          "createdAt": "2026-04-16T11:29:29.221Z"
+        }
+      ],
+      "outscope": []
+    }
+  }
+}
