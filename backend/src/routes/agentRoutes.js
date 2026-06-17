@@ -29,6 +29,9 @@ router.post('/create-outlook-data', controller.createOutlookData);
 router.post('/create-test-data', controller.createTestData);
 router.post('/create-box-data', controller.createBoxData);
 router.get('/box/users', controller.getBoxUsers);
+router.post('/create-drive-data', controller.createDriveData);
+router.post('/update-drive-versions', controller.updateDriveVersions);
+router.post('/setup-drive-shared-links', controller.setupDriveSharedLinks);
 router.post('/executions/:id/cancel', controller.cancelExecution);
 
 module.exports = router;

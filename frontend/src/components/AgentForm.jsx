@@ -18,9 +18,20 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
     testType: 'E2E',
     migrationType: 'FULL',
   });
-  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('migration-server-url', 'https://devemail.cloudfuze.com/proxyservices/v1');
-  const [migrationServerEmail, setMigrationServerEmail] = usePersistedState('migration-server-email', '');
-  const [migrationServerPassword, setMigrationServerPassword] = useState('');
+  // Separate persisted server config per mode — content defaults to qarelease, email to devemail
+  const [emailServerUrl,  setEmailServerUrl]  = usePersistedState('migration-server-url-email',    'https://devemail.cloudfuze.com/proxyservices/v1');
+  const [contentServerUrl, setContentServerUrl] = usePersistedState('migration-server-url-content', 'https://qarelease.cloudfuze.com/');
+  const [emailServerEmail,  setEmailServerEmail]  = usePersistedState('migration-server-email-email',   '');
+  const [contentServerEmail, setContentServerEmail] = usePersistedState('migration-server-email-content', 'soumya.gande@cloudfuze.com');
+  const [emailServerPassword,  setEmailServerPassword]  = useState('');
+  const [contentServerPassword, setContentServerPassword] = useState('CloudFuze@123');
+
+  const migrationServerUrl      = mode === 'content' ? contentServerUrl      : emailServerUrl;
+  const setMigrationServerUrl   = mode === 'content' ? setContentServerUrl   : setEmailServerUrl;
+  const migrationServerEmail    = mode === 'content' ? contentServerEmail    : emailServerEmail;
+  const setMigrationServerEmail = mode === 'content' ? setContentServerEmail : setEmailServerEmail;
+  const migrationServerPassword    = mode === 'content' ? contentServerPassword    : emailServerPassword;
+  const setMigrationServerPassword = mode === 'content' ? setContentServerPassword : setEmailServerPassword;
   const [mappedPairs, setMappedPairs] = useState(null);
   const [userEmailMappings, setUserEmailMappings] = useState(null);
   const [sourceAdminEmail, setSourceAdminEmail] = useState('');

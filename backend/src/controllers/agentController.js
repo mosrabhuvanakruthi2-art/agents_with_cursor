@@ -1014,6 +1014,204 @@ async function createBoxData(req, res) {
   }
 }
 
+/**
+ * POST /agents/create-drive-data
+ * Body: { sourceEmail, editorEmail?, viewerEmail?, sourceFolderName? }
+ *
+ * Runs DriveTestDataAgent — creates the full QA data set in Google My Drive.
+ * sourceEmail must belong to a tenant with a service account (DWD) or have a stored OAuth token.
+ * sourceFolderName defaults to "Agent My Drive" (matches the CSV migration path /Agent My Drive).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createDriveData(req, res) {
+  try {
+    const { sourceEmail, editorEmail, viewerEmail, sourceFolderName } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    const folderName = sourceFolderName || 'Agent My Drive';
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, sourceFolderName: folderName }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Drive data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: creating folders, uploading files, building versions, setting permissions…',
+        });
+        const result = await agent.run({
+          sourceEmail,
+          editorEmail:      editorEmail || null,
+          viewerEmail:      viewerEmail || null,
+          sourceFolderName: folderName,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], driveData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createDriveData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createDriveData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/setup-drive-shared-links
+ * Body: {
+ *   sourceEmail,
+ *   rootFolderId,           — ID of "Agent My Drive" folder
+ *   existingSharedItems,    — [{label, id}, ...] items whose public links to remove
+ *   domain?                 — defaults to 'storefuze.com'
+ * }
+ *
+ * 1. Removes public "anyone" links from all previously shared items.
+ * 2. Creates "Agent Shared Links" folder with 5 files:
+ *    - 2 files with "anyone with the link" (viewer + editor)
+ *    - 3 files with domain-restricted link for storefuze.com (viewer + commenter + editor)
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function setupDriveSharedLinks(req, res) {
+  try {
+    const { sourceEmail, rootFolderId, existingSharedItems = [], domain = 'storefuze.com' } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!rootFolderId) return res.status(400).json({ error: 'rootFolderId is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, rootFolderId, domain }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Shared links setup started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: removing public links, creating Agent Shared Links folder…',
+        });
+        const result = await agent.setupSharedLinksFolder(sourceEmail, rootFolderId, existingSharedItems, domain);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], sharedLinksSetup: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`setupDriveSharedLinks failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`setupDriveSharedLinks error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/update-drive-versions
+ * Body: { sourceEmail, versionedFiles: [{name, id}, ...], fromVersion?, toVersion? }
+ *
+ * Appends additional versions to existing Drive files — used for delta migration testing.
+ * fromVersion defaults to 5 (initial agent creates 5). toVersion defaults to 10.
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function updateDriveVersions(req, res) {
+  try {
+    const { sourceEmail, versionedFiles, fromVersion = 5, toVersion = 10 } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!Array.isArray(versionedFiles) || versionedFiles.length === 0) {
+      return res.status(400).json({ error: 'versionedFiles array is required (e.g. [{name, id}, ...])' });
+    }
+    if (fromVersion >= toVersion) {
+      return res.status(400).json({ error: `fromVersion (${fromVersion}) must be less than toVersion (${toVersion})` });
+    }
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, fromVersion, toVersion, files: versionedFiles.map((f) => f.name) }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: `Adding versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s). Poll GET /api/agents/executions/:id for progress.`,
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: `DriveTestDataAgent: uploading versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s)…`,
+        });
+        const result = await agent.updateVersions(sourceEmail, versionedFiles, fromVersion, toVersion);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], updatedVersions: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`updateDriveVersions failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`updateDriveVersions error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -1023,6 +1221,6 @@ module.exports = {
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
   createOutlookData, cancelExecution, createTestData,
-  getBoxUsers, createBoxData,
+  getBoxUsers, createBoxData, createDriveData, updateDriveVersions, setupDriveSharedLinks,
 };
 

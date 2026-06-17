@@ -10,11 +10,19 @@ import usePersistedState from '../hooks/usePersistedState';
 // ─── Provider config ──────────────────────────────────────────────────────────
 
 const PROVIDERS = {
-  google: { key: 'google', label: 'Google Workspace', short: 'Google', icon: GoogleIcon },
-  microsoft: { key: 'microsoft', label: 'Microsoft 365', short: 'Microsoft', icon: MicrosoftIcon },
-  box: { key: 'box', label: 'Box', short: 'Box', icon: BoxIcon },
-  sharepoint: { key: 'sharepoint', label: 'SharePoint Online', short: 'SharePoint', icon: SharePointIcon },
+  google:      { key: 'google',      label: 'Google Workspace',  short: 'Google',       icon: GoogleIcon,      oauthKey: 'google'    },
+  mydrive:     { key: 'mydrive',     label: 'Google My Drive',   short: 'My Drive',     icon: MyDriveIcon,     oauthKey: 'google'    },
+  shareddrive: { key: 'shareddrive', label: 'Google Shared Drive', short: 'Shared Drive', icon: SharedDriveIcon, oauthKey: 'google'  },
+  microsoft:   { key: 'microsoft',   label: 'Microsoft 365',     short: 'Microsoft',    icon: MicrosoftIcon,   oauthKey: 'microsoft' },
+  onedrive:    { key: 'onedrive',    label: 'OneDrive',          short: 'OneDrive',     icon: OneDriveIcon,    oauthKey: 'microsoft' },
+  box:         { key: 'box',         label: 'Box',               short: 'Box',          icon: BoxIcon,         oauthKey: 'box'       },
+  sharepoint:  { key: 'sharepoint',  label: 'SharePoint Online', short: 'SharePoint',   icon: SharePointIcon,  oauthKey: 'sharepoint'},
 };
+
+/** Maps a logical provider key to the underlying OAuth provider key */
+function oauthKey(providerKey) {
+  return PROVIDERS[providerKey]?.oauthKey || providerKey;
+}
 
 // ─── OAuth popup ──────────────────────────────────────────────────────────────
 
@@ -107,9 +115,10 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
 
   async function handleSignOut(provider, email) {
     try {
-      if (provider === 'google') await signOutGoogle(email);
-      else if (provider === 'box') await signOutBox(email);
-      else if (provider === 'sharepoint') await signOutSharePoint(email);
+      const ok = oauthKey(provider);
+      if (ok === 'google') await signOutGoogle(email);
+      else if (ok === 'box') await signOutBox(email);
+      else if (ok === 'sharepoint') await signOutSharePoint(email);
       else await signOutMicrosoft(email);
       if (srcEmail === email) setSrcEmail('');
       if (dstEmail === email) setDstEmail('');
@@ -119,9 +128,10 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
 
   async function handleLogin(target) {
     const providerKey = target === 'source' ? srcProvider : dstProvider;
+    const ok = oauthKey(providerKey);
 
     // migrationn.com uses DWD — store in DB and select
-    if (providerKey === 'google' && googleTenant === '3') {
+    if (ok === 'google' && googleTenant === '3') {
       const email = dwdEmail.trim().toLowerCase();
       if (!email) return;
       try {
@@ -137,7 +147,7 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
     }
 
     // Box uses email-only connect (no OAuth popup)
-    if (providerKey === 'box') {
+    if (ok === 'box') {
       const email = boxEmail.trim().toLowerCase();
       if (!email) return;
       try {
@@ -154,7 +164,7 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
     }
 
     // SharePoint uses email-only connect (reuses Microsoft Graph credentials)
-    if (providerKey === 'sharepoint') {
+    if (ok === 'sharepoint') {
       const email = sharePointEmail.trim().toLowerCase();
       if (!email) return;
       try {
@@ -174,7 +184,7 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
     setOauthLoading(true);
     try {
       let getFn, tenant;
-      if (providerKey === 'google') { getFn = getGoogleOAuthUrl; tenant = googleTenant; }
+      if (ok === 'google') { getFn = getGoogleOAuthUrl; tenant = googleTenant; }
       else { getFn = getMicrosoftOAuthUrl; tenant = msTenant; }
       const res = await getFn('popup', tenant);
       popupRef.current = openOAuthPopup(res.data.url);
@@ -288,12 +298,18 @@ export default function UserMapping({ onMappingComplete, mode = 'email' }) {
     );
   }
 
-  // Providers available for this mode (Box only in content tab)
-  const availableProviders = Object.values(PROVIDERS).filter((p) => mode === 'content' || (p.key !== 'box' && p.key !== 'sharepoint'));
+  // Providers available for this mode
+  // email mode: Google, Microsoft only
+  // content mode: My Drive, Shared Drive, OneDrive, SharePoint, Box (specific cloud types)
+  const EMAIL_PROVIDERS    = ['google', 'microsoft'];
+  const CONTENT_PROVIDERS  = ['mydrive', 'shareddrive', 'onedrive', 'sharepoint', 'box'];
+  const availableProviders = Object.values(PROVIDERS).filter((p) =>
+    mode === 'content' ? CONTENT_PROVIDERS.includes(p.key) : EMAIL_PROVIDERS.includes(p.key)
+  );
 
-  // Accounts for each provider
-  const srcAccounts = accounts.filter((a) => a.provider === srcProvider);
-  const dstAccounts = accounts.filter((a) => a.provider === dstProvider);
+  // Accounts for each provider — map logical key to OAuth provider for filtering
+  const srcAccounts = accounts.filter((a) => a.provider === oauthKey(srcProvider));
+  const dstAccounts = accounts.filter((a) => a.provider === oauthKey(dstProvider));
 
   return (
     <div className="space-y-5">
@@ -537,7 +553,7 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             type="button"
             onClick={onLogin}
             className={`w-full flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
-              provider === 'google'
+              ['google','mydrive','shareddrive'].includes(provider)
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
                 : provider === 'box'
                 ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
@@ -555,8 +571,8 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
       ) : (
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2">
-              <Icon className="w-3.5 h-3.5" />
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              <Icon className="w-3.5 h-3.5 flex-shrink-0" />
             </div>
             <input
               type="email"
@@ -571,7 +587,7 @@ function AdminField({ label, provider, email, connectedAccounts, accountsLoading
             onClick={onLogin}
             title={`Sign in with ${p.label}`}
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors flex-shrink-0 ${
-              provider === 'google'
+              ['google','mydrive','shareddrive'].includes(provider)
                 ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
                 : provider === 'box'
                 ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
@@ -730,6 +746,37 @@ function LoginModal({ provider, loading, error, onConnect, onClose, googleTenant
 function Pill({ color, text }) {
   const colors = { indigo: 'bg-indigo-50 text-indigo-700', purple: 'bg-purple-50 text-purple-700', green: 'bg-green-50 text-green-700', yellow: 'bg-yellow-50 text-yellow-700', orange: 'bg-orange-50 text-orange-700' };
   return <span className={`${colors[color]} px-3 py-1 rounded-full font-medium`}>{text}</span>;
+}
+
+function MyDriveIcon({ className }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} fill="none">
+      <path d="M6 38l8-14h20l8 14H6z" fill="#4285F4" />
+      <path d="M16 10l8 14H8L16 10z" fill="#34A853" />
+      <path d="M32 10l8 14H24L32 10z" fill="#FBBC05" />
+    </svg>
+  );
+}
+
+function SharedDriveIcon({ className }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} fill="none">
+      <path d="M6 38l8-14h20l8 14H6z" fill="#1A73E8" />
+      <path d="M16 10l8 14H8L16 10z" fill="#1A73E8" opacity="0.6" />
+      <path d="M32 10l8 14H24L32 10z" fill="#1A73E8" opacity="0.8" />
+      <circle cx="34" cy="14" r="7" fill="#34A853" />
+      <path d="M31 14h6M34 11v6" stroke="white" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function OneDriveIcon({ className }) {
+  return (
+    <svg viewBox="0 0 48 48" className={className} fill="none">
+      <path d="M28 32H12a8 8 0 01-1-15.94A12 12 0 0133 20h1a8 8 0 010 12h-6z" fill="#0078D4" />
+      <path d="M36 32H26a6 6 0 010-12h1.4A10 10 0 0146 26a6 6 0 01-6 6H36z" fill="#28A8E8" />
+    </svg>
+  );
 }
 
 function GoogleIcon({ className }) {
