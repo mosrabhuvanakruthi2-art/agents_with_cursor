@@ -29,3 +29,5 @@ backend/data/test-repository.json
 .claude/settings.local.json
 .claude/settings.json
 .claude/scheduled_tasks.lock
+backend/config/gem-co-service-account.json
+backend/config/*.json
