@@ -275,13 +275,22 @@ class AgentOrchestrator {
         throw new Error('Execution cancelled by user');
       }
 
-      // Step 3: Validate — skip if content migration returned a stop status
+      // Step 3: Validate — skip for content migrations (box/sharepoint/onedrive/dropbox)
+      // and for content migrations that returned a stop status.
+      const isContentProviders =
+        ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
+        ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
+      const skipValidation = migrationResult?.skipValidation || (isContentMode && isContentProviders);
+
       let validationResult = null;
-      if (migrationResult?.skipValidation) {
-        log.info(`Step 3: Skipped — content migration stop status "${migrationResult.finalStatus}"`);
+      if (skipValidation) {
+        const reason = migrationResult?.skipValidation
+          ? `content migration stop status "${migrationResult.finalStatus}"`
+          : `content migration (${context.sourceProvider} → ${context.destinationProvider}) — email validation not applicable`;
+        log.info(`Step 3: Skipped — ${reason}`);
         executionService.update(context.executionId, {
           currentAgent: 'Skipped',
-          progress: `Validation skipped — content migration stopped with status "${migrationResult.finalStatus}"`,
+          progress: `Validation skipped — ${reason}`,
         });
       } else {
         executionService.update(context.executionId, {
@@ -301,7 +310,7 @@ class AgentOrchestrator {
         agentResults: [
           ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          ...(migrationResult?.skipValidation ? [] : [outlookAgent.toJSON()]),
+          ...(skipValidation ? [] : [outlookAgent.toJSON()]),
         ],
         sourceData,
         migrationResult,
@@ -331,9 +340,9 @@ class AgentOrchestrator {
         duration,
         error: err.message,
         agentResults: [
-          dataAgent.toJSON(),
+          ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          outlookAgent.toJSON(),
+          ...(isContentMode ? [] : [outlookAgent.toJSON()]),
         ],
       };
 

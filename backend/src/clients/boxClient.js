@@ -105,9 +105,12 @@ async function createFolder(name, parentId, token, asUserId = null) {
 
 // ─── File operations ──────────────────────────────────────────────────────────
 
-async function uploadFile(name, fileBuffer, parentId, token, asUserId = null) {
+async function uploadFile(name, fileBuffer, parentId, token, asUserId = null, opts = {}) {
+  const attributes = { name, parent: { id: String(parentId) } };
+  if (opts.contentModifiedAt) attributes.content_modified_at = opts.contentModifiedAt;
+  if (opts.contentCreatedAt) attributes.content_created_at = opts.contentCreatedAt;
   const { body, contentType } = buildMultipart(
-    { name, parent: { id: String(parentId) } },
+    attributes,
     name,
     Buffer.isBuffer(fileBuffer) ? fileBuffer : Buffer.from(fileBuffer)
   );
@@ -147,4 +150,162 @@ async function createSharedLink(itemType, itemId, token, asUserId = null) {
   return res.data.shared_link?.url || null;
 }
 
-module.exports = { getValidToken, getMe, getUsers, createFolder, uploadFile, uploadVersion, createSharedLink };
+// ─── Comments ─────────────────────────────────────────────────────────────────
+
+async function addComment(fileId, message, token, asUserId = null) {
+  const res = await axios.post(`${BOX_API}/comments`, {
+    item: { type: 'file', id: String(fileId) },
+    message,
+  }, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+// ─── Groups ───────────────────────────────────────────────────────────────────
+
+async function createGroup(name, token, asUserId = null) {
+  const res = await axios.post(`${BOX_API}/groups`, { name }, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+async function addGroupMember(groupId, userId, role = 'member', token, asUserId = null) {
+  const res = await axios.post(`${BOX_API}/group_memberships`, {
+    user: { id: String(userId) },
+    group: { id: String(groupId) },
+    role,
+  }, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+async function createGroupCollaboration(itemType, itemId, groupId, role, token, suppressNotify = true, asUserId = null) {
+  const url = suppressNotify
+    ? `${BOX_API}/collaborations?notify=false`
+    : `${BOX_API}/collaborations`;
+  const res = await axios.post(url, {
+    item: { type: itemType, id: String(itemId) },
+    accessible_by: { type: 'group', id: String(groupId) },
+    role,
+  }, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+// ─── Collaborations ───────────────────────────────────────────────────────────
+
+async function createCollaboration(itemType, itemId, userEmail, role, token, suppressNotify = true, asUserId = null) {
+  const url = suppressNotify
+    ? `${BOX_API}/collaborations?notify=false`
+    : `${BOX_API}/collaborations`;
+  const res = await axios.post(url, {
+    item: { type: itemType, id: String(itemId) },
+    accessible_by: { type: 'user', login: userEmail },
+    role,
+  }, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+// ─── Content stats & cleanup ──────────────────────────────────────────────────
+
+async function getFolderItems(folderId, token, asUserId = null) {
+  const res = await axios.get(`${BOX_API}/folders/${folderId}/items`, {
+    headers: authHeaders(token, asUserId),
+    params: { fields: 'id,name,type,size', limit: 1000 },
+  });
+  return res.data.entries || [];
+}
+
+async function deleteBoxItem(type, id, token, asUserId = null) {
+  const url = type === 'folder'
+    ? `${BOX_API}/folders/${id}?recursive=true`
+    : `${BOX_API}/files/${id}`;
+  await axios.delete(url, { headers: authHeaders(token, asUserId) });
+}
+
+async function getBoxUserByEmail(adminEmail, userEmail) {
+  const users = await getUsers(adminEmail);
+  return users.find((u) => u.login.toLowerCase() === userEmail.toLowerCase()) || null;
+}
+
+async function getBoxContentStats(adminEmail, userEmail) {
+  const token = await getValidToken(adminEmail);
+  const user = await getBoxUserByEmail(adminEmail, userEmail);
+  const asUserId = user ? user.id : null;
+  const items = await getFolderItems('0', token, asUserId);
+  return {
+    email: userEmail,
+    fileCount: items.filter((i) => i.type === 'file').length,
+    folderCount: items.filter((i) => i.type === 'folder').length,
+    totalItems: items.length,
+  };
+}
+
+async function cleanBoxContent(adminEmail, userEmail) {
+  const token = await getValidToken(adminEmail);
+  const user = await getBoxUserByEmail(adminEmail, userEmail);
+  const asUserId = user ? user.id : null;
+  const items = await getFolderItems('0', token, asUserId);
+  let deletedFiles = 0, deletedFolders = 0;
+  const errors = [];
+  for (const item of items) {
+    try {
+      await deleteBoxItem(item.type, item.id, token, asUserId);
+      if (item.type === 'file') deletedFiles++;
+      else deletedFolders++;
+    } catch (err) {
+      errors.push(`${item.name}: ${err.message}`);
+    }
+  }
+  return { deletedFiles, deletedFolders, errors };
+}
+
+async function cleanBoxFiles(adminEmail, userEmail) {
+  const token = await getValidToken(adminEmail);
+  const user = await getBoxUserByEmail(adminEmail, userEmail);
+  const asUserId = user ? user.id : null;
+  const items = await getFolderItems('0', token, asUserId);
+  let deletedFiles = 0;
+  const errors = [];
+  for (const item of items.filter((i) => i.type === 'file')) {
+    try {
+      await deleteBoxItem('file', item.id, token, asUserId);
+      deletedFiles++;
+    } catch (err) {
+      errors.push(`${item.name}: ${err.message}`);
+    }
+  }
+  return { deletedFiles, errors };
+}
+
+async function cleanBoxFolders(adminEmail, userEmail) {
+  const token = await getValidToken(adminEmail);
+  const user = await getBoxUserByEmail(adminEmail, userEmail);
+  const asUserId = user ? user.id : null;
+  const items = await getFolderItems('0', token, asUserId);
+  let deletedFolders = 0;
+  const errors = [];
+  for (const item of items.filter((i) => i.type === 'folder')) {
+    try {
+      await deleteBoxItem('folder', item.id, token, asUserId);
+      deletedFolders++;
+    } catch (err) {
+      errors.push(`${item.name}: ${err.message}`);
+    }
+  }
+  return { deletedFolders, errors };
+}
+
+module.exports = {
+  getValidToken, getMe, getUsers,
+  createFolder, uploadFile, uploadVersion,
+  createSharedLink, addComment, createCollaboration,
+  createGroup, addGroupMember, createGroupCollaboration,
+  getBoxContentStats, cleanBoxContent, cleanBoxFiles, cleanBoxFolders,
+};

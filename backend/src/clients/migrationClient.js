@@ -26,14 +26,11 @@ let runtimeConfig = null;
  */
 function normalizeBaseUrl(url) {
   if (!url) return url;
-  try {
-    const u = new URL(url);
-    if (u.pathname === '/' || u.pathname === '') {
-      return url.replace(/\/$/, '') + '/proxyservices/v1';
-    }
-  } catch {}
-  return url.replace(/\/$/, '');
+  // Strip trailing slashes only. Do NOT auto-append /proxyservices/v1 — login discovery
+  // below probes both root-level and proxyservices-level paths automatically.
+  return url.replace(/\/+$/, '');
 }
+
 
 function setRuntimeConfig(cfg) {
   if (cfg?.baseUrl) cfg = { ...cfg, baseUrl: normalizeBaseUrl(cfg.baseUrl) };
@@ -78,6 +75,19 @@ function getActiveEmailBaseUrl() {
   } catch {
     return env.MIGRATION_API_URL.replace(/\/proxyservices\/v1.*$/i, '');
   }
+}
+
+/**
+ * Returns the API module ('report' for content-migration servers like qarelease,
+ * 'email' for email-migration new-servers like newtestemail5).
+ * Derived from the active base URL — login updates it to include the module path.
+ * e.g. .../proxyservices/v1/report → 'report'
+ *      .../proxyservices/v1/email  → 'email'
+ */
+function getApiModule() {
+  const base = getActiveEmailBaseUrl();
+  if (/\/report(\/|$)/.test(base)) return 'report';
+  return 'email';
 }
 
 /**
@@ -193,37 +203,117 @@ async function register() {
 async function login() {
   if (loginToken && !isJwtExpired(loginToken)) return loginToken;
 
-  // New server: email + MD5-hashed password + ent via POST /email/app/login
+  // New server: email + password via POST /email/app/login
+  // Different CloudFuze servers (newtestemail5, qarelease, etc.) vary in:
+  //   (a) whether the API lives at root or under /proxyservices/v1
+  //   (b) whether the password is MD5-hashed or sent as plain text
+  // Probe URL candidates × password variants until one succeeds.
   if (isNewServer() && runtimeConfig.email && runtimeConfig.password) {
     const crypto = require('crypto');
-    const hashedPassword = crypto.createHash('md5').update(runtimeConfig.password).digest('hex');
-    const ent = (() => { try { return new URL(runtimeConfig.baseUrl).host; } catch { return runtimeConfig.baseUrl; } })();
-    const res = await retryWithBackoff(
-      () =>
-        axios.post(
-          `${runtimeConfig.baseUrl}/email/app/login`,
-          { email: runtimeConfig.email, password: hashedPassword, ent },
-          migrationAxiosConfig({ timeout: 30000 })
-        ),
-      { label: 'CloudFuze email/app/login', maxRetries: 3 }
-    );
-    const raw = res.data;
-    logger.info(`CloudFuze /email/app/login raw response: ${JSON.stringify(raw)}`);
-    logger.info(`CloudFuze /email/app/login response headers: ${JSON.stringify(res.headers)}`);
-    const headerToken = (
-      res.headers?.['authorization'] ||
-      res.headers?.['x-auth-token'] ||
-      res.headers?.['x-access-token'] ||
-      res.headers?.['token'] ||
-      ''
-    ).replace(/^Bearer\s*/i, '').trim();
-    const token = raw?.token || raw?.accessToken || raw?.jwtToken || raw?.data?.token ||
-      raw?.data?.accessToken || raw?.result?.token || headerToken ||
-      (typeof raw === 'string' ? raw.replace(/^Bearer\s*/i, '').trim() : '');
-    if (!token) throw new Error(`CloudFuze /email/app/login: no token in response — body: ${JSON.stringify(raw)}`);
-    loginToken = token;
-    logger.info(`CloudFuze: logged in via POST /email/app/login (${runtimeConfig.baseUrl})`);
-    return loginToken;
+    const baseUrl = runtimeConfig.baseUrl;
+    const origin = (() => { try { return new URL(baseUrl).origin; } catch { return baseUrl; } })();
+    const ent = (() => { try { return new URL(baseUrl).host; } catch { return baseUrl; } })();
+
+    // Password variants: try MD5, plain, and SHA-256 — different CloudFuze servers expect different formats
+    const md5Password    = crypto.createHash('md5').update(runtimeConfig.password).digest('hex');
+    const sha256Password = crypto.createHash('sha256').update(runtimeConfig.password).digest('hex');
+
+    // ent field variants — all of these returned 403 previously, so try WITHOUT ent first.
+    const entFull  = ent;                // 'qarelease.cloudfuze.com'
+    const entShort = ent.split('.')[0];  // 'qarelease'
+
+    // No-ent variants come FIRST — if ent field is causing the 403, these will find the working combo.
+    // SHA-256 added because all MD5+plain variants returned 403 on previous run.
+    const bodyVariants = [
+      { label: 'md5-noEnt',       body: { email: runtimeConfig.email, password: md5Password            } },
+      { label: 'plain-noEnt',     body: { email: runtimeConfig.email, password: runtimeConfig.password } },
+      { label: 'sha256-noEnt',    body: { email: runtimeConfig.email, password: sha256Password          } },
+      { label: 'md5+entFull',     body: { email: runtimeConfig.email, password: md5Password,            ent: entFull  } },
+      { label: 'plain+entFull',   body: { email: runtimeConfig.email, password: runtimeConfig.password, ent: entFull  } },
+      { label: 'sha256+entFull',  body: { email: runtimeConfig.email, password: sha256Password,         ent: entFull  } },
+      { label: 'md5+entShort',    body: { email: runtimeConfig.email, password: md5Password,            ent: entShort } },
+      { label: 'plain+entShort',  body: { email: runtimeConfig.email, password: runtimeConfig.password, ent: entShort } },
+      { label: 'sha256+entShort', body: { email: runtimeConfig.email, password: sha256Password,         ent: entShort } },
+      // Some CloudFuze APIs use emailId instead of email
+      { label: 'md5+emailId',     body: { emailId: runtimeConfig.email, password: md5Password,          ent: entFull  } },
+      { label: 'plain+emailId',   body: { emailId: runtimeConfig.email, password: runtimeConfig.password, ent: entFull } },
+    ];
+
+    // Ordered URL candidates — first success wins.
+    // Known working URLs (return 403 = URL exists): /email/app/login and /entapp/login — try these FIRST.
+    // /report/* paths all returned 404 in previous run — keep as last-resort fallback.
+    const loginCandidates = [...new Set([
+      `${origin}/proxyservices/v1/email/app/login`,     // 403 → URL exists, credentials format wrong
+      `${origin}/proxyservices/v1/entapp/login`,        // 403 → URL exists, credentials format wrong
+      `${origin}/proxyservices/v1/report/entapp/login`, // 404 in prev run — keep as fallback
+      `${origin}/proxyservices/v1/report/app/login`,    // 404 in prev run — keep as fallback
+      `${baseUrl}/email/app/login`,
+      `${origin}/email/app/login`,
+      `${origin}/app/login`,
+    ])];
+
+    const extractToken = (res) => {
+      const raw = res.data;
+      logger.info(`CloudFuze login response body: ${JSON.stringify(raw)}`);
+      const headerToken = (
+        res.headers?.['authorization'] ||
+        res.headers?.['x-auth-token'] ||
+        res.headers?.['x-access-token'] ||
+        res.headers?.['token'] ||
+        ''
+      ).replace(/^Bearer\s*/i, '').trim();
+      return raw?.token || raw?.accessToken || raw?.jwtToken || raw?.data?.token ||
+        raw?.data?.accessToken || raw?.result?.token || headerToken ||
+        (typeof raw === 'string' ? raw.replace(/^Bearer\s*/i, '').trim() : '');
+    };
+
+    let lastErr;
+    const failedSummary = [];
+    for (const loginUrl of loginCandidates) {
+      for (const variant of bodyVariants) {
+        try {
+          const res = await retryWithBackoff(
+            () =>
+              axios.post(
+                loginUrl,
+                variant.body,
+                migrationAxiosConfig({
+                  timeout: 30000,
+                  headers: { 'Content-Type': 'application/json' },
+                })
+              ),
+            { label: `CloudFuze login (${loginUrl}, ${variant.label})`, maxRetries: 1 }
+          );
+          const token = extractToken(res);
+          if (!token) throw new Error(`no token in response — body: ${JSON.stringify(res.data)}`);
+
+          loginToken = token;
+          // Strip the login suffix so the module prefix (/report/ or /email/) is preserved in baseUrl.
+          // Handles both /app/login and /entapp/login patterns.
+          const successBase = loginUrl.replace(/\/(ent)?app\/login$/, '');
+          if (successBase !== baseUrl) {
+            logger.info(`CloudFuze: base URL updated to ${successBase} (login via ${loginUrl})`);
+            runtimeConfig = { ...runtimeConfig, baseUrl: successBase };
+          }
+          logger.info(`CloudFuze: logged in via POST ${loginUrl} (variant: ${variant.label})`);
+          return loginToken;
+        } catch (err) {
+          lastErr = err;
+          const status = err?.response?.status;
+          failedSummary.push(`${loginUrl.replace(/^https?:\/\/[^/]+/, '')}[${variant.label}]:${status || 'net'}`);
+          if (status === 403 || status === 401) {
+            logger.warn(`CloudFuze login (${loginUrl}, ${variant.label}) → HTTP ${status}: ${JSON.stringify(err?.response?.data)}`);
+          } else {
+            logger.warn(`CloudFuze login (${loginUrl}, ${variant.label}) → HTTP ${status || 'network'}: ${err?.message}`);
+          }
+          // Only 401 (definitively wrong credentials) stops all remaining candidates
+          if (status === 401) throw err;
+        }
+      }
+    }
+    const summary = failedSummary.join(', ');
+    logger.error(`CloudFuze: all login candidates exhausted. Attempts: ${summary}`);
+    throw lastErr || new Error(`CloudFuze: all login candidates exhausted [${summary}] — check server URL and credentials`);
   }
 
   // Legacy: static Bearer env token
@@ -292,9 +382,12 @@ async function getClouds() {
   const base = getActiveBaseUrl();
   const emailBase = getActiveEmailBaseUrl();
 
-  // New server exposes clouds at /email/user/clouds
+  // New server exposes clouds at /email/user/clouds (email) or /report/entuser/clouds (content/qarelease)
+  const apiModule = getApiModule();
   const cloudsUrl = isNewServer()
-    ? `${emailBase}/email/user/clouds`
+    ? apiModule === 'report'
+      ? `${emailBase}/entuser/clouds`      // content migration: .../report/entuser/clouds
+      : `${emailBase}/user/clouds`         // email migration:   .../email/user/clouds
     : `${base}/mail/clouds`;
 
   // Build ordered list of tokens to try
@@ -330,7 +423,7 @@ async function getClouds() {
       logger.warn(`CloudFuze getClouds: 0 clouds with ${cand.label} — trying next token`);
     } catch (err) {
       lastErr = err;
-      logger.warn(`CloudFuze getClouds with ${cand.label} failed (${err.response?.status || err.message}) — trying next`);
+      logger.warn(`CloudFuze getClouds with ${cand.label} failed (${err?.response?.status || err?.message}) — trying next`);
     }
   }
 
@@ -352,7 +445,7 @@ async function getClouds() {
         return clouds;
       } catch (err) {
         lastErr = err;
-        logger.warn(`CloudFuze getClouds Basic auth failed (${err.response?.status || err.message})`);
+        logger.warn(`CloudFuze getClouds Basic auth failed (${err?.response?.status || err?.message})`);
       }
     }
   }
@@ -439,7 +532,7 @@ async function getPermissionMapping(sourceCloudId, destCloudId, { pageSize = 500
       }))
       .filter((p) => p.sourceEmail && p.destinationEmail);
   } catch (err) {
-    logger.warn(`CloudFuze getPermissionMapping failed (${err.response?.status || err.message}) — skipping`);
+    logger.warn(`CloudFuze getPermissionMapping failed (${err?.response?.status || err?.message}) — skipping`);
     return [];
   }
 }
@@ -532,7 +625,14 @@ async function triggerPreScan(fromMailId, fromCloud) {
 }
 
 function initiatePathCandidates(sourceCloudId) {
-  if (isNewServer()) return ['email/move/initiate'];
+  if (isNewServer()) {
+    // Content migration servers (qarelease, /report/ prefix) use different paths.
+    // DevTools pattern: entuser/*, entapp/* — trigger is likely entmove/initiate or move/initiate.
+    if (getApiModule() === 'report') {
+      return ['entmove/initiate', 'move/initiate', 'content/initiate', 'email/move/initiate'];
+    }
+    return ['email/move/initiate'];
+  }
   const custom = (env.MIGRATION_API_INITIATE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
   const defaults = ['mail/move/initiate', 'mail/initiate', 'initiate'];
   const out = [];
@@ -644,8 +744,8 @@ async function triggerMigration(context) {
         };
       } catch (err) {
         authErr = err;
-        const st = err.response?.status;
-        const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
+        const st = err?.response?.status;
+        const errBody = err?.response?.data ? JSON.stringify(err?.response?.data) : '(no body)';
         logger.warn(`CloudFuze POST ${path} (${variant.label}) HTTP ${st}: ${errBody}`);
       }
     }

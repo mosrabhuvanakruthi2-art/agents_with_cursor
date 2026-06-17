@@ -1014,6 +1014,162 @@ async function createBoxData(req, res) {
   }
 }
 
+/**
+ * POST /agents/create-box-automation-data
+ * Body: { adminEmail, collaboratorEmail?, targetUserId? }
+ *
+ * Runs BoxAutomationDataAgent — creates "AUTOMATION BOX" root folder with all
+ * 17 migration QA scenarios inside it.
+ * adminEmail must already be connected via GET /api/auth/box/url
+ * (or BOX_DEVELOPER_TOKEN set in .env).
+ * collaboratorEmail (optional): email to add as collaborator in permission scenarios.
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxAutomationData(req, res) {
+  try {
+    const { adminEmail, collaboratorEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxAutomationDataAgent = require('../agents/box/BoxAutomationDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxAutomationDataAgent',
+      progress: 'BoxAutomationDataAgent: creating AUTOMATION BOX root folder…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box automation data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxAutomationDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxAutomationDataAgent',
+          progress: 'BoxAutomationDataAgent: running 17 migration QA scenarios…',
+        });
+        const result = await agent.run({
+          adminEmail,
+          collaboratorEmail: collaboratorEmail || null,
+          boxTargetUserId: targetUserId || null,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxAutomation: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxAutomationData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxAutomationData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function getContentStats(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.query;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    if (!provider) return res.status(400).json({ error: 'provider is required (box or sharepoint)' });
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const stats = await boxClient.getBoxContentStats(adm, email);
+      return res.json(stats);
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content stats` });
+  } catch (err) {
+    logger.error(`getContentStats error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContent(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxContent(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content cleanup` });
+  } catch (err) {
+    logger.error(`cleanContent error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFiles(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFiles(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFiles error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFolders(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFolders(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFolders error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -1023,6 +1179,7 @@ module.exports = {
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
   createOutlookData, cancelExecution, createTestData,
-  getBoxUsers, createBoxData,
+  getBoxUsers, createBoxData, createBoxAutomationData,
+  getContentStats, cleanContent, cleanContentFiles, cleanContentFolders,
 };
 

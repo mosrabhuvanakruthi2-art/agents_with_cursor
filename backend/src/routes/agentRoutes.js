@@ -28,8 +28,13 @@ router.post('/clean-destination-events', controller.cleanDestinationEvents);
 router.post('/create-outlook-data', controller.createOutlookData);
 router.post('/create-test-data', controller.createTestData);
 router.post('/create-box-data', controller.createBoxData);
+router.post('/create-box-automation-data', controller.createBoxAutomationData);
 router.get('/box/users', controller.getBoxUsers);
 router.post('/executions/:id/cancel', controller.cancelExecution);
+router.get('/content-stats', controller.getContentStats);
+router.post('/clean-content', controller.cleanContent);
+router.post('/clean-content-files', controller.cleanContentFiles);
+router.post('/clean-content-folders', controller.cleanContentFolders);
 
 module.exports = router;
 

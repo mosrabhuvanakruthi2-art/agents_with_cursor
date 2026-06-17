@@ -38,7 +38,6 @@ export default function RunAgent() {
         <p className="text-sm text-gray-500 mt-1">{currentTab.desc}</p>
       </div>
 
-      {/* Tab switcher */}
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
         {TABS.map((tab) => (
           <button
@@ -57,7 +56,7 @@ export default function RunAgent() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <AgentForm onSubmit={run} loading={loading} mode={activeTab} />
+        <AgentForm key={activeTab} onSubmit={run} loading={loading} mode={activeTab} />
       </div>
 
       {error && (

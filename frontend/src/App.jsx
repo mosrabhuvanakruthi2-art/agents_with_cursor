@@ -8,6 +8,7 @@ import ExecutionLogs from './pages/ExecutionLogs';
 import ValidationResults from './pages/ValidationResults';
 import CleanDestination from './pages/CleanDestination';
 import CleanSource from './pages/CleanSource';
+import ContentCleanUp from './pages/ContentCleanUp';
 import TestRepository from './pages/TestRepository';
 import AgentRepo from './pages/AgentRepo';
 import ConnectAccounts from './pages/ConnectAccounts';
@@ -28,6 +29,7 @@ function App() {
         <Route path="validation" element={<ValidationResults />} />
         <Route path="clean" element={<CleanDestination />} />
         <Route path="clean-source" element={<CleanSource />} />
+        <Route path="clean-content" element={<ContentCleanUp />} />
         <Route path="test-repository" element={<TestRepository />} />
         <Route path="agent-repo" element={<AgentRepo />} />
         <Route path="connect" element={<ConnectAccounts />} />

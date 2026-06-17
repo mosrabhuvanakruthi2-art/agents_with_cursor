@@ -18,9 +18,30 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
     testType: 'E2E',
     migrationType: 'FULL',
   });
-  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('migration-server-url', 'https://devemail.cloudfuze.com/proxyservices/v1');
-  const [migrationServerEmail, setMigrationServerEmail] = usePersistedState('migration-server-email', '');
-  const [migrationServerPassword, setMigrationServerPassword] = useState('');
+  // Each mode stores its own server settings so content migration and email migration
+  // never share or overwrite each other's server URL / credentials.
+  const isContent = mode === 'content';
+  const [migrationServerUrl, setMigrationServerUrl] = usePersistedState(
+    isContent ? 'content-migration-server-url-v2' : 'migration-server-url',
+    isContent ? 'https://qarelease.cloudfuze.com' : 'https://devemail.cloudfuze.com/proxyservices/v1'
+  );
+  const [migrationServerEmail, setMigrationServerEmail] = usePersistedState(
+    isContent ? 'content-migration-server-email' : 'migration-server-email',
+    isContent ? 'asma.karim@cloudfuze.com' : ''
+  );
+  // Content migration password is persisted (server is always qarelease; password resets on page load otherwise)
+  // Email migration password intentionally NOT persisted (production server — don't store in localStorage)
+  const [contentMigrationServerPassword, setContentMigrationServerPassword] = usePersistedState(
+    'content-migration-server-password',
+    ''
+  );
+  const [emailMigrationServerPassword, setEmailMigrationServerPassword] = useState('');
+  const migrationServerPassword = isContent ? contentMigrationServerPassword : emailMigrationServerPassword;
+  const setMigrationServerPassword = isContent ? setContentMigrationServerPassword : setEmailMigrationServerPassword;
+  const [destinationFolderPath, setDestinationFolderPath] = usePersistedState(
+    'content-destination-folder-path',
+    ''
+  );
   const [mappedPairs, setMappedPairs] = useState(null);
   const [userEmailMappings, setUserEmailMappings] = useState(null);
   const [sourceAdminEmail, setSourceAdminEmail] = useState('');
@@ -63,6 +84,7 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
       ...(migrationServerUrl ? { migrationServerUrl } : {}),
       ...(migrationServerEmail ? { migrationServerEmail } : {}),
       ...(migrationServerPassword ? { migrationServerPassword } : {}),
+      ...(isContent && destinationFolderPath.trim() ? { toFolderId: destinationFolderPath.trim() } : {}),
     };
     const payloadBase = { ...form, ...scope, sourceAdminEmail, destAdminEmail, ...serverFields, mode };
     if (mappedPairs.length === 1) {
@@ -165,9 +187,25 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
 
         <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-700 space-y-0.5">
           <p><span className="font-semibold">devemail (legacy):</span> use URL <code className="bg-blue-100 px-1 rounded">https://devemail.cloudfuze.com/proxyservices/v1</code> — leave Email &amp; Password empty. Auth uses Basic credentials from <code className="bg-blue-100 px-1 rounded">.env</code>.</p>
-          <p><span className="font-semibold">qarelease (content):</span> use URL <code className="bg-blue-100 px-1 rounded">https://qarelease.cloudfuze.com/</code> — leave Email empty, paste the Basic auth token in Password field.</p>
+          <p><span className="font-semibold">qarelease (content):</span> URL <code className="bg-blue-100 px-1 rounded">https://qarelease.cloudfuze.com</code> — fill in Email &amp; Password (new server mode).</p>
           <p><span className="font-semibold">newtestemail5 (new):</span> use URL <code className="bg-blue-100 px-1 rounded">https://newtestemail5.cloudfuze.com</code> — fill in Email &amp; Password.</p>
         </div>
+
+        {isContent && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Destination Folder Path <span className="text-gray-400 font-normal">(optional — where to place migrated content)</span>
+            </label>
+            <input
+              type="text"
+              value={destinationFolderPath}
+              onChange={(e) => setDestinationFolderPath(e.target.value)}
+              placeholder="/SANITY DATAA/Documents/BOX AUTOMATION"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white font-mono"
+            />
+            <p className="text-xs text-gray-500 mt-1">Leave empty to migrate to root. Example: <code className="bg-gray-100 px-1 rounded">/SANITY DATAA/Documents/BOX AUTOMATION</code></p>
+          </div>
+        )}
       </div>
 
       <div>
@@ -176,7 +214,7 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
           {[
             { value: 'SMOKE', label: 'Smoke', emailDesc: 'Quick connectivity check', contentDesc: 'Quick connectivity check' },
             { value: 'SANITY', label: 'Sanity', emailDesc: 'Core feature validation', contentDesc: 'Core content validation' },
-            { value: 'E2E', label: 'E2E', emailDesc: 'Full Gmail seed + calendar (slow)', contentDesc: 'Full calendar & contacts (slow)' },
+            { value: 'E2E', label: 'E2E', emailDesc: 'Full Gmail seed + calendar (slow)', contentDesc: 'End to End Testing for content migration' },
           ].map((opt) => {
             const isActive = form.testType === opt.value;
             const activeColor = mode === 'content' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500';
@@ -221,9 +259,9 @@ export default function AgentForm({ onSubmit, loading, mode = 'email' }) {
         <p className="text-xs text-gray-500 leading-relaxed">
           {mode === 'content' ? (
             form.migrationType === 'FULL' ? (
-              <><strong>One Time</strong> — initial transfer of calendar events and contacts.</>
+              <><strong>One Time</strong> — initial transfer of Files and Folders.</>
             ) : (
-              <><strong>Delta</strong> — incremental calendar and contacts changes after the initial migration.</>
+              <><strong>Delta</strong> — incremental Files and Folders changes after the initial migration.</>
             )
           ) : (
             form.migrationType === 'FULL' ? (

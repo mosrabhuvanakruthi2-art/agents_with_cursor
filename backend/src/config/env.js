@@ -386,4 +386,14 @@ module.exports = {
   /** Box OAuth 2.0 app credentials (Standard OAuth 2.0 app from Box Developer Console) */
   BOX_CLIENT_ID: (process.env.BOX_CLIENT_ID || '').trim(),
   BOX_CLIENT_SECRET: (process.env.BOX_CLIENT_SECRET || '').trim(),
+  /**
+   * Content migration server credentials (qarelease).
+   * Used as fallback when the Migration Server password field is left empty in the form.
+   * CONTENT_MIGRATION_SERVER_URL  — e.g. https://qarelease.cloudfuze.com/
+   * CONTENT_MIGRATION_SERVER_EMAIL — app account email on that server
+   * CONTENT_MIGRATION_SERVER_PASSWORD — app account password (plaintext; MD5-hashed before sending)
+   */
+  CONTENT_MIGRATION_SERVER_URL: (process.env.CONTENT_MIGRATION_SERVER_URL || '').trim(),
+  CONTENT_MIGRATION_SERVER_EMAIL: (process.env.CONTENT_MIGRATION_SERVER_EMAIL || '').trim(),
+  CONTENT_MIGRATION_SERVER_PASSWORD: (process.env.CONTENT_MIGRATION_SERVER_PASSWORD || '').trim(),
 };

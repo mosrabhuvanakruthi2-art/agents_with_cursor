@@ -34,6 +34,10 @@ class MigrationContext {
     migrationServerPassword = '',
     /** 'email' | 'content' — determines which agents and flows to run */
     mode = 'email',
+    /** Source folder path / ID for content migrations (e.g. '/' for root, or a specific folder ID) */
+    fromFolderId = '/',
+    /** Destination folder path for content migrations (e.g. '/SANITY DATAA/Documents/BOX AUTOMATION') */
+    toFolderId = '/',
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -74,6 +78,8 @@ class MigrationContext {
     this.migrationServerEmail = String(migrationServerEmail || '').trim();
     this.migrationServerPassword = String(migrationServerPassword || '');
     this.mode = mode === 'content' ? 'content' : 'email';
+    this.fromFolderId = String(fromFolderId || '').trim() || '/';
+    this.toFolderId = String(toFolderId || '').trim() || '/';
   }
 
   validate() {
@@ -108,6 +114,8 @@ class MigrationContext {
       destAdminEmail: this.destAdminEmail,
       migrationServerUrl: this.migrationServerUrl || undefined,
       migrationServerEmail: this.migrationServerEmail || undefined,
+      fromFolderId: this.fromFolderId,
+      toFolderId: this.toFolderId,
       preMigrationSnapshot: this.preMigrationSnapshot || undefined,
       preMigrationDestSnapshot: this.preMigrationDestSnapshot || undefined,
     };

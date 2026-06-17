@@ -83,6 +83,25 @@ export function cleanSourceCalendars(email) {
   return api.post('/agents/clean-source-calendars', { email }, { timeout: 0 });
 }
 
+export function getContentStats(email, adminEmail, provider) {
+  const params = new URLSearchParams({ email });
+  if (adminEmail) params.set('adminEmail', adminEmail);
+  if (provider) params.set('provider', provider);
+  return api.get(`/agents/content-stats?${params}`, { timeout: 60000 });
+}
+
+export function cleanContent(email, adminEmail, provider) {
+  return api.post('/agents/clean-content', { email, adminEmail, provider }, { timeout: 0 });
+}
+
+export function cleanContentFiles(email, adminEmail, provider) {
+  return api.post('/agents/clean-content-files', { email, adminEmail, provider }, { timeout: 0 });
+}
+
+export function cleanContentFolders(email, adminEmail, provider) {
+  return api.post('/agents/clean-content-folders', { email, adminEmail, provider }, { timeout: 0 });
+}
+
 export function getTestRepositoryData() {
   return api.get('/test-repository/data');
 }
