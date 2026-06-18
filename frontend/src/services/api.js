@@ -211,8 +211,8 @@ export function getGoogleOAuthUrl(source, tenant, agent) {
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
   if (agent) params.set('agent', agent);
-  const qs = params.toString();
-  return api.get('/auth/google/url' + (qs ? `?${qs}` : ''));
+  params.set('origin', window.location.origin);
+  return api.get('/auth/google/url?' + params.toString());
 }
 
 export function signOutGoogle(email) {
@@ -224,8 +224,8 @@ export function getMicrosoftOAuthUrl(source, tenant, agent) {
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
   if (agent) params.set('agent', agent);
-  const qs = params.toString();
-  return api.get('/auth/microsoft/url' + (qs ? `?${qs}` : ''));
+  params.set('origin', window.location.origin);
+  return api.get('/auth/microsoft/url?' + params.toString());
 }
 
 export function signOutMicrosoft(email) {
@@ -242,8 +242,8 @@ export function getSlackOAuthUrl(source = 'popup', agent) {
   const params = new URLSearchParams();
   if (source) params.set('source', source);
   if (agent) params.set('agent', agent);
-  const qs = params.toString();
-  return api.get('/auth/slack/url' + (qs ? `?${qs}` : ''));
+  params.set('origin', window.location.origin);
+  return api.get('/auth/slack/url?' + params.toString());
 }
 
 export function signOutSlack(email) {
@@ -266,6 +266,21 @@ export function getMessageUserStatus(emails, platform) {
 /** Returns all cloud accounts connected to the CloudFuze subscriber. */
 export function getCFCloudAccounts() {
   return api.get('/agents/cf-cloud-accounts');
+}
+
+/** Returns the list of CloudFuze server login accounts (env + user-added). */
+export function getCFLoginAccounts() {
+  return api.get('/agents/cf-login-accounts');
+}
+
+/** Add a new CF server login account (stored in backend/data/cf-extra-accounts.json). */
+export function addCFLoginAccount(email, password) {
+  return api.post('/agents/cf-login-accounts', { email, password });
+}
+
+/** Remove a user-added CF server login account. */
+export function removeCFLoginAccount(email) {
+  return api.delete(`/agents/cf-login-accounts/${encodeURIComponent(email)}`);
 }
 
 /**

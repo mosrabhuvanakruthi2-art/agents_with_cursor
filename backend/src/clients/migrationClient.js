@@ -602,6 +602,54 @@ async function closeChatMigrationJobs(jobIds) {
   return Array.isArray(res.data) ? res.data : [res.data];
 }
 
+/**
+ * Add / connect a cloud account to CloudFuze via REST API.
+ * Tries several candidate path patterns because the exact path differs by CF version.
+ * Returns { success: true, path, data } or throws on a non-404/405 error.
+ *
+ * @param {{ cloudName: string, adminEmail: string, tenantId?: string, accessToken?: string, refreshToken?: string }} opts
+ */
+async function addCloudAccount({ cloudName, adminEmail, tenantId, accessToken, refreshToken } = {}) {
+  const { auth, userId } = await login();
+  if (!userId) throw new Error('addCloudAccount: userId required — use MIGRATION_API_USERNAME/PASSWORD auth');
+
+  const client = getAuthClient(auth);
+
+  const payload = { cloudName, emailId: adminEmail };
+  if (tenantId)     payload.tenantId     = tenantId;
+  if (accessToken)  payload.accessToken  = accessToken;
+  if (refreshToken) payload.refreshToken = refreshToken;
+
+  const pathCandidates = [
+    `users/${userId}/add/cloud`,
+    `users/${userId}/cloud/add`,
+    `users/${userId}/cloud`,
+    `cloud/add`,
+    `cloud`,
+    `users/${userId}/clouds/add`,
+    `users/${userId}/clouds`,
+  ];
+
+  let lastErr;
+  for (const p of pathCandidates) {
+    try {
+      const res = await client.post(p, payload);
+      logger.info(`CF addCloudAccount: ${cloudName}/${adminEmail} added via POST ${p}`);
+      return { success: true, path: p, data: res.data };
+    } catch (err) {
+      const st = err.response?.status;
+      // 404/405 = wrong path — keep trying; anything else is a real error
+      if (st === 404 || st === 405) {
+        logger.debug(`CF addCloudAccount: POST ${p} → HTTP ${st}, trying next`);
+        lastErr = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('CF addCloudAccount: all endpoint candidates returned 404/405');
+}
+
 function clearToken() {
   cfAuth = null;
 }
@@ -612,6 +660,7 @@ module.exports = {
   triggerMigration,
   triggerChatMigration,
   getCloudAccounts,
+  addCloudAccount,
   getCloudChannels,
   getCloudDMs,
   getMigrationReports,

@@ -1563,7 +1563,22 @@ async function startCFBrowserMigration(req, res) {
       mappingType    = 'auto',
       userMappings   = [],
       userMappingCsvPath = null,
+      cfAccountEmail = null,
     } = req.body;
+
+    // Resolve CF login credentials: check env accounts then user-added JSON accounts.
+    const env = require('../config/env');
+    const fs2  = require('fs');
+    const path2 = require('path');
+    const CF_EXTRA_FILE2 = path2.join(__dirname, '../../data/cf-extra-accounts.json');
+    let extraAccounts2 = [];
+    try { extraAccounts2 = JSON.parse(fs2.readFileSync(CF_EXTRA_FILE2, 'utf8')); } catch { /* ignore */ }
+    const allCFAccounts = [...(env.CF_ACCOUNTS || []), ...extraAccounts2];
+    const selectedCFAccount = cfAccountEmail
+      ? allCFAccounts.find(a => a.email === cfAccountEmail)
+      : null;
+    const cfUsername = selectedCFAccount?.email || env.MIGRATION_API_USERNAME;
+    const cfPassword = selectedCFAccount?.password || env.MIGRATION_API_PASSWORD;
 
     const hasCloudsById = !!(cfSrcCloudId && cfDstCloudId);
     const hasCsvPath    = typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim().length > 0;
@@ -1593,6 +1608,8 @@ async function startCFBrowserMigration(req, res) {
       userMappingCsvPath: typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim()
         ? userMappingCsvPath.trim()
         : null,
+      cfUsername,
+      cfPassword,
     });
 
     if (!result.started) {

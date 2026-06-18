@@ -177,6 +177,28 @@ module.exports = {
     .replace(/^\/+/, '')
     .replace(/\/+$/, ''),
   CLOUDFUZE_OWNER_EMAIL: process.env.CLOUDFUZE_OWNER_EMAIL || '',
+  /**
+   * All CloudFuze login accounts for browser automation.
+   * Primary account first; extras parsed from CF_EXTRA_ACCOUNTS (email:password,...).
+   */
+  CF_ACCOUNTS: (() => {
+    const primary = (process.env.MIGRATION_API_USERNAME || '').trim();
+    const primaryPwd = (process.env.MIGRATION_API_PASSWORD || '').trim();
+    const accounts = primary ? [{ email: primary, password: primaryPwd }] : [];
+    const extras = (process.env.CF_EXTRA_ACCOUNTS || '').trim();
+    if (extras) {
+      for (const pair of extras.split(',')) {
+        const idx = pair.indexOf(':');
+        if (idx === -1) continue;
+        const email = pair.substring(0, idx).trim();
+        const password = pair.substring(idx + 1).trim();
+        if (email && password && !accounts.find(a => a.email === email)) {
+          accounts.push({ email, password });
+        }
+      }
+    }
+    return accounts;
+  })(),
   SCHEDULER_ENABLED: process.env.SCHEDULER_ENABLED === 'true',
   DEFAULT_SOURCE_EMAIL: process.env.DEFAULT_SOURCE_EMAIL || '',
   DEFAULT_DEST_EMAIL: process.env.DEFAULT_DEST_EMAIL || '',

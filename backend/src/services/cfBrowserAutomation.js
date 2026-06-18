@@ -20,6 +20,26 @@ const { EventEmitter } = require('events');
 const fs               = require('fs');
 const path             = require('path');
 const os               = require('os');
+
+// Resolve the Chromium executable — try the version playwright-core expects first,
+// then fall back to any other installed revision so the automation works even when
+// the exact revision download is still pending or incomplete.
+function resolveChromiumExe() {
+  const playwrightDir = path.join(os.homedir(), 'AppData', 'Local', 'ms-playwright');
+  if (!fs.existsSync(playwrightDir)) return undefined;
+  // Prefer the revision playwright-core itself reports.
+  try {
+    const expectedExe = chromium.executablePath();
+    if (fs.existsSync(expectedExe)) return expectedExe;
+  } catch { /* ignore */ }
+  // Scan for any chromium-NNNN/chrome-win64/chrome.exe that actually exists.
+  for (const entry of fs.readdirSync(playwrightDir)) {
+    if (!entry.startsWith('chromium-')) continue;
+    const candidate = path.join(playwrightDir, entry, 'chrome-win64', 'chrome.exe');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
 const env              = require('../config/env');
 const logger           = require('../utils/logger');
 
@@ -126,10 +146,13 @@ class CFBrowserAutomation extends EventEmitter {
 
     this.log('LAUNCH', `Opening CloudFuze — ${CF_BASE}`);
 
+    const chromiumExe = resolveChromiumExe();
+    if (chromiumExe) this.log('LAUNCH', `Using Chromium: ${chromiumExe}`);
     this.browser = await chromium.launch({
       headless,
       slowMo: 100,
       args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox'],
+      ...(chromiumExe ? { executablePath: chromiumExe } : {}),
     });
 
     const ctx = await this.browser.newContext({ viewport: null });
@@ -457,16 +480,59 @@ class CFBrowserAutomation extends EventEmitter {
     return false;
   }
 
-  /* ── Add a cloud account via the CF browser UI ───────────────────────────── */
+  /* ── Add a cloud account — tries CF REST API first, then browser UI ─────── */
 
   async _addCloud(platform, email) {
     this.log('ADD_CLOUD', `Adding ${platform} / ${email}`);
 
-    // Make sure we're on the Cloud Accounts page before clicking Add
+    const CF_NAME_MAP = {
+      slack: 'SLACK', microsoft: 'MICROSOFT_TEAMS', teams: 'MICROSOFT_TEAMS',
+      microsoft_teams: 'MICROSOFT_TEAMS', google: 'GOOGLE_CHAT',
+      googlechat: 'GOOGLE_CHAT', google_chat: 'GOOGLE_CHAT',
+    };
+    const cloudName = CF_NAME_MAP[platform?.toLowerCase()] || platform?.toUpperCase();
+    const platLower = (platform || '').toLowerCase();
+    const domain    = (email || '').split('@')[1]?.toLowerCase() || '';
+
+    // ── Strategy A: CloudFuze REST API (preferred — no OAuth popup needed) ────
+    try {
+      const { addCloudAccount } = require('../clients/migrationClient');
+      const opts = { cloudName, adminEmail: email };
+
+      // Microsoft Teams — pass Tenant ID so CF can register the tenant directly
+      if (cloudName === 'MICROSOFT_TEAMS') {
+        if (env.GRAPH_TENANT_ID_2 && Array.isArray(env.GRAPH_TENANT_2_DOMAINS) &&
+            env.GRAPH_TENANT_2_DOMAINS.includes(domain)) {
+          opts.tenantId = env.GRAPH_TENANT_ID_2;
+        } else if (env.GRAPH_TENANT_ID) {
+          opts.tenantId = env.GRAPH_TENANT_ID;
+        }
+      }
+
+      // Slack — pass the stored user token so CF can verify workspace access
+      if (cloudName === 'SLACK' && env.SLACK_USER_TOKEN) {
+        opts.accessToken = env.SLACK_USER_TOKEN;
+      }
+
+      // Google Chat — pass the stored refresh token for the admin email
+      if (cloudName === 'GOOGLE_CHAT' && env.googleAccounts) {
+        const rt = env.googleAccounts.get((email || '').toLowerCase());
+        if (rt) opts.refreshToken = rt;
+      }
+
+      const result = await addCloudAccount(opts);
+      this.log('ADD_CLOUD', `✓ ${cloudName}(${email}) added via CF API (${result.path})`);
+      await this._safeWait(WAIT_L);
+      return; // done — skip browser UI
+    } catch (apiErr) {
+      this.log('ADD_CLOUD', `CF API add failed: ${apiErr.message} — falling back to browser UI`);
+    }
+
+    // ── Strategy B: Browser UI with credential pre-fill ───────────────────────
     const onPage = await this._goToCloudAccountsPage();
     if (!onPage) { this.log('ADD_CLOUD', 'Cannot reach Cloud Accounts page'); return; }
 
-    // Click "Add Cloud" / "+ Add" button
+    // Click "Add Cloud" / "Connect" button
     let clicked = false;
     for (const sel of [
       'button:has-text("Add Cloud")', 'a:has-text("Add Cloud")',
@@ -478,14 +544,14 @@ class CFBrowserAutomation extends EventEmitter {
       if (!btn || !(await btn.isVisible().catch(() => false))) continue;
       await btn.click();
       await this.page.waitForTimeout(WAIT_L);
-      this.log('ADD_CLOUD', `Add button clicked: ${sel}`);
+      this.log('ADD_CLOUD', `Add Cloud button clicked: ${sel}`);
       clicked = true;
       break;
     }
-    if (!clicked) { this.log('ADD_CLOUD', 'Add Cloud button not found on page'); return; }
+    if (!clicked) { this.log('ADD_CLOUD', 'Add Cloud button not found'); return; }
 
-    // Select the platform in the modal/dialog
-    const labels = CF_CLOUD_LABELS[platform?.toLowerCase()] || [platform];
+    // Select platform in the modal
+    const labels = CF_CLOUD_LABELS[platLower] || [platform];
     let platformSelected = false;
     for (const lbl of labels) {
       for (const sel of [
@@ -504,15 +570,15 @@ class CFBrowserAutomation extends EventEmitter {
       }
       if (platformSelected) break;
     }
-    if (!platformSelected) this.log('ADD_CLOUD', `Platform selector not found for ${platform} — may need manual selection`);
+    if (!platformSelected) this.log('ADD_CLOUD', `Platform icon not found for ${platform}`);
 
-    // Fill admin email if an input is present
+    await this.page.waitForTimeout(WAIT_M);
+
+    // Fill admin email
     if (email) {
-      await this.page.waitForTimeout(WAIT_M);
       for (const sel of [
         'input[type="email"]', 'input[name="email"]', 'input[name="adminEmail"]',
         'input[placeholder*="email" i]', 'input[placeholder*="admin" i]',
-        'input[placeholder*="tenant" i]',
       ]) {
         const inp = await this.page.$(sel).catch(() => null);
         if (!inp || !(await inp.isVisible().catch(() => false))) continue;
@@ -522,11 +588,65 @@ class CFBrowserAutomation extends EventEmitter {
       }
     }
 
+    // Fill Tenant ID for Microsoft Teams
+    if (cloudName === 'MICROSOFT_TEAMS') {
+      let tenantId = env.GRAPH_TENANT_ID;
+      if (env.GRAPH_TENANT_ID_2 && Array.isArray(env.GRAPH_TENANT_2_DOMAINS) &&
+          env.GRAPH_TENANT_2_DOMAINS.includes(domain)) {
+        tenantId = env.GRAPH_TENANT_ID_2;
+      }
+      if (tenantId) {
+        for (const sel of [
+          'input[name="tenantId"]', 'input[name="tenant"]',
+          'input[placeholder*="tenant id" i]', 'input[placeholder*="directory id" i]',
+          'input[placeholder*="tenant" i]',
+        ]) {
+          const inp = await this.page.$(sel).catch(() => null);
+          if (!inp || !(await inp.isVisible().catch(() => false))) continue;
+          await inp.fill(tenantId);
+          this.log('ADD_CLOUD', `Tenant ID filled: ${tenantId}`);
+          break;
+        }
+      }
+    }
+
+    // Fill Slack token
+    if (cloudName === 'SLACK' && env.SLACK_USER_TOKEN) {
+      for (const sel of [
+        'input[name="token"]', 'input[name="apiToken"]', 'input[name="accessToken"]',
+        'input[placeholder*="token" i]', 'input[placeholder*="api key" i]',
+        'input[placeholder*="bot token" i]', 'input[placeholder*="user token" i]',
+      ]) {
+        const inp = await this.page.$(sel).catch(() => null);
+        if (!inp || !(await inp.isVisible().catch(() => false))) continue;
+        await inp.fill(env.SLACK_USER_TOKEN);
+        this.log('ADD_CLOUD', `Slack token filled`);
+        break;
+      }
+    }
+
+    // Fill Google refresh token
+    if (cloudName === 'GOOGLE_CHAT' && env.googleAccounts) {
+      const rt = env.googleAccounts.get((email || '').toLowerCase());
+      if (rt) {
+        for (const sel of [
+          'input[name="refreshToken"]', 'input[name="token"]',
+          'textarea[name="serviceAccount"]', 'input[placeholder*="token" i]',
+        ]) {
+          const inp = await this.page.$(sel).catch(() => null);
+          if (!inp || !(await inp.isVisible().catch(() => false))) continue;
+          await inp.fill(rt);
+          this.log('ADD_CLOUD', `Google refresh token filled for ${email}`);
+          break;
+        }
+      }
+    }
+
     // Submit / Connect
     for (const sel of [
       'button[type="submit"]', 'button:has-text("Connect")', 'button:has-text("Add")',
       'button:has-text("Authorize")', 'button:has-text("Save")',
-      'button:has-text("Next")', 'button:has-text("Submit")',
+      'button:has-text("Submit")', 'button:has-text("Next")',
     ]) {
       const btn = await this.page.$(sel).catch(() => null);
       if (!btn || !(await btn.isVisible().catch(() => false))) continue;
@@ -536,28 +656,24 @@ class CFBrowserAutomation extends EventEmitter {
       break;
     }
 
-    // Wait for OAuth popup or confirmation
+    // Wait and check for OAuth popup — if no popup opens, the API-key/token flow succeeded
     await this.page.waitForTimeout(3000);
-
-    // If a new page/popup opened for OAuth, wait for it to complete (up to 60s)
     const pages = this.page.context().pages();
     if (pages.length > 1) {
-      this.log('ADD_CLOUD', `OAuth popup detected (${pages.length} pages) — waiting up to 60s for completion`);
-      await this.page.waitForTimeout(60_000);
+      this.log('ADD_CLOUD', `OAuth popup detected — waiting up to 30s (popup may auto-complete)`);
+      await this.page.waitForTimeout(30_000);
     }
 
-    // Verify the cloud was added
+    // Verify
     try {
       const { getCloudAccounts } = require('../clients/migrationClient');
       const accounts = await getCloudAccounts();
-      const cfNames  = Object.values({ slack: 'SLACK', microsoft: 'MICROSOFT_TEAMS', teams: 'MICROSOFT_TEAMS', google: 'GOOGLE_CHAT', googlechat: 'GOOGLE_CHAT' });
-      const cfName   = { slack: 'SLACK', microsoft: 'MICROSOFT_TEAMS', teams: 'MICROSOFT_TEAMS', google: 'GOOGLE_CHAT', googlechat: 'GOOGLE_CHAT' }[platform?.toLowerCase()] || platform?.toUpperCase();
-      const added    = accounts.some(a =>
-        a.cloudName === cfName &&
+      const added = accounts.some(a =>
+        a.cloudName === cloudName &&
         (a.emailId || '').toLowerCase() === (email || '').toLowerCase()
       );
-      if (added) this.log('ADD_CLOUD', `✓ ${platform}(${email}) confirmed in CF accounts`);
-      else        this.log('ADD_CLOUD', `⚠ ${platform}(${email}) not yet visible — OAuth may still be pending`);
+      if (added) this.log('ADD_CLOUD', `✓ ${cloudName}(${email}) confirmed in CF`);
+      else        this.log('ADD_CLOUD', `⚠ ${cloudName}(${email}) not yet visible — may need manual OAuth`);
     } catch { /* ignore */ }
   }
 
@@ -1108,32 +1224,14 @@ class CFBrowserAutomation extends EventEmitter {
       }
     }
 
-    // Check if mappings already exist — skip auto-map if the table already shows "Mapped"
-    // Use a tight check: requires user-mapping table indicators, not just any "Mapped" text.
-    const alreadyMapped = await this.page.evaluate(() => {
-      const body = document.body.textContent || '';
-      const hasMappedRows = document.querySelectorAll('table tr').length > 1;
-      return hasMappedRows &&
-             body.includes('Mapped') &&
-             (body.includes('Source User') || body.includes('Destination User') ||
-              body.includes('Mapping Status'));
-    }).catch(() => false);
-
-    if (alreadyMapped && !csvPathExists && userMappings.length === 0) {
-      // Page already shows Mapped rows and caller gave us nothing to override — skip.
-      this.log('MAPPING', 'Mapping already exists in table — skipping (no override CSV provided)');
-    } else if (csvPathExists || userMappings.length > 0) {
-      // Explicit CSV path always wins — upload even if the table already shows Mapped rows.
-      if (alreadyMapped) {
-        this.log('MAPPING', 'Table shows existing mappings — overriding with provided CSV');
-      }
+    if (csvPathExists || userMappings.length > 0) {
       const uploaded = await this._uploadMappingCSV(userMappings, csvPathExists ? csvPath : null);
       if (!uploaded) {
         this.log('MAPPING', 'CSV upload unavailable — falling back to Auto Map');
         await this._triggerAutoMap();
       }
     } else {
-      // No specific pairs provided — use Auto Map
+      // No CSV — always trigger Auto Map so mapping is applied every run
       await this._triggerAutoMap();
     }
 
@@ -1690,28 +1788,32 @@ class CFBrowserAutomation extends EventEmitter {
     const pubTabClicked = await this._clickCFTab(publicTabLabels);
     await this.page.waitForTimeout(WAIT_L);
 
-    // Verify tab switch worked — confirm we are NOT still on the Users/mapping tab.
-    // Bootstrap nav-tabs may need the anchor click (not the li) to activate.
-    const onPublicTab = await this.page.evaluate(() => {
-      const body = document.body.textContent || '';
-      const rows = document.querySelectorAll('tbody tr');
-      // Still on mapping page if no rows and showing user-mapping content
-      if (rows.length === 0 && (body.includes('Source User') || body.includes('Auto Map'))) return false;
-      return true;
-    }).catch(() => true);
+    // Verify we left the Users/mapping tab — the Users tab has an "Auto Map" button;
+    // channels tabs don't.  The old check tested rows.length===0 which is always wrong
+    // because the Users tab itself has a populated mapping table (rows.length > 0).
+    const stillOnUsersTab = await this.page.evaluate(() => {
+      return Array.from(document.querySelectorAll('button'))
+        .some(b => b.offsetParent && /auto.?map/i.test(b.textContent || ''));
+    }).catch(() => false);
 
-    if (!onPublicTab) {
-      this.log('CHANNELS', 'Still on Users tab — retrying Public Channels tab click with anchor strategy');
-      // Try every label with the anchor-in-li pattern explicitly
-      for (const label of publicTabLabels) {
-        const anchor = await this.page.$(`li a:has-text("${label}")`).catch(() => null);
-        if (anchor && await anchor.isVisible().catch(() => false)) {
-          await anchor.click();
-          await this.page.waitForTimeout(WAIT_L);
-          this.log('CHANNELS', `Tab re-clicked via anchor: ${label}`);
-          break;
+    if (stillOnUsersTab) {
+      this.log('CHANNELS', 'Still on Users tab — forcing Public Channels tab via JS evaluate');
+      await this.page.evaluate(({ labels }) => {
+        const norm = s => (s || '').toLowerCase().trim();
+        const lnorms = labels.map(norm);
+        const els = Array.from(document.querySelectorAll('a, button, [role="tab"], li'));
+        for (const el of els) {
+          if (!el.offsetParent) continue;
+          if (el.closest('td') || el.closest('tbody')) continue;
+          const t = norm(el.textContent || '');
+          if (lnorms.some(l => t === l || t.startsWith(l + ' '))) {
+            el.click();
+            return el.textContent.trim();
+          }
         }
-      }
+        return null;
+      }, { labels: publicTabLabels }).catch(() => {});
+      await this.page.waitForTimeout(WAIT_L);
     }
 
     // Expand collapsed team rows so their channel sub-rows become selectable.
@@ -1735,12 +1837,14 @@ class CFBrowserAutomation extends EventEmitter {
       this.log('CHANNELS', 'No specific private channels — tab visited, no rows selected');
     }
 
-    // ── Advance Channels (Step 4) → Direct Messages (Step 5) ─────────────────
-    // This click is ALWAYS required — Start Migration button is on Step 5.
-    this.log('CHANNELS', 'Advancing from Channels → Direct Messages step');
+    // ── Navigate to Direct Messages tab ──────────────────────────────────────
+    // Direct Messages is a TAB on the same Map & Migrate page (alongside Users,
+    // Public Channels, Private Channels).  Click it directly instead of using the
+    // wizard Next button, which advances to a different wizard step entirely.
+    this.log('CHANNELS', 'Navigating to Direct Messages tab');
     await this.page.waitForTimeout(WAIT_M);
 
-    // Dismiss any stray dialog that may have appeared after channel selection
+    // Dismiss any stray dialog before navigating
     for (const sel of [
       'button:has-text("OK")', 'button:has-text("Close")', 'button:has-text("Confirm")',
       '.modal-footer button', '[role="dialog"] button', '.alert button',
@@ -1749,39 +1853,57 @@ class CFBrowserAutomation extends EventEmitter {
       if (btn && await btn.isVisible().catch(() => false)) {
         await btn.click().catch(() => {});
         await this.page.waitForTimeout(WAIT_M);
-        this.log('CHANNELS', `Dismissed stray dialog before Next: ${sel}`);
+        this.log('CHANNELS', `Dismissed stray dialog: ${sel}`);
         break;
       }
     }
 
-    const nextClicked = await this._clickWizardNext('CHANNELS');
-
-    // Fallback: if Next button was not found, try clicking the "Direct Messages"
-    // step in the wizard breadcrumb to jump directly to Step 5.
-    if (!nextClicked) {
-      this.log('CHANNELS', 'Next not found — attempting breadcrumb jump to Direct Messages');
+    let onDMsTab = false;
+    for (const label of ['Direct Messages', 'DMs', 'Direct Message', 'DM', 'Group DMs', 'Instant Messages']) {
       for (const sel of [
-        'a:has-text("Direct Messages")', '[data-step="5"]',
-        'li:has-text("Direct Messages") a', 'span:has-text("Direct Messages")',
-        'ol li:nth-child(5) a', 'ul li:nth-child(5) a',
+        `a:has-text("${label}")`,
+        `button:has-text("${label}")`,
+        `[role="tab"]:has-text("${label}")`,
+        `li:has-text("${label}") > a`,
+        `li:has-text("${label}") a`,
       ]) {
-        const crumb = await this.page.$(sel).catch(() => null);
-        if (crumb && await crumb.isVisible().catch(() => false)) {
-          await crumb.click().catch(() => {});
-          await this.page.waitForTimeout(WAIT_L);
-          this.log('CHANNELS', `Jumped to Direct Messages via breadcrumb: ${sel}`);
-          break;
+        const el = await this.page.$(sel).catch(() => null);
+        if (!el || !(await el.isVisible().catch(() => false))) continue;
+        // Skip elements that are inside a table row (data cells, not tabs)
+        if (await el.evaluate(e => !!(e.closest('td') || e.closest('tbody'))).catch(() => false)) continue;
+        await el.click();
+        await this.page.waitForTimeout(WAIT_L);
+        this.log('CHANNELS', `Direct Messages tab clicked: "${label}" (${sel})`);
+        onDMsTab = true;
+        break;
+      }
+      if (onDMsTab) break;
+    }
+
+    if (!onDMsTab) {
+      this.log('CHANNELS', 'DMs tab not found — falling back to wizard Next button');
+      const nextClicked = await this._clickWizardNext('CHANNELS');
+      if (!nextClicked) {
+        this.log('CHANNELS', 'Next not found — trying breadcrumb selectors');
+        for (const sel of ['[data-step="5"]', 'ol li:nth-child(5) a', 'ul li:nth-child(5) a']) {
+          const crumb = await this.page.$(sel).catch(() => null);
+          if (crumb && await crumb.isVisible().catch(() => false)) {
+            await crumb.click().catch(() => {});
+            await this.page.waitForTimeout(WAIT_L);
+            this.log('CHANNELS', `Breadcrumb jump: ${sel}`);
+            break;
+          }
         }
       }
     }
 
-    // ── Step 5: Direct Messages ───────────────────────────────────────────────
+    // ── Direct Messages — select DMs if specified ─────────────────────────────
     await this.page.waitForTimeout(WAIT_L);
     if (dmObjects.length > 0) {
-      this.log('CHANNELS', `Selecting ${dmObjects.length} DM(s) on Direct Messages page`);
+      this.log('CHANNELS', `Selecting ${dmObjects.length} DM(s)`);
       await this._selectChannelRows(dmObjects);
     } else {
-      this.log('CHANNELS', 'No specific DMs — on Direct Messages page, ready for Start Migration');
+      this.log('CHANNELS', 'No specific DMs — ready for Initiate Migration');
     }
 
     this.log('CHANNELS', 'Channels + Direct Messages steps complete ✓');
@@ -2131,16 +2253,23 @@ class CFBrowserAutomation extends EventEmitter {
    * dialog tells CF to proceed with the migration despite existing content.
    */
   async _startMigration() {
-    this.log('MIGRATE', 'Step 5 (Direct Messages) — looking for Start Migration button');
+    this.log('MIGRATE', 'Looking for Initiate/Start Migration button');
     await this.page.waitForTimeout(WAIT_L);
 
+    // Log page URL so we can diagnose wrong-step issues from the logs
+    const currentUrl = await this.page.url().catch(() => 'unknown');
+    this.log('MIGRATE', `Current URL: ${currentUrl}`);
+
     const btnSels = [
-      // CF Teams→Teams specific labels
+      // CF-specific labels (all known variants)
       'button:has-text("Initiate Migration")', 'button:has-text("Initiate Channel Migration")',
       'button:has-text("Start Migration")', 'button:has-text("Start Migrate")',
       'button:has-text("Migrate Now")', 'button:has-text("Migrate")',
+      'button:has-text("Pick & Move")', 'button:has-text("Pick and Move")',
+      'button:has-text("Pick & Migrate")',
       'a:has-text("Initiate Migration")', 'a:has-text("Start Migration")',
       'a:has-text("Initiate Channel Migration")',
+      'a:has-text("Pick & Move")', 'a:has-text("Pick and Move")',
       // Bootstrap button class patterns
       'button.btn-primary:has-text("Initiate")', 'button.btn-success:has-text("Initiate")',
       'button.btn-primary:has-text("Migrate")',  'a.btn-primary:has-text("Initiate")',
@@ -2154,51 +2283,107 @@ class CFBrowserAutomation extends EventEmitter {
       '[id*="start-migration"]', '[class*="start-migration"]',
     ];
 
+    // JS-based flexible button finder — checks all visible buttons/links against migration
+    // keywords using textContent rather than the element tag alone.  This catches any label
+    // CF uses regardless of exact spelling or extra whitespace.
+    const MIGRATE_KEYWORDS = [
+      'initiate migration', 'initiate channel migration', 'start migration',
+      'start migrate', 'migrate now', 'pick & move', 'pick and move', 'pick & migrate',
+      'begin migration', 'run migration', 'initiate',
+    ];
+    const jsFindAndClick = () => this.page.evaluate((kws) => {
+      const norm = s => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const els = Array.from(document.querySelectorAll(
+        'button, a[href], input[type="button"], input[type="submit"], [role="button"]'
+      ));
+      for (const el of els) {
+        if (!el.offsetParent) continue; // hidden
+        if (el.disabled || el.classList.contains('disabled')) continue;
+        const t = norm(el.textContent || el.value || el.getAttribute('aria-label') || '');
+        if (!t) continue;
+        if (/cancel|close|back|prev/i.test(t)) continue; // skip nav buttons
+        if (kws.some(k => t === k || t.startsWith(k) || t.includes(k))) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return t.slice(0, 60);
+        }
+      }
+      return null;
+    }, MIGRATE_KEYWORDS).catch(() => null);
+
     let clicked = false;
 
-    // Two passes: first try without scrolling, then scroll to bottom and retry
-    for (const scrollFirst of [false, true]) {
-      if (scrollFirst) {
+    // Three passes: no-scroll → scroll to bottom → scroll to mid-page
+    for (const pass of [0, 1, 2]) {
+      if (pass === 1) {
         await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
         await this.page.waitForTimeout(WAIT_M);
-        this.log('MIGRATE', 'Scrolled to bottom — retrying Start Migration button search');
+        this.log('MIGRATE', 'Scrolled to bottom — retrying');
+      } else if (pass === 2) {
+        await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2)).catch(() => {});
+        await this.page.waitForTimeout(WAIT_M);
       }
 
+      // Pass A: Playwright selectors (exact)
       for (const sel of btnSels) {
         const btn = await this.page.$(sel).catch(() => null);
-        if (!btn) continue;
-        if (!(await btn.isVisible().catch(() => false))) continue;
+        if (!btn || !(await btn.isVisible().catch(() => false))) continue;
         const disabled = await btn.evaluate(el =>
           el.disabled || el.classList.contains('disabled') || el.getAttribute('aria-disabled') === 'true'
         ).catch(() => false);
         if (disabled) continue;
         await btn.scrollIntoViewIfNeeded().catch(() => {});
         await btn.click();
-        this.log('MIGRATE', `Start Migration clicked: ${sel}`);
+        this.log('MIGRATE', `Initiate Migration clicked: ${sel}`);
         clicked = true;
         break;
       }
       if (clicked) break;
+
+      // Pass B: JS keyword scan (flexible text matching)
+      const jsResult = await jsFindAndClick();
+      if (jsResult) {
+        this.log('MIGRATE', `Initiate Migration clicked via JS: "${jsResult}"`);
+        clicked = true;
+        break;
+      }
     }
 
     if (!clicked) {
-      this.log('MIGRATE', 'Start Migration button not found — waiting 8s then retrying once more');
+      // Dump visible buttons to logs so we know what's actually on the page
+      const visibleBtns = await this.page.evaluate(() =>
+        Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"]'))
+          .filter(e => e.offsetParent)
+          .map(e => (e.textContent || e.value || '').replace(/\s+/g, ' ').trim().slice(0, 40))
+          .filter(t => t.length > 1)
+          .slice(0, 30)
+      ).catch(() => []);
+      this.log('MIGRATE', `Visible buttons on page: ${visibleBtns.join(' | ')}`);
+
+      this.log('MIGRATE', 'Button not found — waiting 8s for page to settle then final attempt');
       await this.page.waitForTimeout(8_000);
-      // Final attempt after page settles
+
       for (const sel of btnSels) {
         const btn = await this.page.$(sel).catch(() => null);
         if (btn && await btn.isVisible().catch(() => false)) {
           await btn.scrollIntoViewIfNeeded().catch(() => {});
           await btn.click();
-          this.log('MIGRATE', `Start Migration clicked (final attempt): ${sel}`);
+          this.log('MIGRATE', `Initiate Migration clicked (final): ${sel}`);
           clicked = true;
           break;
+        }
+      }
+      if (!clicked) {
+        const jsResult = await jsFindAndClick();
+        if (jsResult) {
+          this.log('MIGRATE', `Initiate Migration clicked (final JS): "${jsResult}"`);
+          clicked = true;
         }
       }
     }
 
     if (!clicked) {
-      this.log('MIGRATE', 'Start Migration button not found — falling back to CF API');
+      this.log('MIGRATE', 'Initiate Migration button not found — falling back to CF API');
       return false;
     }
 

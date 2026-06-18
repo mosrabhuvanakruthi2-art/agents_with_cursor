@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import UserMapping from './UserMapping';
+import AdditionalCredentials from './AdditionalCredentials';
 import { MESSAGE_MIGRATION_COMBINATIONS, parseIdList } from '../constants/messageCombinations';
 import {
   getCustomTestCases, getMessageTargets, getConnectedAccounts,
@@ -134,6 +135,8 @@ export default function MessageAgentForm({
     const t = setInterval(reloadMsgAccounts, 5000);
     return () => clearInterval(t);
   }, [reloadMsgAccounts]);
+
+  const [cfAccountEmail, setCfAccountEmail] = useState('');
 
   const sourceProvider      = deriveSourceProvider(form.messageCombination);
   const destinationProvider = deriveDestinationProvider(form.messageCombination);
@@ -514,6 +517,7 @@ export default function MessageAgentForm({
       userMappingCsvPath: (form.userMappingCsvPath || '').trim() || null,
       migrationType:      form.migrationType,
       sourceAdminEmail:   getActiveFetchAdmin(),
+      cfAccountEmail:     cfAccountEmail || null,
     });
   }
 
@@ -668,6 +672,9 @@ export default function MessageAgentForm({
           </div>
 
         </Section>
+
+        {/* ─── Additional User Credentials ─── */}
+        <AdditionalCredentials onCFAccountChange={setCfAccountEmail} />
 
         {/* ─── Section 2: Migration Route ─── */}
         <Section step="2" title="Migration Route"

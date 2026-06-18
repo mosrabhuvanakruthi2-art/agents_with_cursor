@@ -171,8 +171,9 @@ router.get('/google/url', (req, res) => {
   // agent=message → Google Chat scopes only (no Gmail/Calendar).
   // anything else  → legacy mail-agent scopes (Gmail + Calendar). Keeps existing Mail Agent working.
   const agent = req.query.agent === 'message' ? 'message' : 'mail';
-  // Encode source, tenant, and agent so the callback can reconstruct the right client
-  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}`;
+  // Embed the caller's frontend origin so the callback always redirects to the right port.
+  const callerOrigin = (req.query.origin || '').trim() || FRONTEND_ORIGIN;
+  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}|${callerOrigin}`;
   const identityScopes = [
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile',
@@ -220,13 +221,14 @@ router.get('/google/url', (req, res) => {
 
 router.get('/google/callback', async (req, res) => {
   const { code, error, state } = req.query;
-  // State format: "<source>:<tenant>:<agent>" (e.g. "popup:3:message").
-  // Falls back cleanly for legacy state values that only had source[:tenant].
-  const [source = 'default', tenant = '1', agentRaw = 'mail'] = (state || 'default:1:mail').split(':');
+  // State format: "<source>:<tenant>:<agent>|<frontendOrigin>" (origin appended after |)
+  const [statePart = 'default:1:mail', originPart = ''] = (state || '').split('|');
+  const [source = 'default', tenant = '1', agentRaw = 'mail'] = statePart.split(':');
   const agent = agentRaw === 'message' ? 'message' : 'mail';
   const isPopup = source === 'popup';
-  const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
-  const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+  const resolvedOrigin = originPart || FRONTEND_ORIGIN;
+  const successBase = isPopup ? `${resolvedOrigin}/oauth-callback` : `${resolvedOrigin}/connect`;
+  const errorBase = isPopup ? `${resolvedOrigin}/oauth-callback` : `${resolvedOrigin}/connect`;
 
   if (error) {
     logger.warn(`[auth] Google OAuth error: ${error}`);
@@ -282,8 +284,9 @@ router.get('/microsoft/url', (req, res) => {
           : `Set GRAPH_CLIENT_ID${tenant === '2' ? '_2' : ''} / GRAPH_CLIENT_SECRET${tenant === '2' ? '_2' : ''} in backend/.env.`),
     });
   }
-  // State: "<source>:<tenant>:<agent>" — keeps Run Agent (mail) and Message Agent installs separate
-  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}`;
+  // State: "<source>:<tenant>:<agent>|<frontendOrigin>" — dynamic origin so any Vite port works
+  const callerOriginMs = (req.query.origin || '').trim() || FRONTEND_ORIGIN;
+  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}|${callerOriginMs}`;
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: 'code',
@@ -298,11 +301,13 @@ router.get('/microsoft/url', (req, res) => {
 
 router.get('/microsoft/callback', async (req, res) => {
   const { code, error, error_description, state } = req.query;
-  const [source = 'default', tenant = '1', agentRaw = 'mail'] = (state || 'default:1:mail').split(':');
+  const [statePart2 = 'default:1:mail', originPart2 = ''] = (state || '').split('|');
+  const [source = 'default', tenant = '1', agentRaw = 'mail'] = statePart2.split(':');
   const agent = agentRaw === 'message' ? 'message' : 'mail';
   const isPopup = source === 'popup';
-  const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
-  const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+  const resolvedOrigin2 = originPart2 || FRONTEND_ORIGIN;
+  const successBase = isPopup ? `${resolvedOrigin2}/oauth-callback` : `${resolvedOrigin2}/connect`;
+  const errorBase = isPopup ? `${resolvedOrigin2}/oauth-callback` : `${resolvedOrigin2}/connect`;
 
   if (error) {
     logger.warn(`[auth] Microsoft OAuth error: ${error} — ${error_description}`);
@@ -522,7 +527,8 @@ router.get('/slack/url', (req, res) => {
   // Slack is only used by the Message Agent, but we still encode the agent
   // explicitly so future callers (and already-stored accounts) stay correct.
   const agent = req.query.agent === 'mail' ? 'mail' : 'message';
-  const state = `${isPopup ? 'popup' : 'default'}:${agent}`;
+  const callerOriginSl = (req.query.origin || '').trim() || FRONTEND_ORIGIN;
+  const state = `${isPopup ? 'popup' : 'default'}:${agent}|${callerOriginSl}`;
   const params = new URLSearchParams({
     client_id: SLACK_CLIENT_ID,
     user_scope: SLACK_USER_SCOPES,
@@ -536,11 +542,13 @@ router.get('/slack/url', (req, res) => {
 
 router.get('/slack/callback', async (req, res) => {
   const { code, error, state } = req.query;
-  const [source = 'default', agentRaw = 'message'] = String(state || 'default:message').split(':');
+  const [slStatePart = 'default:message', slOriginPart = ''] = String(state || '').split('|');
+  const [source = 'default', agentRaw = 'message'] = slStatePart.split(':');
   const agent = agentRaw === 'mail' ? 'mail' : 'message';
   const isPopup = source === 'popup';
-  const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
-  const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+  const resolvedOriginSl = slOriginPart || FRONTEND_ORIGIN;
+  const successBase = isPopup ? `${resolvedOriginSl}/oauth-callback` : `${resolvedOriginSl}/connect`;
+  const errorBase = isPopup ? `${resolvedOriginSl}/oauth-callback` : `${resolvedOriginSl}/connect`;
 
   if (error) {
     logger.warn(`[auth] Slack OAuth error: ${error}`);
