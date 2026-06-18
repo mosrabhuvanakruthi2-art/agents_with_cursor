@@ -43,7 +43,8 @@ export const DOMAINS = {
     key: 'message',
     label: 'Message',
     mode: 'message',
-    comingSoon: true, // no backend connectors yet — Run Agent shows a coming-soon panel
+    // Message is its own product flow (MessageRunPanel), not the mail/content stepper.
+    ownPanel: true,
     connectAccounts: [],
     sourceProviders: [],
     destProviders: [],

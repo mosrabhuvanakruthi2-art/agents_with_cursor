@@ -84,3 +84,43 @@ export async function runExecution(payload) {
     throw err;
   }
 }
+
+/**
+ * Factory for an independent execution store backed by a custom runner.
+ * Used by the message product (messageExecutionStore) to keep its run/seed/migrate
+ * flows separate from the mail/content singleton above. Same polling behaviour.
+ */
+export function createExecutionStore(runner) {
+  const s = { execution: null, loading: false, error: null, pollingInterval: null, listeners: new Set() };
+  const fire = () => s.listeners.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
+  const stop = () => { if (s.pollingInterval) { clearInterval(s.pollingInterval); s.pollingInterval = null; } };
+  const poll = (executionId) => {
+    stop();
+    const tick = async () => {
+      try {
+        const { data } = await getExecution(executionId);
+        s.execution = data; fire();
+        if (['COMPLETED', 'FAILED', 'INTERRUPTED', 'CANCELLED'].includes(data.status)) stop();
+      } catch { stop(); }
+    };
+    tick();
+    s.pollingInterval = setInterval(tick, 3000);
+  };
+  return {
+    subscribe(listener) { s.listeners.add(listener); return () => s.listeners.delete(listener); },
+    getState() { return { execution: s.execution, loading: s.loading, error: s.error }; },
+    async runExecution(payload) {
+      s.loading = true; s.error = null; s.execution = null; fire();
+      try {
+        const { data, status } = await runner(payload);
+        s.loading = false;
+        if (data.bulk) { s.execution = data; fire(); return data; }
+        if (data.executionId && (status === 202 || data.status === 'RUNNING')) { s.execution = data; fire(); poll(data.executionId); return data; }
+        s.execution = data; fire(); return data;
+      } catch (err) {
+        s.error = err.response?.data?.error || err.message;
+        s.loading = false; fire(); throw err;
+      }
+    },
+  };
+}

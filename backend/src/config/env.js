@@ -424,4 +424,63 @@ module.exports = {
   CONTENT_MIGRATION_SERVER_URL: (process.env.CONTENT_MIGRATION_SERVER_URL || '').trim(),
   CONTENT_MIGRATION_SERVER_EMAIL: (process.env.CONTENT_MIGRATION_SERVER_EMAIL || '').trim(),
   CONTENT_MIGRATION_SERVER_PASSWORD: (process.env.CONTENT_MIGRATION_SERVER_PASSWORD || '').trim(),
+
+  // ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
+  /** 4th Google tenant (message product). */
+  GOOGLE_CLIENT_ID_4: process.env.GOOGLE_CLIENT_ID_4,
+  GOOGLE_CLIENT_SECRET_4: process.env.GOOGLE_CLIENT_SECRET_4,
+  GOOGLE_TENANT_4_DOMAINS: (process.env.GOOGLE_TENANT_4_DOMAINS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean),
+  /** Azure app client id used for message (Teams) delegated tokens, if separate from GRAPH_CLIENT_ID. */
+  MS_MESSAGE_CLIENT_ID: process.env.MS_MESSAGE_CLIENT_ID || '',
+  /** CloudFuze chat-migration server credentials (email/password login). */
+  MIGRATION_API_USERNAME: (process.env.MIGRATION_API_USERNAME || '').trim(),
+  MIGRATION_API_PASSWORD: (process.env.MIGRATION_API_PASSWORD || '').trim(),
+  /**
+   * Dedicated CHAT-migration CloudFuze account. Chat (Slack/Teams/Google Chat) clouds
+   * usually live in a DIFFERENT CloudFuze subscriber account than the mail account.
+   * If set, chatMigrationClient logs into THIS account; otherwise it falls back to the
+   * shared MIGRATION_API_* (mail) credentials. Any of URL / BASIC_AUTH / BEARER /
+   * USERNAME+PASSWORD may be supplied (same precedence as the mail client).
+   */
+  CHAT_MIGRATION_API_URL: normalizeMigrationApiUrl(process.env.CHAT_MIGRATION_API_URL || process.env.MIGRATION_API_URL || 'http://localhost:8080'),
+  CHAT_MIGRATION_API_BASIC_AUTH: (process.env.CHAT_MIGRATION_API_BASIC_AUTH || '').trim(),
+  CHAT_MIGRATION_API_KEY: (process.env.CHAT_MIGRATION_API_KEY || '').trim(),
+  CHAT_MIGRATION_API_BEARER_TOKEN: cleanEnvValue(process.env.CHAT_MIGRATION_API_BEARER_TOKEN || ''),
+  CHAT_MIGRATION_API_USERNAME: (process.env.CHAT_MIGRATION_API_USERNAME || '').trim(),
+  CHAT_MIGRATION_API_PASSWORD: (process.env.CHAT_MIGRATION_API_PASSWORD || '').trim(),
+  /** When 'true', skip CloudFuze validateUser before triggering a chat migration. */
+  CLOUDFUZE_SKIP_VALIDATE_USER: String(process.env.CLOUDFUZE_SKIP_VALIDATE_USER ?? '').trim().toLowerCase() === 'true',
+  /** Optional Google Chat space id for seeding/validation. */
+  GOOGLE_CHAT_SPACE: (process.env.GOOGLE_CHAT_SPACE || '').trim(),
+  /** Optional overrides for the CloudFuze chat-migration initiate/close paths + wait. */
+  CHAT_MIGRATION_API_INITIATE_PATH: (process.env.CHAT_MIGRATION_API_INITIATE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''),
+  CHAT_MIGRATION_CLOSE_PATH: (process.env.CHAT_MIGRATION_CLOSE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''),
+  CHAT_MIGRATION_MAX_WAIT_MINUTES: parseInt(process.env.CHAT_MIGRATION_MAX_WAIT_MINUTES || '30', 10) || 30,
+  /** Slack tokens (message product). SLACK_USER_TOKEN (xoxp-…) auto-installs on startup. */
+  SLACK_USER_TOKEN: cleanEnvValue(process.env.SLACK_USER_TOKEN || ''),
+  SLACK_BOT_TOKEN: cleanEnvValue(process.env.SLACK_BOT_TOKEN || ''),
+  SLACK_CHANNEL_ID: (process.env.SLACK_CHANNEL_ID || '').trim(),
+  SLACK_CLIENT_ID: cleanEnvValue(process.env.SLACK_CLIENT_ID || ''),
+  SLACK_CLIENT_SECRET: cleanEnvValue(process.env.SLACK_CLIENT_SECRET || ''),
+  SLACK_REDIRECT_URI: cleanEnvValue(process.env.SLACK_REDIRECT_URI || ''),
+  /** Teams target ids for seeding/validation. */
+  TEAMS_TEAM_ID: (process.env.TEAMS_TEAM_ID || '').trim(),
+  TEAMS_CHANNEL_ID: (process.env.TEAMS_CHANNEL_ID || '').trim(),
+  /** CF chat-migration server accounts: primary (MIGRATION_API_USERNAME/PASSWORD) + CF_EXTRA_ACCOUNTS ("email:pwd,email:pwd"). */
+  CF_ACCOUNTS: (() => {
+    const primary = (process.env.MIGRATION_API_USERNAME || '').trim();
+    const primaryPwd = (process.env.MIGRATION_API_PASSWORD || '').trim();
+    const accounts = primary ? [{ email: primary, password: primaryPwd }] : [];
+    const extras = (process.env.CF_EXTRA_ACCOUNTS || '').trim();
+    if (extras) {
+      for (const pair of extras.split(',')) {
+        const idx = pair.indexOf(':');
+        if (idx === -1) continue;
+        const email = pair.substring(0, idx).trim();
+        const password = pair.substring(idx + 1).trim();
+        if (email && password && !accounts.find((a) => a.email === email)) accounts.push({ email, password });
+      }
+    }
+    return accounts;
+  })(),
 };

@@ -190,10 +190,11 @@ export function getConnectedAccounts() {
   return api.get('/auth/accounts');
 }
 
-export function getGoogleOAuthUrl(source, tenant) {
+export function getGoogleOAuthUrl(source, tenant, agent) {
   const params = new URLSearchParams();
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
+  if (agent) params.set('agent', agent);
   const qs = params.toString();
   return api.get('/auth/google/url' + (qs ? `?${qs}` : ''));
 }
@@ -202,10 +203,11 @@ export function signOutGoogle(email) {
   return api.post('/auth/google/signout', { email });
 }
 
-export function getMicrosoftOAuthUrl(source, tenant) {
+export function getMicrosoftOAuthUrl(source, tenant, agent) {
   const params = new URLSearchParams();
   if (source) params.set('source', source);
   if (tenant && tenant !== '1') params.set('tenant', tenant);
+  if (agent) params.set('agent', agent);
   const qs = params.toString();
   return api.get('/auth/microsoft/url' + (qs ? `?${qs}` : ''));
 }
@@ -286,6 +288,54 @@ export const runDocsSync = () => api.post('/agents/docs-sync');
 export const getDocsSyncStatus = () => api.get('/agents/docs-sync/status');
 export const markFeatureImplemented = (featureId) =>
   api.patch('/agents/docs-sync/feature/' + featureId, { status: 'implemented' });
+
+// ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
+export function runMessageAgent(payload) { return api.post('/agents/message-run', payload); }
+export function seedMessageAgent(payload) { return api.post('/agents/message-seed', payload); }
+export function migrateMessageAgent(payload) { return api.post('/agents/message-migrate', payload); }
+export function uploadMappingCsv(content, filename) { return api.post('/agents/upload-mapping-csv', { content, filename }); }
+export function getMessageTargets(provider, adminEmail) {
+  const params = new URLSearchParams({ provider, adminEmail });
+  return api.get(`/agents/message-targets?${params}`);
+}
+export function getMessageUserStatus(emails, platform) {
+  const params = new URLSearchParams({ emails: emails.join(','), platform });
+  return api.get(`/agents/message-user-status?${params}`);
+}
+export function closeCFChatMigration(jobIds) { return api.post('/agents/cf-close-migration', { jobIds }, { timeout: 60000 }); }
+export function validateCFChatMigration(payload) { return api.post('/agents/cf-validate-migration', payload, { timeout: 30000 }); }
+export function getSlackOAuthUrl(source = 'popup', agent) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  if (agent) params.set('agent', agent);
+  params.set('origin', window.location.origin);
+  return api.get('/auth/slack/url?' + params.toString());
+}
+export function signOutSlack(email) { return api.post('/auth/slack/signout', { email }); }
+export function connectMicrosoftAdmin(email, tenant = '1', agent) {
+  const body = { email, tenant };
+  if (agent) body.agent = agent;
+  return api.post('/auth/microsoft/admin', body);
+}
+export function connectSlackToken(token, agent) {
+  const body = { token };
+  if (agent) body.agent = agent;
+  return api.post('/auth/slack/token', body);
+}
+// CloudFuze direct proxies (chat migration)
+export function getCFCloudAccounts() { return api.get('/agents/cf-cloud-accounts'); }
+export function getCFLoginAccounts() { return api.get('/agents/cf-login-accounts'); }
+export function addCFLoginAccount(email, password) { return api.post('/agents/cf-login-accounts', { email, password }); }
+export function removeCFLoginAccount(email) { return api.delete(`/agents/cf-login-accounts/${encodeURIComponent(email)}`); }
+export function getCFChannels(params = {}) { return api.get('/agents/cf-channels', { params }); }
+export function getCFDMs(params = {}) { return api.get('/agents/cf-dms', { params }); }
+export function getCFChannelsAll(params = {}) { return api.get('/agents/cf-channels-all', { params }); }
+export function getCFChannelsCache(params = {}) { return api.get('/agents/cf-channels-cache', { params }); }
+export function getCFReports(params = {}) { return api.get('/agents/cf-reports', { params }); }
+// CF browser automation (requires playwright on the backend — errors if not installed)
+export function startCFBrowserMigration(payload) { return api.post('/agents/cf-browser-migrate', payload); }
+export function abortCFBrowserMigration() { return api.post('/agents/cf-browser-abort'); }
+export function getCFBrowserEvents() { return api.get('/agents/cf-browser-events'); }
 
 export default api;
 

@@ -72,6 +72,16 @@ const MS_SCOPES = [
   'Calendars.ReadWrite',
 ].join(' ');
 
+// Microsoft Teams scopes for the message product (agent=message).
+const MS_SCOPES_MESSAGE = [
+  'openid', 'email', 'profile', 'offline_access',
+  'User.Read', 'User.ReadBasic.All',
+  'Team.ReadBasic.All', 'Channel.ReadBasic.All', 'ChannelMember.Read.All',
+  'ChannelMessage.Send', 'ChannelMessage.Read.All',
+  'Chat.Read', 'Chat.ReadWrite', 'ChatMessage.Send',
+  'Files.ReadWrite.All',
+].join(' ');
+
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 router.get('/status', (_req, res) => {
@@ -98,19 +108,37 @@ router.get('/google/url', (req, res) => {
     return res.status(400).json({ error: `Google OAuth not configured for tenant ${tenant} (GOOGLE_CLIENT_ID_${tenant} / GOOGLE_CLIENT_SECRET_${tenant} missing)` });
   }
   const isPopup = req.query.source === 'popup';
-  // Encode both source and tenant in state so the callback can reconstruct the right client
-  const state = `${isPopup ? 'popup' : 'default'}:${tenant}`;
+  // agent=message → Google Chat scopes (message product); else mail scopes (Gmail/Calendar).
+  const agent = req.query.agent === 'message' ? 'message' : 'mail';
+  // Encode source + tenant + agent in state so the callback reconstructs the right client/tag.
+  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}`;
+  const identityScopes = [
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/directory.readonly',
+  ];
+  const mailScopes = [
+    'https://mail.google.com/',
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/calendar',
+    ...identityScopes,
+  ];
+  const messageScopes = [
+    ...identityScopes,
+    'https://www.googleapis.com/auth/chat.spaces.readonly',
+    'https://www.googleapis.com/auth/chat.spaces',
+    'https://www.googleapis.com/auth/chat.memberships.readonly',
+    'https://www.googleapis.com/auth/chat.memberships',
+    'https://www.googleapis.com/auth/chat.messages.readonly',
+    'https://www.googleapis.com/auth/chat.messages',
+    'https://www.googleapis.com/auth/chat.messages.reactions',
+    'https://www.googleapis.com/auth/chat.delete',
+    'https://www.googleapis.com/auth/drive.file',
+  ];
   const oAuth2Client = googleOAuthClient(tenant);
   const url = oAuth2Client.generateAuthUrl({
     access_type: 'offline',
-    scope: [
-      'https://mail.google.com/',
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/calendar',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/userinfo.profile',
-      'https://www.googleapis.com/auth/directory.readonly',
-    ],
+    scope: agent === 'message' ? messageScopes : mailScopes,
     prompt: 'consent',
     state,
   });
@@ -119,8 +147,9 @@ router.get('/google/url', (req, res) => {
 
 router.get('/google/callback', async (req, res) => {
   const { code, error, state } = req.query;
-  // State format: "<source>:<tenant>" (e.g. "popup:2") — fall back to legacy "popup"/"default"
-  const [source = 'default', tenant = '1'] = (state || 'default:1').split(':');
+  // State format: "<source>:<tenant>:<agent>" — fall back to legacy "popup"/"default"
+  const [source = 'default', tenant = '1', agentRaw = 'mail'] = (state || 'default:1:mail').split(':');
+  const agent = agentRaw === 'message' ? 'message' : 'mail';
   const isPopup = source === 'popup';
   const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
   const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
@@ -145,8 +174,8 @@ router.get('/google/callback', async (req, res) => {
     const { data: userInfo } = await oauth2.userinfo.get();
     const email = userInfo.email;
 
-    tokenStore.setGoogleToken(email, tokens.refresh_token);
-    logger.info(`[auth] Google account connected: ${email}`);
+    tokenStore.setGoogleToken(email, tokens.refresh_token, agent);
+    logger.info(`[auth] Google account connected: ${email} (agent=${agent})`);
 
     res.redirect(`${successBase}?connected=google&email=${encodeURIComponent(email)}`);
   } catch (err) {
@@ -260,12 +289,13 @@ router.get('/microsoft/url', (req, res) => {
     return res.status(400).json({ error: `Microsoft OAuth not configured for tenant ${tenant} (GRAPH_CLIENT_ID${tenant === '2' ? '_2' : ''} missing)` });
   }
   const isPopup = req.query.source === 'popup';
-  const state = `${isPopup ? 'popup' : 'default'}:${tenant}`;
+  const agent = req.query.agent === 'message' ? 'message' : 'mail';
+  const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}`;
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: 'code',
     redirect_uri: MS_REDIRECT_URI,
-    scope: MS_SCOPES,
+    scope: agent === 'message' ? MS_SCOPES_MESSAGE : MS_SCOPES,
     response_mode: 'query',
     prompt: 'select_account',
     state,
@@ -275,7 +305,8 @@ router.get('/microsoft/url', (req, res) => {
 
 router.get('/microsoft/callback', async (req, res) => {
   const { code, error, error_description, state } = req.query;
-  const [source = 'default', tenant = '1'] = (state || 'default:1').split(':');
+  const [source = 'default', tenant = '1', agentRaw = 'mail'] = (state || 'default:1:mail').split(':');
+  const agent = agentRaw === 'message' ? 'message' : 'mail';
   const isPopup = source === 'popup';
   const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
   const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
@@ -314,8 +345,9 @@ router.get('/microsoft/callback', async (req, res) => {
       accessToken: access_token,
       refreshToken: refresh_token,
       expiresAt: Date.now() + expires_in * 1000,
+      agent, // 'message' tags a Teams-scoped token so hasTeamsToken() recognizes it
     });
-    logger.info(`[auth] Microsoft account connected: ${email}`);
+    logger.info(`[auth] Microsoft account connected: ${email} (agent=${agent})`);
 
     res.redirect(`${successBase}?connected=microsoft&email=${encodeURIComponent(email)}`);
   } catch (err) {
@@ -449,6 +481,106 @@ router.post('/sharepoint/signout', (req, res) => {
     logger.info(`[auth] SharePoint account disconnected: ${email}`);
   }
   res.json({ success: true });
+});
+
+// ─── Slack (message product) ────────────────────────────────────────────────────
+// OAuth popup (needs SLACK_CLIENT_ID/SECRET) + direct user-token install (xoxp-…),
+// which works without a Slack app — used by the Connect Clouds "Slack" tile.
+const SLACK_REDIRECT_PATH = '/api/auth/slack/callback';
+// Valid Slack USER token scopes only. (chat:write.customize is bot-only; the bare
+// *:write channel-management scopes are invalid as user scopes → "Invalid permissions".)
+const SLACK_USER_SCOPES = [
+  'users:read', 'users:read.email', 'users.profile:read', 'team:read',
+  'channels:read', 'groups:read', 'im:read', 'mpim:read',
+  'channels:history', 'groups:history', 'im:history', 'mpim:history',
+  'chat:write',
+  'files:read', 'files:write',
+  'reactions:read', 'reactions:write',
+  'pins:read', 'bookmarks:read',
+  'search:read',
+].join(',');
+
+function slackRedirectUri() {
+  const override = env.SLACK_REDIRECT_URI;
+  if (override && String(override).trim()) return String(override).trim().replace(/\/+$/, '');
+  return `${BACKEND_BASE}${SLACK_REDIRECT_PATH}`;
+}
+
+router.get('/slack/url', (req, res) => {
+  const { SLACK_CLIENT_ID, SLACK_CLIENT_SECRET } = env;
+  if (!SLACK_CLIENT_ID || !SLACK_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'Slack OAuth not configured. Set SLACK_CLIENT_ID/SLACK_CLIENT_SECRET in .env, or paste a user token instead.' });
+  }
+  const isPopup = req.query.source === 'popup';
+  const origin = (req.query.origin || '').trim() || FRONTEND_ORIGIN;
+  const state = `${isPopup ? 'popup' : 'default'}:message|${origin}`;
+  const params = new URLSearchParams({
+    client_id: SLACK_CLIENT_ID, user_scope: SLACK_USER_SCOPES, redirect_uri: slackRedirectUri(), state,
+  });
+  res.json({ url: `https://slack.com/oauth/v2/authorize?${params}` });
+});
+
+router.get('/slack/callback', async (req, res) => {
+  const { code, error, state } = req.query;
+  const [statePart = 'default:message', originPart = ''] = String(state || '').split('|');
+  const [source = 'default'] = statePart.split(':');
+  const isPopup = source === 'popup';
+  const origin = originPart || FRONTEND_ORIGIN;
+  const base = isPopup ? `${origin}/oauth-callback` : `${origin}/connect`;
+  if (error) return res.redirect(`${base}?error=slack&message=${encodeURIComponent(error)}`);
+  if (!code) return res.status(400).send('Missing code');
+  try {
+    const tokenParams = new URLSearchParams({
+      client_id: env.SLACK_CLIENT_ID, client_secret: env.SLACK_CLIENT_SECRET, code, redirect_uri: slackRedirectUri(),
+    });
+    const tokenRes = await axios.post('https://slack.com/api/oauth.v2.access', tokenParams.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    const payload = tokenRes.data;
+    if (!payload.ok) throw new Error(payload.error || 'oauth.v2.access failed');
+    const userToken = payload.authed_user?.access_token;
+    const userId = payload.authed_user?.id;
+    if (!userToken || !userId) throw new Error('Slack did not return a user token (enable User Token Scopes).');
+    let email = '';
+    try {
+      const infoRes = await axios.get('https://slack.com/api/users.info', { headers: { Authorization: `Bearer ${userToken}` }, params: { user: userId } });
+      email = infoRes.data?.user?.profile?.email || '';
+    } catch { /* ignore */ }
+    if (!email) email = `${userId}@slack-local.invalid`;
+    tokenStore.setSlackToken({ email, userAccessToken: userToken, userId, teamId: payload.team?.id || '', teamName: payload.team?.name || '', scope: payload.authed_user?.scope || '', agent: 'message' });
+    res.redirect(`${base}?connected=slack&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    res.redirect(`${base}?error=slack&message=${encodeURIComponent(err.message)}`);
+  }
+});
+
+router.post('/slack/signout', (req, res) => {
+  const { email } = req.body || {};
+  if (email) { tokenStore.removeSlackToken(email); logger.info(`[auth] Slack disconnected: ${email}`); }
+  res.json({ success: true });
+});
+
+// Direct token install — paste a pre-issued Slack user token (xoxp-…); no Slack app needed.
+router.post('/slack/token', async (req, res) => {
+  try {
+    const rawToken = (req.body?.token || '').trim();
+    if (!rawToken) return res.status(400).json({ error: 'token is required' });
+    if (!rawToken.startsWith('xox')) return res.status(400).json({ error: 'Token must be a Slack OAuth token (xoxp-… / xoxb-…).' });
+    const authTest = await axios.post('https://slack.com/api/auth.test', new URLSearchParams({ token: rawToken }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    if (!authTest.data?.ok) return res.status(400).json({ error: `Slack auth.test failed: ${authTest.data?.error || 'unknown'}` });
+    const userId = authTest.data.user_id;
+    let email = '';
+    try {
+      const infoRes = await axios.get('https://slack.com/api/users.info', { headers: { Authorization: `Bearer ${rawToken}` }, params: { user: userId } });
+      email = infoRes.data?.user?.profile?.email || '';
+    } catch { /* ignore */ }
+    if (!email) email = `${userId}@slack-local.invalid`;
+    tokenStore.setSlackToken({ email, userAccessToken: rawToken, userId, teamId: authTest.data.team_id || '', teamName: authTest.data.team || '', scope: 'manual', agent: 'message' });
+    logger.info(`[auth] Slack token installed for ${email}`);
+    res.json({ success: true, email });
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data?.error || err.message });
+  }
 });
 
 module.exports = router;

@@ -3260,7 +3260,104 @@ async function deleteQAGroups(userId = '') {
   }
 }
 
+// ── Microsoft Teams (message product) ───────────────────────────────────────────
+// Post/read Teams channel & chat messages with a user's delegated token. Used by the
+// message-migration validation flow. Depends only on getAccessToken/GRAPH_BASE/axios/
+// tokenStore already defined above, so it's purely additive to the mail client.
+// targetId: "teamId/channelId" → channel; "19:…" (no slash) → chat.
+
+async function postTeamsMessage(userEmail, targetId, htmlContent, contentType = 'html') {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const body = { body: { content: htmlContent, contentType } };
+  let url;
+  let isChannel = false;
+  const slashIdx = targetId.indexOf('/');
+  if (slashIdx !== -1) {
+    const teamId    = targetId.slice(0, slashIdx);
+    const channelId = targetId.slice(slashIdx + 1);
+    url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
+    isChannel = true;
+  } else {
+    url = `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages`;
+  }
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id, isChannel };
+}
+
+async function postTeamsReply(userEmail, targetId, parentMessageId, htmlContent, contentType = 'html') {
+  if (!targetId.includes('/')) {
+    return postTeamsMessage(userEmail, targetId, htmlContent, contentType);
+  }
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const slashIdx = targetId.indexOf('/');
+  const teamId    = targetId.slice(0, slashIdx);
+  const channelId = targetId.slice(slashIdx + 1);
+  const url =
+    `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+    `/channels/${encodeURIComponent(channelId)}` +
+    `/messages/${encodeURIComponent(parentMessageId)}/replies`;
+  const body = { body: { content: htmlContent, contentType } };
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id };
+}
+
+function hasTeamsToken(userEmail) {
+  try {
+    const stored = tokenStore.getMicrosoftToken(userEmail);
+    if (!stored?.accessToken && !stored?.refreshToken) return false;
+    if (stored.mode === 'app-only') return false;
+    const agent = (stored.agent || '').toLowerCase();
+    if (agent === 'message' || agent === 'both') return true;
+    if (stored.accessToken) {
+      try {
+        const payload = JSON.parse(Buffer.from(stored.accessToken.split('.')[1], 'base64').toString());
+        const scp = (payload.scp || payload.scope || '').toLowerCase();
+        if (scp.includes('channel') || scp.includes('team') || scp.includes('chat')) return true;
+      } catch { /* ignore JWT decode errors */ }
+    }
+    return false;
+  } catch { return false; }
+}
+
+async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes = 120 } = {}) {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+  const sinceMs = Date.now() - sinceMinutes * 60 * 1000;
+  let url;
+  const isChannel = targetId.includes('/');
+  if (isChannel) {
+    const slash = targetId.indexOf('/');
+    const teamId    = targetId.slice(0, slash);
+    const channelId = targetId.slice(slash + 1);
+    url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages?$top=${top}`;
+  } else {
+    url = `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages?$top=${top}`;
+  }
+  try {
+    const res = await axios.get(url, { headers });
+    const all = res.data.value || [];
+    return all.filter((m) => {
+      if (!m.createdDateTime) return true;
+      return new Date(m.createdDateTime).getTime() >= sinceMs;
+    });
+  } catch (err) {
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.message;
+    if (status === 403) {
+      logger.warn(`[readTeamsMessages] 403 reading ${targetId} for ${userEmail}: ${errMsg}.`);
+      return [];
+    }
+    throw err;
+  }
+}
+
 module.exports = {
+  postTeamsMessage,
+  postTeamsReply,
+  hasTeamsToken,
+  readTeamsMessages,
   getAccessToken,
   getMailFolders,
   getChildFolders,

@@ -6,6 +6,7 @@ import {
   Stepper, StepSelect, StepMap, StepServer, StepOptions, StepSummary,
 } from '../components/runwizard/steps';
 import { DOMAIN_LIST, DOMAINS } from '../components/runwizard/domains';
+import MessageWizard from '../components/MessageWizard';
 
 const STEPS = ['Source & Destination', 'Map Users', 'Migration Server', 'Options', 'Summary'];
 
@@ -63,7 +64,9 @@ export default function RunAgent() {
         ))}
       </div>
 
-      {domainCfg.comingSoon ? (
+      {domainCfg.ownPanel && wiz.domain === 'message' ? (
+        <MessageWizard />
+      ) : domainCfg.comingSoon ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 flex flex-col items-center justify-center text-center gap-3 h-[calc(100vh-16rem)]">
           <span className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-500 flex items-center justify-center">
             <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" strokeWidth={1.6} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10.5h8M8 14h5m-9 6 3.5-2H18a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14Z" /></svg>

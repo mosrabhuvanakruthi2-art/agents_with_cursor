@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   getConnectedAccounts, addDwdAccount, getMicrosoftAdminConsentUrl, getBoxOAuthUrl,
   signOutGoogle, signOutMicrosoft, signOutBox,
+  getMicrosoftOAuthUrl, getGoogleOAuthUrl, getSlackOAuthUrl, signOutSlack,
 } from '../services/api';
 
 const POPUP_KEY = 'cf_oauth_result';
@@ -20,9 +21,9 @@ const CATALOG = {
     { key: 'sharepoint', name: 'SharePoint', account: 'microsoft' },
   ],
   message: [
-    { key: 'slack', name: 'Slack' },
-    { key: 'teams', name: 'Microsoft Teams' },
-    { key: 'googlechat', name: 'Google Chat' },
+    { key: 'slack', name: 'Slack', account: 'slack' },
+    { key: 'teams', name: 'Microsoft Teams', account: 'microsoft' },
+    { key: 'googlechat', name: 'Google Chat', account: 'google' },
     { key: 'webex', name: 'Webex' },
     { key: 'workplace', name: 'Meta Workplace' },
     { key: 'viva', name: 'Viva Engage' },
@@ -35,7 +36,7 @@ const DOMAIN_TABS = [
   { key: 'message', label: 'Message' },
 ];
 
-const ACCOUNT_NAME = { google: 'Google', microsoft: 'Microsoft', box: 'Box' };
+const ACCOUNT_NAME = { google: 'Google', microsoft: 'Microsoft', box: 'Box', slack: 'Slack' };
 
 function openPopup(url) {
   const w = 520, h = 680;
@@ -101,6 +102,13 @@ export default function ConnectClouds() {
 
   function handleTile(cloud) {
     if (!cloud.account) { showToast(`${cloud.name} is not implemented yet`, 'error'); return; }
+    // Message clouds connect with agent=message scopes (Teams/Chat) or a Slack user token.
+    if (domainTab === 'message') {
+      if (cloud.key === 'slack') { runPopupFlow(() => getSlackOAuthUrl('popup', 'message'), cloud.name); return; }
+      if (cloud.key === 'teams') { runPopupFlow(() => getMicrosoftOAuthUrl('popup', '1', 'message'), cloud.name); return; }
+      if (cloud.key === 'googlechat') { runPopupFlow(() => getGoogleOAuthUrl('popup', '1', 'message'), cloud.name); return; }
+      showToast(`${cloud.name} is not implemented yet`, 'error'); return;
+    }
     if (cloud.account === 'google') { setGoogleFor(cloud); setGoogleEmail(''); return; }
     if (cloud.account === 'microsoft') { runPopupFlow(() => getMicrosoftAdminConsentUrl(), cloud.name); return; }
     if (cloud.account === 'box') { runPopupFlow(() => getBoxOAuthUrl('popup'), cloud.name); return; }
@@ -125,6 +133,7 @@ export default function ConnectClouds() {
     try {
       if (acct.provider === 'google') await signOutGoogle(acct.email);
       else if (acct.provider === 'box') await signOutBox(acct.email);
+      else if (acct.provider === 'slack') await signOutSlack(acct.email);
       else await signOutMicrosoft(acct.email);
       showToast(`${acct.email} disconnected`);
       await loadAccounts();

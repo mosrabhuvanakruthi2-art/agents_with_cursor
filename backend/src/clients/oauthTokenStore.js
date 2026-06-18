@@ -48,6 +48,8 @@ function migrateIfNeeded(data) {
   if (!data.box.accounts) data.box.accounts = {};
   if (!data.sharepoint) data.sharepoint = { accounts: {} };
   if (!data.sharepoint.accounts) data.sharepoint.accounts = {};
+  if (!data.slack) data.slack = { accounts: {} };
+  if (!data.slack.accounts) data.slack.accounts = {};
   return data;
 }
 
@@ -144,10 +146,17 @@ function getGoogleToken(email) {
   return data.google.accounts[email.toLowerCase()] || null;
 }
 
-function setGoogleToken(email, refreshToken) {
+function setGoogleToken(email, refreshToken, agent) {
   const data = read();
   const key = email.toLowerCase();
-  const entry = { refreshToken, connectedAt: data.google.accounts[key]?.connectedAt || new Date().toISOString() };
+  const existing = data.google.accounts[key];
+  // `agent` ('mail' | 'message') tags which product the consented scopes are for
+  // (Gmail/Calendar vs Google Chat) so the right account is used per migration domain.
+  const entry = {
+    refreshToken,
+    agent: agent || existing?.agent,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
   data.google.accounts[key] = entry;
   write(data);
   syncToMongo('google', key, entry);
@@ -353,7 +362,46 @@ function getAllConnectedAccounts() {
   for (const [email, entry] of Object.entries(data.sharepoint.accounts)) {
     accounts.push({ provider: 'sharepoint', email, connectedAt: entry.connectedAt });
   }
+  for (const [email, entry] of Object.entries(data.slack.accounts)) {
+    accounts.push({ provider: 'slack', email, connectedAt: entry.connectedAt, teamName: entry.teamName });
+  }
   return accounts.sort((a, b) => (b.connectedAt || '').localeCompare(a.connectedAt || ''));
+}
+
+// ─── Slack (message product) ─────────────────────────────────────────────────
+function getSlackToken(email) {
+  if (!email) return null;
+  return read().slack.accounts[email.toLowerCase()] || null;
+}
+
+function setSlackToken({ email, userAccessToken, userId, teamId, teamName, scope, agent }) {
+  if (!email || !userAccessToken) return;
+  const data = read();
+  const key = email.toLowerCase();
+  const existing = data.slack.accounts[key];
+  const entry = {
+    userAccessToken, userId, teamId,
+    teamName: teamName || '',
+    scope: scope || '',
+    agent: agent || existing?.agent || 'message',
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
+  data.slack.accounts[key] = entry;
+  write(data);
+  syncToMongo('slack', key, { email: key, ...entry });
+}
+
+function removeSlackToken(email) {
+  if (!email) return;
+  const data = read();
+  delete data.slack.accounts[email.toLowerCase()];
+  write(data);
+  removeFromMongo('slack', email.toLowerCase());
+}
+
+function getSlackStatus() {
+  const emails = Object.keys(read().slack.accounts);
+  return { connected: emails.length > 0, emails, count: emails.length };
 }
 
 module.exports = {
@@ -382,6 +430,11 @@ module.exports = {
   setSharePointToken,
   removeSharePointToken,
   getSharePointStatus,
+  // Slack (message product)
+  getSlackToken,
+  setSlackToken,
+  removeSlackToken,
+  getSlackStatus,
   // Combined
   getAllConnectedAccounts,
 };

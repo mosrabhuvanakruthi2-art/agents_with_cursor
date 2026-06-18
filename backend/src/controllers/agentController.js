@@ -276,6 +276,10 @@ async function getSourceUsers(req, res) {
           const domains = [...new Set(allUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
           domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
         }
+      } else if (provider === 'slack') {
+        const slackClient = require('../clients/slackClient');
+        logger.info(`getSourceUsers: fetching Slack workspace users (admin: ${adminEmail})`);
+        liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
       } else if (provider === 'google' || !provider) {
         const gmailClient = require('../clients/gmailClient');
         liveUsers = await gmailClient.listDomainUsers(adminEmail);
@@ -346,6 +350,10 @@ async function getDestinationUsers(req, res) {
         const gmailClient = require('../clients/gmailClient');
         logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
         liveUsers = await gmailClient.listDomainUsers(adminEmail);
+      } else if (provider === 'slack') {
+        const slackClient = require('../clients/slackClient');
+        logger.info(`getDestinationUsers: fetching Slack workspace users (admin: ${adminEmail})`);
+        liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
       } else if (provider === 'microsoft' || !provider) {
         const outlookClient = require('../clients/outlookClient');
         logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
