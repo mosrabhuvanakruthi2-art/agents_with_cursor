@@ -13,7 +13,18 @@ const logsDir = path.resolve(__dirname, '../../logs');
 
 async function runAgents(req, res) {
   try {
-    const { sourceEmail, destinationEmail, migrationType, includeMail, includeCalendar, testType, mappedPairs } = req.body;
+    const {
+      sourceEmail,
+      destinationEmail,
+      migrationType,
+      includeMail,
+      includeCalendar,
+      testType,
+      mappedPairs,
+      productType,
+      messageCombination,
+      messageAdmins,
+    } = req.body;
 
     // Bulk migration: multiple mapped pairs
     if (mappedPairs && Array.isArray(mappedPairs) && mappedPairs.length > 0) {
@@ -27,6 +38,9 @@ async function runAgents(req, res) {
             includeMail: includeMail !== false,
             includeCalendar: includeCalendar !== false,
             testType: testType || 'E2E',
+            productType: productType || 'Mail',
+            messageCombination: messageCombination || 'Slack → Google Chat',
+            messageAdmins: messageAdmins || undefined,
           });
           results.push(result);
         } catch (err) {
@@ -60,6 +74,9 @@ async function runAgents(req, res) {
       includeMail: includeMail !== false,
       includeCalendar: includeCalendar !== false,
       testType: testType || 'E2E',
+      productType: productType || 'Mail',
+      messageCombination: messageCombination || 'Slack → Google Chat',
+      messageAdmins: messageAdmins || undefined,
     });
     context.validate();
 

@@ -3,10 +3,11 @@ import UserMapping from './UserMapping';
 
 export default function AgentForm({ onSubmit, loading }) {
   const [form, setForm] = useState({
-    testType: 'E2E',
+    testType: 'SANITY',
     migrationType: 'FULL',
     includeMail: true,
     includeCalendar: true,
+    productType: 'Mail',
   });
   const [mappedPairs, setMappedPairs] = useState(null);
 
@@ -29,10 +30,15 @@ export default function AgentForm({ onSubmit, loading }) {
   function handleSubmit(e) {
     e.preventDefault();
     if (!mappedPairs || mappedPairs.length === 0) return;
+    const base = { ...form, productType: 'Mail' };
     if (mappedPairs.length === 1) {
-      onSubmit({ ...form, sourceEmail: mappedPairs[0].sourceEmail, destinationEmail: mappedPairs[0].destinationEmail });
+      onSubmit({
+        ...base,
+        sourceEmail: mappedPairs[0].sourceEmail,
+        destinationEmail: mappedPairs[0].destinationEmail,
+      });
     } else {
-      onSubmit({ ...form, mappedPairs });
+      onSubmit({ ...base, mappedPairs });
     }
   }
 
@@ -52,7 +58,11 @@ export default function AgentForm({ onSubmit, loading }) {
             </button>
           )}
         </div>
-        <UserMapping onMappingComplete={handleMappingComplete} agent="mail" />
+        <UserMapping onMappingComplete={handleMappingComplete} />
+        <p className="text-xs pt-2" style={{ color: '#4a65c0', borderTop: '1px solid #c5cef5' }}>
+          For <strong>Slack / Google Chat / Microsoft Teams</strong> message seeding and migration QA, use the{' '}
+          <strong>Message Agent</strong> page in the sidebar.
+        </p>
         {mappedPairs && (
           <div className="rounded-lg p-3 text-sm" style={{ backgroundColor: '#eef1fb', border: '1px solid #c5cef5', color: '#0129ac' }}>
             {mappedPairs.length} pair{mappedPairs.length > 1 ? 's' : ''} mapped.
@@ -64,11 +74,10 @@ export default function AgentForm({ onSubmit, loading }) {
 
       <div>
         <label className="block text-sm font-medium mb-2" style={{ color: '#0129ac' }}>Test Type</label>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           {[
             { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
             { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
-            { value: 'E2E', label: 'End-to-End', desc: 'Full coverage test' },
           ].map((opt) => (
             <button
               key={opt.value}
@@ -91,7 +100,6 @@ export default function AgentForm({ onSubmit, loading }) {
         <div className="mt-2 text-xs" style={{ color: '#4a65c0' }}>
           {form.testType === 'SMOKE' && 'Creates 1 plain text email. Validates inbox accessibility and message count. Fastest.'}
           {form.testType === 'SANITY' && 'Creates plain text, HTML, attachment emails + labels + drafts. Validates folders, subjects, and attachments.'}
-          {form.testType === 'E2E' && 'Full coverage: all email types, inline images, sent mail, labels, drafts, calendar events. Deepest validation.'}
         </div>
       </div>
 
@@ -142,8 +150,8 @@ export default function AgentForm({ onSubmit, loading }) {
         disabled={loading || !mappedPairs || mappedPairs.length === 0}
         className="w-full md:w-auto px-8 py-3 text-white text-sm font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         style={{ backgroundColor: '#0129ac' }}
-        onMouseEnter={e => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#011e8a'; }}
-        onMouseLeave={e => e.currentTarget.style.backgroundColor = '#0129ac'}
+        onMouseEnter={(e) => { if (!e.currentTarget.disabled) e.currentTarget.style.backgroundColor = '#011e8a'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#0129ac'; }}
       >
         {loading ? (
           <span className="flex items-center gap-2">

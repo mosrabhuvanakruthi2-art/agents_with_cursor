@@ -11,6 +11,12 @@ class MigrationContext {
     includeCalendar = true,
     testType = 'E2E',
     executionId,
+    /** 'Mail' | 'Message' — Message uses MessageTestDataAgent instead of GmailTestDataAgent */
+    productType = 'Mail',
+    /** e.g. "Slack → Google Chat" — drives which source API seeds test messages */
+    messageCombination = 'Slack → Google Chat',
+    /** Optional: Slack / Google Chat / Teams admin contacts from Message Agent UI */
+    messageAdmins = null,
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -19,6 +25,16 @@ class MigrationContext {
     this.includeCalendar = includeCalendar;
     this.testType = TEST_TYPES[testType] || TEST_TYPES.E2E;
     this.executionId = executionId || uuidv4();
+    this.productType = productType === 'Message' ? 'Message' : 'Mail';
+    this.messageCombination = String(messageCombination || 'Slack → Google Chat').trim() || 'Slack → Google Chat';
+    this.messageAdmins =
+      messageAdmins && typeof messageAdmins === 'object'
+        ? {
+            slack: messageAdmins.slack || undefined,
+            googleChat: messageAdmins.googleChat || undefined,
+            teams: messageAdmins.teams || undefined,
+          }
+        : null;
   }
 
   validate() {
@@ -43,6 +59,9 @@ class MigrationContext {
       includeCalendar: this.includeCalendar,
       testType: this.testType,
       executionId: this.executionId,
+      productType: this.productType,
+      messageCombination: this.messageCombination,
+      messageAdmins: this.messageAdmins,
     };
   }
 }

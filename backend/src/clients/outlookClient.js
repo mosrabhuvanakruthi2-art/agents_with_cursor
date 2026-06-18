@@ -990,6 +990,7 @@ async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes =
 }
 
 module.exports = {
+  getAppAccessToken,
   getMailFolders,
   getAllFoldersFlat,
   getTotalMessageCount,

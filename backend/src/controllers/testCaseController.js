@@ -7,16 +7,10 @@ const CUSTOM_CASES_FILE = path.resolve(__dirname, '../../data/custom-test-cases.
 
 function readCustomCases() {
   try {
-    if (!fs.existsSync(CUSTOM_CASES_FILE)) return { scenarios: [] };
-    const raw = JSON.parse(fs.readFileSync(CUSTOM_CASES_FILE, 'utf8'));
-    // Migrate old smoke/sanity format to flat scenarios array
-    if (raw.smoke !== undefined || raw.sanity !== undefined) {
-      const all = [...(raw.smoke || []), ...(raw.sanity || [])];
-      return { scenarios: all };
-    }
-    return { scenarios: raw.scenarios || [] };
+    if (!fs.existsSync(CUSTOM_CASES_FILE)) return { smoke: [], sanity: [] };
+    return JSON.parse(fs.readFileSync(CUSTOM_CASES_FILE, 'utf8'));
   } catch {
-    return { scenarios: [] };
+    return { smoke: [], sanity: [] };
   }
 }
 
@@ -130,7 +124,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Microsoft Teams → Slack': {
+  'Teams → Slack': {
     how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
 2. A CloudFuze migration job exports Teams data and imports it into Slack destination workspace
 3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
@@ -155,7 +149,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Microsoft Teams → Microsoft Teams': {
+  'Teams → Teams': {
     how: `1. Messages, channels, chats, threads, and attachments exist in the source Microsoft Teams workspace/tenant
 2. A CloudFuze migration job copies Teams data to the destination Teams workspace/tenant
 3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
@@ -180,7 +174,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Microsoft Teams → Google Chat': {
+  'Teams → Google Chat': {
     how: `1. Messages, channels, chats, threads, and attachments exist in Microsoft Teams source workspace
 2. A CloudFuze migration job exports Teams data and imports it into Google Chat destination
 3. The destination Google Chat is validated for correct Spaces/DM/thread mapping`,
@@ -205,7 +199,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Google Chat → Microsoft Teams': {
+  'Chat → Teams': {
     how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
 2. A CloudFuze migration job exports Google Chat data and imports it into Microsoft Teams destination
 3. The destination Teams workspace is validated for correct channel/chat/thread mapping`,
@@ -230,7 +224,7 @@ const MESSAGE_CONTEXT = {
     ],
   },
 
-  'Google Chat → Slack': {
+  'Chat → Slack': {
     how: `1. Messages, spaces, DMs, threads, and attachments exist in Google Chat source workspace
 2. A CloudFuze migration job exports Google Chat data and imports it into Slack destination workspace
 3. The destination Slack workspace is validated for correct channel/DM/thread mapping`,
@@ -252,31 +246,6 @@ const MESSAGE_CONTEXT = {
       'Wait for the migration job to complete in CloudFuze dashboard',
       'Log in to Slack destination workspace',
       'Navigate to the expected channel/DM and verify message content, threads, and file attachments',
-    ],
-  },
-
-  'Google Chat → Google Chat': {
-    how: `1. Messages, spaces, DMs, threads, and attachments exist in the source Google Chat workspace
-2. A CloudFuze migration job copies Google Chat data to the destination Google Chat workspace
-3. The destination Google Chat workspace is validated for correct Spaces/DM/thread mapping`,
-    mapping: `GOOGLE CHAT → GOOGLE CHAT MAPPING:
-- Google Chat Spaces (public) → Google Chat Spaces (public, same name)
-- Google Chat Spaces (restricted) → Google Chat Spaces (restricted, same name)
-- Direct Messages → Direct Messages in destination workspace
-- Group Conversations → Group Conversations in destination workspace
-- Threaded replies → Threaded replies preserved in destination
-- Files (from Google Drive) → Files re-attached in destination Space messages
-- Starred messages → Starred messages in destination
-- Archived Spaces → Archived Spaces in destination
-- Reactions/Emojis → Same emoji preserved
-- @mentions → @mentions re-mapped to destination workspace users
-- Space descriptions → Space description preserved`,
-    stepVerbs: [
-      'Log in to source Google Chat workspace and verify Spaces/DMs/messages exist',
-      'Trigger CloudFuze migration job for Google Chat → Google Chat',
-      'Wait for the migration job to complete in CloudFuze dashboard',
-      'Log in to destination Google Chat workspace',
-      'Navigate to the expected Space/DM and verify message content, threads, files, and reactions are present',
     ],
   },
 
@@ -333,8 +302,7 @@ Each test case object MUST have ALL of these fields:
 {
   "summary": "One-line title describing what is being validated",
   "action": "The specific migration action being tested — name both source and destination platforms explicitly",
-  "messageCount": <integer — EXTRACT the number of messages from the scenario text (e.g. "5000 messages" → 5000, "100 bold messages" → 100, "validate 2000 threads" → 2000). If the scenario does not mention a count, use 100>,
-  "testData": "MUST start with the messageCount followed by the message type, e.g. '5000 bold text messages sent at 1-minute intervals from mapped user'. Be specific about content type, format, and metadata",
+  "testData": "Concrete description of the test data — be specific about content type, format, and metadata",
   "testSteps": [
     "${ctx.stepVerbs[0]}",
     "${ctx.stepVerbs[1]}",
@@ -354,8 +322,6 @@ Each test case object MUST have ALL of these fields:
 
 RULES:
 - Every field must have a real, meaningful value — no empty strings, no null, no "N/A"
-- messageCount MUST be a positive integer extracted from the scenario — this is critical
-- testData MUST start with the messageCount number (e.g. "5000 bold text messages...")
 - testSteps must have 4–5 concrete steps specific to ${combination} migration
 - Each test case must validate a DISTINCT aspect of the scenario
 - subject must always start with "QA Custom - "
@@ -385,7 +351,7 @@ async function generateTestCases(req, res) {
     return res.status(400).json({ error: 'At least one scenario is required' });
   }
 
-  const requestedCount   = Math.min(Math.max(parseInt(count, 10) || 5, 1), 40);
+  const requestedCount   = Math.min(Math.max(parseInt(count, 10) || 5, 1), 20);
   const effectiveProduct = (productType || 'Mail').trim();
   const effectiveCombo   = (combination || 'Gmail → Outlook').trim();
   const effectiveFolder  = (folder || '').trim();
@@ -410,12 +376,12 @@ async function generateTestCases(req, res) {
           { role: 'user',   content: userPrompt },
         ],
         response_format: { type: 'json_object' },
-        max_tokens: 16000,
+        max_tokens: 6000,
         temperature: 0.5,
       },
       {
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 300000,
+        timeout: 90000,
       }
     );
 
@@ -464,93 +430,111 @@ function getCustomTestCases(req, res) {
 }
 
 function addCustomTestCase(req, res) {
-  const { testCase } = req.body || {};
+  const { testType, testCase } = req.body || {};
 
-  const summary = testCase?.summary || testCase?.subject;
-  if (!testCase || !summary) {
-    return res.status(400).json({ error: 'testCase with summary is required' });
+  if (!testType || !['smoke', 'sanity'].includes(testType)) {
+    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
+  }
+  if (!testCase || !testCase.subject) {
+    return res.status(400).json({ error: 'testCase with subject is required' });
   }
 
   const data = readCustomCases();
 
-  if (isDuplicate(data.scenarios, testCase)) {
+  if (isDuplicate(data[testType], testCase)) {
     return res.status(409).json({
       error: 'duplicate',
-      message: `"${summary}" already exists in test scenarios.`,
+      message: `"${testCase.summary || testCase.subject}" already exists in ${testType} test cases.`,
     });
   }
 
-  const nextNum = data.scenarios.length + 1;
-  const testCaseId = `Testscenario${nextNum}`;
+  const nextNum = data[testType].length + 1;
+  const idPrefix = testType === 'smoke' ? 'Testsmoke' : 'Testsanity';
+  const testCaseId = `${idPrefix}${nextNum}`;
 
   const entry = {
     id: testCaseId,
     testCaseId,
+    testType,
     addedAt: new Date().toISOString(),
-    summary,
+    summary: testCase.summary || testCase.subject,
     action: testCase.action || '',
-    messageCount: parseInt(testCase.messageCount, 10) || 0,
     testData: testCase.testData || '',
     testSteps: Array.isArray(testCase.testSteps) ? testCase.testSteps : [],
     expectedResult: testCase.expectedResult || '',
     combination: testCase.combination || '',
     productType: testCase.productType || 'Mail',
-    folder: testCase.folder || '',
-    subject: summary,
+    folder: testCase.folder || (testType === 'smoke' ? '/Smoke Cases' : '/Sanity Cases'),
+    subject: testCase.subject,
     textBody: testCase.textBody || '',
     htmlBody: testCase.htmlBody || undefined,
     labelIds: testCase.labelIds || ['INBOX'],
     hasAttachment: !!testCase.hasAttachment,
+    messageChannelId: testCase.messageChannelId || undefined,
+    messageSpaceId: testCase.messageSpaceId || undefined,
+    messageTeamId: testCase.messageTeamId || undefined,
   };
   if (!entry.htmlBody) delete entry.htmlBody;
+  ['messageChannelId', 'messageSpaceId', 'messageTeamId'].forEach((k) => {
+    if (!entry[k]) delete entry[k];
+  });
 
-  data.scenarios.push(entry);
+  data[testType].push(entry);
   writeCustomCases(data);
   res.json({ success: true, entry });
 }
 
-// Add multiple test cases at once
+// Add multiple test cases at once (used by Select All)
 function addBulkTestCases(req, res) {
-  const { testCases } = req.body || {};
+  const { testType, testCases } = req.body || {};
 
+  if (!testType || !['smoke', 'sanity'].includes(testType)) {
+    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
+  }
   if (!Array.isArray(testCases) || testCases.length === 0) {
     return res.status(400).json({ error: 'testCases array is required' });
   }
 
   const data = readCustomCases();
+  const idPrefix = testType === 'smoke' ? 'Testsmoke' : 'Testsanity';
   const added = [];
   const skipped = [];
 
   for (const testCase of testCases) {
-    const tcSummary = testCase?.summary || testCase?.subject;
-    if (!testCase || !tcSummary) continue;
-    if (isDuplicate(data.scenarios, testCase)) {
-      skipped.push(tcSummary);
+    if (!testCase || !testCase.subject) continue;
+    if (isDuplicate(data[testType], testCase)) {
+      skipped.push(testCase.summary || testCase.subject);
       continue;
     }
-    const nextNum = data.scenarios.length + 1;
-    const testCaseId = `Testscenario${nextNum}`;
+    const nextNum = data[testType].length + 1;
+    const testCaseId = `${idPrefix}${nextNum}`;
     const entry = {
       id: testCaseId,
       testCaseId,
+      testType,
       addedAt: new Date().toISOString(),
-      summary: tcSummary,
+      summary: testCase.summary || testCase.subject,
       action: testCase.action || '',
-      messageCount: parseInt(testCase.messageCount, 10) || 0,
       testData: testCase.testData || '',
       testSteps: Array.isArray(testCase.testSteps) ? testCase.testSteps : [],
       expectedResult: testCase.expectedResult || '',
       combination: testCase.combination || '',
       productType: testCase.productType || 'Mail',
-      folder: testCase.folder || '',
-      subject: tcSummary,
+      folder: testCase.folder || (testType === 'smoke' ? '/Smoke Cases' : '/Sanity Cases'),
+      subject: testCase.subject,
       textBody: testCase.textBody || '',
       htmlBody: testCase.htmlBody || undefined,
-      labelIds: testCase.labelIds || ['INBOX'],
-      hasAttachment: !!testCase.hasAttachment,
+    labelIds: testCase.labelIds || ['INBOX'],
+    hasAttachment: !!testCase.hasAttachment,
+    messageChannelId: testCase.messageChannelId || undefined,
+    messageSpaceId: testCase.messageSpaceId || undefined,
+    messageTeamId: testCase.messageTeamId || undefined,
     };
     if (!entry.htmlBody) delete entry.htmlBody;
-    data.scenarios.push(entry);
+    ['messageChannelId', 'messageSpaceId', 'messageTeamId'].forEach((k) => {
+      if (!entry[k]) delete entry[k];
+    });
+    data[testType].push(entry);
     added.push(entry);
   }
 
@@ -560,12 +544,17 @@ function addBulkTestCases(req, res) {
 
 function deleteCustomTestCase(req, res) {
   const { id } = req.params;
+  const { testType } = req.query;
+
+  if (!testType || !['smoke', 'sanity'].includes(testType)) {
+    return res.status(400).json({ error: 'testType query param must be "smoke" or "sanity"' });
+  }
 
   const data = readCustomCases();
-  const before = data.scenarios.length;
-  data.scenarios = data.scenarios.filter((tc) => tc.id !== id);
+  const before = data[testType].length;
+  data[testType] = data[testType].filter((tc) => tc.id !== id);
 
-  if (data.scenarios.length === before) {
+  if (data[testType].length === before) {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
@@ -574,34 +563,38 @@ function deleteCustomTestCase(req, res) {
 }
 
 const UPDATABLE_FIELDS = [
-  'summary', 'action', 'messageCount', 'testData', 'testSteps', 'expectedResult',
+  'summary', 'action', 'testData', 'testSteps', 'expectedResult',
   'combination', 'productType', 'folder', 'subject', 'textBody',
   'labelIds', 'hasAttachment',
+  'messageChannelId', 'messageSpaceId', 'messageTeamId',
 ];
 
 function updateCustomTestCase(req, res) {
   const { id } = req.params;
-  const { updates } = req.body || {};
+  const { testType, updates } = req.body || {};
 
+  if (!testType || !['smoke', 'sanity'].includes(testType)) {
+    return res.status(400).json({ error: 'testType must be "smoke" or "sanity"' });
+  }
   if (!updates || typeof updates !== 'object') {
     return res.status(400).json({ error: 'updates object is required' });
   }
 
   const data = readCustomCases();
-  const idx = data.scenarios.findIndex((tc) => tc.id === id);
+  const idx = data[testType].findIndex((tc) => tc.id === id);
   if (idx === -1) {
     return res.status(404).json({ error: 'Test case not found' });
   }
 
   for (const key of UPDATABLE_FIELDS) {
     if (updates[key] !== undefined) {
-      data.scenarios[idx][key] = updates[key];
+      data[testType][idx][key] = updates[key];
     }
   }
-  data.scenarios[idx].updatedAt = new Date().toISOString();
+  data[testType][idx].updatedAt = new Date().toISOString();
 
   writeCustomCases(data);
-  res.json({ success: true, entry: data.scenarios[idx] });
+  res.json({ success: true, entry: data[testType][idx] });
 }
 
 module.exports = {
