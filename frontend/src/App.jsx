@@ -7,6 +7,7 @@ import TestCases from './pages/TestCases';
 import RunAgent from './pages/RunAgent';
 import ExecutionLogs from './pages/ExecutionLogs';
 import CleanUp from './pages/CleanUp';
+import ContentCleanUp from './pages/ContentCleanUp';
 import TestRepository from './pages/TestRepository';
 import ConnectAccounts from './pages/ConnectAccounts';
 import OAuthCallback from './pages/OAuthCallback';
@@ -29,6 +30,8 @@ function App() {
         <Route path="clean" element={<CleanUp />} />
         {/* Gmail + Outlook cleanup merged into one tabbed page */}
         <Route path="clean-source" element={<Navigate to="/clean" replace />} />
+        {/* Content (Box/Drive) cleanup — brought in from dev */}
+        <Route path="clean-content" element={<ContentCleanUp />} />
         <Route path="test-repository" element={<TestRepository />} />
         {/* Test Case Generator + Agent Repo merged into one tabbed page */}
         <Route path="agent-repo" element={<Navigate to="/test-case-generator" replace />} />

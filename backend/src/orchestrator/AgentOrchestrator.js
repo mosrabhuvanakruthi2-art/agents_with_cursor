@@ -231,9 +231,13 @@ class AgentOrchestrator {
     const migrationAgent = new MigrationAgent();
     const outlookAgent = new ValidationAgent();
 
+    // Detect content migration mode: explicitly set OR no mail with calendar/contacts flags
+    const isContentMode = context.mode === 'content' || (!context.includeMail && (context.includeCalendar || context.includeContacts));
+
     try {
-      // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure)
-      if (!context.skipCleanup) {
+      // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
+      // Skipped on resume (skipCleanup) and for content migration (no test data to clean).
+      if (context.skipCleanup !== true && !isContentMode) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: 'CleanupAgent',
@@ -248,9 +252,10 @@ class AgentOrchestrator {
         }
       }
 
-      // Step 1: Generate test data (Gmail or Outlook depending on source provider)
+      // Step 1: Generate test data (Gmail or Outlook depending on source provider).
+      // Skipped on resume (skipTestData) and for content migration (data already in source cloud).
       let sourceData = null;
-      if (!context.skipTestData) {
+      if (!context.skipTestData && !isContentMode) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: dataAgent.getName(),
@@ -260,6 +265,13 @@ class AgentOrchestrator {
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
+      } else if (isContentMode) {
+        log.info('Step 1: Skipped (content migration mode — test data creation not applicable)');
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          currentAgent: migrationAgent.getName(),
+          progress: 'Content migration mode: skipping test data creation, proceeding to migration…',
+        });
       } else {
         log.info(`Step 1: Skipping ${dataAgent.getName()} (already completed)`);
       }
@@ -286,13 +298,31 @@ class AgentOrchestrator {
         throw new Error('Execution cancelled by user');
       }
 
-      // Step 3: Validate in Outlook
-      executionService.update(context.executionId, {
-        currentAgent: outlookAgent.getName(),
-        progress: `${outlookAgent.getName()}: comparing source vs destination…`,
-      });
-      log.info(`Step 3: Running ${outlookAgent.getName()}`);
-      const validationResult = await outlookAgent.run(context);
+      // Step 3: Validate — skip for content migrations (box/sharepoint/onedrive/dropbox)
+      // and for content migrations that returned a stop status.
+      const isContentProviders =
+        ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
+        ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
+      const skipValidation = migrationResult?.skipValidation || (isContentMode && isContentProviders);
+
+      let validationResult = null;
+      if (skipValidation) {
+        const reason = migrationResult?.skipValidation
+          ? `content migration stop status "${migrationResult.finalStatus}"`
+          : `content migration (${context.sourceProvider} → ${context.destinationProvider}) — email validation not applicable`;
+        log.info(`Step 3: Skipped — ${reason}`);
+        executionService.update(context.executionId, {
+          currentAgent: 'Skipped',
+          progress: `Validation skipped — ${reason}`,
+        });
+      } else {
+        executionService.update(context.executionId, {
+          currentAgent: outlookAgent.getName(),
+          progress: `${outlookAgent.getName()}: comparing source vs destination…`,
+        });
+        log.info(`Step 3: Running ${outlookAgent.getName()}`);
+        validationResult = await outlookAgent.run(context);
+      }
 
       const duration = Date.now() - startTime;
 
@@ -301,13 +331,14 @@ class AgentOrchestrator {
         status: 'COMPLETED',
         duration,
         agentResults: [
-          dataAgent.toJSON(),
+          ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          outlookAgent.toJSON(),
+          ...(skipValidation ? [] : [outlookAgent.toJSON()]),
         ],
         sourceData,
         migrationResult,
         validationSummary: validationResult,
+        contentMigrationReport: migrationResult?.contentMigrationReport || null,
       };
 
       executionService.update(context.executionId, {
@@ -349,9 +380,9 @@ class AgentOrchestrator {
         duration,
         error: err.message,
         agentResults: [
-          dataAgent.toJSON(),
+          ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          outlookAgent.toJSON(),
+          ...(isContentMode ? [] : [outlookAgent.toJSON()]),
         ],
       };
 

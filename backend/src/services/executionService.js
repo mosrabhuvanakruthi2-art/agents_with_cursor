@@ -56,7 +56,7 @@ const executionService = {
   create(context) {
     const execution = {
       executionId: context.executionId,
-      context: context.toJSON(),
+      context: typeof context.toJSON === 'function' ? context.toJSON() : { ...context },
       status: 'PENDING',
       currentAgent: null,
       result: null,

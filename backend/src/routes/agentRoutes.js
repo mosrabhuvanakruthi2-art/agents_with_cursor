@@ -28,8 +28,20 @@ router.post('/clean-destination-folders', controller.cleanDestinationFolders);
 router.post('/clean-destination-events', controller.cleanDestinationEvents);
 router.post('/create-outlook-data', controller.createOutlookData);
 router.post('/create-test-data', controller.createTestData);
+router.post('/create-box-data', controller.createBoxData);
+router.post('/create-box-automation-data', controller.createBoxAutomationData);
+router.get('/box/users', controller.getBoxUsers);
+router.post('/create-drive-data', controller.createDriveData);
+router.post('/update-drive-versions', controller.updateDriveVersions);
+router.post('/setup-drive-shared-links', controller.setupDriveSharedLinks);
 router.post('/executions/:id/cancel', controller.cancelExecution);
 router.post('/executions/:id/resume', controller.resumeExecution);
+
+// ── Content (Box/Drive) cleanup — from dev ─────────────────────────────────────
+router.get('/content-stats', controller.getContentStats);
+router.post('/clean-content', controller.cleanContent);
+router.post('/clean-content-files', controller.cleanContentFiles);
+router.post('/clean-content-folders', controller.cleanContentFolders);
 
 // ── Docs sync ─────────────────────────────────────────────────────────────────
 router.post('/docs-sync', docsSyncController.runDocsSync);

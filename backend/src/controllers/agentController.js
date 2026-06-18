@@ -23,6 +23,7 @@ async function runAgents(req, res) {
       userEmailMappings,
       sourceAdminEmail,
       destAdminEmail,
+      mode,
     } = req.body;
     const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
 
@@ -77,6 +78,7 @@ async function runAgents(req, res) {
       migrationServerUrl: req.body.migrationServerUrl || '',
       migrationServerEmail: req.body.migrationServerEmail || '',
       migrationServerPassword: req.body.migrationServerPassword || '',
+      mode: mode || 'email',
     });
     context.validate();
 
@@ -274,7 +276,7 @@ async function getSourceUsers(req, res) {
           const domains = [...new Set(allUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
           domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
         }
-      } else {
+      } else if (provider === 'google' || !provider) {
         const gmailClient = require('../clients/gmailClient');
         liveUsers = await gmailClient.listDomainUsers(adminEmail);
       }
@@ -285,6 +287,35 @@ async function getSourceUsers(req, res) {
     if (liveUsers && liveUsers.length > 0) {
       return res.json({ adminEmail, users: liveUsers, source: provider === 'microsoft' ? 'graph' : 'gmail' });
     }
+
+    // Box / SharePoint providers (from dev) — dedicated discovery.
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getSourceUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getSourceUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail.split('@')[1]?.toLowerCase();
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, source: 'box-graph-fallback' });
+      }
+    }
+
+    if (provider === 'sharepoint') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getSourceUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail.split('@')[1]?.toLowerCase();
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, source: 'sharepoint' });
+    }
+
+    // Fallback to the curated config list, then domain guidance, then empty.
     if (configUsers.length > 0) {
       logger.info(`getSourceUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
       return res.json({ adminEmail, users: configUsers, source: 'config' });
@@ -315,7 +346,7 @@ async function getDestinationUsers(req, res) {
         const gmailClient = require('../clients/gmailClient');
         logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
         liveUsers = await gmailClient.listDomainUsers(adminEmail);
-      } else {
+      } else if (provider === 'microsoft' || !provider) {
         const outlookClient = require('../clients/outlookClient');
         logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
         const allTenantUsers = await outlookClient.listUsers(adminEmail);
@@ -336,6 +367,34 @@ async function getDestinationUsers(req, res) {
       logger.info(`getDestinationUsers: ${liveUsers.length} users (live)`);
       return res.json({ adminEmail, users: liveUsers, total: liveUsers.length, source: provider === 'google' ? 'gmail' : 'graph' });
     }
+    // Box / SharePoint providers (from dev) — dedicated discovery.
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getDestinationUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, total: users.length, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getDestinationUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, total: users.length, source: 'box-graph-fallback' });
+      }
+    }
+
+    if (provider === 'sharepoint') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getDestinationUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, total: users.length, source: 'sharepoint' });
+    }
+
+    // Fallback to the curated config list, then domain guidance, then empty.
     if (configUsers.length > 0) {
       logger.info(`getDestinationUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
       return res.json({ adminEmail, users: configUsers, total: configUsers.length, source: 'config' });
@@ -941,6 +1000,441 @@ async function resumeExecution(req, res) {
   }
 }
 
+/**
+ * GET /agents/box/users?adminEmail=admin@domain.com
+ * List all active managed Box users for the given admin account.
+ */
+async function getBoxUsers(req, res) {
+  try {
+    const { adminEmail } = req.query;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
+    const boxClient = require('../clients/boxClient');
+    const users = await boxClient.getUsers(adminEmail);
+    const mapped = users.map((u) => ({ id: u.id, email: u.login, displayName: u.name }));
+    res.json({ adminEmail, users: mapped, total: mapped.length });
+  } catch (err) {
+    logger.error(`getBoxUsers error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-box-data
+ * Body: { adminEmail, targetUserId? }
+ *
+ * Runs BoxTestDataAgent — creates the full QA data set in Box cloud.
+ * adminEmail must already be connected via GET /api/auth/box/url.
+ * targetUserId (optional): Box user ID to create data as (As-User impersonation).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxData(req, res) {
+  try {
+    const { adminEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxTestDataAgent = require('../agents/box/BoxTestDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxTestDataAgent',
+      progress: 'BoxTestDataAgent: starting Box data creation…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxTestDataAgent',
+          progress: 'BoxTestDataAgent: creating folders, uploading files, building versions…',
+        });
+        const result = await agent.run({ adminEmail, boxTargetUserId: targetUserId || null, executionId });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-box-automation-data
+ * Body: { adminEmail, collaboratorEmail?, targetUserId? }
+ *
+ * Runs BoxAutomationDataAgent — creates "AUTOMATION BOX" root folder with all
+ * 17 migration QA scenarios inside it.
+ * adminEmail must already be connected via GET /api/auth/box/url
+ * (or BOX_DEVELOPER_TOKEN set in .env).
+ * collaboratorEmail (optional): email to add as collaborator in permission scenarios.
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxAutomationData(req, res) {
+  try {
+    const { adminEmail, collaboratorEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxAutomationDataAgent = require('../agents/box/BoxAutomationDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxAutomationDataAgent',
+      progress: 'BoxAutomationDataAgent: creating AUTOMATION BOX root folder…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box automation data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxAutomationDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxAutomationDataAgent',
+          progress: 'BoxAutomationDataAgent: running 17 migration QA scenarios…',
+        });
+        const result = await agent.run({
+          adminEmail,
+          collaboratorEmail: collaboratorEmail || null,
+          boxTargetUserId: targetUserId || null,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxAutomation: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxAutomationData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxAutomationData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-drive-data
+ * Body: { sourceEmail, editorEmail?, viewerEmail?, sourceFolderName? }
+ *
+ * Runs DriveTestDataAgent — creates the full QA data set in Google My Drive.
+ * sourceEmail must belong to a tenant with a service account (DWD) or have a stored OAuth token.
+ * sourceFolderName defaults to "Agent My Drive" (matches the CSV migration path /Agent My Drive).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createDriveData(req, res) {
+  try {
+    const { sourceEmail, editorEmail, viewerEmail, sourceFolderName } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    const folderName = sourceFolderName || 'Agent My Drive';
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, sourceFolderName: folderName }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Drive data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: creating folders, uploading files, building versions, setting permissions…',
+        });
+        const result = await agent.run({
+          sourceEmail,
+          editorEmail:      editorEmail || null,
+          viewerEmail:      viewerEmail || null,
+          sourceFolderName: folderName,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], driveData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createDriveData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createDriveData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function getContentStats(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.query;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    if (!provider) return res.status(400).json({ error: 'provider is required (box or sharepoint)' });
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const stats = await boxClient.getBoxContentStats(adm, email);
+      return res.json(stats);
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content stats` });
+  } catch (err) {
+    logger.error(`getContentStats error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContent(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxContent(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content cleanup` });
+  } catch (err) {
+    logger.error(`cleanContent error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFiles(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFiles(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFiles error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFolders(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFolders(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFolders error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/setup-drive-shared-links
+ * Body: {
+ *   sourceEmail,
+ *   rootFolderId,           — ID of "Agent My Drive" folder
+ *   existingSharedItems,    — [{label, id}, ...] items whose public links to remove
+ *   domain?                 — defaults to 'storefuze.com'
+ * }
+ *
+ * 1. Removes public "anyone" links from all previously shared items.
+ * 2. Creates "Agent Shared Links" folder with 5 files:
+ *    - 2 files with "anyone with the link" (viewer + editor)
+ *    - 3 files with domain-restricted link for storefuze.com (viewer + commenter + editor)
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function setupDriveSharedLinks(req, res) {
+  try {
+    const { sourceEmail, rootFolderId, existingSharedItems = [], domain = 'storefuze.com' } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!rootFolderId) return res.status(400).json({ error: 'rootFolderId is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, rootFolderId, domain }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Shared links setup started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: removing public links, creating Agent Shared Links folder…',
+        });
+        const result = await agent.setupSharedLinksFolder(sourceEmail, rootFolderId, existingSharedItems, domain);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], sharedLinksSetup: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`setupDriveSharedLinks failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`setupDriveSharedLinks error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/update-drive-versions
+ * Body: { sourceEmail, versionedFiles: [{name, id}, ...], fromVersion?, toVersion? }
+ *
+ * Appends additional versions to existing Drive files — used for delta migration testing.
+ * fromVersion defaults to 5 (initial agent creates 5). toVersion defaults to 10.
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function updateDriveVersions(req, res) {
+  try {
+    const { sourceEmail, versionedFiles, fromVersion = 5, toVersion = 10 } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!Array.isArray(versionedFiles) || versionedFiles.length === 0) {
+      return res.status(400).json({ error: 'versionedFiles array is required (e.g. [{name, id}, ...])' });
+    }
+    if (fromVersion >= toVersion) {
+      return res.status(400).json({ error: `fromVersion (${fromVersion}) must be less than toVersion (${toVersion})` });
+    }
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, fromVersion, toVersion, files: versionedFiles.map((f) => f.name) }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: `Adding versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s). Poll GET /api/agents/executions/:id for progress.`,
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: `DriveTestDataAgent: uploading versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s)…`,
+        });
+        const result = await agent.updateVersions(sourceEmail, versionedFiles, fromVersion, toVersion);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], updatedVersions: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`updateDriveVersions failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`updateDriveVersions error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -950,5 +1444,8 @@ module.exports = {
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
   createOutlookData, cancelExecution, createTestData, resumeExecution,
+  getBoxUsers, createBoxData, createBoxAutomationData,
+  createDriveData, updateDriveVersions, setupDriveSharedLinks,
+  getContentStats, cleanContent, cleanContentFiles, cleanContentFolders,
 };
 

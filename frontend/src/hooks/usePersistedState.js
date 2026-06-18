@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // State persisted to localStorage so it survives a full page refresh (not just
 // in-app navigation). A small in-memory cache avoids re-parsing on every mount.
@@ -21,7 +21,17 @@ function readInitial(key, initialValue) {
 }
 
 export default function usePersistedState(key, initialValue) {
+  // readInitial restores from the in-memory cache AND localStorage (survives full refresh).
   const [value, setValue] = useState(() => readInitial(key, initialValue));
+  const prevKeyRef = useRef(key);
+
+  // When the key changes (e.g. mode switch), reinitialise from the new key's stored value.
+  useEffect(() => {
+    if (prevKeyRef.current !== key) {
+      prevKeyRef.current = key;
+      setValue(readInitial(key, initialValue));
+    }
+  }, [key, initialValue]);
 
   useEffect(() => {
     cache.set(key, value);
