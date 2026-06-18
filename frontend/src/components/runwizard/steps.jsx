@@ -1,10 +1,15 @@
 import { useState, useEffect } from 'react';
+import { DOMAINS, PROVIDER_META, accountProviderFor } from './domains';
 
 // ── Provider config + icons ──────────────────────────────────────────────────
-const PROVIDERS = {
-  google: { key: 'google', label: 'Google Workspace', short: 'Google', Icon: GoogleIcon },
-  microsoft: { key: 'microsoft', label: 'Microsoft 365', short: 'Microsoft', Icon: MicrosoftIcon },
+// Icons per provider key; label/short/account come from PROVIDER_META (domains.js).
+const ICONS = {
+  google: GoogleIcon, microsoft: MicrosoftIcon, box: BoxIcon,
+  googledrive: GoogleIcon, onedrive: MicrosoftIcon, sharepoint: MicrosoftIcon,
 };
+function provMeta(key) {
+  return { key, ...(PROVIDER_META[key] || { label: key, short: key, account: key }), Icon: ICONS[key] || GenericCloudIcon };
+}
 
 export function Stepper({ steps, current, onJump, maxReached }) {
   return (
@@ -40,28 +45,47 @@ export function Stepper({ steps, current, onJump, maxReached }) {
 }
 
 // ── Step 1: Connect clouds ────────────────────────────────────────────────────
+// Cards shown are driven by the active domain's `connectAccounts` (mail → Google/Microsoft;
+// content → Box/Google/Microsoft). Each card connects an account TYPE (google|microsoft|box).
 export function StepConnect({ wiz }) {
   const [gEmail, setGEmail] = useState('');
-  const google = wiz.accounts.filter((a) => a.provider === 'google');
-  const microsoft = wiz.accounts.filter((a) => a.provider === 'microsoft');
+  const cfg = DOMAINS[wiz.domain] || DOMAINS.mail;
+  const accountsOf = (acct) => wiz.accounts.filter((a) => a.provider === acct);
+
+  const cardFor = (acct) => {
+    if (acct === 'google') return (
+      <ConnectCard key="google"
+        provider="google" accounts={accountsOf('google')} busy={wiz.busy}
+        hint="Domain-Wide Delegation — enter a Workspace admin email; no sign-in needed."
+        value={gEmail} onChange={setGEmail}
+        onConnect={() => wiz.connectGoogle(gEmail).then(() => setGEmail(''))}
+        onDisconnect={(e) => wiz.disconnect('google', e)}
+      />
+    );
+    if (acct === 'microsoft') return (
+      <ConnectCard key="microsoft"
+        provider="microsoft" accounts={accountsOf('microsoft')} busy={wiz.busy} popup
+        hint="Sign in as a tenant admin in the popup — consent is granted there (one-time per tenant)."
+        onConnect={() => wiz.connectMicrosoft()}
+        onDisconnect={(e) => wiz.disconnect('microsoft', e)}
+      />
+    );
+    if (acct === 'box') return (
+      <ConnectCard key="box"
+        provider="box" accounts={accountsOf('box')} busy={wiz.busy} popup
+        hint="Sign in to Box in the popup to authorize the QA app for this account."
+        onConnect={() => wiz.connectBox()}
+        onDisconnect={(e) => wiz.disconnect('box', e)}
+      />
+    );
+    return null;
+  };
 
   return (
     <div className="space-y-5">
       <p className="text-sm text-gray-500">Connect the cloud accounts you'll migrate between. You'll assign which is source and which is destination next.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ConnectCard
-          provider="google" accounts={google} busy={wiz.busy}
-          hint="Domain-Wide Delegation — enter a Workspace admin email; no sign-in needed."
-          value={gEmail} onChange={setGEmail}
-          onConnect={() => wiz.connectGoogle(gEmail).then(() => setGEmail(''))}
-          onDisconnect={(e) => wiz.disconnect('google', e)}
-        />
-        <ConnectCard
-          provider="microsoft" accounts={microsoft} busy={wiz.busy} popup
-          hint="Sign in as a tenant admin in the popup — consent is granted there (one-time per tenant)."
-          onConnect={() => wiz.connectMicrosoft()}
-          onDisconnect={(e) => wiz.disconnect('microsoft', e)}
-        />
+        {cfg.connectAccounts.map((acct) => cardFor(acct))}
       </div>
       {wiz.error && <Err msg={wiz.error} />}
     </div>
@@ -69,7 +93,7 @@ export function StepConnect({ wiz }) {
 }
 
 function ConnectCard({ provider, accounts, busy, hint, value, onChange, onConnect, onDisconnect, popup }) {
-  const p = PROVIDERS[provider];
+  const p = provMeta(provider);
   const { Icon } = p;
   return (
     <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
@@ -111,14 +135,15 @@ function ConnectCard({ provider, accounts, busy, hint, value, onChange, onConnec
 
 // ── Step 2: Select source & destination ───────────────────────────────────────
 export function StepSelect({ wiz }) {
+  const cfg = DOMAINS[wiz.domain] || DOMAINS.mail;
   return (
     <div className="space-y-5">
       <p className="text-sm text-gray-500">Pick which connected account is the source and which is the destination.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <RolePicker label="Source" accounts={wiz.accounts}
+        <RolePicker label="Source" accounts={wiz.accounts} providerKeys={cfg.sourceProviders}
           provider={wiz.srcProvider} onProvider={wiz.setSrcProvider}
           email={wiz.srcEmail} onEmail={wiz.setSrcEmail} />
-        <RolePicker label="Destination" accounts={wiz.accounts}
+        <RolePicker label="Destination" accounts={wiz.accounts} providerKeys={cfg.destProviders}
           provider={wiz.dstProvider} onProvider={wiz.setDstProvider}
           email={wiz.dstEmail} onEmail={wiz.setDstEmail} />
       </div>
@@ -126,17 +151,20 @@ export function StepSelect({ wiz }) {
   );
 }
 
-function RolePicker({ label, accounts, provider, onProvider, email, onEmail }) {
-  const list = accounts.filter((a) => a.provider === provider);
+function RolePicker({ label, accounts, providerKeys, provider, onProvider, email, onEmail }) {
+  // Accounts are connected per type (google/microsoft/box); a content provider like
+  // 'onedrive' is backed by a 'microsoft' account, so filter by the backing account type.
+  const list = accounts.filter((a) => a.provider === accountProviderFor(provider));
   return (
     <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
       <h3 className="text-sm font-semibold text-gray-900">{label} Admin</h3>
       <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
-        {Object.values(PROVIDERS).map((pv) => {
+        {providerKeys.map((key) => {
+          const pv = provMeta(key);
           const { Icon } = pv;
-          const active = provider === pv.key;
+          const active = provider === key;
           return (
-            <button key={pv.key} type="button" onClick={() => { onProvider(pv.key); onEmail(''); }}
+            <button key={key} type="button" onClick={() => { onProvider(key); onEmail(''); }}
               className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition-all ${active ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
               <Icon className="w-3.5 h-3.5" />{pv.short}
             </button>
@@ -155,7 +183,7 @@ function RolePicker({ label, accounts, provider, onProvider, email, onEmail }) {
         </div>
       ) : (
         <>
-          <p className="text-xs text-amber-600">No {PROVIDERS[provider].short} accounts connected — connect one in step 1, or type an admin email.</p>
+          <p className="text-xs text-amber-600">No {provMeta(provider).short} accounts connected — connect one in step 1, or type an admin email.</p>
           <input type="email" value={email} onChange={(e) => onEmail(e.target.value)} placeholder="admin@yourdomain.com"
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
         </>
@@ -308,8 +336,8 @@ export function StepSummary({ wiz, onRun, running }) {
     <div className="space-y-5">
       <p className="text-sm text-gray-500">Review your selections, then run the migration QA flow.</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <SummaryCard title="Source" lines={[`${PROVIDERS[wiz.srcProvider].short}`, wiz.srcEmail || '—']} />
-        <SummaryCard title="Destination" lines={[`${PROVIDERS[wiz.dstProvider].short}`, wiz.dstEmail || '—']} />
+        <SummaryCard title="Source" lines={[`${provMeta(wiz.srcProvider).short}`, wiz.srcEmail || '—']} />
+        <SummaryCard title="Destination" lines={[`${provMeta(wiz.dstProvider).short}`, wiz.dstEmail || '—']} />
         <SummaryCard title="User pairs" lines={[`${pairs.length} selected`, pairs.length === 1 ? `${pairs[0].source.email} → ${pairs[0].destination.email}` : 'bulk run']} />
         <SummaryCard title="Options" lines={[`Test: ${wiz.testType}`, `Type: ${wiz.migrationType === 'FULL' ? 'One Time' : 'Delta'}`]} />
         <SummaryCard title="Migration server" lines={[wiz.migrationServerUrl || '—', wiz.migrationServerEmail || '(.env credentials)']} />
@@ -363,6 +391,20 @@ function MicrosoftIcon({ className }) {
     <svg viewBox="0 0 23 23" className={className}>
       <rect x="1" y="1" width="10" height="10" fill="#F25022" /><rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
       <rect x="1" y="12" width="10" height="10" fill="#00A4EF" /><rect x="12" y="12" width="10" height="10" fill="#FFB900" />
+    </svg>
+  );
+}
+function BoxIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="#0061D5">
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2.4 12.6a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2zm4.8 0a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2z" />
+    </svg>
+  );
+}
+function GenericCloudIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.6}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-3.758-3.848 5.25 5.25 0 0 0-10.233 2.33A4.502 4.502 0 0 0 2.25 15Z" />
     </svg>
   );
 }

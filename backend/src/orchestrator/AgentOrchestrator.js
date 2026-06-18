@@ -22,6 +22,25 @@ function agentsFor(context) {
   return set;
 }
 
+const CONTENT_PROVIDERS = ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'];
+
+/** True when this run is a content (files/folders) migration rather than mail. */
+function isContentModeFor(context) {
+  return (
+    context.domain === 'content' ||
+    context.mode === 'content' ||
+    (!context.includeMail && (context.includeCalendar || context.includeContacts))
+  );
+}
+
+/** True when either side is a content cloud — content migrations skip email validation. */
+function isContentProvidersFor(context) {
+  return (
+    CONTENT_PROVIDERS.includes(context.sourceProvider) ||
+    CONTENT_PROVIDERS.includes(context.destinationProvider)
+  );
+}
+
 class AgentOrchestrator {
   /**
    * Phased bulk flow for multiple pairs:
@@ -42,10 +61,14 @@ class AgentOrchestrator {
         executionService.create(context);
       }
       const { TestDataAgent, ValidationAgent } = agentsFor(context);
+      const isContentMode = isContentModeFor(context);
 
       return {
         context,
-        dataAgent: new TestDataAgent(),
+        isContentMode,
+        // Content migrations seed source data via a separate flow, so a combination may
+        // register no TestDataAgent — keep it null and skip the seeding phase.
+        dataAgent: TestDataAgent ? new TestDataAgent() : null,
         migrationAgent: new MigrationAgent(),
         outlookAgent: new ValidationAgent(),
         removeExecLogger,
@@ -61,7 +84,7 @@ class AgentOrchestrator {
     log.info('Bulk Phase 0/3: cleaning previous QA test data from all pairs in parallel');
     await Promise.all(pairs.map(async (pair) => {
       const { context } = pair;
-      if (context.skipCleanup === true) return;
+      if (context.skipCleanup === true || pair.isContentMode) return;
       executionService.update(context.executionId, {
         currentAgent: 'CleanupAgent',
         progress: '[0/3] CleanupAgent: removing previous QA test data…',
@@ -78,6 +101,14 @@ class AgentOrchestrator {
     log.info('Bulk Phase 1/3: creating test data for all pairs in parallel');
     await Promise.all(pairs.map(async (pair) => {
       const { context, dataAgent } = pair;
+      // Content migrations have no test-data agent — source data already exists in the cloud.
+      if (pair.isContentMode || !dataAgent) {
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          progress: '[1/3] Skipping test-data creation (content migration)…',
+        });
+        return;
+      }
       executionService.update(context.executionId, {
         status: 'RUNNING',
         currentAgent: dataAgent.getName(),
@@ -144,21 +175,36 @@ class AgentOrchestrator {
         pair.removeExecLogger();
         return;
       }
-      executionService.update(context.executionId, {
-        currentAgent: outlookAgent.getName(),
-        progress: `[3/3] ${outlookAgent.getName()}: comparing source vs destination…`,
-      });
+      // Content migrations skip email validation — surface the migration report instead.
+      const skipValidation = pair.migrationResult?.skipValidation || (pair.isContentMode && isContentProvidersFor(context));
+      if (skipValidation) {
+        executionService.update(context.executionId, {
+          currentAgent: 'Skipped',
+          progress: '[3/3] Validation skipped (content migration)',
+        });
+      } else {
+        executionService.update(context.executionId, {
+          currentAgent: outlookAgent.getName(),
+          progress: `[3/3] ${outlookAgent.getName()}: comparing source vs destination…`,
+        });
+      }
+      const buildAgentResults = () => [
+        ...(pair.isContentMode || !pair.dataAgent ? [] : [pair.dataAgent.toJSON()]),
+        pair.migrationAgent.toJSON(),
+        ...(skipValidation ? [] : [pair.outlookAgent.toJSON()]),
+      ];
       try {
-        pair.validationResult = await outlookAgent.run(context);
+        pair.validationResult = skipValidation ? null : await outlookAgent.run(context);
         const duration = Date.now() - pair.startTime;
         const result = {
           executionId: context.executionId,
           status: 'COMPLETED',
           duration,
-          agentResults: [pair.dataAgent.toJSON(), pair.migrationAgent.toJSON(), pair.outlookAgent.toJSON()],
+          agentResults: buildAgentResults(),
           sourceData: pair.sourceData,
           migrationResult: pair.migrationResult,
           validationSummary: pair.validationResult,
+          contentMigrationReport: pair.migrationResult?.contentMigrationReport || null,
         };
         executionService.update(context.executionId, {
           status: 'COMPLETED',
@@ -179,7 +225,7 @@ class AgentOrchestrator {
             status: finalStatus,
             duration,
             error: err.message,
-            agentResults: [pair.dataAgent.toJSON(), pair.migrationAgent.toJSON(), pair.outlookAgent.toJSON()],
+            agentResults: buildAgentResults(),
           },
           error: err.message,
           progress: wasCancelled ? 'Cancelled by user' : `Phase 3 failed: ${err.message}`,
@@ -227,12 +273,13 @@ class AgentOrchestrator {
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
     const { TestDataAgent, ValidationAgent } = agentsFor(context);
-    const dataAgent = new TestDataAgent();
+    // Content combinations register no TestDataAgent (source data already exists) — keep null.
+    const dataAgent = TestDataAgent ? new TestDataAgent() : null;
     const migrationAgent = new MigrationAgent();
     const outlookAgent = new ValidationAgent();
 
-    // Detect content migration mode: explicitly set OR no mail with calendar/contacts flags
-    const isContentMode = context.mode === 'content' || (!context.includeMail && (context.includeCalendar || context.includeContacts));
+    // Detect content migration mode: domain/mode content, OR no mail with calendar/contacts flags
+    const isContentMode = isContentModeFor(context);
 
     try {
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).

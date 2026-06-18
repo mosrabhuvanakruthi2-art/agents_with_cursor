@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   getConnectedAccounts, addDwdAccount, getMicrosoftAdminConsentUrl,
   signOutGoogle, signOutMicrosoft, getSourceUsers, getDestinationUsers,
+  getBoxOAuthUrl, signOutBox,
 } from '../services/api';
 import usePersistedState from './usePersistedState';
+import { DOMAINS, accountProviderFor } from '../components/runwizard/domains';
 
 const POPUP_KEY = 'cf_oauth_result';
 
@@ -27,6 +29,9 @@ function scopesFor(migrationType) {
  */
 export default function useRunWizard() {
   const [step, setStep] = usePersistedState('rw-step', 1);
+
+  // Migration domain: 'mail' | 'content' (| 'message' future) — selected via the tab bar.
+  const [domain, setDomainRaw] = usePersistedState('rw-domain', 'mail');
 
   // Source / destination admins (assigned in step 2)
   const [srcProvider, setSrcProvider] = usePersistedState('rw-srcProvider', 'google');
@@ -117,13 +122,54 @@ export default function useRunWizard() {
     } catch (err) { setError(err.response?.data?.error || err.message); setBusy(false); }
   }
 
+  // Box OAuth — same popup → /oauth-callback → localStorage result flow as Microsoft.
+  async function connectBox() {
+    setError(null); setBusy(true);
+    try {
+      const res = await getBoxOAuthUrl('popup');
+      popupRef.current = openPopup(res.data.url);
+      localStorage.removeItem(POPUP_KEY);
+      pollRef.current = setInterval(() => {
+        const raw = localStorage.getItem(POPUP_KEY);
+        if (raw) {
+          try {
+            const result = JSON.parse(raw);
+            localStorage.removeItem(POPUP_KEY);
+            stopPolling(); popupRef.current?.close(); popupRef.current = null;
+            if (result.error) setError(result.message || result.error);
+            else loadAccounts();
+          } catch { /* ignore */ }
+          setBusy(false);
+          return;
+        }
+        if (popupRef.current?.closed) { stopPolling(); setBusy(false); }
+      }, 500);
+      setTimeout(() => { stopPolling(); setBusy(false); }, 300_000);
+    } catch (err) { setError(err.response?.data?.error || err.message); setBusy(false); }
+  }
+
   async function disconnect(provider, email) {
     try {
-      if (provider === 'google') await signOutGoogle(email); else await signOutMicrosoft(email);
+      if (provider === 'google') await signOutGoogle(email);
+      else if (provider === 'box') await signOutBox(email);
+      else await signOutMicrosoft(email);
       if (srcEmail === email) setSrcEmail('');
       if (dstEmail === email) setDstEmail('');
       await loadAccounts();
     } catch { /* ignore */ }
+  }
+
+  // Switch migration domain (tab). Resets provider/email selection + mapping to the new
+  // domain's defaults so a half-built mail run never leaks into a content run.
+  function setDomain(next) {
+    if (next === domain) return;
+    const cfg = DOMAINS[next] || DOMAINS.mail;
+    setDomainRaw(next);
+    setSrcProvider(cfg.defaultSrc);
+    setDstProvider(cfg.defaultDst);
+    setSrcEmail(''); setDstEmail('');
+    resetMapping();
+    setStep(1);
   }
 
   // ── Fetch + auto-map (step 3) ─────────────────────────────────────────────
@@ -146,16 +192,18 @@ export default function useRunWizard() {
     setBusy(true); setError(null); setFetched(false);
     setMappings([]); setUnmappedSource([]); setUnmappedDest([]);
     try {
+      // User listing is done per connected-account type (google/microsoft/box). For content
+      // the provider is a finer service (googledrive/onedrive/sharepoint) → map to its account.
       const [srcRes, destRes] = await Promise.all([
-        getSourceUsers(srcEmail, srcProvider),
-        getDestinationUsers(dstEmail, dstProvider),
+        getSourceUsers(srcEmail, accountProviderFor(srcProvider)),
+        getDestinationUsers(dstEmail, accountProviderFor(dstProvider)),
       ]);
       const src = srcRes.data.users || [];
       const dest = destRes.data.users || [];
       setSourceUsers(src); setDestUsers(dest);
       autoMap(src, dest);
       setFetched(true);
-      setFetchedKey(`${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`);
+      setFetchedKey(`${domain}|${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`);
     } catch (err) { setError(err.response?.data?.error || err.message); }
     finally { setBusy(false); }
   }
@@ -199,7 +247,7 @@ export default function useRunWizard() {
 
   // True when a source+destination are chosen but their users haven't been fetched yet
   // (or the selection changed) — drives the automatic fetch on the Map Users step.
-  const needsFetch = !!(srcEmail && dstEmail) && fetchedKey !== `${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`;
+  const needsFetch = !!(srcEmail && dstEmail) && fetchedKey !== `${domain}|${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`;
 
   // ── Payload (step 6) ──────────────────────────────────────────────────────
   const selectedPairs = mappings.filter((_, i) => selectedIndices.has(i));
@@ -219,6 +267,7 @@ export default function useRunWizard() {
       ...(migrationServerPassword ? { migrationServerPassword } : {}),
     };
     const base = {
+      domain, mode: (DOMAINS[domain] || DOMAINS.mail).mode,
       testType, migrationType, ...scope,
       sourceAdminEmail: srcEmail, destAdminEmail: dstEmail,
       userEmailMappings: allMapped.length ? allMapped : pairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail })),
@@ -239,9 +288,10 @@ export default function useRunWizard() {
 
   return {
     step, setStep,
+    domain, setDomain,
     srcProvider, setSrcProvider, srcEmail, setSrcEmail,
     dstProvider, setDstProvider, dstEmail, setDstEmail,
-    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, disconnect,
+    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, disconnect,
     fetched, needsFetch, fetchUsers, sourceUsers, destUsers, mappings, selectedIndices,
     togglePair, manualMap, removeMapping, unmappedSource, unmappedDest, resetMapping,
     migrationServerUrl, setMigrationServerUrl, migrationServerEmail, setMigrationServerEmail,

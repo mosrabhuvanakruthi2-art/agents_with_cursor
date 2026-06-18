@@ -13,10 +13,12 @@ const registry = new Map();
 const key = (domain, src, dst) => `${domain}:${src}:${dst}`;
 
 /**
- * @param {string} domain            e.g. 'mail'
- * @param {string} sourceProvider    'google' | 'microsoft'
+ * @param {string} domain            'mail' | 'content' | 'message' (future)
+ * @param {string} sourceProvider    e.g. 'google' | 'microsoft' | 'box' | 'googledrive'
  * @param {string} destinationProvider
- * @param {{ TestDataAgent: Function, ValidationAgent: Function }} handlers  agent classes
+ * @param {{ TestDataAgent?: Function, ValidationAgent: Function }} handlers  agent classes.
+ *        TestDataAgent is optional — content migrations create source data via a separate
+ *        flow and skip test-data seeding, so those combinations register without one.
  */
 function register(domain, sourceProvider, destinationProvider, handlers) {
   registry.set(key(domain, sourceProvider, destinationProvider), handlers);
@@ -31,7 +33,14 @@ function resolve(domain, sourceProvider, destinationProvider) {
 // `require('../agentRegistry')` while this module is still initializing.
 module.exports = { register, resolve };
 
-const combosDir = path.join(__dirname, 'combinations');
-for (const file of fs.readdirSync(combosDir)) {
-  if (file.endsWith('.js')) require(path.join(combosDir, file));
+// Combinations live in per-domain subfolders: combinations/<domain>/<combo>.js
+// (e.g. combinations/mail/gmailToOutlook.js, combinations/content/boxToSharepoint.js).
+// Recurse so a new domain or combination is just a NEW FILE — no edit here.
+function loadCombinations(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) loadCombinations(full);
+    else if (entry.name.endsWith('.js')) require(full);
+  }
 }
+loadCombinations(path.join(__dirname, 'combinations'));

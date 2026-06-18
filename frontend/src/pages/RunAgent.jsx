@@ -5,6 +5,7 @@ import useAgentExecution from '../hooks/useAgentExecution';
 import {
   Stepper, StepConnect, StepSelect, StepMap, StepServer, StepOptions, StepSummary,
 } from '../components/runwizard/steps';
+import { DOMAIN_LIST } from '../components/runwizard/domains';
 
 const STEPS = ['Connect', 'Source & Destination', 'Map Users', 'Migration Server', 'Options', 'Summary'];
 
@@ -45,7 +46,23 @@ export default function RunAgent() {
           className="text-xs text-gray-500 hover:text-red-500">Reset</button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col h-[calc(100vh-13rem)]">
+      {/* Domain tabs — Mail / Content (Message later). Switching resets the wizard. */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+        {DOMAIN_LIST.map((d) => (
+          <button
+            key={d.key}
+            type="button"
+            onClick={() => wiz.setDomain(d.key)}
+            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${
+              wiz.domain === d.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {d.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col h-[calc(100vh-16rem)]">
         {/* Only allow jumping back to the current or earlier steps — never skip ahead */}
         <Stepper steps={STEPS} current={wiz.step} maxReached={wiz.step} onJump={wiz.setStep} />
 

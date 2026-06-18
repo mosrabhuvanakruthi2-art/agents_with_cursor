@@ -34,6 +34,12 @@ class MigrationContext {
     migrationServerPassword = '',
     /** 'email' | 'content' — determines which agents and flows to run */
     mode = 'email',
+    /**
+     * 'mail' | 'content' | 'message' (future) — the migration domain. Drives agent
+     * resolution in the registry (domain, source, destination). When omitted it is
+     * derived from `mode` so older callers keep working.
+     */
+    domain,
     /** Source folder path / ID for content migrations (e.g. '/' for root, or a specific folder ID) */
     fromFolderId = '/',
     /** Destination folder path for content migrations (e.g. '/SANITY DATAA/Documents/BOX AUTOMATION') */
@@ -78,6 +84,11 @@ class MigrationContext {
     this.migrationServerEmail = String(migrationServerEmail || '').trim();
     this.migrationServerPassword = String(migrationServerPassword || '');
     this.mode = mode === 'content' ? 'content' : 'email';
+    // Domain drives registry resolution. Explicit value wins; otherwise derive from mode.
+    const VALID_DOMAINS = ['mail', 'content', 'message'];
+    this.domain = VALID_DOMAINS.includes(domain)
+      ? domain
+      : (this.mode === 'content' ? 'content' : 'mail');
     this.fromFolderId = String(fromFolderId || '').trim() || '/';
     this.toFolderId = String(toFolderId || '').trim() || '/';
   }
@@ -107,6 +118,8 @@ class MigrationContext {
       executionId: this.executionId,
       sourceProvider: this.sourceProvider,
       destinationProvider: this.destinationProvider,
+      domain: this.domain,
+      mode: this.mode,
       deepValidation: this.deepValidation,
       userEmailMappings: this.userEmailMappings,
       migrateOrphanedLabels: this.migrateOrphanedLabels,
