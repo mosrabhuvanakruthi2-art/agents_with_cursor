@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 const navItems = [
   { to: '/', label: 'Dashboard', icon: DashboardIcon },
   { to: '/test-case-generator', label: 'Test Cases', icon: SparklesIcon },
+  { to: '/connect', label: 'Connect Clouds', icon: ConnectIcon },
   { to: '/run', label: 'Run Agent', icon: PlayIcon },
   { to: '/logs', label: 'Reports & Logs', icon: LogsIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },

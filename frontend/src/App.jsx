@@ -9,7 +9,7 @@ import ExecutionLogs from './pages/ExecutionLogs';
 import CleanUp from './pages/CleanUp';
 import ContentCleanUp from './pages/ContentCleanUp';
 import TestRepository from './pages/TestRepository';
-import ConnectAccounts from './pages/ConnectAccounts';
+import ConnectClouds from './pages/ConnectClouds';
 import OAuthCallback from './pages/OAuthCallback';
 import CreateTestData from './pages/CreateTestData';
 
@@ -35,7 +35,7 @@ function App() {
         <Route path="test-repository" element={<TestRepository />} />
         {/* Test Case Generator + Agent Repo merged into one tabbed page */}
         <Route path="agent-repo" element={<Navigate to="/test-case-generator" replace />} />
-        <Route path="connect" element={<ConnectAccounts />} />
+        <Route path="connect" element={<ConnectClouds />} />
         <Route path="create-test-data" element={<CreateTestData />} />
       </Route>
     </Routes>

@@ -39,7 +39,17 @@ export const DOMAINS = {
     defaultSrc: 'box',
     defaultDst: 'sharepoint',
   },
-  // message: { … } — future domain; add here + backend combinations/message/*.js
+  message: {
+    key: 'message',
+    label: 'Message',
+    mode: 'message',
+    comingSoon: true, // no backend connectors yet — Run Agent shows a coming-soon panel
+    connectAccounts: [],
+    sourceProviders: [],
+    destProviders: [],
+    defaultSrc: '',
+    defaultDst: '',
+  },
 };
 
 export const DOMAIN_LIST = Object.values(DOMAINS);
