@@ -195,6 +195,13 @@ export function signOutMicrosoft(email) {
   return api.post('/auth/microsoft/signout', { email: email || null });
 }
 
+/** Admin-consent URL for the shared app in the admin email's tenant (app-only access). */
+export function getMicrosoftAdminConsentUrl(email) {
+  const params = new URLSearchParams({ source: 'popup' });
+  if (email) params.set('email', email);
+  return api.get(`/auth/microsoft/admin-consent?${params}`);
+}
+
 export function addDwdAccount(email) {
   return api.post('/auth/dwd', { email });
 }

@@ -1,14 +1,26 @@
-const GmailTestDataAgent = require('../agents/gmail/GmailTestDataAgent');
-const OutlookTestDataAgent = require('../agents/outlook/OutlookTestDataAgent');
 const MigrationAgent = require('../agents/migration/MigrationAgent');
-const OutlookValidationAgent = require('../agents/outlook/OutlookValidationAgent');
-const GmailValidationAgent = require('../agents/gmail/GmailValidationAgent');
 const CleanupAgent = require('../agents/cleanup/CleanupAgent');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
 const neutaraClient = require('../clients/neutaraClient');
+const { resolve: resolveAgents } = require('./agentRegistry');
+
+/**
+ * Resolve the test-data + validation agent classes for a context's combination.
+ * Throws if the (domain, source, destination) combination is not registered.
+ */
+function agentsFor(context) {
+  const domain = context.domain || 'mail';
+  const src = context.sourceProvider || 'google';
+  const dst = context.destinationProvider || 'microsoft';
+  const set = resolveAgents(domain, src, dst);
+  if (!set) {
+    throw new Error(`No agents registered for ${domain}: ${src} → ${dst}`);
+  }
+  return set;
+}
 
 class AgentOrchestrator {
   /**
@@ -22,7 +34,6 @@ class AgentOrchestrator {
     log.info(`Bulk flow started for ${pairsData.length} pair(s) — phased: create → migrate → validate`);
 
     // Build a state object per pair so phases can share context without re-constructing
-    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
     const pairs = pairsData.map((pairData) => {
       const context = pairData instanceof MigrationContext ? pairData : new MigrationContext(pairData);
       context.validate();
@@ -30,24 +41,13 @@ class AgentOrchestrator {
       if (!executionService.get(context.executionId)) {
         executionService.create(context);
       }
-      const isOutlookSource = context.sourceProvider === 'microsoft';
-      const isGmailDest     = context.destinationProvider === 'google';
-      const isGmailSource   = context.sourceProvider === 'google';
-
-      let outlookAgent;
-      if (isGmailDest && isGmailSource) {
-        outlookAgent = new GmailToGmailValidationAgent();
-      } else if (isGmailDest) {
-        outlookAgent = new GmailValidationAgent();
-      } else {
-        outlookAgent = new OutlookValidationAgent();
-      }
+      const { TestDataAgent, ValidationAgent } = agentsFor(context);
 
       return {
         context,
-        dataAgent: isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent(),
+        dataAgent: new TestDataAgent(),
         migrationAgent: new MigrationAgent(),
-        outlookAgent,
+        outlookAgent: new ValidationAgent(),
         removeExecLogger,
         startTime: Date.now(),
         sourceData: null,
@@ -226,19 +226,10 @@ class AgentOrchestrator {
     log.info('Starting full migration QA flow');
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
-    const isGmailDest     = context.destinationProvider === 'google';
-    const isGmailSource   = context.sourceProvider === 'google';
-    const dataAgent = isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent();
+    const { TestDataAgent, ValidationAgent } = agentsFor(context);
+    const dataAgent = new TestDataAgent();
     const migrationAgent = new MigrationAgent();
-    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
-    let outlookAgent;
-    if (isGmailDest && isGmailSource) {
-      outlookAgent = new GmailToGmailValidationAgent();
-    } else if (isGmailDest) {
-      outlookAgent = new GmailValidationAgent();
-    } else {
-      outlookAgent = new OutlookValidationAgent();
-    }
+    const outlookAgent = new ValidationAgent();
 
     try {
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure)

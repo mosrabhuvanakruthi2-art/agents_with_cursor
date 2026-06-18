@@ -234,6 +234,17 @@ function loadUsersConfig() {
   }
 }
 
+/** Map curated config users to the API shape used by the user-mapping UI. */
+function mapConfigUsers(admin) {
+  return (admin?.users || []).map((u) => ({
+    id: u.email,
+    email: u.email,
+    displayName: `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+    firstName: u.firstName || '',
+    lastName: u.lastName || '',
+  }));
+}
+
 async function getSourceUsers(req, res) {
   try {
     const { adminEmail, provider } = req.query;
@@ -243,34 +254,43 @@ async function getSourceUsers(req, res) {
     const admin = config.source?.admins?.find(
       (a) => a.email.toLowerCase() === adminEmail.toLowerCase()
     );
+    const configUsers = mapConfigUsers(admin);
 
-    if (admin && admin.users?.length > 0) {
-      const users = admin.users.map((u) => ({
-        id: u.email,
-        email: u.email,
-        displayName: `${u.firstName} ${u.lastName}`.trim(),
-        firstName: u.firstName,
-        lastName: u.lastName || '',
-      }));
-      return res.json({ adminEmail, users, source: 'config' });
+    // Live first (authoritative); the curated config list in data/users.json is a fallback
+    // only. This keeps the list current — a stale config entry no longer silently caps it.
+    let liveUsers = null;
+    let domainHint = null;
+    try {
+      if (provider === 'microsoft') {
+        const outlookClient = require('../clients/outlookClient');
+        logger.info(`getSourceUsers: fetching Microsoft tenant users (admin: ${adminEmail})`);
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail.split('@')[1]?.toLowerCase();
+        liveUsers = domain
+          ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+          : allUsers;
+        // Admin UPN domain ≠ mailbox SMTP domain: guide to a domain that exists.
+        if (domain && liveUsers.length === 0 && allUsers.length > 0) {
+          const domains = [...new Set(allUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
+          domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
+        }
+      } else {
+        const gmailClient = require('../clients/gmailClient');
+        liveUsers = await gmailClient.listDomainUsers(adminEmail);
+      }
+    } catch (liveErr) {
+      logger.warn(`getSourceUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
     }
 
-    // Route by provider
-    if (provider === 'microsoft') {
-      const outlookClient = require('../clients/outlookClient');
-      logger.info(`getSourceUsers: fetching Microsoft tenant users (admin: ${adminEmail})`);
-      const allUsers = await outlookClient.listUsers(adminEmail);
-      const domain = adminEmail.split('@')[1]?.toLowerCase();
-      const users = domain
-        ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
-        : allUsers;
-      return res.json({ adminEmail, users, source: 'graph' });
+    if (liveUsers && liveUsers.length > 0) {
+      return res.json({ adminEmail, users: liveUsers, source: provider === 'microsoft' ? 'graph' : 'gmail' });
     }
-
-    // Default: Google Workspace
-    const gmailClient = require('../clients/gmailClient');
-    const users = await gmailClient.listDomainUsers(adminEmail);
-    res.json({ adminEmail, users, source: 'gmail' });
+    if (configUsers.length > 0) {
+      logger.info(`getSourceUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
+      return res.json({ adminEmail, users: configUsers, source: 'config' });
+    }
+    if (domainHint) return res.status(400).json({ error: domainHint });
+    return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -285,38 +305,46 @@ async function getDestinationUsers(req, res) {
     const admin = config.destination?.admins?.find(
       (a) => a.email.toLowerCase() === (adminEmail || '').toLowerCase()
     );
+    const configUsers = mapConfigUsers(admin);
 
-    if (admin && admin.users?.length > 0) {
-      const users = admin.users.map((u) => ({
-        id: u.email,
-        email: u.email,
-        displayName: `${u.firstName} ${u.lastName}`.trim(),
-        firstName: u.firstName || '',
-        lastName: u.lastName || '',
-      }));
-      logger.info(`getDestinationUsers: using config list (${users.length} users) for admin ${adminEmail}`);
-      return res.json({ adminEmail, users, total: users.length });
+    // Live first (authoritative); curated config list is a fallback only.
+    let liveUsers = null;
+    let domainHint = null;
+    try {
+      if (provider === 'google') {
+        const gmailClient = require('../clients/gmailClient');
+        logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
+        liveUsers = await gmailClient.listDomainUsers(adminEmail);
+      } else {
+        const outlookClient = require('../clients/outlookClient');
+        logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
+        const allTenantUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+        liveUsers = domain
+          ? allTenantUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+          : allTenantUsers;
+        if (domain && liveUsers.length === 0 && allTenantUsers.length > 0) {
+          const domains = [...new Set(allTenantUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
+          domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
+        }
+      }
+    } catch (liveErr) {
+      logger.warn(`getDestinationUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
     }
 
-    // Route by provider
-    if (provider === 'google') {
-      const gmailClient = require('../clients/gmailClient');
-      logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
-      const users = await gmailClient.listDomainUsers(adminEmail);
-      return res.json({ adminEmail, users, total: users.length, source: 'gmail' });
+    if (liveUsers && liveUsers.length > 0) {
+      logger.info(`getDestinationUsers: ${liveUsers.length} users (live)`);
+      return res.json({ adminEmail, users: liveUsers, total: liveUsers.length, source: provider === 'google' ? 'gmail' : 'graph' });
     }
-
-    // Default: Microsoft 365 via Graph API
-    const outlookClient = require('../clients/outlookClient');
-    logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
-    const allTenantUsers = await outlookClient.listUsers(adminEmail);
-    const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
-    const users = domain
-      ? allTenantUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
-      : allTenantUsers;
-    logger.info(`getDestinationUsers: ${users.length} users found${domain ? ` (@${domain})` : ''}`);
-
-    res.json({ adminEmail, users, total: users.length, source: 'graph' });
+    if (configUsers.length > 0) {
+      logger.info(`getDestinationUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
+      return res.json({ adminEmail, users: configUsers, total: configUsers.length, source: 'config' });
+    }
+    if (domainHint) {
+      logger.warn(`getDestinationUsers: ${domainHint}`);
+      return res.status(400).json({ error: domainHint });
+    }
+    return res.json({ adminEmail, users: [], total: 0, source: provider === 'google' ? 'gmail' : 'graph' });
   } catch (err) {
     logger.error(`getDestinationUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });

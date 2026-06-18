@@ -119,16 +119,20 @@ class MigrationAgent extends BaseAgent {
 
     if (useDevemail) {
       // devemail Step 1: resolve cloud IDs
-      // Priority 1 — use devemail-specific env vars (set once, no API call needed)
-      // GET /users/{userId}/get/all/cloud requires App JWT (🔵) but we only have
-      // Mail JWT (🟣) from /mail/login — that endpoint returns 401 for App-scoped calls.
-      if (env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID && env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID) {
+      // Priority 1 — use env-configured cloud IDs (set once, no API call needed).
+      // Prefer the devemail-specific vars; fall back to the generic OUTLOOK/GMAIL
+      // cloud IDs (these point at the same devemail server when MIGRATION_API_URL is
+      // the devemail host). GET /users/{userId}/get/all/cloud requires App JWT (🔵)
+      // but we only have Mail JWT (🟣) from /mail/login, so the live lookup often 401s.
+      const devOutlookCloudId = env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID || env.CLOUDFUZE_OUTLOOK_CLOUD_ID;
+      const devGmailCloudId   = env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID   || env.CLOUDFUZE_GMAIL_CLOUD_ID;
+      if (devOutlookCloudId && devGmailCloudId) {
         sourceCloud = isOutlookSrc
-          ? { id: env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID, cloudName: 'OUTLOOK' }
-          : { id: env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID,   cloudName: 'GMAIL'   };
+          ? { id: devOutlookCloudId, cloudName: 'OUTLOOK' }
+          : { id: devGmailCloudId,   cloudName: 'GMAIL'   };
         destCloud = isGmailDst
-          ? { id: env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID,   cloudName: 'GMAIL'   }
-          : { id: env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID, cloudName: 'OUTLOOK' };
+          ? { id: devGmailCloudId,   cloudName: 'GMAIL'   }
+          : { id: devOutlookCloudId, cloudName: 'OUTLOOK' };
         log.info(`CloudFuze devemail: cloud IDs from env — source: ${sourceCloud.id} (${sourceCloud.cloudName}), dest: ${destCloud.id} (${destCloud.cloudName})`);
         bump('MigrationAgent: cloud IDs loaded from devemail env vars...');
       } else {

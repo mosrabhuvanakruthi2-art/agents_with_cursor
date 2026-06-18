@@ -2,38 +2,35 @@ import { NavLink } from 'react-router-dom';
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: DashboardIcon },
-  { to: '/test-case-generator', label: 'Test Case Generator', icon: SparklesIcon },
-  { to: '/agent-repo', label: 'Agent Repo', icon: AgentRepoIcon },
+  { to: '/test-case-generator', label: 'Test Cases', icon: SparklesIcon },
   { to: '/run', label: 'Run Agent', icon: PlayIcon },
-  { to: '/logs', label: 'Execution Logs', icon: LogsIcon },
-  { to: '/validation', label: 'Validation Results', icon: CheckIcon },
+  { to: '/logs', label: 'Reports & Logs', icon: LogsIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
-  { to: '/clean', label: 'Outlook Clean Up', icon: TrashIcon },
-  { to: '/clean-source', label: 'Gmail Clean Up', icon: TrashIcon },
+  { to: '/clean', label: 'Clean Up', icon: TrashIcon },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
   return (
     <aside
-      className={`relative flex-shrink-0 bg-gray-900 text-white flex flex-col transition-all duration-200 ${
+      className={`relative flex-shrink-0 bg-slate-700 text-white flex flex-col transition-all duration-200 ${
         collapsed ? 'w-14' : 'w-64'
       }`}
     >
-      {/* Header */}
-      <div className={`border-b border-gray-700 flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'px-6 py-5'}`}>
+      {/* Header — brand + collapse toggle (no hamburger, no edge arrow) */}
+      <div className={`border-b border-slate-600 flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'justify-between pl-5 pr-3 py-4'}`}>
         {!collapsed && (
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold tracking-tight truncate">Migration QA</h1>
-            <p className="text-xs text-gray-400 mt-0.5">Agent System</p>
+            <p className="text-xs text-slate-300 mt-0.5">Agent System</p>
           </div>
         )}
-        {collapsed && (
-          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
-            </svg>
-          </div>
-        )}
+        <button
+          onClick={onToggle}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-300 hover:bg-slate-600 hover:text-white transition-colors flex-shrink-0"
+        >
+          <PanelIcon className="w-5 h-5" />
+        </button>
       </div>
 
       {/* Nav items */}
@@ -52,7 +49,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                 } ${
                   isActive
                     ? 'bg-indigo-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                    : 'text-slate-200 hover:bg-slate-600 hover:text-white'
                 }`
               }
             >
@@ -65,28 +62,20 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       {/* Footer */}
       {!collapsed && (
-        <div className="px-6 py-4 border-t border-gray-700 text-xs text-gray-500">
+        <div className="px-6 py-4 border-t border-slate-600 text-xs text-slate-400">
           v1.0.0
         </div>
       )}
-
-      {/* Toggle button — sits on the right edge of the sidebar */}
-      <button
-        onClick={onToggle}
-        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="absolute -right-3 top-[72px] z-10 w-6 h-6 rounded-full bg-indigo-600 hover:bg-indigo-500 border-2 border-gray-900 flex items-center justify-center transition-colors shadow-md"
-      >
-        <svg
-          className={`w-3 h-3 text-white transition-transform duration-200 ${collapsed ? 'rotate-0' : 'rotate-180'}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={3}
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-        </svg>
-      </button>
     </aside>
+  );
+}
+
+function PanelIcon(props) {
+  return (
+    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 4.5v15" />
+    </svg>
   );
 }
 
@@ -114,13 +103,6 @@ function LogsIcon(props) {
   );
 }
 
-function CheckIcon(props) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-    </svg>
-  );
-}
 
 function TrashIcon(props) {
   return (

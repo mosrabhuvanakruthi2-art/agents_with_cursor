@@ -177,6 +177,78 @@ router.delete('/dwd/:email', (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Microsoft admin consent (app-only) ────────────────────────────────────────
+
+const MS_ADMIN_CONSENT_REDIRECT = `${BACKEND_BASE}/api/auth/microsoft/admin-consent/callback`;
+// Sign-in + admin-consent in one popup. `.default` against the `organizations`
+// authority makes the signing-in admin consent to ALL the app's configured
+// permissions (incl. application permissions) tenant-wide, while the code flow
+// lets us read who signed in (email) and their tenant id from the returned token.
+const MS_CONNECT_SCOPE = 'openid profile email offline_access https://graph.microsoft.com/.default';
+
+function decodeJwt(token) {
+  try {
+    const p = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(Buffer.from(p, 'base64').toString('utf8'));
+  } catch { return {}; }
+}
+
+router.get('/microsoft/admin-consent', (req, res) => {
+  if (!env.GRAPH_CLIENT_ID) {
+    return res.status(400).json({ error: 'GRAPH_CLIENT_ID not configured' });
+  }
+  const isPopup = req.query.source === 'popup';
+  const params = new URLSearchParams({
+    client_id: env.GRAPH_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: MS_ADMIN_CONSENT_REDIRECT,
+    response_mode: 'query',
+    scope: MS_CONNECT_SCOPE,
+    prompt: 'select_account',
+    state: isPopup ? 'popup' : 'default',
+  });
+  res.json({ url: `https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?${params}` });
+});
+
+router.get('/microsoft/admin-consent/callback', async (req, res) => {
+  const { code, error, error_description, state } = req.query;
+  const isPopup = String(state || '').startsWith('popup');
+  const base = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+
+  if (error) {
+    logger.warn(`[auth] Microsoft connect error: ${error} — ${error_description}`);
+    return res.redirect(`${base}?error=microsoft&message=${encodeURIComponent(error_description || error)}`);
+  }
+  if (!code) return res.redirect(`${base}?error=microsoft&message=${encodeURIComponent('No authorization code returned')}`);
+
+  try {
+    const tokenRes = await axios.post(
+      'https://login.microsoftonline.com/organizations/oauth2/v2.0/token',
+      new URLSearchParams({
+        client_id: env.GRAPH_CLIENT_ID,
+        client_secret: env.GRAPH_CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: MS_ADMIN_CONSENT_REDIRECT,
+        scope: MS_CONNECT_SCOPE,
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    const claims = decodeJwt(tokenRes.data.id_token || '');
+    const email = String(claims.preferred_username || claims.email || claims.upn || '').toLowerCase();
+    const tenant = claims.tid || null;
+    if (!email) {
+      return res.redirect(`${base}?error=microsoft&message=${encodeURIComponent('Signed in but could not read the admin email')}`);
+    }
+    tokenStore.setMicrosoftConsent(email, tenant);
+    logger.info(`[auth] Microsoft connected: ${email}${tenant ? ` (tenant ${tenant})` : ''}`);
+    return res.redirect(`${base}?connected=microsoft&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    logger.error(`[auth] Microsoft connect callback error: ${err.response?.data?.error_description || err.message}`);
+    return res.redirect(`${base}?error=microsoft&message=${encodeURIComponent(err.response?.data?.error_description || err.message)}`);
+  }
+});
+
 // ─── Microsoft OAuth ──────────────────────────────────────────────────────────
 
 router.get('/microsoft/url', (req, res) => {

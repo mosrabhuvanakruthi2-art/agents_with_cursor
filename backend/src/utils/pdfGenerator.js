@@ -259,11 +259,17 @@ function drawPageHeader(doc, execution, validation, context, result) {
     `Migration: ${context?.migrationType === 'DELTA' ? 'DELTA' : 'FULL'}`,
     `Duration: ${result?.duration != null ? formatDurationMs(result.duration) : 'N/A'}`,
   ];
-  const metaColW = CONTENT_W / metaItems.length;
+  // Reserve the right side of the meta band for the Initiated date (when the
+  // migration run was started), separate from the "Generated" download date above.
+  const initiated = execution?.createdAt ? formatTimestamp(execution.createdAt) : 'N/A';
+  const initW   = 185;
+  const leftW   = CONTENT_W - initW;
+  const metaColW = leftW / metaItems.length;
   doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt);
   metaItems.forEach((item, i) => {
     doc.text(item, MARGIN + i * metaColW, 100, { width: metaColW - 6, lineBreak: false });
   });
+  doc.text(`Initiated: ${initiated}`, MARGIN + leftW, 100, { width: initW, align: 'right', lineBreak: false });
 
   doc.y = 140;
 }

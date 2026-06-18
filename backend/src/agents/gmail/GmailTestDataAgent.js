@@ -466,7 +466,9 @@ class GmailTestDataAgent extends BaseAgent {
     const sourceDomain = (sourceEmail || '').split('@')[1]?.toLowerCase() || '';
     const isTenant2 = Array.isArray(env.GOOGLE_TENANT_2_DOMAINS) && env.GOOGLE_TENANT_2_DOMAINS.includes(sourceDomain);
     const isTenant3 = Array.isArray(env.GOOGLE_TENANT_3_DOMAINS) && env.GOOGLE_TENANT_3_DOMAINS.includes(sourceDomain);
-    const isDWDTenant = (isTenant2 && gmailClient.hasServiceAccount('2')) || isTenant3;
+    // The single service account serves every Google domain via DWD, so any source
+    // can list its domain users dynamically (Admin SDK) — no per-domain .env config needed.
+    const isDWDTenant = !!env.GOOGLE_SERVICE_ACCOUNT_KEY || (isTenant2 && gmailClient.hasServiceAccount('2')) || isTenant3;
 
     let correspondentEmail, ccEmail, bccEmail, effectiveInboundSenders;
 

@@ -24,13 +24,13 @@ const COLLECTION = 'connected_accounts';
 
 function read() {
   try {
-    if (!fs.existsSync(TOKEN_FILE)) return {};
+    if (!fs.existsSync(TOKEN_FILE)) return migrateIfNeeded({});
     const raw = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
-    if (!raw) return {};
+    if (!raw) return migrateIfNeeded({});
     const data = JSON.parse(raw);
     return migrateIfNeeded(data);
   } catch {
-    return {};
+    return migrateIfNeeded({});
   }
 }
 
@@ -104,10 +104,11 @@ async function loadFromMongo() {
         }
         loaded++;
       } else if (provider === 'microsoft') {
-        data.microsoft.accounts[email.toLowerCase()] = {
-          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
-          expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
-        };
+        // Preserve ALL stored fields — notably `tenantId` and `consented`, which the
+        // tenant resolver (getMicrosoftTenantMap) needs to route a mailbox to the right
+        // Azure tenant. Dropping tenantId here makes cross-tenant accounts resolve to the
+        // default tenant after every restart.
+        data.microsoft.accounts[email.toLowerCase()] = { ...rest };
         loaded++;
       }
     }
@@ -194,6 +195,41 @@ function setMicrosoftToken(tokenData) {
   syncToMongo('microsoft', key, { email: key, ...entry });
 }
 
+/**
+ * Register a Microsoft account that was granted via tenant ADMIN CONSENT (app-only).
+ * No user token is stored — operations use app-only tokens; this just records the
+ * connected admin/tenant for the UI account list.
+ */
+function setMicrosoftConsent(email, tenantId) {
+  const data = read();
+  const key = email.toLowerCase();
+  const existing = data.microsoft.accounts[key];
+  const entry = {
+    consented: true,
+    tenantId: tenantId || existing?.tenantId,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
+  data.microsoft.accounts[key] = entry;
+  write(data);
+  syncToMongo('microsoft', key, { email: key, ...entry });
+}
+
+/**
+ * Map of email-domain → tenant id, built from consented Microsoft accounts that
+ * recorded their tenant. Lets the app resolve which Azure tenant a mailbox lives in
+ * for any customer added via admin consent — no static .env mapping needed.
+ */
+function getMicrosoftTenantMap() {
+  const data = read();
+  const map = {};
+  for (const [email, entry] of Object.entries(data.microsoft.accounts)) {
+    if (!entry.tenantId) continue;
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (domain) map[domain] = entry.tenantId;
+  }
+  return map;
+}
+
 function removeMicrosoftToken(email) {
   const data = read();
   if (email) {
@@ -248,6 +284,8 @@ module.exports = {
   // Microsoft
   getMicrosoftToken,
   setMicrosoftToken,
+  setMicrosoftConsent,
+  getMicrosoftTenantMap,
   removeMicrosoftToken,
   getMicrosoftStatus,
   // Combined

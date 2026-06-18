@@ -14,26 +14,40 @@ function graphUserPath(userId) {
   return encodeURIComponent(String(userId == null ? '' : userId).trim());
 }
 
-/** Return '2' if the email's domain belongs to the second tenant, else '1'. */
+/** Return '2' if the email's domain belongs to the second M365 tenant, else '1'. */
+/**
+ * Resolve the Azure AD tenant id (directory) for an email's domain.
+ * Priority:
+ *   1. Dynamically consented customer tenants (from the token store) — any customer
+ *      added via admin-consent in their OWN tenant, no .env change needed.
+ *   2. Configured second tenant (GRAPH_TENANT_2_DOMAINS → GRAPH_TENANT_ID_2).
+ *   3. Default tenant (GRAPH_TENANT_ID).
+ * Returns a tenant id (GUID).
+ */
 function getMsTenant(email) {
   const domain = (email || '').split('@')[1]?.toLowerCase() || '';
-  if (domain && env.GRAPH_CLIENT_ID_2 && env.GRAPH_TENANT_2_DOMAINS?.includes(domain)) return '2';
-  return '1';
+  if (domain) {
+    const dynamic = tokenStore.getMicrosoftTenantMap ? tokenStore.getMicrosoftTenantMap() : {};
+    if (dynamic[domain]) return dynamic[domain];
+    if (env.GRAPH_TENANT_2_DOMAINS?.includes(domain)) return env.GRAPH_TENANT_ID_2;
+  }
+  return env.GRAPH_TENANT_ID;
 }
 
-/** Return the right Azure AD app credentials for a given tenant key ('1' or '2'). */
+/**
+ * Return the shared multi-tenant Azure AD app credentials for a tenant.
+ * `tenant` may be a tenant id (GUID), a legacy key ('1'/'2'), or undefined.
+ * clientId + clientSecret are always the one shared app; only the tenantId differs.
+ */
 function getMsCredentials(tenant) {
-  if (tenant === '2') {
-    return {
-      clientId: env.GRAPH_CLIENT_ID_2,
-      clientSecret: env.GRAPH_CLIENT_SECRET_2,
-      tenantId: env.GRAPH_TENANT_ID_2,
-    };
-  }
+  let tenantId;
+  if (!tenant || tenant === '1') tenantId = env.GRAPH_TENANT_ID;
+  else if (tenant === '2') tenantId = env.GRAPH_TENANT_ID_2;
+  else tenantId = tenant; // already a tenant id (GUID)
   return {
     clientId: env.GRAPH_CLIENT_ID,
     clientSecret: env.GRAPH_CLIENT_SECRET,
-    tenantId: env.GRAPH_TENANT_ID,
+    tenantId,
   };
 }
 
@@ -584,22 +598,36 @@ async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchor
  */
 async function _fetchAllUsers(token) {
   const users = [];
-  let url = `${GRAPH_BASE}/users?$top=999&$select=id,displayName,mail,givenName,surname,userPrincipalName`;
+  let url = `${GRAPH_BASE}/users?$top=999&$select=id,displayName,mail,givenName,surname,userPrincipalName,userType,assignedLicenses`;
   while (url) {
     const res = await retryWithBackoff(
       () => axios.get(url, { headers: { Authorization: `Bearer ${token}` } }),
       { label: 'Graph listUsers' }
     );
     for (const u of res.data.value || []) {
-      if (u.mail) {
-        users.push({
-          id: u.id,
-          email: u.mail,
-          displayName: u.displayName || '',
-          firstName: u.givenName || u.displayName?.split(' ')[0] || '',
-          lastName: u.surname || '',
-        });
-      }
+      // Skip B2B guest accounts — their `mail` is an external address (gmail.com, etc.),
+      // they are not real mailboxes in this tenant.
+      if (u.userType === 'Guest') continue;
+
+      // Resolve the mailbox address. The Entra `mail` attribute can be blank for a
+      // licensed mailbox (e.g. recently provisioned, or never stamped), so fall back
+      // to userPrincipalName. Skip external/#EXT# UPNs — those are guests, not mailboxes.
+      const upn = u.userPrincipalName || '';
+      const email = u.mail || (upn.includes('#EXT#') ? '' : upn);
+      if (!email) continue;
+
+      // When falling back to UPN (no `mail`), only keep licensed users — an unlicensed
+      // account with no `mail` attribute almost never has a real mailbox to migrate.
+      const isLicensed = (u.assignedLicenses || []).length > 0;
+      if (!u.mail && !isLicensed) continue;
+
+      users.push({
+        id: u.id,
+        email,
+        displayName: u.displayName || '',
+        firstName: u.givenName || u.displayName?.split(' ')[0] || '',
+        lastName: u.surname || '',
+      });
     }
     url = res.data['@odata.nextLink'] || null;
   }

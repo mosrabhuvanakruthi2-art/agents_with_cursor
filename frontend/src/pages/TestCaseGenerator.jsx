@@ -435,13 +435,7 @@ export default function TestCaseGenerator() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Test Case Generator</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Select the product type and migration combination, then describe your scenarios to generate accurate test cases.
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">Select the product type and migration combination, then describe your scenarios to generate accurate test cases. Saved cases land in the <span className="font-medium text-gray-700">Agent Repo</span> tab.</p>
 
       {/* Input card */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">

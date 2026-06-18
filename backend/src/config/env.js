@@ -49,7 +49,6 @@ function parseGoogleAccounts() {
     }
   }
 
-  console.log(`[env] Loaded ${accounts.size} Google account(s): ${Array.from(accounts.keys()).join(', ')}`);
   return accounts;
 }
 
@@ -150,7 +149,6 @@ function parseOutlookAccounts() {
   const raw = process.env.OUTLOOK_ACCOUNTS || '';
   if (!raw) return [];
   const emails = raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
-  console.log(`[env] Loaded ${emails.length} Outlook account(s): ${emails.join(', ')}`);
   return emails;
 }
 
@@ -170,9 +168,6 @@ function parseUserEmailMappings() {
       destinationEmail: pair.substring(colonIdx + 1).trim().toLowerCase(),
     };
   }).filter((p) => p && p.sourceEmail && p.destinationEmail);
-  if (pairs.length > 0) {
-    console.log(`[env] Loaded ${pairs.length} USER_EMAIL_MAPPINGS pair(s)`);
-  }
   return pairs;
 }
 
@@ -232,6 +227,18 @@ module.exports = {
   /** Absolute or relative-to-cwd path to the service account JSON key for tenant 3 (migrationn.com DWD). */
   GOOGLE_SERVICE_ACCOUNT_KEY_3: (() => {
     const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_3 || '').trim();
+    if (!raw) return '';
+    if (path.isAbsolute(raw)) return raw;
+    return path.resolve(__dirname, '../../', raw);
+  })(),
+  /**
+   * Single shared service account key (Domain-Wide Delegation) used for ALL Google
+   * domains that don't have a tenant-specific key above. Authorize this one service
+   * account's client ID + scopes in each Workspace domain's Admin Console, then set
+   * this path and you can drop GOOGLE_SERVICE_ACCOUNT_KEY_2/_3 and the OAuth client IDs.
+   */
+  GOOGLE_SERVICE_ACCOUNT_KEY: (() => {
+    const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '').trim();
     if (!raw) return '';
     if (path.isAbsolute(raw)) return raw;
     return path.resolve(__dirname, '../../', raw);

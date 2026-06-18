@@ -32,11 +32,24 @@ const SERVICE_ACCOUNT_SCOPES_WRITE = [
   ...SERVICE_ACCOUNT_SCOPES,
 ];
 
+/**
+ * Resolve the service-account key path for an email's domain.
+ * Priority: tenant-specific key (legacy, if set) → single shared key (GOOGLE_SERVICE_ACCOUNT_KEY).
+ * Returns null when no DWD key is configured (caller falls back to OAuth).
+ */
+function serviceAccountKeyPathFor(email) {
+  const tenant = getGoogleTenant(email);
+  if (tenant === '3' && env.GOOGLE_SERVICE_ACCOUNT_KEY_3) return env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
+  if (tenant === '2' && env.GOOGLE_SERVICE_ACCOUNT_KEY_2) return env.GOOGLE_SERVICE_ACCOUNT_KEY_2;
+  return env.GOOGLE_SERVICE_ACCOUNT_KEY || null;
+}
+
 /** Returns true when the tenant for this email has a service account key configured (DWD). */
 function hasServiceAccount(tenant) {
-  if (tenant === '3') return !!env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
-  if (tenant === '2') return !!env.GOOGLE_SERVICE_ACCOUNT_KEY_2;
-  return false;
+  if (tenant === '3' && env.GOOGLE_SERVICE_ACCOUNT_KEY_3) return true;
+  if (tenant === '2' && env.GOOGLE_SERVICE_ACCOUNT_KEY_2) return true;
+  // Single shared service account serves every domain (incl. tenant 1) once set + DWD-authorized.
+  return !!env.GOOGLE_SERVICE_ACCOUNT_KEY;
 }
 
 /**
@@ -44,9 +57,10 @@ function hasServiceAccount(tenant) {
  * Used for tenants with Domain-Wide Delegation configured — no per-user OAuth needed.
  */
 function getServiceAccountAuth(email, write = false) {
-  const tenant = getGoogleTenant(email);
-  const keyPath = tenant === '2' ? env.GOOGLE_SERVICE_ACCOUNT_KEY_2 : env.GOOGLE_SERVICE_ACCOUNT_KEY_3;
-  if (!keyPath) throw new Error(`GOOGLE_SERVICE_ACCOUNT_KEY_${tenant} not set in .env`);
+  const keyPath = serviceAccountKeyPathFor(email);
+  if (!keyPath) {
+    throw new Error(`No service account key configured for ${email} (set GOOGLE_SERVICE_ACCOUNT_KEY)`);
+  }
   const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
   return new google.auth.JWT({
     email: key.client_email,

@@ -3,6 +3,7 @@
  */
 
 const crypto = require('crypto');
+const tolerance = require('./mailTolerance');
 
 /**
  * @typedef {object} FieldDiff
@@ -767,33 +768,7 @@ function sha256Hex(buffer) {
 function compareAttachmentSizesWithTolerance(srcAttachments, dstAttachments, combination) {
   if (!srcAttachments || srcAttachments.length === 0) return [];
 
-  const CONFIG = {
-    gmail_to_outlook: {
-      infoMin: 1.00, infoMax: 1.60,
-      warnMin: 0.85, warnMax: 2.00,
-      expectedNote:
-        'Gmail API reports decoded (raw) bytes; Graph API includes base64 encoding + MIME envelope overhead (~33–45% larger). ' +
-        'This size difference is expected during Gmail→Outlook migration.',
-    },
-    outlook_to_gmail: {
-      infoMin: 0.55, infoMax: 1.05,
-      warnMin: 0.40, warnMax: 1.20,
-      expectedNote:
-        'Graph API reports base64-encoded + MIME size; Gmail API reports decoded (raw) bytes (~25–32% smaller). ' +
-        'This size difference is expected during Outlook→Gmail migration.',
-    },
-    outlook_to_outlook: {
-      infoMin: 0.90, infoMax: 1.10,
-      warnMin: 0.70, warnMax: 1.30,
-      expectedNote: 'Same platform (Outlook→Outlook): attachment sizes should be near-identical.',
-    },
-    gmail_to_gmail: {
-      infoMin: 0.90, infoMax: 1.10,
-      warnMin: 0.70, warnMax: 1.30,
-      expectedNote: 'Same platform (Gmail→Gmail): attachment sizes should be near-identical.',
-    },
-  };
-
+  const CONFIG = tolerance.attachmentSize;
   const cfg = CONFIG[combination] || CONFIG.outlook_to_outlook;
 
   const toMap = (list) =>
@@ -1091,16 +1066,8 @@ function formatBytes(bytes) {
 }
 
 // Per-combination tolerance for total mailbox size ratio (dst / src).
-const MAILBOX_SIZE_CONFIG = {
-  outlook_to_gmail:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
-    note: 'Outlook MIME sizes vs Gmail sizeEstimate — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
-  gmail_to_outlook:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
-    note: 'Gmail sizeEstimate vs Outlook MIME sizes — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
-  outlook_to_outlook: { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
-    note: 'Same platform (Outlook→Outlook): mailbox sizes should be near-identical (±15%).' },
-  gmail_to_gmail:     { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
-    note: 'Same platform (Gmail→Gmail): mailbox sizes should be near-identical (±15%).' },
-};
+// Bands live in ./mailTolerance/<combination>.js (one file per combination).
+const MAILBOX_SIZE_CONFIG = tolerance.mailboxSize;
 
 /**
  * Build a structured mailbox size comparison result.

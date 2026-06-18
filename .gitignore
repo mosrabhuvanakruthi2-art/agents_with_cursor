@@ -7,6 +7,11 @@ node_modules/
 !.env.example
 !**/.env.example
 
+# Service-account keys / credential JSON — never commit
+backend/config/
+**/*service-account*.json
+**/*-credentials.json
+
 # Build / logs
 frontend/dist/
 backend/logs/*
