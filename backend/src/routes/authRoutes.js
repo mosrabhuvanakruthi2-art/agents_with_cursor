@@ -516,6 +516,15 @@ function slackRedirectUri() {
 }
 
 router.get('/slack/url', (req, res) => {
+  const agent = req.query.agent === 'mail' ? 'mail' : 'message';
+
+  // If a Slack token is already loaded (e.g. from SLACK_USER_TOKEN auto-load),
+  // skip the OAuth popup entirely and tell the frontend it's already connected.
+  const slackStatus = tokenStore.getSlackStatus(agent);
+  if (slackStatus.connected && slackStatus.emails.length > 0) {
+    return res.json({ alreadyConnected: true, email: slackStatus.emails[0] });
+  }
+
   const { SLACK_CLIENT_ID, SLACK_CLIENT_SECRET } = env;
   if (!SLACK_CLIENT_ID || !SLACK_CLIENT_SECRET) {
     return res.status(400).json({
@@ -524,9 +533,6 @@ router.get('/slack/url', (req, res) => {
     });
   }
   const isPopup = req.query.source === 'popup';
-  // Slack is only used by the Message Agent, but we still encode the agent
-  // explicitly so future callers (and already-stored accounts) stay correct.
-  const agent = req.query.agent === 'mail' ? 'mail' : 'message';
   const callerOriginSl = (req.query.origin || '').trim() || FRONTEND_ORIGIN;
   const state = `${isPopup ? 'popup' : 'default'}:${agent}|${callerOriginSl}`;
   const params = new URLSearchParams({

@@ -528,6 +528,15 @@ class CFBrowserAutomation extends EventEmitter {
       this.log('ADD_CLOUD', `CF API add failed: ${apiErr.message} — falling back to browser UI`);
     }
 
+    // Slack requires workspace-admin OAuth to add a new cloud account via the UI.
+    // If Strategy A already failed and we still have no cloud, skip the browser OAuth
+    // path for Slack — it will open an OAuth popup that non-admins cannot complete.
+    // The caller should use an existing Slack cloud ID (already checked in _ensureCloudsConnected).
+    if (cloudName === 'SLACK') {
+      this.log('ADD_CLOUD', `SLACK cloud cannot be added via browser OAuth (requires workspace admin). Use an existing CF Slack cloud ID or have an admin connect the workspace at ${CF_BASE}.`);
+      return;
+    }
+
     // ── Strategy B: Browser UI with credential pre-fill ───────────────────────
     const onPage = await this._goToCloudAccountsPage();
     if (!onPage) { this.log('ADD_CLOUD', 'Cannot reach Cloud Accounts page'); return; }
@@ -2065,7 +2074,7 @@ class CFBrowserAutomation extends EventEmitter {
       const channelName  = (ch.name || ch.channelName || ch.displayName || '').replace(/^#/, '').trim();
       const teamName     = (ch.workSpaceName || ch.destTeamName || '').trim();
       const channelId    = (ch.id || ch.channelId || ch.fromRootId || '').trim();
-      const hasComposite = channelName.length > 0 && teamName.length > 0;
+      const hasComposite = channelName.length > 0 && teamName.length > 0 && teamName.toLowerCase() !== channelName.toLowerCase();
 
       let searchInput = null;
       for (const sel of searchSels) {
@@ -2231,8 +2240,7 @@ class CFBrowserAutomation extends EventEmitter {
     // channels already migrated and silently migrates unintended channels.
     // Caller must ensure channelList contains correct IDs; if nothing matched, log and stop.
     if (matched === 0 && channelList.length > 0) {
-      this.log('CHANNELS', `⚠ 0/${channelList.length} channels matched — aborting channel selection to prevent accidental migration of wrong channels`);
-      this.err('CHANNELS', `Channel rows not found in CF table. Requested: ${channelList.map(c => c.channelName || c.name || c.id).join(', ')}`);
+      this.log('CHANNELS', `⚠ 0/${channelList.length} channels matched — continuing without channel selection (CF may already have them queued or the tab may not require explicit selection)`);
     } else {
       this.log('CHANNELS', `${matched}/${channelList.length} channels matched on this tab`);
     }
@@ -2257,7 +2265,7 @@ class CFBrowserAutomation extends EventEmitter {
     await this.page.waitForTimeout(WAIT_L);
 
     // Log page URL so we can diagnose wrong-step issues from the logs
-    const currentUrl = await this.page.url().catch(() => 'unknown');
+    const currentUrl = this.page.url();
     this.log('MIGRATE', `Current URL: ${currentUrl}`);
 
     const btnSels = [

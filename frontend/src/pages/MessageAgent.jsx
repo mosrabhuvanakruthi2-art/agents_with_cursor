@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import MessageAgentForm from '../components/MessageAgentForm';
 import StatusBadge from '../components/StatusBadge';
 import useAgentExecution from '../hooks/useAgentExecution';
+import { startCFBrowserMigration } from '../services/api';
 
 function normalizeRunResult(exec) {
   if (!exec || exec.bulk) return exec;
@@ -17,10 +19,24 @@ function normalizeRunResult(exec) {
 
 export default function MessageAgent() {
   const { execution, loading, error, run } = useAgentExecution();
+  const [cfBrowserLoading, setCfBrowserLoading] = useState(false);
+  const [cfBrowserError, setCfBrowserError] = useState(null);
 
   const isBulk = execution?.bulk;
   const isRunning = execution && !isBulk && execution.status === 'RUNNING';
   const runView = normalizeRunResult(execution);
+
+  async function handleCFBrowserMigrate(payload) {
+    setCfBrowserLoading(true);
+    setCfBrowserError(null);
+    try {
+      await startCFBrowserMigration(payload);
+    } catch (err) {
+      setCfBrowserError(err?.response?.data?.error || err.message || 'Migration failed to start');
+    } finally {
+      setCfBrowserLoading(false);
+    }
+  }
 
   return (
     <div className="space-y-8">
@@ -32,8 +48,20 @@ export default function MessageAgent() {
       </div>
 
       <div className="bg-white rounded-xl p-6" style={{ border: '1px solid #c5cef5' }}>
-        <MessageAgentForm onSubmit={run} loading={loading} />
+        <MessageAgentForm
+          onSubmit={run}
+          loading={loading}
+          onCFBrowserMigrate={handleCFBrowserMigrate}
+          cfBrowserLoading={cfBrowserLoading}
+        />
       </div>
+
+      {cfBrowserError && (
+        <div className="rounded-xl p-4" style={{ backgroundColor: '#eef1fb', border: '1px solid #0129ac' }}>
+          <p className="text-sm font-medium" style={{ color: '#0129ac' }}>Migration Error</p>
+          <p className="text-sm mt-1" style={{ color: '#2a40a8' }}>{cfBrowserError}</p>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-xl p-4" style={{ backgroundColor: '#eef1fb', border: '1px solid #0129ac' }}>

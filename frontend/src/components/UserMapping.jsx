@@ -187,6 +187,12 @@ export default function UserMapping({
       let res;
       if (providerKey === 'slack') {
         res = await getSlackOAuthUrl('popup', agent);
+        if (res?.data?.alreadyConnected) {
+          await loadAccounts();
+          setLoginTarget(null);
+          setOauthLoading(false);
+          return;
+        }
       } else if (providerKey === 'google') {
         res = await getGoogleOAuthUrl('popup', googleTenant, agent);
       } else {

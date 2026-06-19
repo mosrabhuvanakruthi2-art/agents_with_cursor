@@ -54314,5 +54314,105 @@
     "createdAt": "2026-05-19T12:58:19.597Z",
     "completedAt": "2026-05-19T12:59:53.370Z",
     "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "ebdfc37d-f5ce-4a6c-929f-7042c054bbe9",
+    "context": {
+      "executionId": "ebdfc37d-f5ce-4a6c-929f-7042c054bbe9",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "google",
+      "combination": "Slack → Google Chat",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "LAUNCH",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-09T09:50:45.680Z",
+    "completedAt": "2026-06-09T09:50:45.890Z",
+    "progress": "browserType.launch: Executable doesn't exist at C:\\Users\\NagaLakshmiMangina\\AppData\\Local\\ms-playwright\\chromium-1217\\chrome-win64\\chrome.exe\n╔════════════════════════════════════════════════════════════╗\n║ Looks like Playwright was just installed or updated.       ║\n║ Please run the following command to download new browsers: ║\n║                                                            ║\n║     npx playwright install                                 ║\n║                                                            ║\n║ <3 Playwright Team                                         ║\n╚════════════════════════════════════════════════════════════╝"
+  },
+  {
+    "executionId": "ae06417a-da2c-465e-9ed2-5b4dc2963f36",
+    "context": {
+      "executionId": "ae06417a-da2c-465e-9ed2-5b4dc2963f36",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "google",
+      "combination": "Slack → Google Chat",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "LAUNCH",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-09T10:56:11.451Z",
+    "completedAt": "2026-06-09T10:56:11.673Z",
+    "progress": "browserType.launch: Executable doesn't exist at C:\\Users\\NagaLakshmiMangina\\AppData\\Local\\ms-playwright\\chromium-1217\\chrome-win64\\chrome.exe\n╔════════════════════════════════════════════════════════════╗\n║ Looks like Playwright was just installed or updated.       ║\n║ Please run the following command to download new browsers: ║\n║                                                            ║\n║     npx playwright install                                 ║\n║                                                            ║\n║ <3 Playwright Team                                         ║\n╚════════════════════════════════════════════════════════════╝"
+  },
+  {
+    "executionId": "490cfd4f-b805-403f-a609-cf933c91a573",
+    "context": {
+      "executionId": "490cfd4f-b805-403f-a609-cf933c91a573",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "google",
+      "combination": "Slack → Google Chat",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-09T11:23:14.231Z",
+    "completedAt": "2026-06-09T11:25:10.617Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "db5f7e04-d01a-43d5-b41e-d413cc82aabf",
+    "context": {
+      "executionId": "db5f7e04-d01a-43d5-b41e-d413cc82aabf",
+      "kind": "cf-browser",
+      "sourceEmail": "",
+      "destinationEmail": "",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "google",
+      "combination": "Slack → Google Chat",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "FINALIZE",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-09T12:21:25.717Z",
+    "completedAt": "2026-06-09T12:22:57.339Z",
+    "progress": "CHAT_MIGRATION_MAX_WAIT_MINUTES=0 — skipping wait/close/validate"
+  },
+  {
+    "executionId": "92018285-034b-4e2a-85db-58a01db9da81",
+    "context": {
+      "executionId": "92018285-034b-4e2a-85db-58a01db9da81",
+      "kind": "cf-browser",
+      "sourceEmail": "mia@pepperwood.club",
+      "destinationEmail": "granger@gajha.com",
+      "sourcePlatform": "slack",
+      "destinationPlatform": "microsoft",
+      "combination": "Slack → Microsoft Teams",
+      "migrationType": "CF_BROWSER"
+    },
+    "status": "FAILED",
+    "currentAgent": "Failed",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-18T12:20:07.423Z",
+    "completedAt": "2026-06-18T12:21:57.609Z",
+    "progress": "this.page.url(...).catch is not a function"
   }
 ]

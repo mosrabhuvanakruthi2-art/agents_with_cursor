@@ -1617,6 +1617,11 @@ function SourceUserSignInPanel({ mappedPairs, sourceProvider, sourceAdminEmail }
         res = await getGoogleOAuthUrl('popup', '3', 'message');
       } else if (sourceProvider === 'slack') {
         res = await getSlackOAuthUrl('popup', 'message');
+        if (res?.data?.alreadyConnected) {
+          setSigningIn(null);
+          fetchStatus();
+          return;
+        }
       }
       const url = res?.data?.url;
       if (!url) { setSigningIn(null); return; }
