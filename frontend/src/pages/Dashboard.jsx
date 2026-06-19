@@ -2,16 +2,25 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getExecutions } from '../services/api';
 import DonutChart from '../components/DonutChart';
+import ProductTabs from '../components/ProductTabs';
+import usePersistedState from '../hooks/usePersistedState';
+import { productOf, productCounts, PRODUCT_LABEL } from '../utils/product';
 
 export default function Dashboard() {
-  const [executions, setExecutions] = useState([]);
+  const [allExecutions, setAllExecutions] = useState([]);
+  const [product, setProduct] = usePersistedState('dash:product', 'all');
   const navigate = useNavigate();
 
   useEffect(() => {
     getExecutions()
-      .then(({ data }) => setExecutions(data))
+      .then(({ data }) => setAllExecutions(data))
       .catch(() => { /* API may not be running yet */ });
   }, []);
+
+  // Segregate by product (Mail / Content / Message). "all" shows everything.
+  const counts = productCounts(allExecutions);
+  const executions = product === 'all' ? allExecutions : allExecutions.filter((e) => productOf(e) === product);
+  const productQ = product === 'all' ? '' : `&product=${product}`;
 
   const count = (s) => executions.filter((e) => e.status === s).length;
   const stats = {
@@ -47,7 +56,9 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500 mt-1">Migration QA Agent System overview</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {product === 'all' ? 'Migration QA Agent System overview' : `${PRODUCT_LABEL[product]} migration overview`}
+          </p>
         </div>
         <Link
           to="/run"
@@ -57,22 +68,25 @@ export default function Dashboard() {
         </Link>
       </div>
 
+      {/* Product segregation: Mail / Content / Message (or All) */}
+      <ProductTabs value={product} onChange={setProduct} counts={counts} />
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <StatCard label="Total Runs" value={stats.total} sub="Initiated runs" color="blue" icon={<GearIcon />} to="/executions" />
-        <StatCard label="Completed" value={stats.completed} sub="Completed runs" color="green" icon={<UsersIcon />} to="/executions?status=COMPLETED" />
-        <StatCard label="In Progress" value={stats.running} sub="Currently running" color="amber" icon={<ClockIcon />} to="/executions?status=RUNNING" />
-        <StatCard label="Failed" value={stats.failed} sub="Failed or interrupted" color="red" icon={<AlertIcon />} to="/executions?status=FAILED,INTERRUPTED" />
+        <StatCard label="Total Runs" value={stats.total} sub="Initiated runs" color="blue" icon={<GearIcon />} to={`/executions?_=1${productQ}`} />
+        <StatCard label="Completed" value={stats.completed} sub="Completed runs" color="green" icon={<UsersIcon />} to={`/executions?status=COMPLETED${productQ}`} />
+        <StatCard label="In Progress" value={stats.running} sub="Currently running" color="amber" icon={<ClockIcon />} to={`/executions?status=RUNNING${productQ}`} />
+        <StatCard label="Failed" value={stats.failed} sub="Failed or interrupted" color="red" icon={<AlertIcon />} to={`/executions?status=FAILED,INTERRUPTED${productQ}`} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <ChartCard title="Execution Outcomes" subtitle="Click a slice to open its runs">
           {statusData.length > 0
-            ? <DonutChart data={statusData} centerLabel="runs" onSelect={(k) => k && navigate(`/executions?status=${k}`)} />
+            ? <DonutChart data={statusData} centerLabel="runs" onSelect={(k) => k && navigate(`/executions?status=${k}${productQ}`)} />
             : <Empty text="No executions yet." />}
         </ChartCard>
         <ChartCard title="Validation Results" subtitle="Click a slice to open its runs">
           {validationData.length > 0
-            ? <DonutChart data={validationData} centerLabel="validated" onSelect={(k) => k && navigate(`/executions?validation=${k}`)} />
+            ? <DonutChart data={validationData} centerLabel="validated" onSelect={(k) => k && navigate(`/executions?validation=${k}${productQ}`)} />
             : <Empty text="No validation results yet." />}
         </ChartCard>
       </div>

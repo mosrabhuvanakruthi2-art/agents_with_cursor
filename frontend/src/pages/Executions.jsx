@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { getExecutions } from '../services/api';
 import StatusBadge from '../components/StatusBadge';
+import ProductTabs from '../components/ProductTabs';
+import { productOf, productCounts, PRODUCT_LABEL } from '../utils/product';
 
 const isPassed = (e) => {
   const v = e.result?.validationSummary;
@@ -12,6 +14,9 @@ export default function Executions() {
   const [executions, setExecutions] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [params] = useSearchParams();
+  const [product, setProduct] = useState(
+    ['mail', 'content', 'message'].includes(params.get('product')) ? params.get('product') : 'all'
+  );
 
   useEffect(() => {
     getExecutions()
@@ -24,19 +29,24 @@ export default function Executions() {
   const validationParam = params.get('validation'); // "PASS" | "FAIL"
   const statuses = statusParam ? statusParam.split(',') : null;
 
-  let items = executions;
-  if (statuses) items = items.filter((e) => statuses.includes(e.status));
+  // Counts reflect the current status/validation filter so the product tabs show
+  // how many of THESE runs belong to each product.
+  let scoped = executions;
+  if (statuses) scoped = scoped.filter((e) => statuses.includes(e.status));
   if (validationParam) {
-    items = items.filter((e) => e.result?.validationSummary)
+    scoped = scoped.filter((e) => e.result?.validationSummary)
       .filter((e) => (validationParam === 'PASS' ? isPassed(e) : !isPassed(e)));
   }
+  const counts = productCounts(scoped);
+  const items = product === 'all' ? scoped : scoped.filter((e) => productOf(e) === product);
 
   const title = (() => {
-    if (validationParam) return validationParam === 'PASS' ? 'Passed validation' : 'Failed validation';
-    if (!statuses) return 'All executions';
-    if (statuses.includes('FAILED') && statuses.includes('INTERRUPTED')) return 'Failed jobs';
+    const prefix = product === 'all' ? '' : `${PRODUCT_LABEL[product]} · `;
+    if (validationParam) return prefix + (validationParam === 'PASS' ? 'Passed validation' : 'Failed validation');
+    if (!statuses) return prefix + 'All executions';
+    if (statuses.includes('FAILED') && statuses.includes('INTERRUPTED')) return prefix + 'Failed jobs';
     const map = { COMPLETED: 'Completed jobs', RUNNING: 'Running jobs', FAILED: 'Failed jobs', CANCELLED: 'Cancelled jobs', INTERRUPTED: 'Interrupted jobs' };
-    return statuses.map((s) => map[s] || s).join(', ');
+    return prefix + statuses.map((s) => map[s] || s).join(', ');
   })();
 
   return (
@@ -51,6 +61,9 @@ export default function Executions() {
         <h1 className="text-2xl font-bold text-gray-900 mt-1">{title}</h1>
         <p className="text-sm text-gray-500 mt-0.5">{items.length} {items.length === 1 ? 'run' : 'runs'}</p>
       </div>
+
+      {/* Product segregation: Mail / Content / Message */}
+      <ProductTabs value={product} onChange={setProduct} counts={counts} />
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {!loaded ? (

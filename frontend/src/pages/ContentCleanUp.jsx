@@ -14,7 +14,7 @@ const PROVIDERS = [
   { value: 'sharepoint', label: 'SharePoint' },
 ];
 
-export default function ContentCleanUpPage() {
+export default function ContentCleanUpPage({ embedded = false }) {
   const [adminEmail, setAdminEmail] = usePersistedState('clean-content-adminEmail', '');
   const [provider, setProvider] = usePersistedState('clean-content-provider', 'box');
   const [users, setUsers] = usePersistedState('clean-content-users', []);
@@ -170,12 +170,14 @@ export default function ContentCleanUpPage() {
         </div>
       )}
 
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Content Clean Up</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          View file and folder stats and clean content accounts before migration
-        </p>
-      </div>
+      {!embedded && (
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Content Clean Up</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            View file and folder stats and clean content accounts before migration
+          </p>
+        </div>
+      )}
 
       {anyCleanRunning && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-center gap-3">

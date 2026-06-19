@@ -4,6 +4,8 @@ import { getExecutions, getExecutionLogs, cancelExecution, resumeExecution, down
 import StatusBadge from '../components/StatusBadge';
 import LogViewer from '../components/LogViewer';
 import ResultsView from '../components/ResultsView';
+import ProductTabs from '../components/ProductTabs';
+import { productOf, productCounts, PRODUCT_LABEL } from '../utils/product';
 
 // The fixed agent pipeline; each run's agentResults / currentAgent map onto these.
 const PIPELINE = [
@@ -55,7 +57,12 @@ export default function ExecutionLogs() {
   const [downloading, setDownloading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [tab, setTab] = useState('logs'); // 'results' | 'logs'
+  // Product segregation for the runs list. Honors ?domain= from the migrate redirect.
+  const initialProduct = ['mail', 'content', 'message'].includes(searchParams.get('domain')) ? searchParams.get('domain') : 'all';
+  const [product, setProduct] = useState(initialProduct);
 
+  const counts = productCounts(executions);
+  const visibleExecutions = product === 'all' ? executions : executions.filter((e) => productOf(e) === product);
   const selectedExec = executions.find((e) => e.executionId === selectedId);
   const steps = deriveSteps(selectedExec);
   const hasResults = !!selectedExec?.result?.validationSummary;
@@ -157,12 +164,13 @@ export default function ExecutionLogs() {
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 mt-2 w-96 max-w-[92vw] bg-white rounded-xl shadow-2xl border border-gray-200 z-20 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-100">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Previous runs ({executions.length})</p>
+                  <div className="px-4 py-3 border-b border-gray-100 space-y-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Previous runs ({visibleExecutions.length})</p>
+                    <ProductTabs value={product} onChange={setProduct} counts={counts} />
                   </div>
                   <div className="max-h-[60vh] overflow-y-auto divide-y divide-gray-50">
-                    {executions.length === 0 && <p className="p-4 text-sm text-gray-400">No runs yet.</p>}
-                    {executions.map((e) => {
+                    {visibleExecutions.length === 0 && <p className="p-4 text-sm text-gray-400">No {product === 'all' ? '' : PRODUCT_LABEL[product] + ' '}runs yet.</p>}
+                    {visibleExecutions.map((e) => {
                       const active = e.executionId === selectedId;
                       const src = e.context?.sourceEmail, dst = e.context?.destinationEmail;
                       return (

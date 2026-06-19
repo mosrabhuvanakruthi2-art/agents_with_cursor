@@ -29,6 +29,7 @@ backend/data/oauth-tokens.json
 backend/data/executions.json
 backend/data/custom-test-cases.json
 backend/data/test-repository.json
+backend/data/channel-cache.json
 
 # Claude IDE local config
 .claude/settings.local.json

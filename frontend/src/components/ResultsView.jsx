@@ -9,6 +9,7 @@ export default function ResultsView({ exec }) {
   if (!exec) return <p className="text-sm text-gray-400">Select a run to see its results.</p>;
 
   const validation = exec.result?.validationSummary;
+  const migration = exec.result?.migrationResult;
   const comparison = validation?.comparison;
   const sourceData = validation?.sourceData;
   const destData = validation?.destinationData;
@@ -56,10 +57,14 @@ export default function ResultsView({ exec }) {
           <StatusBadge status={validation.overallStatus} />
           <span className="text-sm text-gray-500">({validation.mismatches?.length || 0} mismatches)</span>
         </div>
-        {validation.mismatches?.length === 0 && (
+        {validation.overallStatus === 'SKIPPED' ? (
+          <p className="text-sm text-gray-600">
+            {validation.note || 'Automated validation was skipped for this product type — verify in the destination app.'}
+          </p>
+        ) : validation.mismatches?.length === 0 ? (
           <p className="text-sm text-green-600">All validations passed — source and destination data match.</p>
-        )}
-        {validation.mismatches?.length > 0 && (
+        ) : null}
+        {validation.overallStatus !== 'SKIPPED' && validation.mismatches?.length > 0 && (
           <div className="mt-3 space-y-2">
             {validation.mismatches.map((m, idx) => (
               <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
@@ -76,6 +81,40 @@ export default function ResultsView({ exec }) {
           </div>
         )}
       </div>
+
+      {/* Message migration outcome — what CloudFuze actually accepted */}
+      {migration?.kind === 'message' || migration?.chatMigrationResults ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Chat Migration</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+            <Stat label="Targets" value={migration.targetsAttempted ?? '—'} />
+            <Stat label="Initiated" value={(migration.chatMigrationResults || []).filter((r) => r.status === 'INITIATED').length} />
+            <Stat label="Failed" value={migration.messagesFailed ?? (migration.chatMigrationResults || []).filter((r) => r.status === 'FAILED').length} />
+            <Stat label="Mode" value={migration.mode || '—'} />
+          </div>
+          {(migration.chatMigrationResults || []).length > 0 && (
+            <div className="space-y-1 mb-3">
+              {migration.chatMigrationResults.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span className={r.status === 'INITIATED' ? 'text-green-600' : 'text-red-600'}>
+                    {r.status === 'INITIATED' ? '✓' : '✗'}
+                  </span>
+                  <span className="text-gray-700">{r.kind} {r.target}</span>
+                  {r.jobId && <code className="bg-gray-100 px-1 rounded text-xs text-gray-600">job {r.jobId}</code>}
+                  {r.error && <span className="text-xs text-red-600">{r.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {migration.note && <p className="text-sm text-gray-600">{migration.note}</p>}
+          {migration.cloudFuzeReportsUrl && (
+            <a href={migration.cloudFuzeReportsUrl} target="_blank" rel="noreferrer"
+              className="inline-block mt-2 text-sm text-indigo-600 hover:text-indigo-800">
+              Open CloudFuze Reports →
+            </a>
+          )}
+        </div>
+      ) : null}
 
       {/* Source vs Destination comparison */}
       {sourceData && destData && (
@@ -239,6 +278,16 @@ function CustomComparisonTable({ title, sourceItems, destItems }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** Small labelled stat tile used by the Chat Migration summary. */
+function Stat({ label, value }) {
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className="text-sm font-semibold text-gray-900 break-words">{String(value)}</p>
     </div>
   );
 }

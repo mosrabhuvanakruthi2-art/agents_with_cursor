@@ -6,9 +6,7 @@ import Executions from './pages/Executions';
 import TestCases from './pages/TestCases';
 import RunAgent from './pages/RunAgent';
 import ExecutionLogs from './pages/ExecutionLogs';
-import CleanUp from './pages/CleanUp';
-import ContentCleanUp from './pages/ContentCleanUp';
-import CleanSpace from './pages/CleanSpace';
+import CleanUpHub from './pages/CleanUpHub';
 import TestRepository from './pages/TestRepository';
 import ConnectClouds from './pages/ConnectClouds';
 import OAuthCallback from './pages/OAuthCallback';
@@ -28,13 +26,11 @@ function App() {
         <Route path="logs" element={<ExecutionLogs />} />
         {/* Validation Results merged into Reports & Logs */}
         <Route path="validation" element={<Navigate to="/logs" replace />} />
-        <Route path="clean" element={<CleanUp />} />
-        {/* Gmail + Outlook cleanup merged into one tabbed page */}
+        {/* Unified Clean Up — Mail / Content / Message under one tabbed page */}
+        <Route path="clean" element={<CleanUpHub />} />
         <Route path="clean-source" element={<Navigate to="/clean" replace />} />
-        {/* Content (Box/Drive) cleanup — brought in from dev */}
-        <Route path="clean-content" element={<ContentCleanUp />} />
-        {/* Message cleanup (Slack / Teams / Google Chat) — Clean Space */}
-        <Route path="clean-space" element={<CleanSpace />} />
+        <Route path="clean-content" element={<Navigate to="/clean" replace />} />
+        <Route path="clean-space" element={<Navigate to="/clean" replace />} />
         <Route path="test-repository" element={<TestRepository />} />
         {/* Test Case Generator + Agent Repo merged into one tabbed page */}
         <Route path="agent-repo" element={<Navigate to="/test-case-generator" replace />} />

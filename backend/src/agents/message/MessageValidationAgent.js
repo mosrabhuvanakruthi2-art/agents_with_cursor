@@ -12,13 +12,18 @@ class MessageValidationAgent extends BaseAgent {
 
   async execute(context) {
     const log = logger.child({ agent: this.name, executionId: context.executionId });
-    log.info('Skipping Gmail↔Outlook mailbox validation for Message product type.');
+    log.info(
+      'Message migration QA is not auto-validated — CloudFuze runs the chat job asynchronously. '
+      + 'Verify channels, DMs, threads, and attachments in the destination app, or on CloudFuze Reports.'
+    );
 
     return {
       overallStatus: 'SKIPPED',
       mismatches: [],
       note:
-        'Message migration QA: validate channels, DMs, threads, and attachments in the destination app. Automated mailbox diff applies to Mail only.',
+        'Message migration QA: CloudFuze migrates chat asynchronously — verify channels, DMs, threads, '
+        + 'and attachments in the destination app (or via CloudFuze Reports using the job ID above). '
+        + 'Automated source-vs-destination diff applies to Mail only.',
       productType: context.productType || 'Message',
       messageCombination: context.messageCombination || '',
     };

@@ -83,10 +83,16 @@ export default function MessageWizard() {
   const [targetTab, setTargetTab] = useState('channels'); // 'channels' | 'dms'
   const [targetSearch, setTargetSearch] = useState('');
 
-  // Step 4 — migration server
-  const [serverUrl, setServerUrl] = useState('');
-  const [serverEmail, setServerEmail] = useState('');
-  const [serverPassword, setServerPassword] = useState('');
+  // Step 4 — CloudFuze migration server + credentials (entered by the user; sent per
+  // migration so any server/account works — no hardcoded backend account). Persisted so
+  // they survive the redirect-to-logs remount. (Password is kept in localStorage for this
+  // internal QA tool's convenience.)
+  const [serverUrl, setServerUrl] = usePersistedState('msgwiz:serverUrl', '');
+  const [serverEmail, setServerEmail] = usePersistedState('msgwiz:serverEmail', '');
+  const [serverPassword, setServerPassword] = usePersistedState('msgwiz:serverPassword', '');
+  // For SSO (Google-login) CloudFuze accounts that have no API password — paste the
+  // "Authorization: Basic …" token from DevTools. Takes priority over email/password.
+  const [serverToken, setServerToken] = usePersistedState('msgwiz:serverToken', '');
 
   // Step 5 — seed scenario (optional)
   const [scenarios, setScenarios] = useState([]);
@@ -252,6 +258,7 @@ export default function MessageWizard() {
       ...(serverUrl ? { migrationServerUrl: serverUrl } : {}),
       ...(serverEmail ? { migrationServerEmail: serverEmail } : {}),
       ...(serverPassword ? { migrationServerPassword: serverPassword } : {}),
+      ...(serverToken ? { migrationServerBasicAuth: serverToken } : {}),
     };
   }
 
@@ -416,12 +423,24 @@ export default function MessageWizard() {
         {/* Step 4 — Migration Server */}
         {step === 4 && (
           <div className="space-y-4">
-            <p className="text-sm text-gray-500">CloudFuze chat-migration server. Leave blank to use the server configured in <span className="font-semibold">.env</span>.</p>
-            <Field label="Server URL"><input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://…cloudfuze.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" /></Field>
+            <p className="text-sm text-gray-500">
+              Your CloudFuze account that has the Slack / Teams / Google&nbsp;Chat clouds connected. These credentials
+              are used for this migration only — any CloudFuze server works, nothing is hardcoded on the backend.
+            </p>
+            <Field label="Server URL"><input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://s2cdev.cloudfuze.com/proxyservices/v1" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" /></Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Email"><input value={serverEmail} onChange={(e) => setServerEmail(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
               <Field label="Password"><input type="password" value={serverPassword} onChange={(e) => setServerPassword(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
             </div>
+            <Field label="API Token (Basic) — for Google/SSO accounts">
+              <input value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="paste the value after 'Authorization: Basic '"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+            </Field>
+            <p className="text-xs text-gray-400">
+              If your CloudFuze account signs in with Google (no API password), open DevTools → Network on any
+              CloudFuze request, copy the <span className="font-mono">Authorization: Basic …</span> value, and paste it
+              here. The token takes priority over email/password.
+            </p>
           </div>
         )}
 

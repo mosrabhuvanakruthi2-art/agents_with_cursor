@@ -2,9 +2,24 @@ const MessageTestDataAgent = require('../agents/message/MessageTestDataAgent');
 const MessageMigrationAgent = require('../agents/message/MessageMigrationAgent');
 const MessageValidationAgent = require('../agents/message/MessageValidationAgent');
 const MessageMigrationContext = require('../models/MessageMigrationContext');
+const agentRegistry = require('./agentRegistry');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
+
+/**
+ * Resolve the agent classes for a message combination from the registry
+ * (combinations/message/<combo>.js), falling back to the generic message agents.
+ * Mirrors how the mail/content AgentOrchestrator resolves per-combination handlers.
+ */
+function agentsFor(context) {
+  const h = agentRegistry.resolve('message', context.sourcePlatform, context.destinationPlatform) || {};
+  return {
+    DataAgent:       h.TestDataAgent   || MessageTestDataAgent,
+    MigrationAgent:  h.MigrationAgent  || MessageMigrationAgent,
+    ValidationAgent: h.ValidationAgent || MessageValidationAgent,
+  };
+}
 
 /**
  * Mirrors AgentOrchestrator but for message/chat migration. Uses the same
@@ -32,11 +47,12 @@ class MessageAgentOrchestrator {
     }
 
     const startTime = Date.now();
-    log.info('Starting Message Agent full flow');
+    log.info(`Starting Message Agent full flow (combination=${context.sourcePlatform}→${context.destinationPlatform})`);
 
-    const dataAgent = new MessageTestDataAgent();
-    const migrationAgent = new MessageMigrationAgent();
-    const validationAgent = new MessageValidationAgent();
+    const { DataAgent, MigrationAgent, ValidationAgent } = agentsFor(context);
+    const dataAgent = new DataAgent();
+    const migrationAgent = new MigrationAgent();
+    const validationAgent = new ValidationAgent();
 
     // Used by validation to reference earlier agents' outputs.
     context.sharedResults = {};
@@ -66,16 +82,11 @@ class MessageAgentOrchestrator {
       log.info('Step 3: MessageValidationAgent');
       const validationResult = await validationAgent.run(context);
 
-      // Reflect a CloudFuze migration failure (returned, not thrown) as FAILED.
-      const migrationFailed = migrationResult?.finalStatus === 'FAILED';
-      const execStatus = migrationFailed ? 'FAILED' : 'COMPLETED';
-      const failNote = migrationResult?.note || 'CloudFuze chat migration failed.';
-
       const duration = Date.now() - startTime;
       const result = {
         kind: 'message',
         executionId: context.executionId,
-        status: execStatus,
+        status: 'COMPLETED',
         duration,
         agentResults: [
           dataAgent.toJSON(),
@@ -85,18 +96,16 @@ class MessageAgentOrchestrator {
         sourceData,
         migrationResult,
         validationSummary: validationResult,
-        ...(migrationFailed ? { error: failNote } : {}),
       };
 
       executionService.update(context.executionId, {
-        status: execStatus,
+        status: 'COMPLETED',
         result,
-        progress: migrationFailed ? `Failed: ${failNote}` : 'Completed',
-        ...(migrationFailed ? { error: failNote } : {}),
+        progress: 'Completed',
         completedAt: new Date().toISOString(),
       });
 
-      log.info(`Message Agent full flow finished (${execStatus}) in ${duration}ms`);
+      log.info(`Message Agent full flow completed in ${duration}ms`);
       removeExecLogger();
       return result;
     } catch (err) {
@@ -152,7 +161,8 @@ class MessageAgentOrchestrator {
     const startTime = Date.now();
     log.info('Starting Message Agent SEED-ONLY flow');
 
-    const dataAgent = new MessageTestDataAgent();
+    const { DataAgent } = agentsFor(context);
+    const dataAgent = new DataAgent();
     context.sharedResults = context.sharedResults || {};
 
     try {
@@ -234,10 +244,11 @@ class MessageAgentOrchestrator {
     }
 
     const startTime = Date.now();
-    log.info('Starting Message Agent MIGRATE-ONLY flow');
+    log.info(`Starting Message Agent MIGRATE-ONLY flow (combination=${context.sourcePlatform}→${context.destinationPlatform})`);
 
-    const migrationAgent = new MessageMigrationAgent();
-    const validationAgent = new MessageValidationAgent();
+    const { MigrationAgent, ValidationAgent } = agentsFor(context);
+    const migrationAgent = new MigrationAgent();
+    const validationAgent = new ValidationAgent();
     context.sharedResults = context.sharedResults || {};
 
     try {
@@ -257,35 +268,26 @@ class MessageAgentOrchestrator {
       log.info('Step 2 (migrate-only): MessageValidationAgent');
       const validationResult = await validationAgent.run(context);
 
-      // The migration agent never throws on a CloudFuze failure — it returns a
-      // result with finalStatus='FAILED'. Reflect that in the execution status so
-      // the Logs page shows FAILED instead of a misleading COMPLETED.
-      const migrationFailed = migrationResult?.finalStatus === 'FAILED';
-      const execStatus = migrationFailed ? 'FAILED' : 'COMPLETED';
-      const failNote = migrationResult?.note || 'CloudFuze chat migration failed.';
-
       const duration = Date.now() - startTime;
       const result = {
         kind: 'message',
         phase: 'migrate',
         executionId: context.executionId,
-        status: execStatus,
+        status: 'COMPLETED',
         duration,
         agentResults: [migrationAgent.toJSON(), validationAgent.toJSON()],
         migrationResult,
         validationSummary: validationResult,
-        ...(migrationFailed ? { error: failNote } : {}),
       };
 
       executionService.update(context.executionId, {
-        status: execStatus,
+        status: 'COMPLETED',
         result,
-        progress: migrationFailed ? `Migration failed: ${failNote}` : 'Migration complete',
-        ...(migrationFailed ? { error: failNote } : {}),
+        progress: 'Migration complete',
         completedAt: new Date().toISOString(),
       });
 
-      log.info(`Message Agent MIGRATE-ONLY finished (${execStatus}) in ${duration}ms`);
+      log.info(`Message Agent MIGRATE-ONLY complete in ${duration}ms`);
       removeExecLogger();
       return result;
     } catch (err) {

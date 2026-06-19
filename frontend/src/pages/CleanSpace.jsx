@@ -33,7 +33,7 @@ const CLEANERS = {
   },
 };
 
-export default function CleanSpace() {
+export default function CleanSpace({ embedded = false }) {
   const [cleaner, setCleaner] = useState('gchat');
   const [startDate, setStartDate] = useState('2024-01-01');
   const [endDate, setEndDate] = useState('2024-12-31');
@@ -302,10 +302,12 @@ export default function CleanSpace() {
     <div className="page-wrap">
       {/* ── Header ── */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Clean Msg Destination</h1>
-          <p className="page-subtitle">Preview and delete spaces, DMs, and channels by date range</p>
-        </div>
+        {!embedded ? (
+          <div>
+            <h1 className="page-title">Clean Msg Destination</h1>
+            <p className="page-subtitle">Preview and delete spaces, DMs, and channels by date range</p>
+          </div>
+        ) : <div />}
         <select
           value={cleaner}
           onChange={e => switchCleaner(e.target.value)}

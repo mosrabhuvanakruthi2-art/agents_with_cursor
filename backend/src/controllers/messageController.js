@@ -147,6 +147,10 @@ function parseMessagePayload(req) {
     dmObjects,
     selectedTestCaseIds,
     repeatCount,
+    migrationServerUrl,
+    migrationServerEmail,
+    migrationServerPassword,
+    migrationServerBasicAuth,
   } = req.body;
 
   const normalizeIds = (v) => {
@@ -175,6 +179,12 @@ function parseMessagePayload(req) {
         : [],
       sourceAdminEmail: sourceAdminEmail || null,
       repeatCount: Math.max(1, parseInt(repeatCount, 10) || 1),
+      // CloudFuze migration-server credentials supplied by the user in the wizard
+      // (Migration Server step). The chat client uses these per-request — no hardcoded account.
+      migrationServerUrl: (migrationServerUrl || '').trim() || null,
+      migrationServerEmail: (migrationServerEmail || '').trim() || null,
+      migrationServerPassword: migrationServerPassword || null,
+      migrationServerBasicAuth: (migrationServerBasicAuth || '').trim() || null,
     },
   };
 }

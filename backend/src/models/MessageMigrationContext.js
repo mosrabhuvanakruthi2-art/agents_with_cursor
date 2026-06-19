@@ -22,6 +22,10 @@ class MessageMigrationContext {
     channelObjects = [],
     dmObjects = [],
     selectedTestCaseIds = [],
+    migrationServerUrl = null,
+    migrationServerEmail = null,
+    migrationServerPassword = null,
+    migrationServerBasicAuth = null,
     executionId,
   }) {
     this.kind = 'message';
@@ -37,6 +41,12 @@ class MessageMigrationContext {
     this.channelObjects = Array.isArray(channelObjects) ? channelObjects : [];
     this.dmObjects = Array.isArray(dmObjects) ? dmObjects : [];
     this.selectedTestCaseIds = Array.isArray(selectedTestCaseIds) ? selectedTestCaseIds : [];
+    // CloudFuze migration-server credentials (from the wizard) — used per-request by the
+    // chat client so any server/account works without hardcoded env credentials.
+    this.migrationServerUrl = migrationServerUrl || null;
+    this.migrationServerEmail = migrationServerEmail || null;
+    this.migrationServerPassword = migrationServerPassword || null;
+    this.migrationServerBasicAuth = migrationServerBasicAuth || null;
     this.executionId = executionId || uuidv4();
 
     const { sourcePlatform, destinationPlatform } = parseCombination(this.messageCombination);

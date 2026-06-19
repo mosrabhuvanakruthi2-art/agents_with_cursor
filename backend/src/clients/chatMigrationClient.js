@@ -3,21 +3,56 @@ const axios = require('axios');
 const env = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
+const channelCache = require('../services/channelCache');
 
-// { auth: "Basic ..." | "Bearer ...", userId: string|null }
-let cfAuth = null;
+// Per-server session cache: key (serverUrl + credential) → { auth, userId, baseURL }.
+// CloudFuze credentials come from the FRONTEND (wizard "Migration Server" step) per
+// migration — NO dedicated/hardcoded account. Any CloudFuze server works. The env vars
+// are only an optional dev fallback used when the request supplies no credentials.
+const sessionCache = new Map();
 
-// Chat migration uses a DEDICATED CloudFuze account when configured (CHAT_MIGRATION_API_*),
-// since the Slack/Teams/Google-Chat clouds typically live in a different subscriber account
-// than the mail clouds. Each field falls back to the shared MIGRATION_API_* (mail) value.
-const CHAT = {
-  url:       env.CHAT_MIGRATION_API_URL || env.MIGRATION_API_URL,
-  basicAuth: env.CHAT_MIGRATION_API_BASIC_AUTH || env.MIGRATION_API_BASIC_AUTH || '',
-  key:       env.CHAT_MIGRATION_API_KEY || env.MIGRATION_API_KEY || '',
-  bearer:    env.CHAT_MIGRATION_API_BEARER_TOKEN || env.MIGRATION_API_BEARER_TOKEN || '',
-  username:  env.CHAT_MIGRATION_API_USERNAME || env.MIGRATION_API_USERNAME || '',
-  password:  env.CHAT_MIGRATION_API_PASSWORD || env.MIGRATION_API_PASSWORD || '',
-};
+/**
+ * Normalise whatever CloudFuze URL the user pastes into the API base.
+ * CloudFuze's REST base is always `<origin>/proxyservices/v1`, but users often paste
+ * the browser/UI URL (e.g. https://s2cdev.cloudfuze.com/pages or .../pages/reports.html)
+ * or just the host. Coerce any of those to the correct API base so login doesn't 404.
+ */
+function normalizeCfApiUrl(raw) {
+  let u = (raw || '').trim().replace(/\/+$/, '');
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+  // Respect an explicit proxyservices/vN base if the user already provided one.
+  const explicit = u.match(/^(https?:\/\/[^/]+\/proxyservices\/v\d+)/i);
+  if (explicit) return explicit[1];
+  const origin = (u.match(/^(https?:\/\/[^/]+)/i) || [])[1] || u;
+  return `${origin}/proxyservices/v1`;
+}
+
+/**
+ * Resolve the CloudFuze server URL + credentials for this migration.
+ * Priority: frontend-supplied creds (context.migrationServer*) → optional env fallback.
+ */
+function cfConfigFromContext(context = {}) {
+  const feUrl      = (context.migrationServerUrl || '').trim();
+  const feUser     = (context.migrationServerEmail || '').trim();
+  const fePass     = (context.migrationServerPassword || '').trim();
+  const feBasic    = (context.migrationServerBasicAuth || context.migrationServerToken || '').trim();
+  const url = normalizeCfApiUrl(feUrl || env.CHAT_MIGRATION_API_URL || env.MIGRATION_API_URL || '');
+
+  // Frontend creds win entirely when provided — never mix with env.
+  if (feBasic)            return { url, basicAuth: feBasic, bearer: '', username: '', password: '', source: 'frontend' };
+  if (feUser && fePass)   return { url, basicAuth: '', bearer: '', username: feUser, password: fePass, source: 'frontend' };
+
+  // Optional env fallback (dev only). Remove these env vars to force frontend creds.
+  return {
+    url,
+    basicAuth: (env.CHAT_MIGRATION_API_BASIC_AUTH || env.CHAT_MIGRATION_API_KEY || env.MIGRATION_API_BASIC_AUTH || env.MIGRATION_API_KEY || '').trim(),
+    bearer:    (env.CHAT_MIGRATION_API_BEARER_TOKEN || env.MIGRATION_API_BEARER_TOKEN || '').trim(),
+    username:  (env.CHAT_MIGRATION_API_USERNAME || env.MIGRATION_API_USERNAME || '').trim(),
+    password:  (env.CHAT_MIGRATION_API_PASSWORD || env.MIGRATION_API_PASSWORD || '').trim(),
+    source: 'env',
+  };
+}
 
 const migrationHttpsAgent = env.MIGRATION_API_TLS_INSECURE
   ? new https.Agent({ rejectUnauthorized: false })
@@ -35,18 +70,18 @@ function migrationAxiosConfig(overrides = {}) {
   return cfg;
 }
 
-function normalizeBearerFromEnv(raw) {
+function normalizeBearer(raw) {
   let s = String(raw ?? '').trim();
   if (!s) return '';
   if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
   return s;
 }
 
-function basicAuthPayload() {
-  let raw = (CHAT.basicAuth || CHAT.key || '').trim();
-  if (!raw) return '';
-  if (/^basic\s+/i.test(raw)) raw = raw.replace(/^basic\s+/i, '').trim();
-  return raw;
+function normalizeBasic(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return '';
+  if (/^basic\s+/i.test(s)) s = s.replace(/^basic\s+/i, '').trim();
+  return s;
 }
 
 /**
@@ -62,76 +97,77 @@ function basicAuthPayload() {
  *
  * Returns { auth: string, userId: string|null }
  */
-async function login() {
-  if (cfAuth) return cfAuth;
+/**
+ * Resolve (and cache) a CloudFuze session for the given migration context.
+ * Credentials come from the frontend (wizard) per context; falls back to env only
+ * if none supplied. Returns { auth, userId, baseURL }.
+ */
+async function getSession(context = {}) {
+  const cfg = cfConfigFromContext(context);
+  if (!cfg.url) {
+    throw new Error('CloudFuze migration server URL is missing — enter it in the wizard (Migration Server step).');
+  }
+  const key = `${cfg.url}::${cfg.basicAuth || cfg.bearer || cfg.username || 'anon'}`;
+  if (sessionCache.has(key)) return sessionCache.get(key);
 
-  // 1. MIGRATION_API_BASIC_AUTH (already post-login userId:apiSecret)
-  const basic = basicAuthPayload();
+  let session;
+  const basic = normalizeBasic(cfg.basicAuth);
+  const bearer = normalizeBearer(cfg.bearer);
+
   if (basic) {
     let userId = null;
+    try { userId = Buffer.from(basic, 'base64').toString().split(':')[0] || null; } catch { /* ignore */ }
+    session = { auth: `Basic ${basic}`, userId, baseURL: cfg.url };
+    logger.info(`CloudFuze: using Basic auth for ${cfg.url} (${cfg.source})`);
+  } else if (bearer) {
+    session = { auth: `Bearer ${bearer}`, userId: null, baseURL: cfg.url };
+    logger.info(`CloudFuze: using Bearer token for ${cfg.url} (${cfg.source})`);
+  } else if (cfg.username && cfg.password) {
+    logger.info(`CloudFuze: logging in as ${cfg.username} @ ${cfg.url} (${cfg.source})…`);
+    const loginBasic = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+    let res;
     try {
-      const decoded = Buffer.from(basic, 'base64').toString();
-      userId = decoded.split(':')[0] || null;
-    } catch { /* ignore decode errors */ }
-    cfAuth = { auth: `Basic ${basic}`, userId };
-    logger.info('CloudFuze (chat): using CHAT/MIGRATION_API_BASIC_AUTH (skipping /auth/user)');
-    return cfAuth;
-  }
-
-  // 2. Bearer token (legacy)
-  const staticBearer = normalizeBearerFromEnv(CHAT.bearer);
-  if (staticBearer) {
-    cfAuth = { auth: `Bearer ${staticBearer}`, userId: null };
-    logger.info('CloudFuze (chat): using CHAT/MIGRATION_API_BEARER_TOKEN (skipping /auth/user)');
-    return cfAuth;
-  }
-
-  // 3. Full two-step login with username + password
-  const username = (CHAT.username || '').trim();
-  const password = (CHAT.password || '').trim();
-  if (!username || !password) {
-    throw new Error(
-      'CloudFuze chat auth missing: set CHAT_MIGRATION_API_BASIC_AUTH / CHAT_MIGRATION_API_BEARER_TOKEN / ' +
-      'CHAT_MIGRATION_API_USERNAME + CHAT_MIGRATION_API_PASSWORD (or the shared MIGRATION_API_* equivalents) ' +
-      'for the CloudFuze account that has the Slack/Teams/Google-Chat clouds connected'
-    );
-  }
-
-  logger.info(`CloudFuze (chat): logging in via POST /auth/user as ${username}…`);
-  const loginBasic = Buffer.from(`${username}:${password}`).toString('base64');
-  const res = await retryWithBackoff(
-    () =>
-      axios.post(
-        `${CHAT.url}/auth/user`,
-        null,
-        migrationAxiosConfig({
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Basic ${loginBasic}`,
-          },
+      res = await retryWithBackoff(
+        () => axios.post(`${cfg.url}/auth/user`, null, migrationAxiosConfig({
+          headers: { 'Content-Type': 'application/json', Authorization: `Basic ${loginBasic}` },
           timeout: 30000,
-        })
-      ),
-    { label: 'CloudFuze /auth/user login', maxRetries: 3 }
-  );
+        })),
+        { label: 'CloudFuze /auth/user login', maxRetries: 3 }
+      );
+    } catch (err) {
+      if (err.response?.status === 401) {
+        throw new Error(
+          `CloudFuze rejected ${cfg.username} (401). This usually means the account signs in with Google/SSO and has `
+          + `no API password. Paste the "Authorization: Basic …" token from DevTools into the API Token field instead.`
+        );
+      }
+      throw err;
+    }
+    const userId = res.data?.id;
+    if (!userId) throw new Error('CloudFuze login failed: no user ID in response (check the migration server email/password).');
+    session = { auth: `Basic ${Buffer.from(`${userId}:${cfg.password}`).toString('base64')}`, userId, baseURL: cfg.url };
+    logger.info(`CloudFuze login successful (userId=${userId}) @ ${cfg.url}`);
+  } else {
+    throw new Error('CloudFuze credentials missing — enter the migration server, email and password in the wizard (Migration Server step).');
+  }
 
-  const userId = res.data?.id;
-  if (!userId) throw new Error('CloudFuze login failed: no user ID in response');
+  sessionCache.set(key, session);
+  return session;
+}
 
-  const postLoginBasic = Buffer.from(`${userId}:${password}`).toString('base64');
-  cfAuth = { auth: `Basic ${postLoginBasic}`, userId };
-  logger.info(`CloudFuze login successful (userId=${userId})`);
-  return cfAuth;
+/** Back-compat alias — returns the session for a context. */
+async function login(context = {}) {
+  return getSession(context);
 }
 
 /**
- * Create an axios instance with the CloudFuze auth header.
+ * Create an axios instance with the CloudFuze auth header for a given server.
  * auth is the full Authorization value, e.g. "Basic xxx" or "Bearer xxx".
  */
-function getAuthClient(auth) {
+function getAuthClient(auth, baseURL) {
   return axios.create(
     migrationAxiosConfig({
-      baseURL: CHAT.url,
+      baseURL,
       headers: {
         'Content-Type': 'application/json',
         Authorization: auth,
@@ -145,11 +181,11 @@ function getAuthClient(auth) {
  * Resolve CloudFuze subscriber profile.
  * GET /users/validateUser?searchUser=<email>
  */
-async function validateUser(email) {
+async function validateUser(email, context = {}) {
   if (!email || typeof email !== 'string') throw new Error('validateUser: email is required');
 
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
 
   const res = await retryWithBackoff(
     () => client.get('users/validateUser', { params: { searchUser: email.trim(), _: Date.now() } }),
@@ -164,13 +200,13 @@ async function validateUser(email) {
  *
  * Each account: { id, cloudName, emailId, domainList, cloudUserId, cloudStatus, ... }
  */
-async function getCloudAccounts() {
-  const { auth, userId } = await login();
+async function getCloudAccounts(context = {}) {
+  const { auth, userId, baseURL } = await getSession(context);
   if (!userId) {
     logger.warn('CloudFuze getCloudAccounts: no userId available (Bearer token mode) — skipping cloud lookup');
     return [];
   }
-  const client = getAuthClient(auth);
+  const client = getAuthClient(auth, baseURL);
   const res = await retryWithBackoff(
     () => client.get(`users/${userId}/get/all/cloud`),
     { label: 'CloudFuze getCloudAccounts', maxRetries: 2 }
@@ -192,8 +228,8 @@ function initiatePathCandidates() {
 }
 
 async function triggerMigration(context) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
 
   const payload = [
     {
@@ -219,7 +255,7 @@ async function triggerMigration(context) {
   ];
 
   const paths = initiatePathCandidates();
-  const base = env.MIGRATION_API_URL;
+  const base = baseURL;
   let lastErr;
 
   for (let i = 0; i < paths.length; i += 1) {
@@ -336,8 +372,8 @@ function chatInitiatePath(isDm) {
  *   channelIds[], dmIds[], migrationType, executionId
  */
 async function triggerChatMigration(context) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
 
   const srcCloudName = CF_PLATFORM[(context.sourcePlatform || '').toLowerCase()] || 'SLACK';
   const dstCloudName = CF_PLATFORM[(context.destinationPlatform || '').toLowerCase()] || 'MICROSOFT_TEAMS';
@@ -358,7 +394,7 @@ async function triggerChatMigration(context) {
   let dstCloudId = null;
   let srcAcct    = null;
   try {
-    const accounts = await getCloudAccounts();
+    const accounts = await getCloudAccounts(context);
     srcAcct        = findCloudAccount(accounts, srcCloudName, context.sourceEmail);
     const dstAcct  = findCloudAccount(accounts, dstCloudName, context.destinationEmail);
     srcCloudId = srcAcct?.id || null;
@@ -379,18 +415,56 @@ async function triggerChatMigration(context) {
     return 'public';
   }
 
+  // ── Enrich selected channels with CloudFuze's own channel metadata ──────────
+  // CRITICAL: CloudFuze scopes the message scan by `channelDate`. Our wizard lists
+  // channels from Slack's API (which has NO channelDate), so without this the payload
+  // defaults channelDate to "now" and CloudFuze finds 0 messages ("No Messages").
+  // CF's channel list keys on `fromRootId` === the Slack channel id, so we match by id
+  // and pull the REAL channelDate + dest names + privacy. Cached per combination.
+  let cfChannelMap = {};
+  if (srcCloudId && dstCloudId && targets.some((t) => !t.isDm)) {
+    try {
+      let cached = channelCache.get(combination, srcCloudId, dstCloudId);
+      if (!cached || (!(cached.publicChannels || []).length && !(cached.privateChannels || []).length)) {
+        const [pub, priv] = await Promise.all([
+          getCloudChannels({ srcCloudId, dstCloudId, channelType: 'public', context }),
+          getCloudChannels({ srcCloudId, dstCloudId, channelType: 'private', context }),
+        ]);
+        cached = { publicChannels: pub, privateChannels: priv };
+        channelCache.set(combination, srcCloudId, dstCloudId, cached);
+      }
+      for (const c of (cached.publicChannels || []))  { const k = c.fromRootId || c.channelId || c.id; if (k) cfChannelMap[k] = { ...c, _cfType: 'public' }; }
+      for (const c of (cached.privateChannels || [])) { const k = c.fromRootId || c.channelId || c.id; if (k) cfChannelMap[k] = { ...c, _cfType: 'private' }; }
+      logger.info(`CloudFuze: enriched channel metadata from CF list (${Object.keys(cfChannelMap).length} channels available)`);
+    } catch (err) {
+      logger.warn(`CloudFuze: channel metadata enrich failed: ${err.message} — falling back to Slack metadata (may migrate 0 messages)`);
+    }
+  }
+
   const results = [];
 
   // Enrich target list with metadata from context.channelObjects / context.dmObjects
   const channelObjects = Array.isArray(context.channelObjects) ? context.channelObjects : [];
   const dmObjects      = Array.isArray(context.dmObjects)      ? context.dmObjects      : [];
 
-  // Batch channels and DMs separately (different endpoints)
+  // Batch channels and DMs separately (different endpoints). CF metadata wins for the
+  // fields CloudFuze actually uses (channelDate, privacy, dest names).
   const channels = targets
     .filter((t) => !t.isDm)
     .map((t) => {
       const enriched = channelObjects.find((c) => c.id === t.id) || {};
-      return { ...t, ...enriched };
+      const cf = cfChannelMap[t.id] || {};
+      return {
+        ...t,
+        ...enriched,
+        channelName:     enriched.name || enriched.channelName || cf.channelName || t.name,
+        channelDate:     cf.channelDate || enriched.channelDate || t.channelDate,
+        cfChannelType:   cf._cfType || cf.channelType,
+        destChannelName: enriched.destChannelName || cf.destChannelName,
+        destTeamName:    enriched.destTeamName || cf.destTeamName,
+        workSpaceName:   enriched.workSpaceName || cf.workSpaceName,
+        cfMatched:       !!cf.channelDate,
+      };
     });
   const dms = targets
     .filter((t) => t.isDm)
@@ -404,12 +478,20 @@ async function triggerChatMigration(context) {
 
     const payload = batch.map((t) => {
       const channelName = t.name || t.channelName || t.id;
+      // Warn loudly if a channel wasn't found in CloudFuze's list — without the real
+      // channelDate CloudFuze will report "No Messages" (0 migrated).
+      if (!isDm && !t.cfMatched) {
+        logger.warn(
+          `CloudFuze: channel "${channelName}" (${t.id}) not found in CF channel list — ` +
+          `using channelDate=now, which usually yields "No Messages". Ensure the channel is indexed in CloudFuze.`
+        );
+      }
       const obj = {
         fromRootId: t.id,
         toRootId: '/',
         channelDate: String(t.channelDate || Math.floor(Date.now() / 1000)),
         dateChanged: false,
-        channelType: toChannelType(t.kind),
+        channelType: t.cfChannelType || toChannelType(t.kind),
         channelName,
         workSpaceName: t.workSpaceName || srcAcct?.metadataUrl || '',
         destChannelName: t.destChannelName || channelName,
@@ -485,9 +567,9 @@ async function triggerChatMigration(context) {
  */
 const CHANNEL_PAGE_SIZE = 100;
 
-async function getCloudChannels({ srcCloudId, dstCloudId, channelType = 'public' } = {}) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+async function getCloudChannels({ srcCloudId, dstCloudId, channelType = 'public', context = {} } = {}) {
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
 
   const allChannels = [];
   const seen = new Set();
@@ -534,9 +616,9 @@ async function getCloudChannels({ srcCloudId, dstCloudId, channelType = 'public'
  * Fetch ALL DMs from CloudFuze with pagination.
  * GET /messagemove/get/slackdms?adminCloudId=...&destAdminCloudId=...&channelType=all
  */
-async function getCloudDMs({ srcCloudId, dstCloudId } = {}) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+async function getCloudDMs({ srcCloudId, dstCloudId, context = {} } = {}) {
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
 
   const allDms = [];
   const seen = new Set();
@@ -580,9 +662,9 @@ async function getCloudDMs({ srcCloudId, dstCloudId } = {}) {
  * Get migration jobs/reports from CloudFuze.
  * GET /messagemove/get/moveJob?combination=S2T&migrationStatus=All
  */
-async function getMigrationReports({ combination = '', migrationStatus = 'All' } = {}) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+async function getMigrationReports({ combination = '', migrationStatus = 'All', context = {} } = {}) {
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
   const params = { migrationStatus };
   if (combination) params.combination = combination;
   const res = await retryWithBackoff(
@@ -597,9 +679,9 @@ async function getMigrationReports({ combination = '', migrationStatus = 'All' }
  * POST /messagemove/close  (configurable via CHAT_MIGRATION_CLOSE_PATH env)
  * Body: array of job objects with { id }
  */
-async function closeChatMigrationJobs(jobIds) {
-  const { auth } = await login();
-  const client = getAuthClient(auth);
+async function closeChatMigrationJobs(jobIds, context = {}) {
+  const { auth, baseURL } = await getSession(context);
+  const client = getAuthClient(auth, baseURL);
   const closePath = (env.CHAT_MIGRATION_CLOSE_PATH || 'messagemove/close')
     .trim().replace(/^\/+/, '').replace(/\/+$/, '');
   const payload = jobIds.map((id) => {
@@ -621,11 +703,11 @@ async function closeChatMigrationJobs(jobIds) {
  *
  * @param {{ cloudName: string, adminEmail: string, tenantId?: string, accessToken?: string, refreshToken?: string }} opts
  */
-async function addCloudAccount({ cloudName, adminEmail, tenantId, accessToken, refreshToken } = {}) {
-  const { auth, userId } = await login();
-  if (!userId) throw new Error('addCloudAccount: userId required — use MIGRATION_API_USERNAME/PASSWORD auth');
+async function addCloudAccount({ cloudName, adminEmail, tenantId, accessToken, refreshToken, context = {} } = {}) {
+  const { auth, userId, baseURL } = await getSession(context);
+  if (!userId) throw new Error('addCloudAccount: userId required — use email/password auth');
 
-  const client = getAuthClient(auth);
+  const client = getAuthClient(auth, baseURL);
 
   const payload = { cloudName, emailId: adminEmail };
   if (tenantId)     payload.tenantId     = tenantId;
@@ -663,47 +745,7 @@ async function addCloudAccount({ cloudName, adminEmail, tenantId, accessToken, r
 }
 
 function clearToken() {
-  cfAuth = null;
-}
-
-/**
- * Pre-flight check before initiating a chat migration: confirm the source and
- * destination platforms are actually connected as clouds in this CloudFuze
- * subscriber account. Returns { ok, srcCloud, dstCloud, available, ... } so the
- * caller can fail fast with a clear message instead of hitting a raw HTTP 500.
- */
-async function preflightClouds(context) {
-  const srcCloudName = CF_PLATFORM[(context.sourcePlatform || '').toLowerCase()] || 'SLACK';
-  const dstCloudName = CF_PLATFORM[(context.destinationPlatform || '').toLowerCase()] || 'MICROSOFT_TEAMS';
-
-  let accounts = [];
-  try {
-    accounts = await getCloudAccounts();
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `Could not list CloudFuze cloud accounts: ${err.message}`,
-      srcCloudName, dstCloudName, srcCloud: null, dstCloud: null, available: [],
-    };
-  }
-
-  const srcCloud = findCloudAccount(accounts, srcCloudName, context.sourceEmail);
-  const dstCloud = findCloudAccount(accounts, dstCloudName, context.destinationEmail);
-  const available = accounts.map((a) => `${a.cloudName}/${a.emailId || '?'}`);
-
-  const missing = [];
-  if (!srcCloud) missing.push(`source ${srcCloudName} (for "${context.sourceEmail}")`);
-  if (!dstCloud) missing.push(`destination ${dstCloudName} (for "${context.destinationEmail}")`);
-
-  return {
-    ok: missing.length === 0,
-    reason: missing.length
-      ? `Not connected in CloudFuze: ${missing.join(' and ')}. `
-        + `Connected clouds: ${available.length ? available.join(', ') : '(none)'}. `
-        + `Connect the ${srcCloudName} and ${dstCloudName} clouds in the CloudFuze subscriber account, then retry.`
-      : null,
-    srcCloudName, dstCloudName, srcCloud, dstCloud, available,
-  };
+  sessionCache.clear();
 }
 
 module.exports = {
@@ -711,7 +753,6 @@ module.exports = {
   validateUser,
   triggerMigration,
   triggerChatMigration,
-  preflightClouds,
   getCloudAccounts,
   addCloudAccount,
   getCloudChannels,

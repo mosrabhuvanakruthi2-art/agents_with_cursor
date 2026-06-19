@@ -3,15 +3,17 @@ import CleanDestination from './CleanDestination';
 import usePersistedState from '../hooks/usePersistedState';
 
 /** Merged Clean Up page — Gmail (source) and Outlook (destination) cleanup under tabs. */
-export default function CleanUp() {
+export default function CleanUp({ embedded = false }) {
   const [tab, setTab] = usePersistedState('cleanup-tab', 'gmail');
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Clean Up</h1>
-        <p className="text-sm text-gray-500 mt-1">Wipe test mailboxes before a migration run</p>
-      </div>
+      {!embedded && (
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Clean Up</h1>
+          <p className="text-sm text-gray-500 mt-1">Wipe test mailboxes before a migration run</p>
+        </div>
+      )}
 
       <div className="flex items-center gap-1 border-b border-gray-200">
         <Tab label="Gmail" active={tab === 'gmail'} onClick={() => setTab('gmail')} />
