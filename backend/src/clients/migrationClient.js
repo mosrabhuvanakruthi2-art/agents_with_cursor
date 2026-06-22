@@ -703,39 +703,45 @@ async function getClouds() {
  */
 function findCloudId(clouds, email, cloudNameHint) {
   const norm = String(email || '').toLowerCase().trim();
-
   const extractId = (c) => c.id || c.vendorId || c.cloudId;
 
-  // 1. Exact match
-  const exact = clouds.find(
-    (c) =>
-      String(c.adminEmailId || '').toLowerCase() === norm ||
-      String(c.email || '').toLowerCase() === norm
-  );
-  if (exact) return { id: extractId(exact), cloudName: exact.cloudName, memberId: exact.memberId };
+  // Extract any email-like field — qarelease uses 'emailId', other servers use 'adminEmailId'/'email'
+  const cloudEmail = (c) => String(
+    c.adminEmailId || c.email || c.emailId || c.memberEmail || c.userEmail || ''
+  ).toLowerCase();
 
-  // 2. Domain match
+  // When cloudNameHint is provided, build a type-filtered subset for scoped matching.
+  // This prevents cross-type domain matches (e.g. Box filefuze.co matching instead of SharePoint filefuze.co).
+  const hint = cloudNameHint ? String(cloudNameHint).toUpperCase().trim() : null;
+  const typedClouds = hint
+    ? clouds.filter((c) => {
+        const cn = String(c.cloudName || '').toUpperCase();
+        return cn === hint || cn.startsWith(hint + '_') || cn.startsWith(hint);
+      })
+    : [];
+
+  // 1. Exact email match — type-scoped first, then all clouds
+  const exactScoped = typedClouds.find((c) => cloudEmail(c) === norm);
+  if (exactScoped) return { id: extractId(exactScoped), cloudName: exactScoped.cloudName, memberId: exactScoped.memberId };
+
+  const exactAll = clouds.find((c) => cloudEmail(c) === norm);
+  if (exactAll) return { id: extractId(exactAll), cloudName: exactAll.cloudName, memberId: exactAll.memberId };
+
+  // 2. Domain match — type-scoped first, then all clouds
   const domain = norm.includes('@') ? norm.split('@')[1] : null;
   if (domain) {
-    const domainHit = clouds.find((c) => {
-      const adminEmail = String(c.adminEmailId || c.email || '').toLowerCase();
-      return adminEmail.endsWith('@' + domain);
-    });
-    if (domainHit) return { id: extractId(domainHit), cloudName: domainHit.cloudName, memberId: domainHit.memberId };
+    const domainScoped = typedClouds.find((c) => cloudEmail(c).endsWith('@' + domain));
+    if (domainScoped) return { id: extractId(domainScoped), cloudName: domainScoped.cloudName, memberId: domainScoped.memberId };
+
+    const domainAll = clouds.find((c) => cloudEmail(c).endsWith('@' + domain));
+    if (domainAll) return { id: extractId(domainAll), cloudName: domainAll.cloudName, memberId: domainAll.memberId };
   }
 
-  // 3. cloudName prefix match — for content clouds without email fields (e.g. qarelease).
-  // 'box' → 'BOX_BUSINESS', 'sharepoint' → 'SHAREPOINT_ONLINE_BUSINESS', etc.
-  if (cloudNameHint) {
-    const hint = String(cloudNameHint).toUpperCase().trim();
-    const nameHit = clouds.find((c) => {
-      const cn = String(c.cloudName || '').toUpperCase();
-      return cn === hint || cn.startsWith(hint + '_') || cn.startsWith(hint);
-    });
-    if (nameHit) {
-      logger.info(`CloudFuze findCloudId: matched "${nameHit.cloudName}" via cloudNameHint "${cloudNameHint}"`);
-      return { id: extractId(nameHit), cloudName: nameHit.cloudName, memberId: nameHit.memberId };
-    }
+  // 3. cloudName-only fallback — first cloud matching the type hint (no email fields on this server)
+  if (hint && typedClouds.length > 0) {
+    const nameHit = typedClouds[0];
+    logger.info(`CloudFuze findCloudId: matched "${nameHit.cloudName}" via cloudNameHint "${cloudNameHint}" (no email match)`);
+    return { id: extractId(nameHit), cloudName: nameHit.cloudName, memberId: nameHit.memberId };
   }
 
   return null;

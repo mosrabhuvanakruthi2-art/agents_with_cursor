@@ -412471,5 +412471,356 @@
       "key": "AQ-28",
       "url": "https://neutaraticketing.cftools.live/issues/AQ-28"
     }
+  },
+  {
+    "executionId": "fa24fedb-be38-4f33-a944-d402ff388164",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "E2E",
+      "executionId": "fa24fedb-be38-4f33-a944-d402ff388164",
+      "sourceProvider": "box",
+      "destinationProvider": "onedrive",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "fa24fedb-be38-4f33-a944-d402ff388164",
+      "status": "FAILED",
+      "duration": 44462,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-22T13:30:14.296Z",
+          "completedAt": "2026-06-22T13:30:58.103Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-22T13:30:13.138Z",
+    "completedAt": "2026-06-22T13:30:58.105Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "b1b7f4ad-c8cd-4f16-8f30-2848cd7b69e8",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "b1b7f4ad-c8cd-4f16-8f30-2848cd7b69e8",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "BoxTestDataAgent",
+    "result": {
+      "executionId": "b1b7f4ad-c8cd-4f16-8f30-2848cd7b69e8",
+      "status": "FAILED",
+      "duration": 191,
+      "error": "adminEmail is required for BoxTestDataAgent",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "PENDING",
+          "startedAt": null,
+          "completedAt": null,
+          "result": null,
+          "error": null,
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "adminEmail is required for BoxTestDataAgent",
+    "createdAt": "2026-06-22T13:43:14.765Z",
+    "completedAt": "2026-06-22T13:43:15.273Z",
+    "progress": "Failed: adminEmail is required for BoxTestDataAgent"
+  },
+  {
+    "executionId": "f208bd69-6b29-4518-9127-711b7dac11a5",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "f208bd69-6b29-4518-9127-711b7dac11a5",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "f208bd69-6b29-4518-9127-711b7dac11a5",
+      "status": "FAILED",
+      "duration": 113623,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-22T13:48:01.977Z",
+          "completedAt": "2026-06-22T13:48:41.434Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-22T13:46:47.492Z",
+    "completedAt": "2026-06-22T13:48:41.436Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "44fa38d3-596f-4da1-a64b-6a042b8adca7",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "44fa38d3-596f-4da1-a64b-6a042b8adca7",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "bhuvana.mosra@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "BoxTestDataAgent",
+    "result": {
+      "executionId": "44fa38d3-596f-4da1-a64b-6a042b8adca7",
+      "status": "FAILED",
+      "duration": 953,
+      "error": "Request failed with status code 409",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "PENDING",
+          "startedAt": null,
+          "completedAt": null,
+          "result": null,
+          "error": null,
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 409",
+    "createdAt": "2026-06-22T14:49:00.722Z",
+    "completedAt": "2026-06-22T14:49:02.072Z",
+    "progress": "Failed: Request failed with status code 409"
+  },
+  {
+    "executionId": "fd7521f6-16c8-4c48-aafa-adfda54486af",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "fd7521f6-16c8-4c48-aafa-adfda54486af",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "fd7521f6-16c8-4c48-aafa-adfda54486af",
+      "status": "FAILED",
+      "duration": 93115,
+      "error": "[Step 5 POST initiate] HTTP 404: Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-22T15:26:42.253Z",
+          "completedAt": "2026-06-22T15:26:50.028Z",
+          "result": null,
+          "error": "[Step 5 POST initiate] HTTP 404: Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "[Step 5 POST initiate] HTTP 404: Request failed with status code 404",
+    "createdAt": "2026-06-22T15:25:16.225Z",
+    "completedAt": "2026-06-22T15:26:50.029Z",
+    "progress": "Failed: [Step 5 POST initiate] HTTP 404: Request failed with status code 404"
+  },
+  {
+    "executionId": "f36d511c-b4ef-4a40-8a3c-6a4f2bc87e7f",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "f36d511c-b4ef-4a40-8a3c-6a4f2bc87e7f",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "INTERRUPTED",
+    "currentAgent": "MigrationAgent",
+    "result": null,
+    "error": "Server restarted while execution was in progress",
+    "createdAt": "2026-06-22T18:19:18.317Z",
+    "completedAt": "2026-06-22T18:34:17.532Z",
+    "progress": "Interrupted — server was restarted. Click Resume to continue."
+  },
+  {
+    "executionId": "13d4f8cf-b2a6-4fdf-898e-8da33b293d37",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "13d4f8cf-b2a6-4fdf-898e-8da33b293d37",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "RUNNING",
+    "currentAgent": "MigrationAgent",
+    "result": null,
+    "error": null,
+    "createdAt": "2026-06-22T18:35:51.688Z",
+    "completedAt": null,
+    "progress": "MigrationAgent: /mail/reports poll 30/60 — IN_PROGRESS"
   }
 ]
