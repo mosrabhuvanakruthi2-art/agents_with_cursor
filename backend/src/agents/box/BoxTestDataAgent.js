@@ -220,11 +220,28 @@ class BoxTestDataAgent extends BaseAgent {
 
     logger.info(`[BoxTestDataAgent] Starting — admin: ${adminEmail}${asUserId ? `, as-user: ${asUserId}` : ''}`);
 
-    // 1. Root folder "Agent Box Data" at Box root (parent id "0")
-    logger.info('[BoxTestDataAgent] Creating root folder: Agent Box Data');
-    const rootFolder = await boxClient.createFolder('Agent Box Data', '0', token, asUserId);
+    // 1. Root folder at Box root (parent id "0") — increment name on conflict (409)
+    const BASE_ROOT_NAME = 'Agent Box Data';
+    let rootFolder;
+    let rootFolderName = BASE_ROOT_NAME;
+    for (let attempt = 0; attempt <= 9; attempt++) {
+      const folderName = attempt === 0 ? BASE_ROOT_NAME : `${BASE_ROOT_NAME} ${attempt}`;
+      try {
+        logger.info(`[BoxTestDataAgent] Creating root folder: ${folderName}`);
+        rootFolder = await boxClient.createFolder(folderName, '0', token, asUserId);
+        rootFolderName = folderName;
+        break;
+      } catch (err) {
+        if (err?.response?.status === 409 && attempt < 9) {
+          logger.warn(`[BoxTestDataAgent] Folder "${folderName}" already exists — trying "${BASE_ROOT_NAME} ${attempt + 1}"`);
+          continue;
+        }
+        throw err;
+      }
+    }
     this.results.rootFolderId = rootFolder.id;
-    logger.info(`[BoxTestDataAgent] Root folder id: ${rootFolder.id}`);
+    this.results.rootFolderName = rootFolderName;
+    logger.info(`[BoxTestDataAgent] Root folder: id=${rootFolder.id} name="${rootFolderName}"`);
 
     // Run all scenarios sequentially so each can reference prior IDs
     await this._createSubFolder(rootFolder.id, token, asUserId);
@@ -239,6 +256,7 @@ class BoxTestDataAgent extends BaseAgent {
     logger.info('[BoxTestDataAgent] All scenarios completed');
     return {
       rootFolderId: this.results.rootFolderId,
+      rootFolderName: this.results.rootFolderName,
       scenarios: this.results,
       sharedLinks: this.sharedLinks,
       warnings: this.errors,

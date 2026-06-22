@@ -315,6 +315,11 @@ class AgentOrchestrator {
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
+        // For content migrations: capture source folder path so MigrationAgent can build the CSV
+        if (sourceData?.rootFolderName) {
+          context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
+          log.info(`Content source path captured from ${dataAgent.getName()}: ${context.sourceTestDataPath}`);
+        }
       } else if (dataAgent === null) {
         log.info('Step 1: Skipped (no TestDataAgent registered for this combination)');
         executionService.update(context.executionId, {
@@ -349,17 +354,22 @@ class AgentOrchestrator {
       }
 
       // Step 3: Validate — skip for content migrations (box/sharepoint/onedrive/dropbox)
-      // and for content migrations that returned a stop status.
+      // UNLESS the ValidationAgent class declares `static supportsDeepValidation = true`,
+      // which means it has a real file/folder comparison (e.g. BoxToSharepointValidationAgent).
+      // Always skip when MigrationAgent returned skipValidation (e.g. content stop status).
       const isContentProviders =
         ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
         ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
-      const skipValidation = migrationResult?.skipValidation || (isContentMode && isContentProviders);
+      const ValidationAgentClass = agentsFor(context)?.ValidationAgent;
+      const hasDeepValidation = Boolean(ValidationAgentClass?.supportsDeepValidation);
+      const skipValidation = migrationResult?.skipValidation ||
+        (isContentMode && isContentProviders && !hasDeepValidation);
 
       let validationResult = null;
       if (skipValidation) {
         const reason = migrationResult?.skipValidation
           ? `content migration stop status "${migrationResult.finalStatus}"`
-          : `content migration (${context.sourceProvider} → ${context.destinationProvider}) — email validation not applicable`;
+          : `content migration (${context.sourceProvider} → ${context.destinationProvider}) — no deep validation registered`;
         log.info(`Step 3: Skipped — ${reason}`);
         executionService.update(context.executionId, {
           currentAgent: 'Skipped',

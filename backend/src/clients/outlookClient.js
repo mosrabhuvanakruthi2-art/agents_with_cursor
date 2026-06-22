@@ -3433,4 +3433,6 @@ module.exports = {
   deleteAllConditionalFormattingRules,
   deleteAllSearchFolders,
   deleteQAGroups,
+  getAppAccessToken,
+  getMsTenant,
 };

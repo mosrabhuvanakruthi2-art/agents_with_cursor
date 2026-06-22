@@ -302,10 +302,29 @@ async function cleanBoxFolders(adminEmail, userEmail) {
   return { deletedFolders, errors };
 }
 
+/**
+ * Build a flat tree of { name, type, path } for every item under rootFolderId.
+ * maxDepth limits recursion to avoid infinite loops in deep/circular structures.
+ */
+async function buildFolderTree(rootFolderId, token, asUserId, maxDepth = 5, _depth = 0, _path = '') {
+  const items = await getFolderItems(rootFolderId, token, asUserId);
+  const result = [];
+  for (const item of items) {
+    const itemPath = `${_path}/${item.name}`;
+    result.push({ name: item.name, type: item.type, path: itemPath, id: item.id });
+    if (item.type === 'folder' && _depth < maxDepth) {
+      const children = await buildFolderTree(item.id, token, asUserId, maxDepth, _depth + 1, itemPath);
+      result.push(...children);
+    }
+  }
+  return result;
+}
+
 module.exports = {
   getValidToken, getMe, getUsers,
   createFolder, uploadFile, uploadVersion,
   createSharedLink, addComment, createCollaboration,
   createGroup, addGroupMember, createGroupCollaboration,
   getBoxContentStats, cleanBoxContent, cleanBoxFiles, cleanBoxFolders,
+  getFolderItems, buildFolderTree,
 };

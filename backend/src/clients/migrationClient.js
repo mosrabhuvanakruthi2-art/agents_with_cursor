@@ -14,6 +14,8 @@ let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null
 let lastJobReport = null;
 // Workspace ID returned by POST /mail/register on some legacy servers
 let registeredWorkspaceId = null;
+// Move ID returned by POST /move/consumer/create (content server migrations)
+let contentMoveId = null;
 
 // ── Runtime config: set by MigrationAgent when context provides a server URL ──
 // { baseUrl: string, email: string, password: string }
@@ -49,6 +51,7 @@ function setRuntimeConfig(cfg) {
   loginToken = null;
   registeredWorkspaceId = null;
   lastJobReport = null;
+  contentMoveId = null;
   if (cfg?.baseUrl) {
     logger.info(`CloudFuze: runtime server override set to ${cfg.baseUrl}`);
   }
@@ -61,6 +64,7 @@ function clearRuntimeConfig() {
   lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
   lastJobReport = null;
   registeredWorkspaceId = null;
+  contentMoveId = null;
 }
 
 function getLastJobDetails() {
@@ -938,6 +942,148 @@ function initiatePathCandidates(sourceCloudId) {
 }
 
 async function triggerMigration(context) {
+  // ── Content server (qarelease/Basic auth): Team Migration via newmultiuser API ──
+  // 4-step flow matching the qarelease Team Migration UI:
+  //   1. POST /mapping/user/path/csv — upload path-based CSV mapping
+  //   2. POST /move/newmultiuser/create/job — create migration job
+  //   3. PUT  /move/newmultiuser/update/{jobId} — set migration options
+  //   4. POST /move/newmultiuser/create/{jobId} — start migration
+  if (runtimeConfig?.userId) {
+    const token = await login();
+    const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
+
+    // Determine source path: prefer explicit context override, then BoxTestDataAgent-captured path, then root
+    const sourcePath = context.sourcePath || context.sourceTestDataPath || '/';
+
+    // Determine destination path based on cloud type (can be overridden via context.destinationPath)
+    let destinationPath = context.destinationPath;
+    if (!destinationPath) {
+      const dcn = String(context.destCloudName || context.destinationProvider || '').toUpperCase();
+      if (dcn.includes('SHAREPOINT')) destinationPath = '/SANITY DATAA/Documents';
+      else if (dcn.includes('SHARED_DRIVE') || dcn.includes('GOOGLEDRIVE') || dcn.includes('GOOGLE_DRIVE')) destinationPath = '/OSM';
+      else destinationPath = '/';
+    }
+
+    logger.info(`CloudFuze triggerMigration (content team): sourcePath="${sourcePath}", destinationPath="${destinationPath}", srcCloud=${context.sourceCloudId}, dstCloud=${context.destCloudId}`);
+
+    // ── Step 1: Upload path mapping CSV ──────────────────────────────────────
+    const csvContent = [
+      'Source Cloud,Source Path,Destination Cloud,Destination Path',
+      `${context.sourceEmail},${sourcePath},${context.destinationEmail},${destinationPath}`,
+    ].join('\n');
+
+    const csvParams = `sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=500`;
+    const csvUrl = `${contentOrigin}/proxyservices/v1/mapping/user/path/csv?${csvParams}`;
+
+    logger.info(`CloudFuze content CSV upload: POST ${csvUrl}\n${csvContent}`);
+    let csvData = [];
+    try {
+      const csvRes = await axios.post(csvUrl, csvContent, migrationAxiosConfig({
+        headers: { Authorization: token, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }));
+      csvData = Array.isArray(csvRes.data) ? csvRes.data : (csvRes.data ? [csvRes.data] : []);
+      logger.info(`CloudFuze content CSV upload response: ${JSON.stringify(csvData)}`);
+    } catch (csvErr) {
+      logger.warn(`CloudFuze content CSV upload failed (${csvErr?.response?.status || csvErr.message}) — using direct workspace pair`);
+    }
+
+    // ── Step 2: Create multiuser migration job ────────────────────────────────
+    const workspacePairs = csvData.length > 0
+      ? csvData.map((row) => ({
+          fromCloudId: { id: context.sourceCloudId },
+          toCloudId: { id: context.destCloudId },
+          fromMailId: row?.sourceCloudDetails?.emailId || row?.fromMailId || context.sourceEmail,
+          toMailId: row?.destCloudDetails?.emailId || row?.toMailId || context.destinationEmail,
+          fromRootId: row?.fromRootId || sourcePath,
+          toRootId: row?.toRootId || destinationPath,
+          fromCloudName: context.sourceCloudName,
+          toCloudName: context.destCloudName,
+        }))
+      : [{
+          fromCloudId: { id: context.sourceCloudId },
+          toCloudId: { id: context.destCloudId },
+          fromMailId: context.sourceEmail,
+          toMailId: context.destinationEmail,
+          fromRootId: sourcePath,
+          toRootId: destinationPath,
+          fromCloudName: context.sourceCloudName,
+          toCloudName: context.destCloudName,
+        }];
+
+    const createJobUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/job`;
+    logger.info(`CloudFuze create multiuser job: POST ${createJobUrl} pairs=${JSON.stringify(workspacePairs)}`);
+    const createJobRes = await axios.post(createJobUrl, workspacePairs, migrationAxiosConfig({
+      headers: { Authorization: token, 'Content-Type': 'application/json' },
+      timeout: 30000,
+    }));
+    logger.info(`CloudFuze multiuser job created: ${JSON.stringify(createJobRes.data)}`);
+
+    const jobId =
+      createJobRes.data?.id ||
+      createJobRes.data?.jobId ||
+      (Array.isArray(createJobRes.data) ? createJobRes.data[0]?.id : null);
+
+    if (!jobId) {
+      throw new Error(`CloudFuze: newmultiuser create/job returned no job ID — ${JSON.stringify(createJobRes.data)}`);
+    }
+
+    // ── Step 3: Update job options (migration settings) ───────────────────────
+    const isDelta = context.migrationType === 'DELTA';
+    const jobName = `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`.slice(0, 80);
+    const toDate = new Date().toISOString().slice(0, 10) + ' 00:00:00';
+
+    const updateParams = [
+      `jobName=${encodeURIComponent(jobName)}`,
+      `migrateFolderName=${encodeURIComponent('/')}`,
+      `isDeltaMigration=${isDelta}`,
+      'fileFolderLink=true',
+      'externalUsers=true',
+      'metaData=true',
+      'sendComments=true',
+      'innerFolderPerms=true',
+      'innerFilePerms=true',
+      'versioning=true',
+      'embeddedLinks=true',
+      'rootFolderPerms=true',
+      'rootFilePerms=true',
+      'addExternalUserAsGuest=true',
+      'withPermissions=true',
+      'notifyInternalUsers=true',
+      'notifyExternalUsers=true',
+      'fromDate=null',
+      `toDate=${encodeURIComponent(toDate)}`,
+      'createdTimeForFiles=false',
+      'modifiedTimeForFiles=true',
+    ].join('&');
+
+    const updateUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/update/${jobId}?${updateParams}`;
+    logger.info(`CloudFuze update job options: PUT ${updateUrl}`);
+    const updateRes = await axios.put(updateUrl, null, migrationAxiosConfig({
+      headers: { Authorization: token },
+      timeout: 30000,
+    }));
+    logger.info(`CloudFuze update job options response: ${JSON.stringify(updateRes.data)}`);
+
+    // ── Step 4: Start migration ───────────────────────────────────────────────
+    const startUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/${jobId}`;
+    logger.info(`CloudFuze start migration: POST ${startUrl}`);
+    const startRes = await axios.post(startUrl, null, migrationAxiosConfig({
+      headers: { Authorization: token },
+      timeout: 60000,
+    }));
+    logger.info(`CloudFuze start migration response: ${JSON.stringify(startRes.data)}`);
+
+    contentMoveId = jobId;
+
+    return {
+      jobId,
+      status: 'INITIATED',
+      rawResponse: startRes.data,
+      initiatePath: 'move/newmultiuser',
+    };
+  }
+
   const token = await login();
   const client = getAuthClient(token);
 
@@ -1083,10 +1229,77 @@ const TERMINAL_STATUSES = new Set([
   // Content migration statuses
   'VERSION_PROCESSED',
   'VERSION_NOT_PROCESSED',
-  'IN_PROGRESS',
-  'INPROGRESS',
   'NOT_PROCESSED',
 ]);
+
+// ─────────────────────────────────────────────────────────────
+// Content server polling — newmultiuser jobs (team migration)
+//   Primary:  GET /proxyservices/v1/move/queue/status?jobId={jobId}
+//   Fallback: GET /proxyservices/v1/move/clouds/status/{moveId}  (legacy consumer jobs)
+// ─────────────────────────────────────────────────────────────
+async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 30000, onProgress, executionId } = {}) {
+  const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
+  const queueStatusUrl = `${contentOrigin}/proxyservices/v1/move/queue/status?jobId=${moveId}`;
+  const listUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/get/list/${moveId}?page_nbr=1&page_size=30`;
+  const cloudsStatusUrl = `${contentOrigin}/proxyservices/v1/move/clouds/status/${moveId}`;
+  const token = await login();
+  const executionService = require('../services/executionService');
+  const maxPolls = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
+
+  for (let attempt = 1; attempt <= maxPolls; attempt++) {
+    const sliceMs = 5000;
+    const slices = Math.ceil(intervalMs / sliceMs);
+    for (let s = 0; s < slices; s++) {
+      await new Promise((r) => setTimeout(r, sliceMs));
+      if (executionId && executionService.isCancelled(executionId)) return 'CANCELLED';
+    }
+    if (executionId && executionService.isCancelled(executionId)) return 'CANCELLED';
+
+    // Try queue/status → get/list → clouds/status in order; use first successful response
+    let data = null;
+    for (const pollUrl of [queueStatusUrl, listUrl, cloudsStatusUrl]) {
+      try {
+        const res = await axios.get(
+          pollUrl,
+          migrationAxiosConfig({ headers: { Authorization: token }, timeout: 30000 })
+        );
+        // queue/status may return an array; get/list returns a page object with content[]
+        const raw = res.data;
+        data = Array.isArray(raw)
+          ? (raw[0] || null)
+          : (raw?.content?.[0] || raw?.data?.[0] || raw);
+        if (data) break;
+      } catch (err) {
+        logger.warn(`CloudFuze content poll ${attempt} via ${pollUrl}: ${err.message}`);
+      }
+    }
+
+    if (!data) {
+      logger.warn(`CloudFuze content poll ${attempt}/${maxPolls} (jobId=${moveId}): no response from any endpoint`);
+      if (onProgress) onProgress(attempt, maxPolls, null);
+      continue;
+    }
+
+    logger.info(`CloudFuze content poll ${attempt}/${maxPolls} (jobId=${moveId}): ${JSON.stringify(data)}`);
+
+    const status = String(
+      data?.status || data?.moveStatus || data?.syncStatus || data?.processStatus || data?.jobStatus || ''
+    ).toUpperCase().trim();
+
+    const totalCount     = Number(data?.totalCount     || data?.totalFiles     || data?.totalFileAndFolder || 0) || null;
+    const processedCount = Number(data?.processedCount || data?.processedFiles || data?.migratedCount || 0) || null;
+
+    lastJobDetails = { workspaceId: moveId, totalCount, processedCount };
+    lastJobReport  = data;
+
+    if (onProgress) onProgress(attempt, maxPolls, status || null);
+
+    if (TERMINAL_STATUSES.has(status)) return status;
+  }
+
+  logger.warn(`CloudFuze content poll: max wait (${maxMinutes} min) reached for jobId=${moveId}`);
+  return 'TIMEOUT';
+}
 
 async function pollReports(deltaMigration, fromMailId, {
   maxMinutes = 30,
@@ -1094,6 +1307,12 @@ async function pollReports(deltaMigration, fromMailId, {
   onProgress,
   executionId,
 } = {}) {
+  // Content server (qarelease): poll by moveId instead of email
+  if (runtimeConfig?.userId && contentMoveId) {
+    logger.info(`CloudFuze pollReports: content server detected — polling /move/clouds/status/${contentMoveId}`);
+    return pollContentMigration(contentMoveId, { maxMinutes, intervalMs, onProgress, executionId });
+  }
+
   const tokenCandidates = [
     loginToken,
     bearerToken,
