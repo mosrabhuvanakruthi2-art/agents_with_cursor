@@ -91,6 +91,9 @@ class MigrationAgent extends BaseAgent {
       // devemail: POST /auth/user → App JWT, then POST /mail/register → Mail JWT
       const devEmail = context.migrationServerEmail || env.CLOUDFUZE_OWNER_EMAIL || '';
       const devPassword = context.migrationServerPassword || env.MIGRATION_APP_LOGIN_PASSWORD || '';
+      // Set runtime config so resolveEmail() / ownerEmailId use the UI credentials for all
+      // subsequent devemailClient calls (triggerMigration, cacheUserMapping, uploadUserCSV, etc.)
+      devemailClient.setRuntimeConfig({ email: devEmail, password: devPassword });
       await devemailClient.authenticate(devEmail, devPassword, {
         baseUrl: context.migrationServerUrl || env.MIGRATION_API_URL,
       });
@@ -109,7 +112,7 @@ class MigrationAgent extends BaseAgent {
     // ── Validate subscriber (optional) ───────────────────────────
     let ownerValidation = null;
     if (process.env.CLOUDFUZE_SKIP_VALIDATE_USER !== 'true') {
-      const ownerEmail = env.CLOUDFUZE_OWNER_EMAIL || context.sourceEmail;
+      const ownerEmail = context.migrationServerEmail || env.CLOUDFUZE_OWNER_EMAIL || context.sourceEmail;
       bump(`MigrationAgent: validating subscriber ${ownerEmail}…`);
       log.info(`Validating CloudFuze subscriber: ${ownerEmail}`);
       try {

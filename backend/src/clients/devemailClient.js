@@ -22,6 +22,7 @@
 
 const https  = require('https');
 const axios  = require('axios');
+const md5    = require('md5');
 const env    = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
@@ -155,40 +156,36 @@ async function getAppJwt(email, password) {
   if (!email)    throw new Error('devemailClient.getAppJwt: email is required');
   if (!password) throw new Error('devemailClient.getAppJwt: password is required');
 
-  // Strategy 1: POST /auth/user with MD5 then plaintext password
-  const crypto = require('crypto');
-  const md5Password = crypto.createHash('md5').update(password).digest('hex');
-  const env = require('../config/env');
+  const md5Password = md5(password);
 
-  logger.info(`devemailClient: POST /auth/user (email=${email}) — trying MD5 then plaintext`);
-
+  // Strategy 1: for non-default users, use headless browser login to get THEIR own JWT.
+  // /auth/user is broken server-side (returns 500 for all users).
+  // Basic auth matches by password hash only — all users sharing the same password would get
+  // the wrong account. Browser login is the only reliable way to get the correct user's JWT.
   let res;
-  for (const [label, pwd] of [['md5', md5Password], ['plaintext', password]]) {
+  const isDefaultUser = email.toLowerCase() === (env.CLOUDFUZE_OWNER_EMAIL || '').toLowerCase().trim();
+  if (!isDefaultUser) {
     try {
-      res = await retryWithBackoff(
-        () =>
-          axios.post(
-            `${BASE_URL}/auth/user`,
-            { email, password: pwd },
-            axiosCfg({ headers: { 'Content-Type': 'application/json' }, timeout: 30000 })
-          ),
-        { label: `devemailClient POST /auth/user (${label})`, maxRetries: 2 }
-      );
-      logger.info(`devemailClient: POST /auth/user succeeded with ${label} password`);
-      break;
-    } catch (err) {
-      logger.warn(`devemailClient: POST /auth/user failed with ${label} password: ${err.message}`);
-      res = null;
+      const { getJwtViaBrowser } = require('./devemailBrowserClient');
+      logger.info(`devemailClient: trying browser login for ${email}`);
+      const browserJwt = await getJwtViaBrowser(email, password);
+      logger.info('devemailClient: browser login succeeded — JWT captured for current user');
+      // emailToken from localStorage is already Mail-scoped — use it as mailJwt directly.
+      // Do NOT go through /mail/register with env Basic auth (that would give bhuvana's JWT).
+      mailJwt = browserJwt;
+      appJwtIsMailJwt = false;
+      res = { data: browserJwt, headers: {} };
+    } catch (browserErr) {
+      logger.warn(`devemailClient: browser login failed (${browserErr.message}) — falling back to Basic auth`);
     }
   }
 
-  // Strategy 2 (fallback): POST /mail/login with Basic auth
-  // This uses the userId:passwordHash Basic credentials stored in MIGRATION_API_BASIC_AUTH.
-  // Confirmed working: returns bhuvana's JWT which is accepted by /mail/move/initiate.
+  // Strategy 2 (fallback): POST /mail/login with env Basic auth token.
+  // Used for the default env user, or when browser login fails.
   if (!res) {
     const basicCred = (env.MIGRATION_API_BASIC_AUTH || '').trim();
-    if (!basicCred) throw new Error('devemailClient: /auth/user failed and MIGRATION_API_BASIC_AUTH not set');
-    logger.info('devemailClient: /auth/user failed — falling back to POST /mail/login (Basic auth)');
+    if (!basicCred) throw new Error('devemailClient: no auth method succeeded and MIGRATION_API_BASIC_AUTH not set');
+    logger.info('devemailClient: using POST /mail/login (Basic auth)');
     try {
       res = await retryWithBackoff(
         () =>
@@ -203,7 +200,7 @@ async function getAppJwt(email, password) {
         { label: 'devemailClient POST /mail/login (Basic)', maxRetries: 2 }
       );
       logger.info('devemailClient: POST /mail/login (Basic auth) succeeded — JWT is already Mail-scoped, skipping /mail/register');
-      appJwtIsMailJwt = true; // signal authenticate() to skip /mail/register
+      appJwtIsMailJwt = true;
     } catch (err2) {
       throw new Error(`devemailClient: all auth methods failed. /mail/login: ${err2.message}`);
     }

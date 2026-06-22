@@ -206,7 +206,7 @@ async function createBug(execution) {
     );
 
     const key = res.data?.key || res.data?.id;
-    const url = `${baseUrl()}/spaces/${spaceKey()}/${key}`;
+    const url = `${baseUrl()}/issues/${key}`;
     logger.info(`[neutaraClient] Bug created: ${key}  ${url}`);
     return { key, url };
   } catch (err) {

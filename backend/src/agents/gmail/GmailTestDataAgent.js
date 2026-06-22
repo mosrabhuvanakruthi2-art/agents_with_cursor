@@ -68,6 +68,59 @@ function requestedTrashOrSpam(labelIds) {
   return (labelIds || []).some((id) => ['TRASH', 'SPAM'].includes(String(id).toUpperCase()));
 }
 
+// Valid Gmail built-in CATEGORY_ system labels — anything else with this prefix is a custom label name.
+const GMAIL_VALID_CATEGORY_LABELS = new Set([
+  'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+]);
+
+// Per-email cache: avoid re-listing labels on every email during the same seed run.
+const _labelCache = new Map(); // sourceEmail → Map<labelNameLower, labelId>
+
+async function resolveCustomLabelIds(sourceEmail, labelIds) {
+  if (!Array.isArray(labelIds) || labelIds.length === 0) return labelIds;
+
+  const customOnes = labelIds.filter(
+    (id) => String(id).toUpperCase().startsWith('CATEGORY_') && !GMAIL_VALID_CATEGORY_LABELS.has(String(id).toUpperCase())
+  );
+  if (customOnes.length === 0) return labelIds;
+
+  // Build/refresh the label name→id cache for this account
+  if (!_labelCache.has(sourceEmail)) {
+    const existing = await gmailClient.listLabels(sourceEmail, 'me');
+    const map = new Map();
+    for (const l of existing) map.set(l.name.toLowerCase(), l.id);
+    _labelCache.set(sourceEmail, map);
+  }
+  const cache = _labelCache.get(sourceEmail);
+
+  const resolved = [...labelIds];
+  for (let i = 0; i < resolved.length; i++) {
+    const raw = String(resolved[i]);
+    if (!raw.toUpperCase().startsWith('CATEGORY_') || GMAIL_VALID_CATEGORY_LABELS.has(raw.toUpperCase())) continue;
+
+    // e.g. CATEGORY_PROJECTX → ProjectX
+    const name = raw.replace(/^CATEGORY_/i, '').charAt(0).toUpperCase() + raw.replace(/^CATEGORY_/i, '').slice(1).toLowerCase();
+    const key = name.toLowerCase();
+
+    if (!cache.has(key)) {
+      try {
+        const res = await gmailClient.createLabel(sourceEmail, 'me', name);
+        const newId = res.data?.id;
+        if (newId) cache.set(key, newId);
+      } catch (createErr) {
+        // Label may already exist from a previous run — re-list and retry
+        const fresh = await gmailClient.listLabels(sourceEmail, 'me');
+        const freshMap = new Map(fresh.map((l) => [l.name.toLowerCase(), l.id]));
+        _labelCache.set(sourceEmail, freshMap);
+        if (!freshMap.has(key)) throw new Error(`Could not create Gmail label "${name}": ${createErr.message}`);
+      }
+    }
+
+    resolved[i] = _labelCache.get(sourceEmail).get(key);
+  }
+  return resolved;
+}
+
 /**
  * users.messages.insert often adds INBOX alongside SENT for outbound mail. Legacy seeds sometimes
  * requested INBOX explicitly (wrong for “sent” scenarios). Always remove INBOX for outbound so mail
@@ -1571,11 +1624,15 @@ class GmailTestDataAgent extends BaseAgent {
               }
         );
 
+        const resolvedLabelIds = await resolveCustomLabelIds(
+          sourceEmail,
+          emailDef.labelIds || (incoming ? ['INBOX'] : ['SENT'])
+        );
         const data = await gmailClient.insertEmail(
           sourceEmail,
           'me',
           raw,
-          emailDef.labelIds || (incoming ? ['INBOX'] : ['SENT']),
+          resolvedLabelIds,
           emailDef.insertOpts || {}
         );
         summary.emailsCreated++;

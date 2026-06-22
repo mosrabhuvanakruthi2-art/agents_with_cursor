@@ -711,11 +711,13 @@ async function listDomainUsers(adminEmail) {
   const tenant = getGoogleTenant(adminEmail);
   const domain = adminEmail.split('@')[1];
 
-  // Tenants with DWD service account: use Admin SDK Directory API
+  // Tenants with DWD service account: try Admin SDK first, then People API via SA impersonation
   if (hasServiceAccount(tenant)) {
+    const saAuth = getServiceAccountAuth(adminEmail);
+
+    // Strategy 1: Admin SDK Directory API (requires admin.directory.user scope in DWD)
     try {
-      const auth = getServiceAccountAuth(adminEmail);
-      const adminSdk = google.admin({ version: 'directory_v1', auth });
+      const adminSdk = google.admin({ version: 'directory_v1', auth: saAuth });
       const users = [];
       let pageToken = undefined;
       do {
@@ -742,48 +744,92 @@ async function listDomainUsers(adminEmail) {
       logger.info(`Admin SDK listed ${users.length} users for ${domain}`);
       return users;
     } catch (err) {
-      logger.warn(`Admin SDK user listing failed for ${adminEmail}: ${err.message}`);
-      return [];
+      logger.warn(`Admin SDK user listing failed for ${adminEmail}: ${err.message} — trying People API via service account`);
+    }
+
+    // Strategy 2: People API impersonating the admin (requires directory.readonly scope in DWD)
+    try {
+      const people = google.people({ version: 'v1', auth: saAuth });
+      const users = [];
+      let pageToken = undefined;
+      do {
+        const res = await people.people.listDirectoryPeople({
+          readMask: 'names,emailAddresses',
+          sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+          pageSize: 1000,
+          pageToken,
+        });
+        const items = res.data.people || [];
+        for (const p of items) {
+          const email = p.emailAddresses?.find((e) => e.value?.endsWith(`@${domain}`))?.value;
+          const name = p.names?.[0];
+          if (email) {
+            users.push({
+              id: p.resourceName,
+              email,
+              displayName: name?.displayName || email.split('@')[0],
+              firstName: name?.givenName || email.split('@')[0],
+              lastName: name?.familyName || '',
+            });
+          }
+        }
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
+      if (users.length > 0) {
+        logger.info(`People API (SA) listed ${users.length} users for ${domain}`);
+        return users;
+      }
+    } catch (err) {
+      logger.warn(`People API (SA) listing failed for ${adminEmail}: ${err.message} — falling back to OAuth`);
     }
   }
 
-  const auth = getAuthForToken(getRefreshTokenForEmail(adminEmail), adminEmail);
-
-  // Try People API directory listing first
+  // OAuth path: for non-DWD Google accounts with a stored refresh token
+  let auth;
   try {
-    const people = google.people({ version: 'v1', auth });
-    const users = [];
-    let pageToken = undefined;
+    auth = getAuthForToken(getRefreshTokenForEmail(adminEmail), adminEmail);
+  } catch (tokenErr) {
+    logger.warn(`listDomainUsers: no OAuth token for ${adminEmail} (${tokenErr.message})`);
+    auth = null;
+  }
 
-    do {
-      const res = await people.people.listDirectoryPeople({
-        readMask: 'names,emailAddresses',
-        sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
-        pageSize: 1000,
-        pageToken,
-      });
+  // Try People API directory listing via OAuth
+  if (auth) {
+    try {
+      const people = google.people({ version: 'v1', auth });
+      const users = [];
+      let pageToken = undefined;
 
-      const items = res.data.people || [];
-      for (const p of items) {
-        const email = p.emailAddresses?.find((e) => e.value?.endsWith(`@${domain}`))?.value;
-        const name = p.names?.[0];
-        if (email) {
-          users.push({
-            id: p.resourceName,
-            email,
-            displayName: name?.displayName || email.split('@')[0],
-            firstName: name?.givenName || email.split('@')[0],
-            lastName: name?.familyName || '',
-          });
+      do {
+        const res = await people.people.listDirectoryPeople({
+          readMask: 'names,emailAddresses',
+          sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+          pageSize: 1000,
+          pageToken,
+        });
+
+        const items = res.data.people || [];
+        for (const p of items) {
+          const email = p.emailAddresses?.find((e) => e.value?.endsWith(`@${domain}`))?.value;
+          const name = p.names?.[0];
+          if (email) {
+            users.push({
+              id: p.resourceName,
+              email,
+              displayName: name?.displayName || email.split('@')[0],
+              firstName: name?.givenName || email.split('@')[0],
+              lastName: name?.familyName || '',
+            });
+          }
         }
-      }
 
-      pageToken = res.data.nextPageToken;
-    } while (pageToken);
+        pageToken = res.data.nextPageToken;
+      } while (pageToken);
 
-    if (users.length > 0) return users;
-  } catch (err) {
-    logger.warn(`People API directory listing failed for ${adminEmail}: ${err.message}`);
+      if (users.length > 0) return users;
+    } catch (err) {
+      logger.warn(`People API directory listing failed for ${adminEmail}: ${err.message}`);
+    }
   }
 
   // Fallback: return all configured accounts for this domain
