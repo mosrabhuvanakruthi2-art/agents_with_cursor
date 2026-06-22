@@ -257,7 +257,10 @@ class MigrationAgent extends BaseAgent {
       const destLookup   = (isEmailOnlyMigration ? env.CLOUDFUZE_DEST_ADMIN_EMAIL   : '') || context.destAdminEmail   || context.destinationEmail;
 
       const isContentMode = context.mode === 'content' || (!context.includeMail && (context.includeCalendar || context.includeContacts));
-      sourceCloud = migrationClient.findCloudId(clouds, sourceLookup);
+      // For content migrations, pass the provider key as a hint so findCloudId() can match
+      // by cloudName prefix when the cloud objects have no email fields (e.g. qarelease returns
+      // BOX_BUSINESS/SHAREPOINT_ONLINE_BUSINESS without adminEmailId).
+      sourceCloud = migrationClient.findCloudId(clouds, sourceLookup, isContentMode ? context.sourceProvider : undefined);
       if (!sourceCloud) {
         if (isContentMode) {
           log.warn(`CloudFuze: source "${sourceLookup}" not found in /mail/clouds — continuing in content mode with null IDs`);
@@ -269,7 +272,7 @@ class MigrationAgent extends BaseAgent {
           );
         }
       }
-      destCloud = migrationClient.findCloudId(clouds, destLookup);
+      destCloud = migrationClient.findCloudId(clouds, destLookup, isContentMode ? context.destinationProvider : undefined);
       if (!destCloud) {
         if (isContentMode) {
           log.warn(`CloudFuze: destination "${destLookup}" not found in /mail/clouds — continuing in content mode with null IDs`);

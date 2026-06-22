@@ -273,7 +273,7 @@ class AgentOrchestrator {
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
     const { TestDataAgent, ValidationAgent } = agentsFor(context);
-    // Content combinations register no TestDataAgent (source data already exists) — keep null.
+    // Some content combinations (e.g. Box→SharePoint) do register a TestDataAgent for seeding.
     const dataAgent = TestDataAgent ? new TestDataAgent() : null;
     const migrationAgent = new MigrationAgent();
     const outlookAgent = new ValidationAgent();
@@ -299,25 +299,28 @@ class AgentOrchestrator {
         }
       }
 
-      // Step 1: Generate test data (Gmail or Outlook depending on source provider).
-      // Skipped on resume (skipTestData) and for content migration (data already in source cloud).
+      // Step 1: Generate test data.
+      // Skipped when: explicitly skipped on resume (skipTestData), OR no TestDataAgent registered
+      // for this combination (content combinations without a seeding agent).
       let sourceData = null;
-      if (!context.skipTestData && !isContentMode) {
+      if (!context.skipTestData && dataAgent !== null) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: dataAgent.getName(),
           progress: isOutlookSource
             ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
-            : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
+            : isContentMode
+              ? `${dataAgent.getName()}: seeding test data in source cloud…`
+              : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
-      } else if (isContentMode) {
-        log.info('Step 1: Skipped (content migration mode — test data creation not applicable)');
+      } else if (dataAgent === null) {
+        log.info('Step 1: Skipped (no TestDataAgent registered for this combination)');
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: migrationAgent.getName(),
-          progress: 'Content migration mode: skipping test data creation, proceeding to migration…',
+          progress: 'No test data agent for this combination — proceeding to migration…',
         });
       } else {
         log.info(`Step 1: Skipping ${dataAgent.getName()} (already completed)`);

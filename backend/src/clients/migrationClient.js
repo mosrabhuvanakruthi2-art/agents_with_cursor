@@ -104,6 +104,9 @@ function getApiModule() {
  * A runtime URL with no credentials is treated as a legacy server override.
  */
 function isNewServer() {
+  // forceNewServer is set when Basic auth via validateUser succeeds (content server with WAF)
+  // so that new-server API paths (entuser/clouds, entmove/initiate, etc.) are used correctly.
+  if (runtimeConfig?.forceNewServer) return true;
   if (!runtimeConfig?.baseUrl || !runtimeConfig?.email || !runtimeConfig?.password) return false;
   const url = runtimeConfig.baseUrl.toLowerCase();
   // devemail and /proxyservices/v1 URLs are legacy servers even when credentials are provided
@@ -137,6 +140,13 @@ function basicAuthPayload() {
   if (!raw) return '';
   if (/^basic\s+/i.test(raw)) raw = raw.replace(/^basic\s+/i, '').trim();
   return raw;
+}
+
+/** Returns the Authorization header value, handling both Bearer JWT and Basic auth tokens. */
+function buildAuthHeader(token) {
+  const s = String(token || '').trim();
+  if (/^Basic\s+/i.test(s)) return s;
+  return `Bearer ${s}`;
 }
 
 function normalizeBearerFromEnv(raw) {
@@ -249,13 +259,17 @@ async function login() {
     ];
 
     // Ordered URL candidates — first success wins.
-    // Known working URLs (return 403 = URL exists): /email/app/login and /entapp/login — try these FIRST.
-    // /report/* paths all returned 404 in previous run — keep as last-resort fallback.
+    // Content servers (qarelease, etc.) use /app/login or /users/app/login — no /email/ prefix.
+    // Email servers (newtestemail5, etc.) use /email/app/login or /entapp/login.
+    // Try content-server paths FIRST so content migrations don't waste time on email-only paths.
     const loginCandidates = [...new Set([
-      `${origin}/proxyservices/v1/email/app/login`,     // 403 → URL exists, credentials format wrong
-      `${origin}/proxyservices/v1/entapp/login`,        // 403 → URL exists, credentials format wrong
-      `${origin}/proxyservices/v1/report/entapp/login`, // 404 in prev run — keep as fallback
-      `${origin}/proxyservices/v1/report/app/login`,    // 404 in prev run — keep as fallback
+      `${origin}/proxyservices/v1/app/login`,           // content server primary
+      `${origin}/proxyservices/v1/users/app/login`,     // content server alternative
+      `${origin}/proxyservices/v1/users/login`,         // content server alternative
+      `${origin}/proxyservices/v1/email/app/login`,     // email server (403 on content servers)
+      `${origin}/proxyservices/v1/entapp/login`,        // email server alternative
+      `${origin}/proxyservices/v1/report/entapp/login`,
+      `${origin}/proxyservices/v1/report/app/login`,
       `${baseUrl}/email/app/login`,
       `${origin}/email/app/login`,
       `${origin}/app/login`,
@@ -278,7 +292,9 @@ async function login() {
 
     let lastErr;
     const failedSummary = [];
+    let wafBlocked = false; // set on first 403 — skip remaining URLs (WAF blocks all at once)
     for (const loginUrl of loginCandidates) {
+      if (wafBlocked) break;
       for (const variant of bodyVariants) {
         try {
           const res = await retryWithBackoff(
@@ -315,11 +331,64 @@ async function login() {
           } else {
             logger.warn(`CloudFuze login (${loginUrl}, ${variant.label}) → HTTP ${status || 'network'}: ${err?.message}`);
           }
-          // Only 401 (definitively wrong credentials) stops all remaining candidates
+          // 401 = definitively wrong credentials — stop all remaining candidates
           if (status === 401) throw err;
+          // 403 = WAF-blocking; all URLs on this server are blocked — skip the rest
+          if (status === 403) { wafBlocked = true; break; }
         }
       }
     }
+    // ── WAF-blocked fallback (content servers only, e.g. qarelease) ─────────────
+    // Some API login paths returned 403 — server is WAF-blocking direct POST login.
+    // (Other paths may return 404 because they don't exist on this server.)
+    // isNewServer() = true here, so this block never runs for devemail or message flows.
+    const hadAny403 = failedSummary.some((s) => s.endsWith(':403'));
+    if (hadAny403 && runtimeConfig?.email && runtimeConfig?.password) {
+      // Approach 1: Basic auth via validateUser (GET — not WAF-blocked).
+      // Content servers store userId:md5(password) as Basic auth in the browser portal.
+      // We reproduce this by getting userId from the validateUser GET endpoint.
+      try {
+        logger.info('CloudFuze: all API login attempts returned 403 — trying Basic auth via validateUser');
+        const vOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
+        const vRes = await axios.get(
+          `${vOrigin}/proxyservices/v1/users/validateUser`,
+          migrationAxiosConfig({ params: { searchUser: runtimeConfig.email }, timeout: 10000 })
+        );
+        const userId = typeof vRes.data === 'string'
+          ? vRes.data.trim()
+          : String(vRes.data?.id || vRes.data?.userId || '').trim();
+        if (userId && userId.length > 8) {
+          const md5pw = crypto.createHash('md5').update(runtimeConfig.password).digest('hex');
+          const b64 = Buffer.from(`${userId}:${md5pw}`).toString('base64');
+          // Set base URL to content module path so getApiModule() returns 'report'
+          // and forceNewServer ensures new-server API paths (entuser/clouds, entmove/initiate) are used.
+          // Store userId for getClouds() to use the /users/{id}/get/all/cloud endpoint.
+          runtimeConfig = { ...runtimeConfig, baseUrl: `${vOrigin}/proxyservices/v1/report`, basicAuth: b64, forceNewServer: true, userId };
+          loginToken = `Basic ${b64}`;
+          logger.info(`CloudFuze: Basic auth via validateUser for ${runtimeConfig.email} at ${vOrigin}`);
+          return loginToken;
+        }
+        logger.warn(`CloudFuze: validateUser returned no valid userId: ${JSON.stringify(vRes.data).slice(0, 100)}`);
+      } catch (vErr) {
+        logger.warn(`CloudFuze: Basic auth via validateUser failed (${vErr.message})`);
+      }
+      // Approach 2: Headless browser fallback
+      try {
+        logger.info('CloudFuze: trying browser login (content server fallback)');
+        const { getTokenViaBrowser } = require('./qareleaseBrowserClient');
+        const browserToken = await getTokenViaBrowser(
+          runtimeConfig.baseUrl,
+          runtimeConfig.email,
+          runtimeConfig.password
+        );
+        loginToken = browserToken;
+        logger.info('CloudFuze: browser login succeeded — token captured for content server');
+        return loginToken;
+      } catch (browserErr) {
+        logger.warn(`CloudFuze: browser login failed (${browserErr.message})`);
+      }
+    }
+
     const summary = failedSummary.join(', ');
     logger.error(`CloudFuze: all login candidates exhausted. Attempts: ${summary}`);
     throw lastErr || new Error(`CloudFuze: all login candidates exhausted [${summary}] — check server URL and credentials`);
@@ -511,7 +580,7 @@ function getAuthClient(token) {
       baseURL: getActiveBaseUrl(),
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+        Authorization: buildAuthHeader(token),
       },
       timeout: 60000,
     })
@@ -527,6 +596,24 @@ async function getClouds() {
   const token = await login();
   const base = getActiveBaseUrl();
   const emailBase = getActiveEmailBaseUrl();
+
+  // Content server with Basic auth (e.g. qarelease): use /users/{userId}/get/all/cloud
+  // This endpoint is only reachable when login() stored a userId via validateUser.
+  if (runtimeConfig?.userId) {
+    const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
+    const contentCloudsUrl = `${contentOrigin}/proxyservices/v1/users/${runtimeConfig.userId}/get/all/cloud`;
+    try {
+      const res = await axios.get(
+        contentCloudsUrl,
+        migrationAxiosConfig({ headers: { Authorization: token }, params: { _: Date.now() }, timeout: 30000 })
+      );
+      const clouds = Array.isArray(res.data) ? res.data : [];
+      logger.info(`CloudFuze getClouds (content server): ${clouds.length} cloud(s) via /users/{id}/get/all/cloud`);
+      return clouds;
+    } catch (err) {
+      logger.warn(`CloudFuze getClouds (content server) failed (${err?.response?.status || err?.message}) — falling back`);
+    }
+  }
 
   // New server exposes clouds at /email/user/clouds (email) or /report/entuser/clouds (content/qarelease)
   const apiModule = getApiModule();
@@ -556,7 +643,7 @@ async function getClouds() {
       const res = await axios.get(
         cloudsUrl,
         migrationAxiosConfig({
-          headers: { Authorization: `Bearer ${cand.value}` },
+          headers: { Authorization: buildAuthHeader(cand.value) },
           params: { _: Date.now() },
           timeout: 30000,
         })
@@ -603,9 +690,14 @@ async function getClouds() {
 /**
  * Find the cloud ID for a given email from the clouds list.
  * Handles both old-server (id field) and new-server (vendorId field).
- * Priority: 1. Exact match on adminEmailId/email  2. Domain match
+ * Priority: 1. Exact match on adminEmailId/email  2. Domain match  3. cloudNameHint match
+ *
+ * @param {Array} clouds
+ * @param {string} email
+ * @param {string} [cloudNameHint] - provider key (e.g. 'box', 'sharepoint') used as fallback
+ *   for content clouds that have no adminEmailId/email fields (e.g. qarelease).
  */
-function findCloudId(clouds, email) {
+function findCloudId(clouds, email, cloudNameHint) {
   const norm = String(email || '').toLowerCase().trim();
 
   const extractId = (c) => c.id || c.vendorId || c.cloudId;
@@ -628,6 +720,20 @@ function findCloudId(clouds, email) {
     if (domainHit) return { id: extractId(domainHit), cloudName: domainHit.cloudName, memberId: domainHit.memberId };
   }
 
+  // 3. cloudName prefix match — for content clouds without email fields (e.g. qarelease).
+  // 'box' → 'BOX_BUSINESS', 'sharepoint' → 'SHAREPOINT_ONLINE_BUSINESS', etc.
+  if (cloudNameHint) {
+    const hint = String(cloudNameHint).toUpperCase().trim();
+    const nameHit = clouds.find((c) => {
+      const cn = String(c.cloudName || '').toUpperCase();
+      return cn === hint || cn.startsWith(hint + '_') || cn.startsWith(hint);
+    });
+    if (nameHit) {
+      logger.info(`CloudFuze findCloudId: matched "${nameHit.cloudName}" via cloudNameHint "${cloudNameHint}"`);
+      return { id: extractId(nameHit), cloudName: nameHit.cloudName, memberId: nameHit.memberId };
+    }
+  }
+
   return null;
 }
 
@@ -648,7 +754,7 @@ async function getDomains(destCloudId) {
           axios.get(
             `${emailBase}/email/move/domains/${destCloudId}`,
             migrationAxiosConfig({
-              headers: { Authorization: `Bearer ${token}` },
+              headers: { Authorization: buildAuthHeader(token) },
               params: { _: Date.now() },
               timeout: 30000,
             })
@@ -678,7 +784,7 @@ async function getPermissionMapping(sourceCloudId, destCloudId, { pageSize = 500
       const res = await axios.get(
         `${emailBase}/email/user/cache/${sourceCloudId}/${destCloudId}`,
         migrationAxiosConfig({
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: buildAuthHeader(token) },
           params: { pageNo: 0, pageSize, _: Date.now() },
           timeout: 30000,
         })
@@ -724,7 +830,7 @@ async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
             csvContent,
             migrationAxiosConfig({
               headers: {
-                Authorization: `Bearer ${token}`,
+                Authorization: buildAuthHeader(token),
                 'Content-Type': 'text/csv',
               },
               timeout: 30000,
@@ -763,7 +869,7 @@ async function cacheUserMapping(sourceCloudId, destCloudId) {
           axios.get(
             cacheUrl,
             migrationAxiosConfig({
-              headers: { Authorization: `Bearer ${token}` },
+              headers: { Authorization: buildAuthHeader(token) },
               params: { pageNo: 0, pageSize: 20, _: Date.now() },
               timeout: 30000,
             })
@@ -798,7 +904,7 @@ async function triggerPreScan(fromMailId, fromCloud) {
     `${emailBase}/email/mail/move/initiate/preScan`,
     [{ fromMailId, fromCloud: fromCloud || 'GMAIL' }],
     migrationAxiosConfig({
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: buildAuthHeader(token), 'Content-Type': 'application/json' },
       timeout: 30000,
     })
   );
@@ -1033,7 +1139,7 @@ async function pollReports(deltaMigration, fromMailId, {
     // Build request headers — rotate to Basic auth after all Bearer tokens fail
     let authHeader;
     if (activeToken && !isJwtExpired(activeToken)) {
-      authHeader = `Bearer ${activeToken}`;
+      authHeader = buildAuthHeader(activeToken);
     } else if (!isNewServer() && !basicAuthExhausted) {
       const basic = basicAuthPayload();
       authHeader = basic ? `Basic ${basic}` : null;
@@ -1233,7 +1339,7 @@ async function fetchCurrentJobStatus(fromMailId) {
         const res = await axios.get(
           reportsUrl,
           migrationAxiosConfig({
-            headers: { Authorization: `Bearer ${token}` },
+            headers: { Authorization: buildAuthHeader(token) },
             params: { pageNo: 0, pageSize, _: Date.now() },
             timeout: 30000,
           })

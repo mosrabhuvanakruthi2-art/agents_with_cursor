@@ -146,6 +146,12 @@ const SAMPLE_ZIP = Buffer.from(
   'base64'
 );
 
+// Minimal DOCX stub (ZIP-based format — Box accepts without strict validation)
+const SAMPLE_DOCX = Buffer.alloc(4 * 1024, 100);
+
+// Minimal XLSX stub (ZIP-based format — Box accepts without strict validation)
+const SAMPLE_XLSX = Buffer.alloc(4 * 1024, 101);
+
 // Minimal valid single-page PDF
 const SAMPLE_PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
@@ -205,8 +211,9 @@ class BoxTestDataAgent extends BaseAgent {
   }
 
   async execute(context) {
-    const { adminEmail, boxTargetUserId } = context;
+    const adminEmail = context.adminEmail || context.sourceAdminEmail || context.sourceEmail;
     if (!adminEmail) throw new Error('adminEmail is required for BoxTestDataAgent');
+    const { boxTargetUserId } = context;
 
     const token = await boxClient.getValidToken(adminEmail);
     const asUserId = boxTargetUserId || null;
@@ -224,6 +231,7 @@ class BoxTestDataAgent extends BaseAgent {
     await this._createRootFiles(rootFolder.id, token, asUserId);
     await this._createVersionsFolder(rootFolder.id, token, asUserId);
     await this._createLongPath(rootFolder.id, token, asUserId);
+    await this._seedLongPathFiles(adminEmail, token, asUserId);
     await this._createLongNameFolder(rootFolder.id, token, asUserId);
     await this._createSpecialCharsFolder(rootFolder.id, token, asUserId);
     await this._createSharedLinks(token, asUserId);
@@ -336,6 +344,91 @@ class BoxTestDataAgent extends BaseAgent {
         logger.warn(`[BoxTestDataAgent]   Long path stopped at level ${i}: ${err.message}`);
         this.errors.push({ scenario: 'longPath', level: i, error: err.message });
         break;
+      }
+    }
+    // Store the deepest folder ID so _seedLongPathFiles can upload files there
+    this.results.longPathLastFolderId = parentId;
+  }
+
+  // ── Scenario 4b: Files at the deepest long-path folder with sharing ──────────
+  // Three files (Word, Excel, PDF) are uploaded to "Long Folder Path 30".
+  // • Word  → shared with one internal managed user (viewer)
+  // • Excel → shared with one external user (mia@pepperwood.club) as viewer
+  // • PDF   → shared publicly via "Anyone with the link"
+  async _seedLongPathFiles(adminEmail, token, asUserId) {
+    const folderId = this.results.longPathLastFolderId;
+    if (!folderId) {
+      logger.warn('[BoxTestDataAgent] _seedLongPathFiles: longPathLastFolderId not set — skipping');
+      return;
+    }
+    logger.info('[BoxTestDataAgent] Scenario 4b — Seeding files at deepest long-path folder');
+
+    // Upload the three files
+    const fileDefs = [
+      { name: 'long_path_document.docx', content: SAMPLE_DOCX, label: 'Word' },
+      { name: 'long_path_spreadsheet.xlsx', content: SAMPLE_XLSX, label: 'Excel' },
+      { name: 'long_path_report.pdf', content: SAMPLE_PDF, label: 'PDF' },
+    ];
+    const uploaded = {};
+    for (const f of fileDefs) {
+      try {
+        const res = await boxClient.uploadFile(f.name, f.content, folderId, token, asUserId);
+        uploaded[f.label] = res.id;
+        logger.info(`[BoxTestDataAgent]   Uploaded ${f.label}: ${f.name} (id ${res.id})`);
+      } catch (err) {
+        logger.warn(`[BoxTestDataAgent]   Upload failed for ${f.name}: ${err.message}`);
+        this.errors.push({ scenario: 'longPathFiles', file: f.name, error: err.message });
+      }
+    }
+    this.results.longPathFiles = uploaded;
+
+    // ── Share Word with one internal managed user (viewer) ────────────────────
+    if (uploaded.Word) {
+      try {
+        const allUsers = await boxClient.getUsers(adminEmail);
+        const adminLower = adminEmail.toLowerCase();
+        const internalUser = allUsers.find((u) => u.login?.toLowerCase() !== adminLower);
+        if (internalUser) {
+          await boxClient.createCollaboration('file', uploaded.Word, internalUser.login, 'viewer', token, true, asUserId);
+          logger.info(`[BoxTestDataAgent]   Word shared (internal viewer): ${internalUser.login}`);
+          this.results.longPathWordInternalShare = internalUser.login;
+        } else {
+          logger.warn('[BoxTestDataAgent]   No other managed user found — skipping internal share');
+        }
+      } catch (err) {
+        logger.warn(`[BoxTestDataAgent]   Internal share failed: ${err.message}`);
+        this.errors.push({ scenario: 'longPathFiles', share: 'internal', error: err.message });
+      }
+    }
+
+    // ── Share Excel with external user ────────────────────────────────────────
+    const EXTERNAL_USERS = ['mia@pepperwood.club', 'oliver@pepperwood.club', 'granger@gajha.com', 'erik@voohalu.co'];
+    if (uploaded.Excel) {
+      for (const extEmail of EXTERNAL_USERS) {
+        try {
+          await boxClient.createCollaboration('file', uploaded.Excel, extEmail, 'viewer', token, true, asUserId);
+          logger.info(`[BoxTestDataAgent]   Excel shared (external viewer): ${extEmail}`);
+          this.results.longPathExcelExternalShare = extEmail;
+          break;
+        } catch (err) {
+          logger.warn(`[BoxTestDataAgent]   External share failed for ${extEmail}: ${err.message}`);
+        }
+      }
+      if (!this.results.longPathExcelExternalShare) {
+        this.errors.push({ scenario: 'longPathFiles', share: 'external', error: 'All external emails failed' });
+      }
+    }
+
+    // ── Share PDF via "Anyone with the link" ──────────────────────────────────
+    if (uploaded.PDF) {
+      try {
+        const url = await boxClient.createSharedLink('file', uploaded.PDF, token, asUserId);
+        logger.info(`[BoxTestDataAgent]   PDF shared (anyone with link): ${url}`);
+        this.results.longPathPdfSharedLink = url;
+        this.sharedLinks.push({ label: 'long_path_report.pdf (public)', type: 'file', id: uploaded.PDF, url });
+      } catch (err) {
+        logger.warn(`[BoxTestDataAgent]   Public shared link failed for PDF: ${err.message}`);
+        this.errors.push({ scenario: 'longPathFiles', share: 'public', error: err.message });
       }
     }
   }
