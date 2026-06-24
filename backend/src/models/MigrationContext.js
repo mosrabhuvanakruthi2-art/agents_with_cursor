@@ -44,6 +44,17 @@ class MigrationContext {
     fromFolderId = '/',
     /** Destination folder path for content migrations (e.g. '/SANITY DATAA/Documents/BOX AUTOMATION') */
     toFolderId = '/',
+    /** Content Team-Migration permission flags selected in the Options step. */
+    contentOptions = null,
+    /** Content job options. */
+    jobName = '',
+    excludeFileTypes = '',
+    replaceSpecialChar = '_',
+    /** Content path mapping (overrides). Source defaults to the seeded folder; destination to the cloud default. */
+    sourcePath = '',
+    destinationPath = '',
+    /** Folder NAME the test-data agent should create in the source (from the UI). Deduped (" 1") on conflict. */
+    sourceFolderName = '',
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -91,6 +102,14 @@ class MigrationContext {
       : (this.mode === 'content' ? 'content' : 'mail');
     this.fromFolderId = String(fromFolderId || '').trim() || '/';
     this.toFolderId = String(toFolderId || '').trim() || '/';
+    this.contentOptions = contentOptions && typeof contentOptions === 'object' ? contentOptions : null;
+    this.jobName = String(jobName || '').trim();
+    this.excludeFileTypes = String(excludeFileTypes || '').trim();
+    this.replaceSpecialChar = replaceSpecialChar === undefined ? '_' : replaceSpecialChar;
+    // Optional path overrides; blank → migrationClient uses the seeded folder / cloud default.
+    this.sourcePath = String(sourcePath || '').trim();
+    this.destinationPath = String(destinationPath || '').trim();
+    this.sourceFolderName = String(sourceFolderName || '').trim();
   }
 
   validate() {

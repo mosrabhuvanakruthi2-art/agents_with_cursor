@@ -16,7 +16,11 @@ const CATALOG = {
   ],
   content: [
     { key: 'box', name: 'Box', account: 'box' },
+    { key: 'dropbox', name: 'Dropbox' },                 // connector pending
+    { key: 'egnyte', name: 'Egnyte' },                   // connector pending
+    { key: 'citrix', name: 'Citrix ShareFile' },         // connector pending
     { key: 'googledrive', name: 'Google Drive', account: 'google' },
+    { key: 'googleshareddrive', name: 'Google Shared Drive', account: 'google' },
     { key: 'onedrive', name: 'OneDrive', account: 'microsoft' },
     { key: 'sharepoint', name: 'SharePoint', account: 'microsoft' },
   ],
@@ -270,35 +274,99 @@ export default function ConnectClouds() {
 }
 
 // ── Cloud glyphs ────────────────────────────────────────────────────────────────
-// Brand-ish marks for connectable clouds; colored initial badges for message clouds.
+// Distinct, brand-correct logo per cloud (no shared marks). Falls back to a
+// brand-coloured initial badge only for clouds without a drawn logo yet.
 function Glyph({ cloud, size = 36 }) {
-  const s = { width: size, height: size };
-  if (cloud === 'google' || cloud === 'googledrive') return (
-    <svg viewBox="0 0 48 48" style={s}>
-      <path fill="#4285F4" d="M46.145 24.504c0-1.613-.134-3.167-.389-4.658H24v8.814h12.449c-.537 2.895-2.168 5.348-4.62 6.994v5.816h7.48c4.376-4.03 6.836-9.968 6.836-16.966z" />
-      <path fill="#34A853" d="M24 48c6.24 0 11.473-2.065 15.298-5.597l-7.48-5.816c-2.072 1.39-4.724 2.21-7.818 2.21-6.012 0-11.1-4.062-12.921-9.516H3.324v6.009A23.998 23.998 0 0024 48z" />
-      <path fill="#FBBC05" d="M11.079 29.281A14.416 14.416 0 0110.25 24c0-1.837.316-3.619.829-5.281v-6.009H3.324A23.998 23.998 0 000 24c0 3.867.927 7.53 2.563 10.71l8.516-5.429z" />
-      <path fill="#EA4335" d="M24 9.503c3.387 0 6.428 1.164 8.82 3.451l6.615-6.615C35.469 2.378 30.24 0 24 0A23.998 23.998 0 002.563 13.29l8.516 6.429C12.9 13.565 17.988 9.503 24 9.503z" />
-    </svg>
-  );
-  if (cloud === 'microsoft' || cloud === 'onedrive' || cloud === 'sharepoint' || cloud === 'teams') return (
-    <svg viewBox="0 0 23 23" style={s}>
-      <rect x="1" y="1" width="10" height="10" fill="#F25022" /><rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
-      <rect x="1" y="12" width="10" height="10" fill="#00A4EF" /><rect x="12" y="12" width="10" height="10" fill="#FFB900" />
-    </svg>
-  );
-  if (cloud === 'box') return (
-    <svg viewBox="0 0 24 24" style={s} fill="#0061D5"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2.4 12.6a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2zm4.8 0a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2z" /></svg>
-  );
-  const BADGES = {
-    slack: { c: '#4A154B', t: 'S' }, googlechat: { c: '#1A73E8', t: 'C' },
-    webex: { c: '#00BCEB', t: 'W' }, workplace: { c: '#1877F2', t: 'W' },
-    viva: { c: '#0078D4', t: 'V' },
-  };
-  const b = BADGES[cloud] || { c: '#64748B', t: (cloud[0] || '?').toUpperCase() };
-  return (
-    <span style={{ ...s, backgroundColor: b.c }} className="rounded-lg flex items-center justify-center text-white font-bold" >
-      {b.t}
-    </span>
-  );
+  const s = { width: size, height: size, flexShrink: 0 };
+  switch (cloud) {
+    case 'google': // Google Workspace / Gmail — multicolour G
+      return (
+        <svg viewBox="0 0 48 48" style={s}>
+          <path fill="#4285F4" d="M46.145 24.504c0-1.613-.134-3.167-.389-4.658H24v8.814h12.449c-.537 2.895-2.168 5.348-4.62 6.994v5.816h7.48c4.376-4.03 6.836-9.968 6.836-16.966z" />
+          <path fill="#34A853" d="M24 48c6.24 0 11.473-2.065 15.298-5.597l-7.48-5.816c-2.072 1.39-4.724 2.21-7.818 2.21-6.012 0-11.1-4.062-12.921-9.516H3.324v6.009A23.998 23.998 0 0024 48z" />
+          <path fill="#FBBC05" d="M11.079 29.281A14.416 14.416 0 0110.25 24c0-1.837.316-3.619.829-5.281v-6.009H3.324A23.998 23.998 0 000 24c0 3.867.927 7.53 2.563 10.71l8.516-5.429z" />
+          <path fill="#EA4335" d="M24 9.503c3.387 0 6.428 1.164 8.82 3.451l6.615-6.615C35.469 2.378 30.24 0 24 0A23.998 23.998 0 002.563 13.29l8.516 6.429C12.9 13.565 17.988 9.503 24 9.503z" />
+        </svg>
+      );
+    case 'googledrive': // Google Drive — tri-colour triangle
+    case 'googleshareddrive':
+      return (
+        <svg viewBox="0 0 88 78" style={s}>
+          <path fill="#0066DA" d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" />
+          <path fill="#00AC47" d="M43.65 25L29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5C.4 49.9 0 51.45 0 53h27.5z" />
+          <path fill="#EA4335" d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.8 57c.8-1.4 1.2-2.95 1.2-4.5H60.5l5.85 11.5z" />
+          <path fill="#00832D" d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" />
+          <path fill="#2684FC" d="M60.5 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" />
+          <path fill="#FFBA00" d="M73.4 26.5L60.75 4.5c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 60.5 53H88c0-1.55-.4-3.1-1.2-4.5z" />
+        </svg>
+      );
+    case 'microsoft': // Microsoft 365 — four squares
+      return (
+        <svg viewBox="0 0 23 23" style={s}>
+          <rect x="1" y="1" width="10" height="10" fill="#F25022" /><rect x="12" y="1" width="10" height="10" fill="#7FBA00" />
+          <rect x="1" y="12" width="10" height="10" fill="#00A4EF" /><rect x="12" y="12" width="10" height="10" fill="#FFB900" />
+        </svg>
+      );
+    case 'onedrive': // OneDrive — blue cloud
+      return (
+        <svg viewBox="0 0 24 24" style={s} fill="#0078D4">
+          <path d="M13.5 7a5.5 5.5 0 015.42 4.6A4 4 0 0118 19.5H7a4.5 4.5 0 01-1.06-8.87A5.5 5.5 0 0113.5 7z" />
+        </svg>
+      );
+    case 'sharepoint': // SharePoint — teal mark
+      return (
+        <svg viewBox="0 0 24 24" style={s}>
+          <circle cx="12" cy="12" r="11" fill="#036C70" />
+          <text x="12" y="16.5" textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" fontFamily="Segoe UI, Arial, sans-serif">S</text>
+        </svg>
+      );
+    case 'teams': // Microsoft Teams — purple
+      return (
+        <svg viewBox="0 0 24 24" style={s}>
+          <rect x="1" y="4" width="22" height="16" rx="4" fill="#5059C9" />
+          <text x="12" y="16.5" textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" fontFamily="Segoe UI, Arial, sans-serif">T</text>
+        </svg>
+      );
+    case 'box': // Box — blue "box" mark
+      return (
+        <svg viewBox="0 0 24 24" style={s}>
+          <rect width="24" height="24" rx="5" fill="#0061D5" />
+          <text x="12" y="15.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#fff" fontFamily="Arial, sans-serif">box</text>
+        </svg>
+      );
+    case 'dropbox': // Dropbox — blue chevrons
+      return (
+        <svg viewBox="0 0 24 24" style={s} fill="#0061FF">
+          <path d="M6 2L0 6l6 4 6-4-6-4zm12 0l-6 4 6 4 6-4-6-4zM0 14l6 4 6-4-6-4-6 4zm18-4l-6 4 6 4 6-4-6-4zM6 19.34l6 4 6-4-6-4-6 4z" />
+        </svg>
+      );
+    case 'slack': // Slack — four-colour hash
+      return (
+        <svg viewBox="0 0 24 24" style={s}>
+          <path fill="#36C5F0" d="M5 15a2 2 0 11-2-2h2zM6 15a2 2 0 014 0v5a2 2 0 11-4 0z" />
+          <path fill="#2EB67D" d="M9 5a2 2 0 112-2v2zM9 6a2 2 0 010 4H4a2 2 0 110-4z" />
+          <path fill="#ECB22E" d="M19 9a2 2 0 112 2h-2zM18 9a2 2 0 01-4 0V4a2 2 0 114 0z" />
+          <path fill="#E01E5A" d="M15 19a2 2 0 11-2 2v-2zM15 18a2 2 0 010-4h5a2 2 0 110 4z" />
+        </svg>
+      );
+    case 'googlechat': // Google Chat — green bubble
+      return (
+        <svg viewBox="0 0 24 24" style={s} fill="#00AC47">
+          <path d="M3 4a2 2 0 012-2h14a2 2 0 012 2v11a2 2 0 01-2 2H9l-5 4v-4a2 2 0 01-2-2V4z" transform="translate(0 1)" />
+        </svg>
+      );
+    default: {
+      const BADGES = {
+        egnyte: { c: '#00AEC7', t: 'E' }, citrix: { c: '#452D82', t: 'C' },
+        sharefile: { c: '#1E7B6F', t: 'S' }, webex: { c: '#00BCEB', t: 'W' },
+        workplace: { c: '#1877F2', t: 'W' }, viva: { c: '#0078D4', t: 'V' },
+      };
+      const b = BADGES[cloud] || { c: '#64748B', t: (cloud[0] || '?').toUpperCase() };
+      return (
+        <span style={{ ...s, backgroundColor: b.c }} className="rounded-lg flex items-center justify-center text-white font-bold">
+          {b.t}
+        </span>
+      );
+    }
+  }
 }

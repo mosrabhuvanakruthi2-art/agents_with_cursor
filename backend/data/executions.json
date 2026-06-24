@@ -412815,12 +412815,5616 @@
       "fromFolderId": "/",
       "toFolderId": "/"
     },
-    "status": "RUNNING",
+    "status": "INTERRUPTED",
     "currentAgent": "MigrationAgent",
     "result": null,
-    "error": null,
+    "error": "Server restarted while execution was in progress",
     "createdAt": "2026-06-22T18:35:51.688Z",
-    "completedAt": null,
-    "progress": "MigrationAgent: /mail/reports poll 30/60 — IN_PROGRESS"
+    "completedAt": "2026-06-23T06:24:04.983Z",
+    "progress": "Interrupted — server was restarted. Click Resume to continue."
+  },
+  {
+    "executionId": "1eb7e8e0-4a44-44b1-87a9-3ddb6e6bc0d9",
+    "context": {
+      "sourceEmail": "collins-gd@storefuze.com",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "1eb7e8e0-4a44-44b1-87a9-3ddb6e6bc0d9",
+      "sourceProvider": "googleshareddrive",
+      "destinationProvider": "box",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "collins-gd@storefuze.com",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "zara@storefuze.com",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "bhuvana.mosra@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "INTERRUPTED",
+    "currentAgent": "Starting",
+    "result": null,
+    "error": "Server restarted while execution was in progress",
+    "createdAt": "2026-06-23T08:15:59.834Z",
+    "completedAt": "2026-06-23T08:38:23.568Z",
+    "progress": "Interrupted — server was restarted. Click Resume to continue."
+  },
+  {
+    "executionId": "6e517e87-2baa-4d4c-9120-948b374ef448",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "6e517e87-2baa-4d4c-9120-948b374ef448",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "bhuvana.mosra@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "BoxTestDataAgent",
+    "result": {
+      "executionId": "6e517e87-2baa-4d4c-9120-948b374ef448",
+      "status": "FAILED",
+      "duration": 1708,
+      "error": "Request failed with status code 400",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "PENDING",
+          "startedAt": null,
+          "completedAt": null,
+          "result": null,
+          "error": null,
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 400",
+    "createdAt": "2026-06-23T08:17:35.935Z",
+    "completedAt": "2026-06-23T08:17:38.496Z",
+    "progress": "Failed: Request failed with status code 400"
+  },
+  {
+    "executionId": "657c504a-7d2a-4da9-b29d-775b5f035511",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "657c504a-7d2a-4da9-b29d-775b5f035511",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "BoxTestDataAgent",
+    "result": {
+      "executionId": "657c504a-7d2a-4da9-b29d-775b5f035511",
+      "status": "FAILED",
+      "duration": 1424,
+      "error": "Request failed with status code 400",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "PENDING",
+          "startedAt": null,
+          "completedAt": null,
+          "result": null,
+          "error": null,
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 400",
+    "createdAt": "2026-06-23T08:18:18.784Z",
+    "completedAt": "2026-06-23T08:18:21.011Z",
+    "progress": "Failed: Request failed with status code 400"
+  },
+  {
+    "executionId": "0c5635c1-51ce-4bd3-9264-02814778ab42",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "0c5635c1-51ce-4bd3-9264-02814778ab42",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "CANCELLED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "0c5635c1-51ce-4bd3-9264-02814778ab42",
+      "status": "CANCELLED",
+      "duration": 517405,
+      "error": "Execution cancelled by user",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T08:40:31.177Z",
+          "completedAt": "2026-06-23T08:47:36.040Z",
+          "result": {
+            "jobId": "6a3a46873ec6ea3192531d15",
+            "finalStatus": "CANCELLED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a46873ec6ea3192531d15",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a46873ec6ea3192531d15",
+              "listOfMoveWorkspaceId": [
+                "6a3a46873ec6ea3192531d16"
+              ],
+              "createdTime": 1782204040022,
+              "modifiedTime": 1782204040025,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 378,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": true,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": true,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a46873ec6ea3192531d15",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "CANCELLED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a46873ec6ea3192531d15",
+              "status": "CANCELLED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a46883ec6ea3192531d19",
+                "type": null,
+                "moveWorkSpaceId": "6a3a46873ec6ea3192531d16",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "IN_PROGRESS",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": 1782204070066,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": "ONETIME"
+              }
+            },
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a46873ec6ea3192531d15",
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Execution cancelled by user",
+    "createdAt": "2026-06-23T08:38:57.734Z",
+    "completedAt": "2026-06-23T08:47:36.043Z",
+    "progress": "Cancelled by user"
+  },
+  {
+    "executionId": "180e66dc-6e45-432e-99a4-97b2ba56b2e1",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "180e66dc-6e45-432e-99a4-97b2ba56b2e1",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Skipped",
+    "result": {
+      "executionId": "180e66dc-6e45-432e-99a4-97b2ba56b2e1",
+      "status": "COMPLETED",
+      "duration": 129457,
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T10:00:06.845Z",
+          "completedAt": "2026-06-23T10:00:51.678Z",
+          "result": {
+            "jobId": "6a3a59323ec6ea3192531ecf",
+            "finalStatus": "NOT_PROCESSED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a59323ec6ea3192531ecf",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a59323ec6ea3192531ecf",
+              "listOfMoveWorkspaceId": [
+                "6a3a59323ec6ea3192531ed0"
+              ],
+              "createdTime": 1782208819938,
+              "modifiedTime": 1782208819944,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 381,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": true,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": true,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a59323ec6ea3192531ecf",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "NOT_PROCESSED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a59323ec6ea3192531ecf",
+              "status": "NOT_PROCESSED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a59333ec6ea3192531ed3",
+                "type": null,
+                "moveWorkSpaceId": "6a3a59323ec6ea3192531ed0",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "NOT_PROCESSED",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": null,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": null
+              },
+              "stoppedAt": "2026-06-23T10:00:51.423Z"
+            },
+            "skipValidation": true,
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a59323ec6ea3192531ecf",
+          "retries": 0
+        }
+      ],
+      "sourceData": {
+        "rootFolderId": "393086838992",
+        "rootFolderName": "Agent Box Data 7",
+        "scenarios": {
+          "rootFolderId": "393086838992",
+          "rootFolderName": "Agent Box Data 7",
+          "subFolderId": "393090433946",
+          "subFolderFiles": [
+            {
+              "name": "sample_text.txt",
+              "id": "2303670014396"
+            },
+            {
+              "name": "sample_data.csv",
+              "id": "2303660956232"
+            },
+            {
+              "name": "sample_report.html",
+              "id": "2303657653760"
+            },
+            {
+              "name": "sample_config.json",
+              "id": "2303672579223"
+            },
+            {
+              "name": "sample_data.xml",
+              "id": "2303668144520"
+            },
+            {
+              "name": "sample_script.js",
+              "id": "2303672493153"
+            },
+            {
+              "name": "sample_image.jpg",
+              "id": "2303672757271"
+            },
+            {
+              "name": "sample_image.png",
+              "id": "2303672013346"
+            },
+            {
+              "name": "sample_archive.zip",
+              "id": "2303671859741"
+            },
+            {
+              "name": "sample_document.pdf",
+              "id": "2303663428444"
+            }
+          ],
+          "sampleTxtFileId": "2303670014396",
+          "rootFiles": [
+            {
+              "name": "root_readme.txt",
+              "id": "2303666901576"
+            },
+            {
+              "name": "root_manifest.csv",
+              "id": "2303663638924"
+            }
+          ],
+          "rootReadmeFileId": "2303666901576",
+          "versionsFolderId": "393087394816",
+          "versionedFiles": [
+            {
+              "name": "versioned_doc_1.txt",
+              "id": "2303666754062",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_2.txt",
+              "id": "2303669307898",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_3.txt",
+              "id": "2303668302551",
+              "versions": 7
+            }
+          ],
+          "longPathContainerId": "393090762764",
+          "longPathFolders": [
+            {
+              "name": "Long Folder Path 1",
+              "id": "393086572057",
+              "level": 1
+            },
+            {
+              "name": "Long Folder Path 2",
+              "id": "393092288783",
+              "level": 2
+            },
+            {
+              "name": "Long Folder Path 3",
+              "id": "393093169204",
+              "level": 3
+            },
+            {
+              "name": "Long Folder Path 4",
+              "id": "393091938479",
+              "level": 4
+            },
+            {
+              "name": "Long Folder Path 5",
+              "id": "393093244205",
+              "level": 5
+            },
+            {
+              "name": "Long Folder Path 6",
+              "id": "393092277430",
+              "level": 6
+            },
+            {
+              "name": "Long Folder Path 7",
+              "id": "393099851676",
+              "level": 7
+            },
+            {
+              "name": "Long Folder Path 8",
+              "id": "393089668173",
+              "level": 8
+            },
+            {
+              "name": "Long Folder Path 9",
+              "id": "393092737732",
+              "level": 9
+            },
+            {
+              "name": "Long Folder Path 10",
+              "id": "393092315183",
+              "level": 10
+            },
+            {
+              "name": "Long Folder Path 11",
+              "id": "393092010533",
+              "level": 11
+            },
+            {
+              "name": "Long Folder Path 12",
+              "id": "393092838039",
+              "level": 12
+            },
+            {
+              "name": "Long Folder Path 13",
+              "id": "393093635594",
+              "level": 13
+            },
+            {
+              "name": "Long Folder Path 14",
+              "id": "393092022533",
+              "level": 14
+            },
+            {
+              "name": "Long Folder Path 15",
+              "id": "393087463041",
+              "level": 15
+            },
+            {
+              "name": "Long Folder Path 16",
+              "id": "393090073357",
+              "level": 16
+            },
+            {
+              "name": "Long Folder Path 17",
+              "id": "393093117089",
+              "level": 17
+            },
+            {
+              "name": "Long Folder Path 18",
+              "id": "393099628025",
+              "level": 18
+            },
+            {
+              "name": "Long Folder Path 19",
+              "id": "393099647495",
+              "level": 19
+            },
+            {
+              "name": "Long Folder Path 20",
+              "id": "393092126084",
+              "level": 20
+            },
+            {
+              "name": "Long Folder Path 21",
+              "id": "393091922054",
+              "level": 21
+            },
+            {
+              "name": "Long Folder Path 22",
+              "id": "393091480520",
+              "level": 22
+            },
+            {
+              "name": "Long Folder Path 23",
+              "id": "393087870065",
+              "level": 23
+            },
+            {
+              "name": "Long Folder Path 24",
+              "id": "393090428403",
+              "level": 24
+            },
+            {
+              "name": "Long Folder Path 25",
+              "id": "393092351183",
+              "level": 25
+            },
+            {
+              "name": "Long Folder Path 26",
+              "id": "393093465269",
+              "level": 26
+            },
+            {
+              "name": "Long Folder Path 27",
+              "id": "393092992072",
+              "level": 27
+            },
+            {
+              "name": "Long Folder Path 28",
+              "id": "393093196541",
+              "level": 28
+            },
+            {
+              "name": "Long Folder Path 29",
+              "id": "393092994370",
+              "level": 29
+            },
+            {
+              "name": "Long Folder Path 30",
+              "id": "393089881323",
+              "level": 30
+            }
+          ],
+          "longPathLastFolderId": "393089881323",
+          "longPathFiles": {
+            "Word": "2303668102822",
+            "Excel": "2303662114816",
+            "PDF": "2303665427297"
+          },
+          "longPathExcelExternalShare": "mia@pepperwood.club",
+          "longPathPdfSharedLink": "https://app.box.com/s/a4s6knear428jmfq3duxsz80v9lsngjx",
+          "longNameFolderId": "393091998551",
+          "longNameLength": 255,
+          "specialCharsFolderId": "393091436914",
+          "specialCharsName": "Special !@#$%^&*()-_+=[]{};',. Folder"
+        },
+        "sharedLinks": [
+          {
+            "label": "long_path_report.pdf (public)",
+            "type": "file",
+            "id": "2303665427297",
+            "url": "https://app.box.com/s/a4s6knear428jmfq3duxsz80v9lsngjx"
+          },
+          {
+            "label": "Agent sub folder",
+            "type": "folder",
+            "id": "393090433946",
+            "url": "https://app.box.com/s/qlvj9b3da9lhmbj14k6zjxgsgg151inl"
+          },
+          {
+            "label": "Agent Versions",
+            "type": "folder",
+            "id": "393087394816",
+            "url": "https://app.box.com/s/bi07x6gcrpm4lx2f7kam50mf7oe3oedf"
+          },
+          {
+            "label": "sample_text.txt",
+            "type": "file",
+            "id": "2303670014396",
+            "url": "https://app.box.com/s/q3ajr1w5l2g9xhcpmavundjx2jt1w39x"
+          },
+          {
+            "label": "root_readme.txt",
+            "type": "file",
+            "id": "2303666901576",
+            "url": "https://app.box.com/s/4cvpj7lra9w5xzkyunv71w2kr02wzkzv"
+          }
+        ],
+        "warnings": [
+          {
+            "scenario": "longPathFiles",
+            "share": "internal",
+            "error": "Box list-users failed (HTTP 403): The request requires higher privileges than provided by the access token.. Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID)."
+          }
+        ]
+      },
+      "migrationResult": {
+        "jobId": "6a3a59323ec6ea3192531ecf",
+        "finalStatus": "NOT_PROCESSED",
+        "retriesUsed": 0,
+        "rawResponse": {
+          "id": "6a3a59323ec6ea3192531ecf",
+          "type": null,
+          "jobName": "Agent-box-to-sharepoint-6a3a59323ec6ea3192531ecf",
+          "listOfMoveWorkspaceId": [
+            "6a3a59323ec6ea3192531ed0"
+          ],
+          "createdTime": 1782208819938,
+          "modifiedTime": 1782208819944,
+          "jobStatus": "IN_PROGRESS",
+          "userId": "68cd22235462b14dc6f60fed",
+          "generatedNo": 381,
+          "migrateFolderName": "/",
+          "customMetadata": false,
+          "notToMoveExtension": [],
+          "onlyPickExtension": [],
+          "moveLimit": null,
+          "emailValues": null,
+          "fromCloudName": "BOX_BUSINESS",
+          "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+          "previewDetail": [
+            {
+              "fromEmailId": "erik@filefuze.co",
+              "toEmailId": "erik@filefuze.co",
+              "fromProvision": true,
+              "toProvision": true,
+              "jobName": null
+            }
+          ],
+          "jobType": "ONETIME",
+          "jobList": [],
+          "isCSV": false,
+          "fromCloudId": "69e73af92698e83b9e904c8b",
+          "toCloudId": "6a33d5532286352041993009",
+          "restrictFileSize": null,
+          "unsupportedFiles": false,
+          "teamFoldersMigrate": false,
+          "listOfremovedWorkspaceIds": null,
+          "externalUsers": true,
+          "metaData": true,
+          "fileFolderLink": true,
+          "sendComments": true,
+          "onlyBoxNotes": false,
+          "innerFolderPerms": true,
+          "innerFilePerms": true,
+          "version": true,
+          "specialCharacter": "-",
+          "pickInsideFolder": false,
+          "contacts": false,
+          "createGroups": false,
+          "migrateToRoot": false,
+          "rootFolderPerms": true,
+          "rootFilePerms": true,
+          "totalPairsCount": 0,
+          "completedPairsCount": 0,
+          "totalData": 0,
+          "processedData": 0,
+          "deltaLastInitiated": null,
+          "deltaJobIds": null,
+          "embeddedLinks": true,
+          "adminUserId": null,
+          "seamless": true,
+          "deltaInitiatedFromReport": false,
+          "deltaInitiated": false
+        },
+        "ownerValidation": null,
+        "migrationJobDetails": {
+          "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+          "workspaceId": "6a3a59323ec6ea3192531ecf",
+          "totalCount": null,
+          "processedCount": null,
+          "cfStatus": "NOT_PROCESSED"
+        },
+        "contentMigrationReport": {
+          "workspaceId": "6a3a59323ec6ea3192531ecf",
+          "status": "NOT_PROCESSED",
+          "totalCount": null,
+          "processedCount": null,
+          "rawJobData": {
+            "id": "6a3a59333ec6ea3192531ed3",
+            "type": null,
+            "moveWorkSpaceId": "6a3a59323ec6ea3192531ed0",
+            "userId": "68cd22235462b14dc6f60fed",
+            "status": "NOT_PROCESSED",
+            "threadStatus": "RESUME",
+            "createdTime": null,
+            "modifiedTime": null,
+            "userType": "MULTIUSER_ACTIVE",
+            "userPause": false,
+            "thirdPartyAgent": false,
+            "seamless": true,
+            "preMigration": false,
+            "hostName": null,
+            "migApi": false,
+            "contentSprawl": false,
+            "jobtype": null
+          },
+          "stoppedAt": "2026-06-23T10:00:51.423Z"
+        },
+        "skipValidation": true,
+        "cloudIds": {
+          "sourceCloudId": "69e73af92698e83b9e904c8b",
+          "destCloudId": "6a33d5532286352041993009",
+          "sourceCloudName": "BOX_BUSINESS",
+          "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+        }
+      },
+      "validationSummary": null,
+      "contentMigrationReport": {
+        "workspaceId": "6a3a59323ec6ea3192531ecf",
+        "status": "NOT_PROCESSED",
+        "totalCount": null,
+        "processedCount": null,
+        "rawJobData": {
+          "id": "6a3a59333ec6ea3192531ed3",
+          "type": null,
+          "moveWorkSpaceId": "6a3a59323ec6ea3192531ed0",
+          "userId": "68cd22235462b14dc6f60fed",
+          "status": "NOT_PROCESSED",
+          "threadStatus": "RESUME",
+          "createdTime": null,
+          "modifiedTime": null,
+          "userType": "MULTIUSER_ACTIVE",
+          "userPause": false,
+          "thirdPartyAgent": false,
+          "seamless": true,
+          "preMigration": false,
+          "hostName": null,
+          "migApi": false,
+          "contentSprawl": false,
+          "jobtype": null
+        },
+        "stoppedAt": "2026-06-23T10:00:51.423Z"
+      }
+    },
+    "error": null,
+    "createdAt": "2026-06-23T09:58:42.152Z",
+    "completedAt": "2026-06-23T10:00:51.891Z",
+    "progress": "Completed"
+  },
+  {
+    "executionId": "ebe4a888-a67d-4f17-84ab-9227f20c458e",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "ebe4a888-a67d-4f17-84ab-9227f20c458e",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "CANCELLED",
+    "currentAgent": "BoxTestDataAgent",
+    "result": {
+      "executionId": "ebe4a888-a67d-4f17-84ab-9227f20c458e",
+      "status": "CANCELLED",
+      "duration": 104578,
+      "error": "Execution cancelled by user",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "PENDING",
+          "startedAt": null,
+          "completedAt": null,
+          "result": null,
+          "error": null,
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Execution cancelled by user",
+    "createdAt": "2026-06-23T10:11:24.577Z",
+    "completedAt": "2026-06-23T10:13:09.517Z",
+    "progress": "Cancelled by user"
+  },
+  {
+    "executionId": "518c6466-cef6-40db-9082-6456a141131f",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "518c6466-cef6-40db-9082-6456a141131f",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "518c6466-cef6-40db-9082-6456a141131f",
+      "status": "FAILED",
+      "duration": 82815,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-23T10:19:48.471Z",
+          "completedAt": "2026-06-23T10:19:50.944Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-23T10:18:27.825Z",
+    "completedAt": "2026-06-23T10:19:50.946Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "601c6c12-3555-4b5b-892d-22bfbd929077",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "601c6c12-3555-4b5b-892d-22bfbd929077",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "601c6c12-3555-4b5b-892d-22bfbd929077",
+      "status": "FAILED",
+      "duration": 83454,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-23T10:24:50.765Z",
+          "completedAt": "2026-06-23T10:24:53.103Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-23T10:23:29.337Z",
+    "completedAt": "2026-06-23T10:24:53.105Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "6309a7ef-ba88-4e5a-8338-2dab888c0c59",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "6309a7ef-ba88-4e5a-8338-2dab888c0c59",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "6309a7ef-ba88-4e5a-8338-2dab888c0c59",
+      "status": "FAILED",
+      "duration": 82094,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-23T10:35:49.337Z",
+          "completedAt": "2026-06-23T10:35:52.105Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-23T10:34:29.301Z",
+    "completedAt": "2026-06-23T10:35:52.107Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "3b21d692-c438-4b20-83d4-16060f059598",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "3b21d692-c438-4b20-83d4-16060f059598",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "3b21d692-c438-4b20-83d4-16060f059598",
+      "status": "FAILED",
+      "duration": 79180,
+      "error": "isContentModeLocal is not defined",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-23T10:41:51.949Z",
+          "completedAt": "2026-06-23T10:41:51.953Z",
+          "result": null,
+          "error": "isContentModeLocal is not defined",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "isContentModeLocal is not defined",
+    "createdAt": "2026-06-23T10:40:32.480Z",
+    "completedAt": "2026-06-23T10:41:51.955Z",
+    "progress": "Failed: isContentModeLocal is not defined"
+  },
+  {
+    "executionId": "f8fa6f0f-728d-46a6-a6fe-bc1b2f4a301f",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "f8fa6f0f-728d-46a6-a6fe-bc1b2f4a301f",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "FAILED",
+    "currentAgent": "MigrationAgent",
+    "result": {
+      "executionId": "f8fa6f0f-728d-46a6-a6fe-bc1b2f4a301f",
+      "status": "FAILED",
+      "duration": 80280,
+      "error": "Request failed with status code 404",
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "FAILED",
+          "startedAt": "2026-06-23T10:45:29.107Z",
+          "completedAt": "2026-06-23T10:45:31.279Z",
+          "result": null,
+          "error": "Request failed with status code 404",
+          "jobId": null,
+          "retries": 0
+        }
+      ]
+    },
+    "error": "Request failed with status code 404",
+    "createdAt": "2026-06-23T10:44:10.732Z",
+    "completedAt": "2026-06-23T10:45:31.281Z",
+    "progress": "Failed: Request failed with status code 404"
+  },
+  {
+    "executionId": "f1e11ceb-b415-4ef3-a3f1-9715865ab1cc",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "f1e11ceb-b415-4ef3-a3f1-9715865ab1cc",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Skipped",
+    "result": {
+      "executionId": "f1e11ceb-b415-4ef3-a3f1-9715865ab1cc",
+      "status": "COMPLETED",
+      "duration": 123660,
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T10:52:19.984Z",
+          "completedAt": "2026-06-23T10:53:02.496Z",
+          "result": {
+            "jobId": "6a3a656d3ec6ea3192531f86",
+            "finalStatus": "NOT_PROCESSED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a656d3ec6ea3192531f86",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a656d3ec6ea3192531f86",
+              "listOfMoveWorkspaceId": [
+                "6a3a656d3ec6ea3192531f87"
+              ],
+              "createdTime": 1782211950701,
+              "modifiedTime": 1782211950706,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 382,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": false,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": false,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a656d3ec6ea3192531f86",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "NOT_PROCESSED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a656d3ec6ea3192531f86",
+              "status": "NOT_PROCESSED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a656e3ec6ea3192531f8a",
+                "type": null,
+                "moveWorkSpaceId": "6a3a656d3ec6ea3192531f87",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "NOT_PROCESSED",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": null,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": null
+              },
+              "stoppedAt": "2026-06-23T10:53:02.364Z"
+            },
+            "skipValidation": true,
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a656d3ec6ea3192531f86",
+          "retries": 0
+        }
+      ],
+      "sourceData": {
+        "rootFolderId": "393111537149",
+        "rootFolderName": "NEWDATA 6",
+        "scenarios": {
+          "rootFolderId": "393111537149",
+          "rootFolderName": "NEWDATA 6",
+          "subFolderId": "393111628459",
+          "subFolderFiles": [
+            {
+              "name": "sample_text.txt",
+              "id": "2303764362407"
+            },
+            {
+              "name": "sample_data.csv",
+              "id": "2303765922657"
+            },
+            {
+              "name": "sample_report.html",
+              "id": "2303759778191"
+            },
+            {
+              "name": "sample_config.json",
+              "id": "2303761074108"
+            },
+            {
+              "name": "sample_data.xml",
+              "id": "2303759694201"
+            },
+            {
+              "name": "sample_script.js",
+              "id": "2303762207160"
+            },
+            {
+              "name": "sample_image.jpg",
+              "id": "2303759358853"
+            },
+            {
+              "name": "sample_image.png",
+              "id": "2303757806080"
+            },
+            {
+              "name": "sample_archive.zip",
+              "id": "2303760829373"
+            },
+            {
+              "name": "sample_document.pdf",
+              "id": "2303758487004"
+            }
+          ],
+          "sampleTxtFileId": "2303764362407",
+          "rootFiles": [
+            {
+              "name": "root_readme.txt",
+              "id": "2303759896674"
+            },
+            {
+              "name": "root_manifest.csv",
+              "id": "2303761077231"
+            }
+          ],
+          "rootReadmeFileId": "2303759896674",
+          "versionsFolderId": "393111147634",
+          "versionedFiles": [
+            {
+              "name": "versioned_doc_1.txt",
+              "id": "2303759984613",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_2.txt",
+              "id": "2303759922573",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_3.txt",
+              "id": "2303757909408",
+              "versions": 7
+            }
+          ],
+          "longPathContainerId": "393111547130",
+          "longPathFolders": [
+            {
+              "name": "Long Folder Path 1",
+              "id": "393110661537",
+              "level": 1
+            },
+            {
+              "name": "Long Folder Path 2",
+              "id": "393111474290",
+              "level": 2
+            },
+            {
+              "name": "Long Folder Path 3",
+              "id": "393113510170",
+              "level": 3
+            },
+            {
+              "name": "Long Folder Path 4",
+              "id": "393112741560",
+              "level": 4
+            },
+            {
+              "name": "Long Folder Path 5",
+              "id": "393111705210",
+              "level": 5
+            },
+            {
+              "name": "Long Folder Path 6",
+              "id": "393113591457",
+              "level": 6
+            },
+            {
+              "name": "Long Folder Path 7",
+              "id": "393113097566",
+              "level": 7
+            },
+            {
+              "name": "Long Folder Path 8",
+              "id": "393113382441",
+              "level": 8
+            },
+            {
+              "name": "Long Folder Path 9",
+              "id": "393112314116",
+              "level": 9
+            },
+            {
+              "name": "Long Folder Path 10",
+              "id": "393113466605",
+              "level": 10
+            },
+            {
+              "name": "Long Folder Path 11",
+              "id": "393111949936",
+              "level": 11
+            },
+            {
+              "name": "Long Folder Path 12",
+              "id": "393112220410",
+              "level": 12
+            },
+            {
+              "name": "Long Folder Path 13",
+              "id": "393113391809",
+              "level": 13
+            },
+            {
+              "name": "Long Folder Path 14",
+              "id": "393111026096",
+              "level": 14
+            },
+            {
+              "name": "Long Folder Path 15",
+              "id": "393114104995",
+              "level": 15
+            },
+            {
+              "name": "Long Folder Path 16",
+              "id": "393113711245",
+              "level": 16
+            },
+            {
+              "name": "Long Folder Path 17",
+              "id": "393112823815",
+              "level": 17
+            },
+            {
+              "name": "Long Folder Path 18",
+              "id": "393113800066",
+              "level": 18
+            },
+            {
+              "name": "Long Folder Path 19",
+              "id": "393112883719",
+              "level": 19
+            },
+            {
+              "name": "Long Folder Path 20",
+              "id": "393112401164",
+              "level": 20
+            },
+            {
+              "name": "Long Folder Path 21",
+              "id": "393111118816",
+              "level": 21
+            },
+            {
+              "name": "Long Folder Path 22",
+              "id": "393113478293",
+              "level": 22
+            },
+            {
+              "name": "Long Folder Path 23",
+              "id": "393111829963",
+              "level": 23
+            },
+            {
+              "name": "Long Folder Path 24",
+              "id": "393112610176",
+              "level": 24
+            },
+            {
+              "name": "Long Folder Path 25",
+              "id": "393111966027",
+              "level": 25
+            },
+            {
+              "name": "Long Folder Path 26",
+              "id": "393111652730",
+              "level": 26
+            },
+            {
+              "name": "Long Folder Path 27",
+              "id": "393112772951",
+              "level": 27
+            },
+            {
+              "name": "Long Folder Path 28",
+              "id": "393112736933",
+              "level": 28
+            },
+            {
+              "name": "Long Folder Path 29",
+              "id": "393112754376",
+              "level": 29
+            },
+            {
+              "name": "Long Folder Path 30",
+              "id": "393113852866",
+              "level": 30
+            }
+          ],
+          "longPathLastFolderId": "393113852866",
+          "longPathFiles": {
+            "Word": "2303768437204",
+            "Excel": "2303765029637",
+            "PDF": "2303760566059"
+          },
+          "longPathExcelExternalShare": "mia@pepperwood.club",
+          "longPathPdfSharedLink": "https://app.box.com/s/tbbbp43zm1c6v2bhdl4hsdmcdz9wa2kn",
+          "longNameFolderId": "393113370778",
+          "longNameLength": 255,
+          "specialCharsFolderId": "393111846749",
+          "specialCharsName": "Special !@#$%^&*()-_+=[]{};',. Folder"
+        },
+        "sharedLinks": [
+          {
+            "label": "long_path_report.pdf (public)",
+            "type": "file",
+            "id": "2303760566059",
+            "url": "https://app.box.com/s/tbbbp43zm1c6v2bhdl4hsdmcdz9wa2kn"
+          },
+          {
+            "label": "Agent sub folder",
+            "type": "folder",
+            "id": "393111628459",
+            "url": "https://app.box.com/s/9m8gfjcx0knz7mh0bjl3vwxwet6pq1fz"
+          },
+          {
+            "label": "Agent Versions",
+            "type": "folder",
+            "id": "393111147634",
+            "url": "https://app.box.com/s/nz8ko82l6sc5sdkgg9vkrvwa7rp3hxbt"
+          },
+          {
+            "label": "sample_text.txt",
+            "type": "file",
+            "id": "2303764362407",
+            "url": "https://app.box.com/s/3slyqu0hr69viazmkkdmb29xabyxha4g"
+          },
+          {
+            "label": "root_readme.txt",
+            "type": "file",
+            "id": "2303759896674",
+            "url": "https://app.box.com/s/a961fpk53u8wics3ckj6tzghz8pmy742"
+          }
+        ],
+        "warnings": [
+          {
+            "scenario": "longPathFiles",
+            "share": "internal",
+            "error": "Box list-users failed (HTTP 403): The request requires higher privileges than provided by the access token.. Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID)."
+          }
+        ]
+      },
+      "migrationResult": {
+        "jobId": "6a3a656d3ec6ea3192531f86",
+        "finalStatus": "NOT_PROCESSED",
+        "retriesUsed": 0,
+        "rawResponse": {
+          "id": "6a3a656d3ec6ea3192531f86",
+          "type": null,
+          "jobName": "Agent-box-to-sharepoint-6a3a656d3ec6ea3192531f86",
+          "listOfMoveWorkspaceId": [
+            "6a3a656d3ec6ea3192531f87"
+          ],
+          "createdTime": 1782211950701,
+          "modifiedTime": 1782211950706,
+          "jobStatus": "IN_PROGRESS",
+          "userId": "68cd22235462b14dc6f60fed",
+          "generatedNo": 382,
+          "migrateFolderName": "/",
+          "customMetadata": false,
+          "notToMoveExtension": [],
+          "onlyPickExtension": [],
+          "moveLimit": null,
+          "emailValues": null,
+          "fromCloudName": "BOX_BUSINESS",
+          "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+          "previewDetail": [
+            {
+              "fromEmailId": "erik@filefuze.co",
+              "toEmailId": "erik@filefuze.co",
+              "fromProvision": true,
+              "toProvision": true,
+              "jobName": null
+            }
+          ],
+          "jobType": "ONETIME",
+          "jobList": [],
+          "isCSV": false,
+          "fromCloudId": "69e73af92698e83b9e904c8b",
+          "toCloudId": "6a33d5532286352041993009",
+          "restrictFileSize": null,
+          "unsupportedFiles": false,
+          "teamFoldersMigrate": false,
+          "listOfremovedWorkspaceIds": null,
+          "externalUsers": true,
+          "metaData": false,
+          "fileFolderLink": true,
+          "sendComments": true,
+          "onlyBoxNotes": false,
+          "innerFolderPerms": true,
+          "innerFilePerms": true,
+          "version": true,
+          "specialCharacter": "-",
+          "pickInsideFolder": false,
+          "contacts": false,
+          "createGroups": false,
+          "migrateToRoot": false,
+          "rootFolderPerms": true,
+          "rootFilePerms": true,
+          "totalPairsCount": 0,
+          "completedPairsCount": 0,
+          "totalData": 0,
+          "processedData": 0,
+          "deltaLastInitiated": null,
+          "deltaJobIds": null,
+          "embeddedLinks": false,
+          "adminUserId": null,
+          "seamless": true,
+          "deltaInitiatedFromReport": false,
+          "deltaInitiated": false
+        },
+        "ownerValidation": null,
+        "migrationJobDetails": {
+          "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+          "workspaceId": "6a3a656d3ec6ea3192531f86",
+          "totalCount": null,
+          "processedCount": null,
+          "cfStatus": "NOT_PROCESSED"
+        },
+        "contentMigrationReport": {
+          "workspaceId": "6a3a656d3ec6ea3192531f86",
+          "status": "NOT_PROCESSED",
+          "totalCount": null,
+          "processedCount": null,
+          "rawJobData": {
+            "id": "6a3a656e3ec6ea3192531f8a",
+            "type": null,
+            "moveWorkSpaceId": "6a3a656d3ec6ea3192531f87",
+            "userId": "68cd22235462b14dc6f60fed",
+            "status": "NOT_PROCESSED",
+            "threadStatus": "RESUME",
+            "createdTime": null,
+            "modifiedTime": null,
+            "userType": "MULTIUSER_ACTIVE",
+            "userPause": false,
+            "thirdPartyAgent": false,
+            "seamless": true,
+            "preMigration": false,
+            "hostName": null,
+            "migApi": false,
+            "contentSprawl": false,
+            "jobtype": null
+          },
+          "stoppedAt": "2026-06-23T10:53:02.364Z"
+        },
+        "skipValidation": true,
+        "cloudIds": {
+          "sourceCloudId": "69e73af92698e83b9e904c8b",
+          "destCloudId": "6a33d5532286352041993009",
+          "sourceCloudName": "BOX_BUSINESS",
+          "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+        }
+      },
+      "validationSummary": null,
+      "contentMigrationReport": {
+        "workspaceId": "6a3a656d3ec6ea3192531f86",
+        "status": "NOT_PROCESSED",
+        "totalCount": null,
+        "processedCount": null,
+        "rawJobData": {
+          "id": "6a3a656e3ec6ea3192531f8a",
+          "type": null,
+          "moveWorkSpaceId": "6a3a656d3ec6ea3192531f87",
+          "userId": "68cd22235462b14dc6f60fed",
+          "status": "NOT_PROCESSED",
+          "threadStatus": "RESUME",
+          "createdTime": null,
+          "modifiedTime": null,
+          "userType": "MULTIUSER_ACTIVE",
+          "userPause": false,
+          "thirdPartyAgent": false,
+          "seamless": true,
+          "preMigration": false,
+          "hostName": null,
+          "migApi": false,
+          "contentSprawl": false,
+          "jobtype": null
+        },
+        "stoppedAt": "2026-06-23T10:53:02.364Z"
+      }
+    },
+    "error": null,
+    "createdAt": "2026-06-23T10:50:58.674Z",
+    "completedAt": "2026-06-23T10:53:02.630Z",
+    "progress": "Completed"
+  },
+  {
+    "executionId": "5030b5e8-3f24-459f-97f0-c11d74ac1889",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "5030b5e8-3f24-459f-97f0-c11d74ac1889",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Skipped",
+    "result": {
+      "executionId": "5030b5e8-3f24-459f-97f0-c11d74ac1889",
+      "status": "COMPLETED",
+      "duration": 118851,
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T10:59:46.093Z",
+          "completedAt": "2026-06-23T11:00:23.292Z",
+          "result": {
+            "jobId": "6a3a67273ec6ea3192531f90",
+            "finalStatus": "NOT_PROCESSED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a67273ec6ea3192531f90",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a67273ec6ea3192531f90",
+              "listOfMoveWorkspaceId": [
+                "6a3a67273ec6ea3192531f91"
+              ],
+              "createdTime": 1782212391975,
+              "modifiedTime": 1782212391980,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 383,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": false,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": false,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a67273ec6ea3192531f90",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "NOT_PROCESSED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a67273ec6ea3192531f90",
+              "status": "NOT_PROCESSED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a67273ec6ea3192531f94",
+                "type": null,
+                "moveWorkSpaceId": "6a3a67273ec6ea3192531f91",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "NOT_PROCESSED",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": null,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": null
+              },
+              "stoppedAt": "2026-06-23T11:00:23.205Z"
+            },
+            "skipValidation": true,
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a67273ec6ea3192531f90",
+          "retries": 0
+        }
+      ],
+      "sourceData": {
+        "rootFolderId": "393112838365",
+        "rootFolderName": "NEWDATA 7",
+        "scenarios": {
+          "rootFolderId": "393112838365",
+          "rootFolderName": "NEWDATA 7",
+          "subFolderId": "393113377983",
+          "subFolderFiles": [
+            {
+              "name": "sample_text.txt",
+              "id": "2303767976642"
+            },
+            {
+              "name": "sample_data.csv",
+              "id": "2303771905334"
+            },
+            {
+              "name": "sample_report.html",
+              "id": "2303776237547"
+            },
+            {
+              "name": "sample_config.json",
+              "id": "2303772424028"
+            },
+            {
+              "name": "sample_data.xml",
+              "id": "2303770326010"
+            },
+            {
+              "name": "sample_script.js",
+              "id": "2303775171639"
+            },
+            {
+              "name": "sample_image.jpg",
+              "id": "2303765893967"
+            },
+            {
+              "name": "sample_image.png",
+              "id": "2303767924024"
+            },
+            {
+              "name": "sample_archive.zip",
+              "id": "2303772602176"
+            },
+            {
+              "name": "sample_document.pdf",
+              "id": "2303774061229"
+            }
+          ],
+          "sampleTxtFileId": "2303767976642",
+          "rootFiles": [
+            {
+              "name": "root_readme.txt",
+              "id": "2303774397178"
+            },
+            {
+              "name": "root_manifest.csv",
+              "id": "2303770422966"
+            }
+          ],
+          "rootReadmeFileId": "2303774397178",
+          "versionsFolderId": "393113351487",
+          "versionedFiles": [
+            {
+              "name": "versioned_doc_1.txt",
+              "id": "2303776494347",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_2.txt",
+              "id": "2303770996287",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_3.txt",
+              "id": "2303772566326",
+              "versions": 7
+            }
+          ],
+          "longPathContainerId": "393113288460",
+          "longPathFolders": [
+            {
+              "name": "Long Folder Path 1",
+              "id": "393113834073",
+              "level": 1
+            },
+            {
+              "name": "Long Folder Path 2",
+              "id": "393113006064",
+              "level": 2
+            },
+            {
+              "name": "Long Folder Path 3",
+              "id": "393115240302",
+              "level": 3
+            },
+            {
+              "name": "Long Folder Path 4",
+              "id": "393115050732",
+              "level": 4
+            },
+            {
+              "name": "Long Folder Path 5",
+              "id": "393114397755",
+              "level": 5
+            },
+            {
+              "name": "Long Folder Path 6",
+              "id": "393115057932",
+              "level": 6
+            },
+            {
+              "name": "Long Folder Path 7",
+              "id": "393112581535",
+              "level": 7
+            },
+            {
+              "name": "Long Folder Path 8",
+              "id": "393113613249",
+              "level": 8
+            },
+            {
+              "name": "Long Folder Path 9",
+              "id": "393112895680",
+              "level": 9
+            },
+            {
+              "name": "Long Folder Path 10",
+              "id": "393114837409",
+              "level": 10
+            },
+            {
+              "name": "Long Folder Path 11",
+              "id": "393114752966",
+              "level": 11
+            },
+            {
+              "name": "Long Folder Path 12",
+              "id": "393115422445",
+              "level": 12
+            },
+            {
+              "name": "Long Folder Path 13",
+              "id": "393112779842",
+              "level": 13
+            },
+            {
+              "name": "Long Folder Path 14",
+              "id": "393115477666",
+              "level": 14
+            },
+            {
+              "name": "Long Folder Path 15",
+              "id": "393114741566",
+              "level": 15
+            },
+            {
+              "name": "Long Folder Path 16",
+              "id": "393115247515",
+              "level": 16
+            },
+            {
+              "name": "Long Folder Path 17",
+              "id": "393115679746",
+              "level": 17
+            },
+            {
+              "name": "Long Folder Path 18",
+              "id": "393115530869",
+              "level": 18
+            },
+            {
+              "name": "Long Folder Path 19",
+              "id": "393114776966",
+              "level": 19
+            },
+            {
+              "name": "Long Folder Path 20",
+              "id": "393115095668",
+              "level": 20
+            },
+            {
+              "name": "Long Folder Path 21",
+              "id": "393112725200",
+              "level": 21
+            },
+            {
+              "name": "Long Folder Path 22",
+              "id": "393114154916",
+              "level": 22
+            },
+            {
+              "name": "Long Folder Path 23",
+              "id": "393113548459",
+              "level": 23
+            },
+            {
+              "name": "Long Folder Path 24",
+              "id": "393113243182",
+              "level": 24
+            },
+            {
+              "name": "Long Folder Path 25",
+              "id": "393113944726",
+              "level": 25
+            },
+            {
+              "name": "Long Folder Path 26",
+              "id": "393114774173",
+              "level": 26
+            },
+            {
+              "name": "Long Folder Path 27",
+              "id": "393115398107",
+              "level": 27
+            },
+            {
+              "name": "Long Folder Path 28",
+              "id": "393113205465",
+              "level": 28
+            },
+            {
+              "name": "Long Folder Path 29",
+              "id": "393115360701",
+              "level": 29
+            },
+            {
+              "name": "Long Folder Path 30",
+              "id": "393114327738",
+              "level": 30
+            }
+          ],
+          "longPathLastFolderId": "393114327738",
+          "longPathFiles": {
+            "Word": "2303774999279",
+            "Excel": "2303767665095",
+            "PDF": "2303773751989"
+          },
+          "longPathExcelExternalShare": "mia@pepperwood.club",
+          "longPathPdfSharedLink": "https://app.box.com/s/rz6nxw7033hs0o06ggu8hjinsqw91jhz",
+          "longNameFolderId": "393113989897",
+          "longNameLength": 255,
+          "specialCharsFolderId": "393113670573",
+          "specialCharsName": "Special !@#$%^&*()-_+=[]{};',. Folder"
+        },
+        "sharedLinks": [
+          {
+            "label": "long_path_report.pdf (public)",
+            "type": "file",
+            "id": "2303773751989",
+            "url": "https://app.box.com/s/rz6nxw7033hs0o06ggu8hjinsqw91jhz"
+          },
+          {
+            "label": "Agent sub folder",
+            "type": "folder",
+            "id": "393113377983",
+            "url": "https://app.box.com/s/6v2j208fy6b6shtxh8do0e2ylb2dkruh"
+          },
+          {
+            "label": "Agent Versions",
+            "type": "folder",
+            "id": "393113351487",
+            "url": "https://app.box.com/s/d0ghwpvys2g2hlhllzhjqvgfgztxroox"
+          },
+          {
+            "label": "sample_text.txt",
+            "type": "file",
+            "id": "2303767976642",
+            "url": "https://app.box.com/s/483tsgww9m8p3j99yux1zde2k2ki8af0"
+          },
+          {
+            "label": "root_readme.txt",
+            "type": "file",
+            "id": "2303774397178",
+            "url": "https://app.box.com/s/8tpyj23o52664553loo88zawp4uvgiu9"
+          }
+        ],
+        "warnings": [
+          {
+            "scenario": "longPathFiles",
+            "share": "internal",
+            "error": "Box list-users failed (HTTP 403): The request requires higher privileges than provided by the access token.. Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID)."
+          }
+        ]
+      },
+      "migrationResult": {
+        "jobId": "6a3a67273ec6ea3192531f90",
+        "finalStatus": "NOT_PROCESSED",
+        "retriesUsed": 0,
+        "rawResponse": {
+          "id": "6a3a67273ec6ea3192531f90",
+          "type": null,
+          "jobName": "Agent-box-to-sharepoint-6a3a67273ec6ea3192531f90",
+          "listOfMoveWorkspaceId": [
+            "6a3a67273ec6ea3192531f91"
+          ],
+          "createdTime": 1782212391975,
+          "modifiedTime": 1782212391980,
+          "jobStatus": "IN_PROGRESS",
+          "userId": "68cd22235462b14dc6f60fed",
+          "generatedNo": 383,
+          "migrateFolderName": "/",
+          "customMetadata": false,
+          "notToMoveExtension": [],
+          "onlyPickExtension": [],
+          "moveLimit": null,
+          "emailValues": null,
+          "fromCloudName": "BOX_BUSINESS",
+          "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+          "previewDetail": [
+            {
+              "fromEmailId": "erik@filefuze.co",
+              "toEmailId": "erik@filefuze.co",
+              "fromProvision": true,
+              "toProvision": true,
+              "jobName": null
+            }
+          ],
+          "jobType": "ONETIME",
+          "jobList": [],
+          "isCSV": false,
+          "fromCloudId": "69e73af92698e83b9e904c8b",
+          "toCloudId": "6a33d5532286352041993009",
+          "restrictFileSize": null,
+          "unsupportedFiles": false,
+          "teamFoldersMigrate": false,
+          "listOfremovedWorkspaceIds": null,
+          "externalUsers": true,
+          "metaData": false,
+          "fileFolderLink": true,
+          "sendComments": true,
+          "onlyBoxNotes": false,
+          "innerFolderPerms": true,
+          "innerFilePerms": true,
+          "version": true,
+          "specialCharacter": "-",
+          "pickInsideFolder": false,
+          "contacts": false,
+          "createGroups": false,
+          "migrateToRoot": false,
+          "rootFolderPerms": true,
+          "rootFilePerms": true,
+          "totalPairsCount": 0,
+          "completedPairsCount": 0,
+          "totalData": 0,
+          "processedData": 0,
+          "deltaLastInitiated": null,
+          "deltaJobIds": null,
+          "embeddedLinks": false,
+          "adminUserId": null,
+          "seamless": true,
+          "deltaInitiatedFromReport": false,
+          "deltaInitiated": false
+        },
+        "ownerValidation": null,
+        "migrationJobDetails": {
+          "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+          "workspaceId": "6a3a67273ec6ea3192531f90",
+          "totalCount": null,
+          "processedCount": null,
+          "cfStatus": "NOT_PROCESSED"
+        },
+        "contentMigrationReport": {
+          "workspaceId": "6a3a67273ec6ea3192531f90",
+          "status": "NOT_PROCESSED",
+          "totalCount": null,
+          "processedCount": null,
+          "rawJobData": {
+            "id": "6a3a67273ec6ea3192531f94",
+            "type": null,
+            "moveWorkSpaceId": "6a3a67273ec6ea3192531f91",
+            "userId": "68cd22235462b14dc6f60fed",
+            "status": "NOT_PROCESSED",
+            "threadStatus": "RESUME",
+            "createdTime": null,
+            "modifiedTime": null,
+            "userType": "MULTIUSER_ACTIVE",
+            "userPause": false,
+            "thirdPartyAgent": false,
+            "seamless": true,
+            "preMigration": false,
+            "hostName": null,
+            "migApi": false,
+            "contentSprawl": false,
+            "jobtype": null
+          },
+          "stoppedAt": "2026-06-23T11:00:23.205Z"
+        },
+        "skipValidation": true,
+        "cloudIds": {
+          "sourceCloudId": "69e73af92698e83b9e904c8b",
+          "destCloudId": "6a33d5532286352041993009",
+          "sourceCloudName": "BOX_BUSINESS",
+          "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+        }
+      },
+      "validationSummary": null,
+      "contentMigrationReport": {
+        "workspaceId": "6a3a67273ec6ea3192531f90",
+        "status": "NOT_PROCESSED",
+        "totalCount": null,
+        "processedCount": null,
+        "rawJobData": {
+          "id": "6a3a67273ec6ea3192531f94",
+          "type": null,
+          "moveWorkSpaceId": "6a3a67273ec6ea3192531f91",
+          "userId": "68cd22235462b14dc6f60fed",
+          "status": "NOT_PROCESSED",
+          "threadStatus": "RESUME",
+          "createdTime": null,
+          "modifiedTime": null,
+          "userType": "MULTIUSER_ACTIVE",
+          "userPause": false,
+          "thirdPartyAgent": false,
+          "seamless": true,
+          "preMigration": false,
+          "hostName": null,
+          "migApi": false,
+          "contentSprawl": false,
+          "jobtype": null
+        },
+        "stoppedAt": "2026-06-23T11:00:23.205Z"
+      }
+    },
+    "error": null,
+    "createdAt": "2026-06-23T10:58:24.258Z",
+    "completedAt": "2026-06-23T11:00:23.379Z",
+    "progress": "Completed"
+  },
+  {
+    "executionId": "dd56176b-95a9-4bb5-b940-490c5444197c",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "dd56176b-95a9-4bb5-b940-490c5444197c",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Skipped",
+    "result": {
+      "executionId": "dd56176b-95a9-4bb5-b940-490c5444197c",
+      "status": "COMPLETED",
+      "duration": 118605,
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T11:06:54.363Z",
+          "completedAt": "2026-06-23T11:07:32.050Z",
+          "result": {
+            "jobId": "6a3a68d33ec6ea3192531f97",
+            "finalStatus": "NOT_PROCESSED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a68d33ec6ea3192531f97",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a68d33ec6ea3192531f97",
+              "listOfMoveWorkspaceId": [
+                "6a3a68d33ec6ea3192531f98"
+              ],
+              "createdTime": 1782212820307,
+              "modifiedTime": 1782212820316,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 384,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": false,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": false,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a68d33ec6ea3192531f97",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "NOT_PROCESSED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a68d33ec6ea3192531f97",
+              "status": "NOT_PROCESSED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a68d43ec6ea3192531f9b",
+                "type": null,
+                "moveWorkSpaceId": "6a3a68d33ec6ea3192531f98",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "NOT_PROCESSED",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": null,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": null
+              },
+              "stoppedAt": "2026-06-23T11:07:31.863Z"
+            },
+            "skipValidation": true,
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a68d33ec6ea3192531f97",
+          "retries": 0
+        }
+      ],
+      "sourceData": {
+        "rootFolderId": "393113848623",
+        "rootFolderName": "NEWDATA 8",
+        "scenarios": {
+          "rootFolderId": "393113848623",
+          "rootFolderName": "NEWDATA 8",
+          "subFolderId": "393117378737",
+          "subFolderFiles": [
+            {
+              "name": "sample_text.txt",
+              "id": "2303784177430"
+            },
+            {
+              "name": "sample_data.csv",
+              "id": "2303781621558"
+            },
+            {
+              "name": "sample_report.html",
+              "id": "2303787942499"
+            },
+            {
+              "name": "sample_config.json",
+              "id": "2303786139809"
+            },
+            {
+              "name": "sample_data.xml",
+              "id": "2303778203822"
+            },
+            {
+              "name": "sample_script.js",
+              "id": "2303791393306"
+            },
+            {
+              "name": "sample_image.jpg",
+              "id": "2303783699419"
+            },
+            {
+              "name": "sample_image.png",
+              "id": "2303783540716"
+            },
+            {
+              "name": "sample_archive.zip",
+              "id": "2303779302252"
+            },
+            {
+              "name": "sample_document.pdf",
+              "id": "2303779173104"
+            }
+          ],
+          "sampleTxtFileId": "2303784177430",
+          "rootFiles": [
+            {
+              "name": "root_readme.txt",
+              "id": "2303787851159"
+            },
+            {
+              "name": "root_manifest.csv",
+              "id": "2303790628469"
+            }
+          ],
+          "rootReadmeFileId": "2303787851159",
+          "versionsFolderId": "393114378800",
+          "versionedFiles": [
+            {
+              "name": "versioned_doc_1.txt",
+              "id": "2303787092507",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_2.txt",
+              "id": "2303787460119",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_3.txt",
+              "id": "2303786708779",
+              "versions": 7
+            }
+          ],
+          "longPathContainerId": "393117004146",
+          "longPathFolders": [
+            {
+              "name": "Long Folder Path 1",
+              "id": "393116000401",
+              "level": 1
+            },
+            {
+              "name": "Long Folder Path 2",
+              "id": "393115686764",
+              "level": 2
+            },
+            {
+              "name": "Long Folder Path 3",
+              "id": "393114904436",
+              "level": 3
+            },
+            {
+              "name": "Long Folder Path 4",
+              "id": "393114685234",
+              "level": 4
+            },
+            {
+              "name": "Long Folder Path 5",
+              "id": "393116445596",
+              "level": 5
+            },
+            {
+              "name": "Long Folder Path 6",
+              "id": "393115179627",
+              "level": 6
+            },
+            {
+              "name": "Long Folder Path 7",
+              "id": "393117381436",
+              "level": 7
+            },
+            {
+              "name": "Long Folder Path 8",
+              "id": "393117462123",
+              "level": 8
+            },
+            {
+              "name": "Long Folder Path 9",
+              "id": "393116459987",
+              "level": 9
+            },
+            {
+              "name": "Long Folder Path 10",
+              "id": "393115261863",
+              "level": 10
+            },
+            {
+              "name": "Long Folder Path 11",
+              "id": "393115485158",
+              "level": 11
+            },
+            {
+              "name": "Long Folder Path 12",
+              "id": "393116773579",
+              "level": 12
+            },
+            {
+              "name": "Long Folder Path 13",
+              "id": "393116059084",
+              "level": 13
+            },
+            {
+              "name": "Long Folder Path 14",
+              "id": "393117080796",
+              "level": 14
+            },
+            {
+              "name": "Long Folder Path 15",
+              "id": "393115922176",
+              "level": 15
+            },
+            {
+              "name": "Long Folder Path 16",
+              "id": "393116678162",
+              "level": 16
+            },
+            {
+              "name": "Long Folder Path 17",
+              "id": "393115117657",
+              "level": 17
+            },
+            {
+              "name": "Long Folder Path 18",
+              "id": "393116228698",
+              "level": 18
+            },
+            {
+              "name": "Long Folder Path 19",
+              "id": "393116202551",
+              "level": 19
+            },
+            {
+              "name": "Long Folder Path 20",
+              "id": "393117575154",
+              "level": 20
+            },
+            {
+              "name": "Long Folder Path 21",
+              "id": "393116507332",
+              "level": 21
+            },
+            {
+              "name": "Long Folder Path 22",
+              "id": "393116802407",
+              "level": 22
+            },
+            {
+              "name": "Long Folder Path 23",
+              "id": "393117183720",
+              "level": 23
+            },
+            {
+              "name": "Long Folder Path 24",
+              "id": "393116814379",
+              "level": 24
+            },
+            {
+              "name": "Long Folder Path 25",
+              "id": "393116728562",
+              "level": 25
+            },
+            {
+              "name": "Long Folder Path 26",
+              "id": "393116951852",
+              "level": 26
+            },
+            {
+              "name": "Long Folder Path 27",
+              "id": "393115734108",
+              "level": 27
+            },
+            {
+              "name": "Long Folder Path 28",
+              "id": "393115252665",
+              "level": 28
+            },
+            {
+              "name": "Long Folder Path 29",
+              "id": "393115302506",
+              "level": 29
+            },
+            {
+              "name": "Long Folder Path 30",
+              "id": "393116257585",
+              "level": 30
+            }
+          ],
+          "longPathLastFolderId": "393116257585",
+          "longPathFiles": {
+            "Word": "2303780498335",
+            "Excel": "2303784686376",
+            "PDF": "2303785148593"
+          },
+          "longPathExcelExternalShare": "mia@pepperwood.club",
+          "longPathPdfSharedLink": "https://app.box.com/s/rg8l8b9smw4j1vec7z91qbuslno0nx1s",
+          "longNameFolderId": "393116889316",
+          "longNameLength": 255,
+          "specialCharsFolderId": "393117155405",
+          "specialCharsName": "Special !@#$%^&*()-_+=[]{};',. Folder"
+        },
+        "sharedLinks": [
+          {
+            "label": "long_path_report.pdf (public)",
+            "type": "file",
+            "id": "2303785148593",
+            "url": "https://app.box.com/s/rg8l8b9smw4j1vec7z91qbuslno0nx1s"
+          },
+          {
+            "label": "Agent sub folder",
+            "type": "folder",
+            "id": "393117378737",
+            "url": "https://app.box.com/s/r4oumvd1723g8b6sbq5nbmhdura1bnfe"
+          },
+          {
+            "label": "Agent Versions",
+            "type": "folder",
+            "id": "393114378800",
+            "url": "https://app.box.com/s/5tqryojbct3lfaikegfnzgfh3q8dm03q"
+          },
+          {
+            "label": "sample_text.txt",
+            "type": "file",
+            "id": "2303784177430",
+            "url": "https://app.box.com/s/4p97mj40hbntda246oyqdgz7cma95e9v"
+          },
+          {
+            "label": "root_readme.txt",
+            "type": "file",
+            "id": "2303787851159",
+            "url": "https://app.box.com/s/l8y8fss3dyarc4ugfh2e9m2tbim2oz7o"
+          }
+        ],
+        "warnings": [
+          {
+            "scenario": "longPathFiles",
+            "share": "internal",
+            "error": "Box list-users failed (HTTP 403): The request requires higher privileges than provided by the access token.. Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID)."
+          }
+        ]
+      },
+      "migrationResult": {
+        "jobId": "6a3a68d33ec6ea3192531f97",
+        "finalStatus": "NOT_PROCESSED",
+        "retriesUsed": 0,
+        "rawResponse": {
+          "id": "6a3a68d33ec6ea3192531f97",
+          "type": null,
+          "jobName": "Agent-box-to-sharepoint-6a3a68d33ec6ea3192531f97",
+          "listOfMoveWorkspaceId": [
+            "6a3a68d33ec6ea3192531f98"
+          ],
+          "createdTime": 1782212820307,
+          "modifiedTime": 1782212820316,
+          "jobStatus": "IN_PROGRESS",
+          "userId": "68cd22235462b14dc6f60fed",
+          "generatedNo": 384,
+          "migrateFolderName": "/",
+          "customMetadata": false,
+          "notToMoveExtension": [],
+          "onlyPickExtension": [],
+          "moveLimit": null,
+          "emailValues": null,
+          "fromCloudName": "BOX_BUSINESS",
+          "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+          "previewDetail": [
+            {
+              "fromEmailId": "erik@filefuze.co",
+              "toEmailId": "erik@filefuze.co",
+              "fromProvision": true,
+              "toProvision": true,
+              "jobName": null
+            }
+          ],
+          "jobType": "ONETIME",
+          "jobList": [],
+          "isCSV": false,
+          "fromCloudId": "69e73af92698e83b9e904c8b",
+          "toCloudId": "6a33d5532286352041993009",
+          "restrictFileSize": null,
+          "unsupportedFiles": false,
+          "teamFoldersMigrate": false,
+          "listOfremovedWorkspaceIds": null,
+          "externalUsers": true,
+          "metaData": false,
+          "fileFolderLink": true,
+          "sendComments": true,
+          "onlyBoxNotes": false,
+          "innerFolderPerms": true,
+          "innerFilePerms": true,
+          "version": true,
+          "specialCharacter": "-",
+          "pickInsideFolder": false,
+          "contacts": false,
+          "createGroups": false,
+          "migrateToRoot": false,
+          "rootFolderPerms": true,
+          "rootFilePerms": true,
+          "totalPairsCount": 0,
+          "completedPairsCount": 0,
+          "totalData": 0,
+          "processedData": 0,
+          "deltaLastInitiated": null,
+          "deltaJobIds": null,
+          "embeddedLinks": false,
+          "adminUserId": null,
+          "seamless": true,
+          "deltaInitiatedFromReport": false,
+          "deltaInitiated": false
+        },
+        "ownerValidation": null,
+        "migrationJobDetails": {
+          "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+          "workspaceId": "6a3a68d33ec6ea3192531f97",
+          "totalCount": null,
+          "processedCount": null,
+          "cfStatus": "NOT_PROCESSED"
+        },
+        "contentMigrationReport": {
+          "workspaceId": "6a3a68d33ec6ea3192531f97",
+          "status": "NOT_PROCESSED",
+          "totalCount": null,
+          "processedCount": null,
+          "rawJobData": {
+            "id": "6a3a68d43ec6ea3192531f9b",
+            "type": null,
+            "moveWorkSpaceId": "6a3a68d33ec6ea3192531f98",
+            "userId": "68cd22235462b14dc6f60fed",
+            "status": "NOT_PROCESSED",
+            "threadStatus": "RESUME",
+            "createdTime": null,
+            "modifiedTime": null,
+            "userType": "MULTIUSER_ACTIVE",
+            "userPause": false,
+            "thirdPartyAgent": false,
+            "seamless": true,
+            "preMigration": false,
+            "hostName": null,
+            "migApi": false,
+            "contentSprawl": false,
+            "jobtype": null
+          },
+          "stoppedAt": "2026-06-23T11:07:31.863Z"
+        },
+        "skipValidation": true,
+        "cloudIds": {
+          "sourceCloudId": "69e73af92698e83b9e904c8b",
+          "destCloudId": "6a33d5532286352041993009",
+          "sourceCloudName": "BOX_BUSINESS",
+          "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+        }
+      },
+      "validationSummary": null,
+      "contentMigrationReport": {
+        "workspaceId": "6a3a68d33ec6ea3192531f97",
+        "status": "NOT_PROCESSED",
+        "totalCount": null,
+        "processedCount": null,
+        "rawJobData": {
+          "id": "6a3a68d43ec6ea3192531f9b",
+          "type": null,
+          "moveWorkSpaceId": "6a3a68d33ec6ea3192531f98",
+          "userId": "68cd22235462b14dc6f60fed",
+          "status": "NOT_PROCESSED",
+          "threadStatus": "RESUME",
+          "createdTime": null,
+          "modifiedTime": null,
+          "userType": "MULTIUSER_ACTIVE",
+          "userPause": false,
+          "thirdPartyAgent": false,
+          "seamless": true,
+          "preMigration": false,
+          "hostName": null,
+          "migApi": false,
+          "contentSprawl": false,
+          "jobtype": null
+        },
+        "stoppedAt": "2026-06-23T11:07:31.863Z"
+      }
+    },
+    "error": null,
+    "createdAt": "2026-06-23T11:05:33.371Z",
+    "completedAt": "2026-06-23T11:07:32.276Z",
+    "progress": "Completed"
+  },
+  {
+    "executionId": "27c562e0-c672-42d8-9700-66e7c0a7d7d2",
+    "context": {
+      "sourceEmail": "erik@filefuze.co",
+      "destinationEmail": "erik@filefuze.co",
+      "migrationType": "FULL",
+      "includeMail": true,
+      "includeCalendar": false,
+      "includeContacts": false,
+      "testType": "SANITY",
+      "executionId": "27c562e0-c672-42d8-9700-66e7c0a7d7d2",
+      "sourceProvider": "box",
+      "destinationProvider": "sharepoint",
+      "domain": "content",
+      "mode": "content",
+      "deepValidation": true,
+      "userEmailMappings": [
+        {
+          "sourceEmail": "admin.florida@filefuze.co",
+          "destinationEmail": "admin.florida@filefuze.co"
+        },
+        {
+          "sourceEmail": "alex@filefuze.co",
+          "destinationEmail": "alex@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia.alex_1@filefuze.co",
+          "destinationEmail": "amelia.alex_1@filefuze.co"
+        },
+        {
+          "sourceEmail": "amelia1@filefuze.co",
+          "destinationEmail": "amelia1@filefuze.co"
+        },
+        {
+          "sourceEmail": "anh@filefuze.co",
+          "destinationEmail": "anh@filefuze.co"
+        },
+        {
+          "sourceEmail": "avagadda.sravani@filefuze.co",
+          "destinationEmail": "avagadda.sravani@filefuze.co"
+        },
+        {
+          "sourceEmail": "basha@filefuze.co",
+          "destinationEmail": "basha@filefuze.co"
+        },
+        {
+          "sourceEmail": "Bashakamal@filefuze.co",
+          "destinationEmail": "Bashakamal@filefuze.co"
+        },
+        {
+          "sourceEmail": "ben@filefuze.co",
+          "destinationEmail": "ben@filefuze.co"
+        },
+        {
+          "sourceEmail": "bharatop@filefuze.co",
+          "destinationEmail": "bharatop@filefuze.co"
+        },
+        {
+          "sourceEmail": "bpeterson@filefuze.co",
+          "destinationEmail": "bpeterson@filefuze.co"
+        },
+        {
+          "sourceEmail": "cloudg@filefuze.co",
+          "destinationEmail": "cloudg@filefuze.co"
+        },
+        {
+          "sourceEmail": "dev.test.giridhar@filefuze.co",
+          "destinationEmail": "dev.test.giridhar@filefuze.co"
+        },
+        {
+          "sourceEmail": "erik@filefuze.co",
+          "destinationEmail": "erik@filefuze.co"
+        },
+        {
+          "sourceEmail": "finance@filefuze.co",
+          "destinationEmail": "finance@filefuze.co"
+        },
+        {
+          "sourceEmail": "fuse5@filefuze.co",
+          "destinationEmail": "fuse5@filefuze.co"
+        },
+        {
+          "sourceEmail": "ganesh.guda@filefuze.co",
+          "destinationEmail": "ganesh.guda@filefuze.co"
+        },
+        {
+          "sourceEmail": "george@filefuze.co",
+          "destinationEmail": "george@filefuze.co"
+        },
+        {
+          "sourceEmail": "giridharkrishna@filefuze.co",
+          "destinationEmail": "giridharkrishna@filefuze.co"
+        },
+        {
+          "sourceEmail": "helpdesk@filefuze.co",
+          "destinationEmail": "helpdesk@filefuze.co"
+        },
+        {
+          "sourceEmail": "isla@filefuze.co",
+          "destinationEmail": "isla@filefuze.co"
+        },
+        {
+          "sourceEmail": "jose@filefuze.co",
+          "destinationEmail": "jose@filefuze.co"
+        },
+        {
+          "sourceEmail": "leone15@filefuze.co",
+          "destinationEmail": "leone15@filefuze.co"
+        },
+        {
+          "sourceEmail": "Liam@filefuze.co",
+          "destinationEmail": "Liam@filefuze.co"
+        },
+        {
+          "sourceEmail": "max@filefuze.co",
+          "destinationEmail": "max@filefuze.co"
+        },
+        {
+          "sourceEmail": "melvin@filefuze.co",
+          "destinationEmail": "melvin@filefuze.co"
+        },
+        {
+          "sourceEmail": "mia@filefuze.co",
+          "destinationEmail": "mia@filefuze.co"
+        },
+        {
+          "sourceEmail": "moorus@filefuze.co",
+          "destinationEmail": "moorus@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze1@filefuze.co",
+          "destinationEmail": "MStrailfuze1@filefuze.co"
+        },
+        {
+          "sourceEmail": "MStrailfuze2@filefuze.co",
+          "destinationEmail": "MStrailfuze2@filefuze.co"
+        },
+        {
+          "sourceEmail": "Narthan.Campbell@filefuze.co",
+          "destinationEmail": "Narthan.Campbell@filefuze.co"
+        },
+        {
+          "sourceEmail": "oilver@filefuze.co",
+          "destinationEmail": "oilver@filefuze.co"
+        },
+        {
+          "sourceEmail": "Olivia@filefuze.co",
+          "destinationEmail": "Olivia@filefuze.co"
+        },
+        {
+          "sourceEmail": "onboardmanualgroup@filefuze.co",
+          "destinationEmail": "onboardmanualgroup@filefuze.co"
+        },
+        {
+          "sourceEmail": "prasanna@filefuze.co",
+          "destinationEmail": "prasanna@filefuze.co"
+        },
+        {
+          "sourceEmail": "priority@filefuze.co",
+          "destinationEmail": "priority@filefuze.co"
+        },
+        {
+          "sourceEmail": "ron@filefuze.co",
+          "destinationEmail": "ron@filefuze.co"
+        },
+        {
+          "sourceEmail": "sampleusers@filefuze.co",
+          "destinationEmail": "sampleusers@filefuze.co"
+        },
+        {
+          "sourceEmail": "sharapova.e@filefuze.co",
+          "destinationEmail": "sharapova.e@filefuze.co"
+        },
+        {
+          "sourceEmail": "soniyaa@filefuze.co",
+          "destinationEmail": "soniyaa@filefuze.co"
+        },
+        {
+          "sourceEmail": "sophia@filefuze.co",
+          "destinationEmail": "sophia@filefuze.co"
+        },
+        {
+          "sourceEmail": "sso.atlassian@filefuze.co",
+          "destinationEmail": "sso.atlassian@filefuze.co"
+        },
+        {
+          "sourceEmail": "test.latestUI@filefuze.co",
+          "destinationEmail": "test.latestUI@filefuze.co"
+        },
+        {
+          "sourceEmail": "testcountcf.c@filefuze.co",
+          "destinationEmail": "testcountcf.c@filefuze.co"
+        },
+        {
+          "sourceEmail": "testmiadan@filefuze.co",
+          "destinationEmail": "testmiadan@filefuze.co"
+        },
+        {
+          "sourceEmail": "Theodore@filefuze.co",
+          "destinationEmail": "Theodore@filefuze.co"
+        },
+        {
+          "sourceEmail": "unictesting@filefuze.co",
+          "destinationEmail": "unictesting@filefuze.co"
+        }
+      ],
+      "migrateOrphanedLabels": false,
+      "sourceAdminEmail": "erik@filefuze.co",
+      "destAdminEmail": "erik@filefuze.co",
+      "migrationServerUrl": "https://qarelease.cloudfuze.com",
+      "migrationServerEmail": "asma.karim@cloudfuze.com",
+      "fromFolderId": "/",
+      "toFolderId": "/"
+    },
+    "status": "COMPLETED",
+    "currentAgent": "Skipped",
+    "result": {
+      "executionId": "27c562e0-c672-42d8-9700-66e7c0a7d7d2",
+      "status": "COMPLETED",
+      "duration": 120282,
+      "agentResults": [
+        {
+          "name": "MigrationAgent",
+          "status": "SUCCESS",
+          "startedAt": "2026-06-23T11:10:55.276Z",
+          "completedAt": "2026-06-23T11:11:32.577Z",
+          "result": {
+            "jobId": "6a3a69c43ec6ea3192531f9e",
+            "finalStatus": "NOT_PROCESSED",
+            "retriesUsed": 0,
+            "rawResponse": {
+              "id": "6a3a69c43ec6ea3192531f9e",
+              "type": null,
+              "jobName": "Agent-box-to-sharepoint-6a3a69c43ec6ea3192531f9e",
+              "listOfMoveWorkspaceId": [
+                "6a3a69c43ec6ea3192531f9f"
+              ],
+              "createdTime": 1782213061277,
+              "modifiedTime": 1782213061281,
+              "jobStatus": "IN_PROGRESS",
+              "userId": "68cd22235462b14dc6f60fed",
+              "generatedNo": 385,
+              "migrateFolderName": "/",
+              "customMetadata": false,
+              "notToMoveExtension": [],
+              "onlyPickExtension": [],
+              "moveLimit": null,
+              "emailValues": null,
+              "fromCloudName": "BOX_BUSINESS",
+              "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+              "previewDetail": [
+                {
+                  "fromEmailId": "erik@filefuze.co",
+                  "toEmailId": "erik@filefuze.co",
+                  "fromProvision": true,
+                  "toProvision": true,
+                  "jobName": null
+                }
+              ],
+              "jobType": "ONETIME",
+              "jobList": [],
+              "isCSV": false,
+              "fromCloudId": "69e73af92698e83b9e904c8b",
+              "toCloudId": "6a33d5532286352041993009",
+              "restrictFileSize": null,
+              "unsupportedFiles": false,
+              "teamFoldersMigrate": false,
+              "listOfremovedWorkspaceIds": null,
+              "externalUsers": true,
+              "metaData": false,
+              "fileFolderLink": true,
+              "sendComments": true,
+              "onlyBoxNotes": false,
+              "innerFolderPerms": true,
+              "innerFilePerms": true,
+              "version": true,
+              "specialCharacter": "-",
+              "pickInsideFolder": false,
+              "contacts": false,
+              "createGroups": false,
+              "migrateToRoot": false,
+              "rootFolderPerms": true,
+              "rootFilePerms": true,
+              "totalPairsCount": 0,
+              "completedPairsCount": 0,
+              "totalData": 0,
+              "processedData": 0,
+              "deltaLastInitiated": null,
+              "deltaJobIds": null,
+              "embeddedLinks": false,
+              "adminUserId": null,
+              "seamless": true,
+              "deltaInitiatedFromReport": false,
+              "deltaInitiated": false
+            },
+            "ownerValidation": null,
+            "migrationJobDetails": {
+              "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+              "workspaceId": "6a3a69c43ec6ea3192531f9e",
+              "totalCount": null,
+              "processedCount": null,
+              "cfStatus": "NOT_PROCESSED"
+            },
+            "contentMigrationReport": {
+              "workspaceId": "6a3a69c43ec6ea3192531f9e",
+              "status": "NOT_PROCESSED",
+              "totalCount": null,
+              "processedCount": null,
+              "rawJobData": {
+                "id": "6a3a69c53ec6ea3192531fa2",
+                "type": null,
+                "moveWorkSpaceId": "6a3a69c43ec6ea3192531f9f",
+                "userId": "68cd22235462b14dc6f60fed",
+                "status": "NOT_PROCESSED",
+                "threadStatus": "RESUME",
+                "createdTime": null,
+                "modifiedTime": null,
+                "userType": "MULTIUSER_ACTIVE",
+                "userPause": false,
+                "thirdPartyAgent": false,
+                "seamless": true,
+                "preMigration": false,
+                "hostName": null,
+                "migApi": false,
+                "contentSprawl": false,
+                "jobtype": null
+              },
+              "stoppedAt": "2026-06-23T11:11:32.506Z"
+            },
+            "skipValidation": true,
+            "cloudIds": {
+              "sourceCloudId": "69e73af92698e83b9e904c8b",
+              "destCloudId": "6a33d5532286352041993009",
+              "sourceCloudName": "BOX_BUSINESS",
+              "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+            }
+          },
+          "error": null,
+          "jobId": "6a3a69c43ec6ea3192531f9e",
+          "retries": 0
+        }
+      ],
+      "sourceData": {
+        "rootFolderId": "393116200363",
+        "rootFolderName": "NEWDATA 9",
+        "scenarios": {
+          "rootFolderId": "393116200363",
+          "rootFolderName": "NEWDATA 9",
+          "subFolderId": "393117769857",
+          "subFolderFiles": [
+            {
+              "name": "sample_text.txt",
+              "id": "2303782528295"
+            },
+            {
+              "name": "sample_data.csv",
+              "id": "2303789750289"
+            },
+            {
+              "name": "sample_report.html",
+              "id": "2303789994062"
+            },
+            {
+              "name": "sample_config.json",
+              "id": "2303792253228"
+            },
+            {
+              "name": "sample_data.xml",
+              "id": "2303789087250"
+            },
+            {
+              "name": "sample_script.js",
+              "id": "2303788513334"
+            },
+            {
+              "name": "sample_image.jpg",
+              "id": "2303792742970"
+            },
+            {
+              "name": "sample_image.png",
+              "id": "2303788595649"
+            },
+            {
+              "name": "sample_archive.zip",
+              "id": "2303790159662"
+            },
+            {
+              "name": "sample_document.pdf",
+              "id": "2303787810276"
+            }
+          ],
+          "sampleTxtFileId": "2303782528295",
+          "rootFiles": [
+            {
+              "name": "root_readme.txt",
+              "id": "2303792473264"
+            },
+            {
+              "name": "root_manifest.csv",
+              "id": "2303784796623"
+            }
+          ],
+          "rootReadmeFileId": "2303792473264",
+          "versionsFolderId": "393118371956",
+          "versionedFiles": [
+            {
+              "name": "versioned_doc_1.txt",
+              "id": "2303796141132",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_2.txt",
+              "id": "2303793643185",
+              "versions": 7
+            },
+            {
+              "name": "versioned_doc_3.txt",
+              "id": "2303787779182",
+              "versions": 7
+            }
+          ],
+          "longPathContainerId": "393116442518",
+          "longPathFolders": [
+            {
+              "name": "Long Folder Path 1",
+              "id": "393117143878",
+              "level": 1
+            },
+            {
+              "name": "Long Folder Path 2",
+              "id": "393115746966",
+              "level": 2
+            },
+            {
+              "name": "Long Folder Path 3",
+              "id": "393118544506",
+              "level": 3
+            },
+            {
+              "name": "Long Folder Path 4",
+              "id": "393114931023",
+              "level": 4
+            },
+            {
+              "name": "Long Folder Path 5",
+              "id": "393118554354",
+              "level": 5
+            },
+            {
+              "name": "Long Folder Path 6",
+              "id": "393116102265",
+              "level": 6
+            },
+            {
+              "name": "Long Folder Path 7",
+              "id": "393116603425",
+              "level": 7
+            },
+            {
+              "name": "Long Folder Path 8",
+              "id": "393114572802",
+              "level": 8
+            },
+            {
+              "name": "Long Folder Path 9",
+              "id": "393115017072",
+              "level": 9
+            },
+            {
+              "name": "Long Folder Path 10",
+              "id": "393115737565",
+              "level": 10
+            },
+            {
+              "name": "Long Folder Path 11",
+              "id": "393116396410",
+              "level": 11
+            },
+            {
+              "name": "Long Folder Path 12",
+              "id": "393115314651",
+              "level": 12
+            },
+            {
+              "name": "Long Folder Path 13",
+              "id": "393115758864",
+              "level": 13
+            },
+            {
+              "name": "Long Folder Path 14",
+              "id": "393117993180",
+              "level": 14
+            },
+            {
+              "name": "Long Folder Path 15",
+              "id": "393117433239",
+              "level": 15
+            },
+            {
+              "name": "Long Folder Path 16",
+              "id": "393116410810",
+              "level": 16
+            },
+            {
+              "name": "Long Folder Path 17",
+              "id": "393115264029",
+              "level": 17
+            },
+            {
+              "name": "Long Folder Path 18",
+              "id": "393116764669",
+              "level": 18
+            },
+            {
+              "name": "Long Folder Path 19",
+              "id": "393118338284",
+              "level": 19
+            },
+            {
+              "name": "Long Folder Path 20",
+              "id": "393115081872",
+              "level": 20
+            },
+            {
+              "name": "Long Folder Path 21",
+              "id": "393116926801",
+              "level": 21
+            },
+            {
+              "name": "Long Folder Path 22",
+              "id": "393116982051",
+              "level": 22
+            },
+            {
+              "name": "Long Folder Path 23",
+              "id": "393116543737",
+              "level": 23
+            },
+            {
+              "name": "Long Folder Path 24",
+              "id": "393115559253",
+              "level": 24
+            },
+            {
+              "name": "Long Folder Path 25",
+              "id": "393117347966",
+              "level": 25
+            },
+            {
+              "name": "Long Folder Path 26",
+              "id": "393117357566",
+              "level": 26
+            },
+            {
+              "name": "Long Folder Path 27",
+              "id": "393116363013",
+              "level": 27
+            },
+            {
+              "name": "Long Folder Path 28",
+              "id": "393115134830",
+              "level": 28
+            },
+            {
+              "name": "Long Folder Path 29",
+              "id": "393117131884",
+              "level": 29
+            },
+            {
+              "name": "Long Folder Path 30",
+              "id": "393117124219",
+              "level": 30
+            }
+          ],
+          "longPathLastFolderId": "393117124219",
+          "longPathFiles": {
+            "Word": "2303793863671",
+            "Excel": "2303791513608",
+            "PDF": "2303793939893"
+          },
+          "longPathExcelExternalShare": "mia@pepperwood.club",
+          "longPathPdfSharedLink": "https://app.box.com/s/4wkaynbjpd1btxqwhhpqtdshcttao437",
+          "longNameFolderId": "393116150055",
+          "longNameLength": 255,
+          "specialCharsFolderId": "393117294901",
+          "specialCharsName": "Special !@#$%^&*()-_+=[]{};',. Folder"
+        },
+        "sharedLinks": [
+          {
+            "label": "long_path_report.pdf (public)",
+            "type": "file",
+            "id": "2303793939893",
+            "url": "https://app.box.com/s/4wkaynbjpd1btxqwhhpqtdshcttao437"
+          },
+          {
+            "label": "Agent sub folder",
+            "type": "folder",
+            "id": "393117769857",
+            "url": "https://app.box.com/s/f4gfts191gw9tzz8m0h5mt1bf1thjerf"
+          },
+          {
+            "label": "Agent Versions",
+            "type": "folder",
+            "id": "393118371956",
+            "url": "https://app.box.com/s/i0cu58bi5cnxrcmjwcx2g15tdob6ei26"
+          },
+          {
+            "label": "sample_text.txt",
+            "type": "file",
+            "id": "2303782528295",
+            "url": "https://app.box.com/s/p4eqxb2vnmb6gvzy1l5jqjph5lchv443"
+          },
+          {
+            "label": "root_readme.txt",
+            "type": "file",
+            "id": "2303792473264",
+            "url": "https://app.box.com/s/svfbyt0i3yclmwik5bljuoq852tiam2g"
+          }
+        ],
+        "warnings": [
+          {
+            "scenario": "longPathFiles",
+            "share": "internal",
+            "error": "Box list-users failed (HTTP 403): The request requires higher privileges than provided by the access token.. Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID)."
+          }
+        ]
+      },
+      "migrationResult": {
+        "jobId": "6a3a69c43ec6ea3192531f9e",
+        "finalStatus": "NOT_PROCESSED",
+        "retriesUsed": 0,
+        "rawResponse": {
+          "id": "6a3a69c43ec6ea3192531f9e",
+          "type": null,
+          "jobName": "Agent-box-to-sharepoint-6a3a69c43ec6ea3192531f9e",
+          "listOfMoveWorkspaceId": [
+            "6a3a69c43ec6ea3192531f9f"
+          ],
+          "createdTime": 1782213061277,
+          "modifiedTime": 1782213061281,
+          "jobStatus": "IN_PROGRESS",
+          "userId": "68cd22235462b14dc6f60fed",
+          "generatedNo": 385,
+          "migrateFolderName": "/",
+          "customMetadata": false,
+          "notToMoveExtension": [],
+          "onlyPickExtension": [],
+          "moveLimit": null,
+          "emailValues": null,
+          "fromCloudName": "BOX_BUSINESS",
+          "toCloudName": "SHAREPOINT_ONLINE_BUSINESS",
+          "previewDetail": [
+            {
+              "fromEmailId": "erik@filefuze.co",
+              "toEmailId": "erik@filefuze.co",
+              "fromProvision": true,
+              "toProvision": true,
+              "jobName": null
+            }
+          ],
+          "jobType": "ONETIME",
+          "jobList": [],
+          "isCSV": false,
+          "fromCloudId": "69e73af92698e83b9e904c8b",
+          "toCloudId": "6a33d5532286352041993009",
+          "restrictFileSize": null,
+          "unsupportedFiles": false,
+          "teamFoldersMigrate": false,
+          "listOfremovedWorkspaceIds": null,
+          "externalUsers": true,
+          "metaData": false,
+          "fileFolderLink": true,
+          "sendComments": true,
+          "onlyBoxNotes": false,
+          "innerFolderPerms": true,
+          "innerFilePerms": true,
+          "version": true,
+          "specialCharacter": "-",
+          "pickInsideFolder": false,
+          "contacts": false,
+          "createGroups": false,
+          "migrateToRoot": false,
+          "rootFolderPerms": true,
+          "rootFilePerms": true,
+          "totalPairsCount": 0,
+          "completedPairsCount": 0,
+          "totalData": 0,
+          "processedData": 0,
+          "deltaLastInitiated": null,
+          "deltaJobIds": null,
+          "embeddedLinks": false,
+          "adminUserId": null,
+          "seamless": true,
+          "deltaInitiatedFromReport": false,
+          "deltaInitiated": false
+        },
+        "ownerValidation": null,
+        "migrationJobDetails": {
+          "serverUrl": "https://qarelease.cloudfuze.com/proxyservices/v1/report",
+          "workspaceId": "6a3a69c43ec6ea3192531f9e",
+          "totalCount": null,
+          "processedCount": null,
+          "cfStatus": "NOT_PROCESSED"
+        },
+        "contentMigrationReport": {
+          "workspaceId": "6a3a69c43ec6ea3192531f9e",
+          "status": "NOT_PROCESSED",
+          "totalCount": null,
+          "processedCount": null,
+          "rawJobData": {
+            "id": "6a3a69c53ec6ea3192531fa2",
+            "type": null,
+            "moveWorkSpaceId": "6a3a69c43ec6ea3192531f9f",
+            "userId": "68cd22235462b14dc6f60fed",
+            "status": "NOT_PROCESSED",
+            "threadStatus": "RESUME",
+            "createdTime": null,
+            "modifiedTime": null,
+            "userType": "MULTIUSER_ACTIVE",
+            "userPause": false,
+            "thirdPartyAgent": false,
+            "seamless": true,
+            "preMigration": false,
+            "hostName": null,
+            "migApi": false,
+            "contentSprawl": false,
+            "jobtype": null
+          },
+          "stoppedAt": "2026-06-23T11:11:32.506Z"
+        },
+        "skipValidation": true,
+        "cloudIds": {
+          "sourceCloudId": "69e73af92698e83b9e904c8b",
+          "destCloudId": "6a33d5532286352041993009",
+          "sourceCloudName": "BOX_BUSINESS",
+          "destCloudName": "SHAREPOINT_ONLINE_BUSINESS"
+        }
+      },
+      "validationSummary": null,
+      "contentMigrationReport": {
+        "workspaceId": "6a3a69c43ec6ea3192531f9e",
+        "status": "NOT_PROCESSED",
+        "totalCount": null,
+        "processedCount": null,
+        "rawJobData": {
+          "id": "6a3a69c53ec6ea3192531fa2",
+          "type": null,
+          "moveWorkSpaceId": "6a3a69c43ec6ea3192531f9f",
+          "userId": "68cd22235462b14dc6f60fed",
+          "status": "NOT_PROCESSED",
+          "threadStatus": "RESUME",
+          "createdTime": null,
+          "modifiedTime": null,
+          "userType": "MULTIUSER_ACTIVE",
+          "userPause": false,
+          "thirdPartyAgent": false,
+          "seamless": true,
+          "preMigration": false,
+          "hostName": null,
+          "migApi": false,
+          "contentSprawl": false,
+          "jobtype": null
+        },
+        "stoppedAt": "2026-06-23T11:11:32.506Z"
+      }
+    },
+    "error": null,
+    "createdAt": "2026-06-23T11:09:31.914Z",
+    "completedAt": "2026-06-23T11:11:32.649Z",
+    "progress": "Completed"
   }
 ]

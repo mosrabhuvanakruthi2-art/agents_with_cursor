@@ -56,12 +56,15 @@ class MigrationAgent extends BaseAgent {
       const hasEmail = Boolean(context.migrationServerEmail);
       const hasPassword = Boolean(context.migrationServerPassword);
 
-      // For content migrations: if no password in form, fall back to env-stored credentials
-      const isContentModeLocal = context.mode === 'content';
+      // For content migrations (or any non-devemail content server like qarelease): if the
+      // form leaves email/password blank, fall back to env CONTENT_MIGRATION_SERVER_* so the
+      // runtime login has credentials (needed for isNewServer → browser-login path).
+      const isContentServer = context.mode === 'content'
+        || (context.migrationServerUrl && !/devemail/i.test(context.migrationServerUrl));
       const effectiveEmail = context.migrationServerEmail ||
-        (isContentModeLocal ? env.CONTENT_MIGRATION_SERVER_EMAIL : '');
+        (isContentServer ? env.CONTENT_MIGRATION_SERVER_EMAIL : '');
       const effectivePassword = context.migrationServerPassword ||
-        (isContentModeLocal ? env.CONTENT_MIGRATION_SERVER_PASSWORD : '');
+        (isContentServer ? env.CONTENT_MIGRATION_SERVER_PASSWORD : '');
 
       migrationClient.setRuntimeConfig({
         baseUrl: context.migrationServerUrl,
@@ -70,7 +73,7 @@ class MigrationAgent extends BaseAgent {
         // When no email is given but a password-like token is provided, treat it as a Basic auth override
         basicAuth: (!effectiveEmail && hasPassword) ? context.migrationServerPassword : null,
       });
-      log.info(`CloudFuze: using runtime server ${context.migrationServerUrl}${!effectiveEmail && hasPassword ? ' (Basic auth override from UI)' : ''}${isContentModeLocal && !context.migrationServerPassword && effectivePassword ? ' (content mode: password from env)' : ''}`);
+      log.info(`CloudFuze: using runtime server ${context.migrationServerUrl}${!effectiveEmail && hasPassword ? ' (Basic auth override from UI)' : ''}${isContentServer && !context.migrationServerPassword && effectivePassword ? ' (content server: password from env)' : ''}`);
       bump(`MigrationAgent: connecting to ${context.migrationServerUrl}…`);
     } else {
       migrationClient.clearRuntimeConfig();

@@ -64,6 +64,27 @@ export default function useRunWizard() {
   const [testType, setTestType] = usePersistedState('rw-testType', 'E2E');
   const [migrationType, setMigrationType] = usePersistedState('rw-migrationType', 'FULL');
 
+  // Content migration options (CloudFuze Team Migration "Options" step). Permission
+  // toggles default ON to mirror a full migration; job options are free-form.
+  const [contentOptions, setContentOptions] = usePersistedState('rw-contentOptions', {
+    rootFolderPermissions: true, rootFilePermissions: true,
+    subFolderPermissions: true, subFilePermissions: true,
+    sharedLinks: true, externalShares: true, versionHistory: true,
+    customMetadata: true, workbookLinks: true, preserveTimestamp: true, comments: true,
+    permissions: true, notifyInternalUsers: false, notifyExternalUsers: false,
+  });
+  const [jobOptions, setJobOptions] = usePersistedState('rw-jobOptions', {
+    jobName: '', excludeFileTypes: '', replaceSpecialChar: '_',
+  });
+  // Content mapping. sourceFolderName = the folder the test-data agent creates in the
+  // source (deduped " 1" on conflict; the CSV uses the actual created name). Blank
+  // destination → backend uses the cloud default (SharePoint /SANITY DATAA/Documents, Drive /OSM).
+  const [contentPaths, setContentPaths] = usePersistedState('rw-contentPaths', { sourceFolderName: '', destinationPath: '' });
+  const setContentPath = (key, val) => setContentPaths((p) => ({ ...p, [key]: val }));
+  const toggleContentOption = (key) => setContentOptions((o) => ({ ...o, [key]: !o[key] }));
+  const setContentOption = (key, val) => setContentOptions((o) => ({ ...o, [key]: !!val }));
+  const setJobOption = (key, val) => setJobOptions((o) => ({ ...o, [key]: val }));
+
   // Connected accounts (live)
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
@@ -240,6 +261,20 @@ export default function useRunWizard() {
     });
   }
 
+  // Bulk select / deselect a given list of mapping indices (e.g. the currently
+  // search-filtered pairs). Select-all adds, deselect-all removes — leaving any
+  // indices outside the filter untouched.
+  function selectAll(indices) {
+    setSelectedIndices((s) => new Set([...s, ...indices]));
+  }
+  function deselectAll(indices) {
+    setSelectedIndices((s) => {
+      const next = new Set(s);
+      indices.forEach((i) => next.delete(i));
+      return next;
+    });
+  }
+
   function resetMapping() {
     setFetched(false); setFetchedKey(''); setMappings([]); setSourceUsers([]); setDestUsers([]);
     setUnmappedSource([]); setUnmappedDest([]); setSelectedIndices(new Set());
@@ -272,6 +307,16 @@ export default function useRunWizard() {
       sourceAdminEmail: srcEmail, destAdminEmail: dstEmail,
       userEmailMappings: allMapped.length ? allMapped : pairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail })),
       ...server,
+      // Content Team-Migration options (permission flags + job options). Backend uses
+      // these only for the content flow; harmless for mail/message.
+      ...(domain === 'content' ? {
+        contentOptions,
+        jobName: jobOptions.jobName || undefined,
+        excludeFileTypes: jobOptions.excludeFileTypes || undefined,
+        replaceSpecialChar: jobOptions.replaceSpecialChar,
+        sourceFolderName: contentPaths.sourceFolderName || undefined,
+        destinationPath: contentPaths.destinationPath || undefined,
+      } : {}),
     };
     if (pairs.length === 1) {
       return { ...base, sourceEmail: pairs[0].sourceEmail, destinationEmail: pairs[0].destinationEmail, sourceProvider: srcProvider, destinationProvider: dstProvider };
@@ -293,10 +338,12 @@ export default function useRunWizard() {
     dstProvider, setDstProvider, dstEmail, setDstEmail,
     accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, disconnect,
     fetched, needsFetch, fetchUsers, sourceUsers, destUsers, mappings, selectedIndices,
-    togglePair, manualMap, removeMapping, unmappedSource, unmappedDest, resetMapping,
+    togglePair, selectAll, deselectAll, manualMap, removeMapping, unmappedSource, unmappedDest, resetMapping,
     migrationServerUrl, setMigrationServerUrl, migrationServerEmail, setMigrationServerEmail,
     migrationServerPassword, setMigrationServerPassword,
     testType, setTestType, migrationType, setMigrationType,
+    contentOptions, toggleContentOption, setContentOption, jobOptions, setJobOption,
+    contentPaths, setContentPath,
     selectedPairs, buildPayload, reset,
     busy, error, setError,
   };

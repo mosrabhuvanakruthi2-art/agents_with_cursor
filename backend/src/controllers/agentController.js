@@ -45,6 +45,17 @@ async function runAgents(req, res) {
         userEmailMappings: normalizedUserMappings,
         sourceAdminEmail: sourceAdminEmail || '',
         destAdminEmail: destAdminEmail || '',
+        migrationServerUrl: req.body.migrationServerUrl || '',
+        migrationServerEmail: req.body.migrationServerEmail || '',
+        migrationServerPassword: req.body.migrationServerPassword || '',
+        mode: mode || 'email',
+        contentOptions: req.body.contentOptions || null,
+        jobName: req.body.jobName || '',
+        excludeFileTypes: req.body.excludeFileTypes || '',
+        replaceSpecialChar: req.body.replaceSpecialChar,
+        sourcePath: req.body.sourcePath || '',
+        destinationPath: req.body.destinationPath || '',
+        sourceFolderName: req.body.sourceFolderName || '',
       }));
       const results = await orchestrator.runBulkFlow(pairsData);
       return res.json({
@@ -79,6 +90,13 @@ async function runAgents(req, res) {
       migrationServerEmail: req.body.migrationServerEmail || '',
       migrationServerPassword: req.body.migrationServerPassword || '',
       mode: mode || 'email',
+      contentOptions: req.body.contentOptions || null,
+      jobName: req.body.jobName || '',
+      excludeFileTypes: req.body.excludeFileTypes || '',
+      replaceSpecialChar: req.body.replaceSpecialChar,
+      sourcePath: req.body.sourcePath || '',
+      destinationPath: req.body.destinationPath || '',
+      sourceFolderName: req.body.sourceFolderName || '',
     });
     context.validate();
 
@@ -247,9 +265,19 @@ function mapConfigUsers(admin) {
   }));
 }
 
+// Content uses fine-grained service keys (googledrive/onedrive/sharepoint/…) but user
+// listing is done at the ACCOUNT level (Gmail/Graph/Box). Normalize so a service key
+// resolves to the right listing path instead of falling through to an empty list.
+const USER_LISTING_PROVIDER = {
+  googledrive: 'google', googleshareddrive: 'google', gmail: 'google', // (googleshareddrive kept)
+  onedrive: 'microsoft', outlook: 'microsoft',
+  sharepoint: 'sharepoint', box: 'box',
+};
+
 async function getSourceUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
     const config = loadUsersConfig();
@@ -262,6 +290,7 @@ async function getSourceUsers(req, res) {
     // only. This keeps the list current — a stale config entry no longer silently caps it.
     let liveUsers = null;
     let domainHint = null;
+    let liveErrMsg = null;
     try {
       if (provider === 'microsoft') {
         const outlookClient = require('../clients/outlookClient');
@@ -286,6 +315,7 @@ async function getSourceUsers(req, res) {
       }
     } catch (liveErr) {
       logger.warn(`getSourceUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
+      liveErrMsg = liveErr.message;
     }
 
     if (liveUsers && liveUsers.length > 0) {
@@ -325,6 +355,16 @@ async function getSourceUsers(req, res) {
       return res.json({ adminEmail, users: configUsers, source: 'config' });
     }
     if (domainHint) return res.status(400).json({ error: domainHint });
+    // Google: a live failure with no fallback almost always means the service account
+    // isn't authorized for Domain-Wide Delegation in THIS user's Workspace domain.
+    if ((provider === 'google' || !provider) && liveErrMsg) {
+      const domain = (adminEmail.split('@')[1] || '').toLowerCase();
+      return res.status(400).json({
+        error: `Couldn't list Google users for @${domain}: ${liveErrMsg}. `
+          + `Authorize the service account's Client ID for Domain-Wide Delegation in the ${domain} `
+          + `Google Admin console (scopes: admin.directory.user.readonly, drive), then retry.`,
+      });
+    }
     return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
@@ -334,7 +374,8 @@ async function getSourceUsers(req, res) {
 
 async function getDestinationUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
 
     const config = loadUsersConfig();
     const admin = config.destination?.admins?.find(

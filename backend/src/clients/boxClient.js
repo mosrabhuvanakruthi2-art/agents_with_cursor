@@ -25,42 +25,87 @@ function buildMultipart(attributes, filename, fileBuffer) {
 
 // ─── Token management ─────────────────────────────────────────────────────────
 
+// Cached Client Credentials Grant (server auth) enterprise token.
+let ccgToken = null; // { token, expiresAt }
+
+/**
+ * Box Client Credentials Grant — server-to-server auth as the enterprise (admin).
+ * No user login, no 60-minute developer-token expiry. Requires BOX_ENTERPRISE_ID and a
+ * Box app of type "Server Authentication (Client Credentials Grant)" authorized in the
+ * Box Admin Console. This is the right auth for listing managed users + seeding data.
+ */
+async function getEnterpriseToken() {
+  const enterpriseId = (process.env.BOX_ENTERPRISE_ID || '').trim();
+  const clientId = process.env.BOX_CLIENT_ID;
+  const clientSecret = process.env.BOX_CLIENT_SECRET;
+  if (!enterpriseId || !clientId || !clientSecret) return null;
+
+  if (ccgToken && Date.now() < ccgToken.expiresAt - 60_000) return ccgToken.token;
+
+  const params = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+    box_subject_type: 'enterprise',
+    box_subject_id: enterpriseId,
+  });
+  const res = await axios.post(BOX_TOKEN_URL, params.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  });
+  const { access_token, expires_in } = res.data;
+  ccgToken = { token: access_token, expiresAt: Date.now() + expires_in * 1000 };
+  logger.info('[boxClient] Obtained enterprise token via Client Credentials Grant');
+  return access_token;
+}
+
 async function getValidToken(adminEmail) {
   const devToken = process.env.BOX_DEVELOPER_TOKEN;
   const tokenStore = require('./oauthTokenStore');
+
+  // 1. Preferred: server-auth (CCG) enterprise token — auto-renews, admin scope.
+  try {
+    const ccg = await getEnterpriseToken();
+    if (ccg) return ccg;
+  } catch (err) {
+    logger.warn(`[boxClient] CCG token failed: ${err.response?.status || ''} ${JSON.stringify(err.response?.data || err.message)}`);
+  }
+
+  // 2. Stored OAuth token (user connected via Connect Clouds).
   const stored = tokenStore.getBoxToken(adminEmail);
-
-  // If no stored token or it has no accessToken, fall back to developer token
-  if (!stored || !stored.accessToken) {
-    if (devToken) return devToken;
-    throw new Error(`No Box token for ${adminEmail}. Set BOX_DEVELOPER_TOKEN in .env or connect via OAuth at GET /api/auth/box/url`);
-  }
-
-  if (!stored.expiresAt || Date.now() >= stored.expiresAt - 60_000) {
-    if (!stored.refreshToken) {
-      if (devToken) return devToken;
-      throw new Error(`No Box refresh token for ${adminEmail}. Please reconnect or set BOX_DEVELOPER_TOKEN.`);
+  if (stored && stored.accessToken) {
+    if (!stored.expiresAt || Date.now() >= stored.expiresAt - 60_000) {
+      if (stored.refreshToken) {
+        try {
+          const params = new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: stored.refreshToken,
+            client_id: process.env.BOX_CLIENT_ID,
+            client_secret: process.env.BOX_CLIENT_SECRET,
+          });
+          const res = await axios.post(BOX_TOKEN_URL, params.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          });
+          const { access_token, refresh_token, expires_in } = res.data;
+          tokenStore.setBoxToken({ email: adminEmail, accessToken: access_token, refreshToken: refresh_token, expiresAt: Date.now() + expires_in * 1000 });
+          logger.info(`[boxClient] Token refreshed for ${adminEmail}`);
+          return access_token;
+        } catch (err) {
+          // Stale/invalid refresh token (Box returns 400 invalid_grant) — fall through to dev token.
+          logger.warn(`[boxClient] OAuth refresh failed for ${adminEmail}: ${err.response?.status || ''} — falling back to developer token`);
+        }
+      }
+    } else {
+      return stored.accessToken;
     }
-    const params = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: stored.refreshToken,
-      client_id: process.env.BOX_CLIENT_ID,
-      client_secret: process.env.BOX_CLIENT_SECRET,
-    });
-    const res = await axios.post(BOX_TOKEN_URL, params.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-    const { access_token, refresh_token, expires_in } = res.data;
-    tokenStore.setBoxToken({
-      email: adminEmail,
-      accessToken: access_token,
-      refreshToken: refresh_token,
-      expiresAt: Date.now() + expires_in * 1000,
-    });
-    logger.info(`[boxClient] Token refreshed for ${adminEmail}`);
-    return access_token;
   }
-  return stored.accessToken;
+
+  // 3. Developer token (manual, expires ~60 min — quick tests only).
+  if (devToken) return devToken;
+
+  throw new Error(
+    `No usable Box credential for ${adminEmail}. Set BOX_ENTERPRISE_ID (+ a Client Credentials Grant app) for server auth, `
+    + `connect Box via OAuth at GET /api/auth/box/url, or set a fresh BOX_DEVELOPER_TOKEN (expires in 60 min).`,
+  );
 }
 
 // ─── Request helpers ──────────────────────────────────────────────────────────
@@ -84,11 +129,19 @@ async function getMe(adminEmail) {
 
 async function getUsers(adminEmail) {
   const token = await getValidToken(adminEmail);
-  const res = await axios.get(`${BOX_API}/users`, {
-    headers: authHeaders(token),
-    params: { fields: 'id,login,name,status', user_type: 'managed', limit: 1000 },
-  });
-  return (res.data.entries || []).filter((u) => u.status === 'active');
+  try {
+    const res = await axios.get(`${BOX_API}/users`, {
+      headers: authHeaders(token),
+      params: { fields: 'id,login,name,status', user_type: 'managed', limit: 1000 },
+    });
+    return (res.data.entries || []).filter((u) => u.status === 'active');
+  } catch (err) {
+    const box = err.response?.data;
+    // /2.0/users requires an enterprise admin token. A user-scoped token gets 403/400.
+    const detail = box?.message || box?.error_description || box?.code || err.message;
+    throw new Error(`Box list-users failed (HTTP ${err.response?.status}): ${detail}. `
+      + `Listing managed users requires an enterprise admin token — use Client Credentials Grant (BOX_ENTERPRISE_ID).`);
+  }
 }
 
 // ─── Folder operations ────────────────────────────────────────────────────────

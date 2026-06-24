@@ -226,6 +226,9 @@ async function register() {
 async function login() {
   if (loginToken && !isJwtExpired(loginToken)) return loginToken;
 
+  // Diagnostic: shows why we take the content-server (browser-login) path vs the legacy one.
+  logger.info(`CloudFuze login(): isNewServer=${isNewServer()} runtimeBaseUrl=${runtimeConfig?.baseUrl || '(none)'} hasEmail=${!!runtimeConfig?.email} hasPassword=${!!runtimeConfig?.password}`);
+
   // New server: email + password via POST /email/app/login
   // Different CloudFuze servers (newtestemail5, qarelease, etc.) vary in:
   //   (a) whether the API lives at root or under /proxyservices/v1
@@ -427,12 +430,17 @@ async function login() {
     // Root base = strip /proxyservices/... suffix so we can try root-level /app/login
     const rootBase = appLoginBase.replace(/\/proxyservices\/.*/i, '');
     const ent = (() => { try { return new URL(appLoginBase).host; } catch { return ''; } })();
+    // The API lives under /proxyservices/v1 even when CONTENT_MIGRATION_SERVER_URL is set
+    // without that prefix (e.g. https://qarelease.cloudfuze.com). Build the API base so the
+    // login doesn't hit the website root (which returns a 404 HTML page).
+    const apiBase = appLoginBase.includes('/proxyservices/') ? appLoginBase : `${rootBase}/proxyservices/v1`;
 
-    const appLoginUrls = [
-      `${appLoginBase}/app/login`,                   // /proxyservices/v1/app/login
-      ...(rootBase !== appLoginBase ? [`${rootBase}/app/login`] : []),  // /app/login (root)
-      `${appLoginBase}/email/app/login`,             // /proxyservices/v1/email/app/login
-    ];
+    const appLoginUrls = [...new Set([
+      `${apiBase}/app/login`,            // /proxyservices/v1/app/login  (content server primary)
+      `${apiBase}/users/app/login`,      // /proxyservices/v1/users/app/login
+      `${apiBase}/email/app/login`,      // /proxyservices/v1/email/app/login
+      `${rootBase}/app/login`,           // /app/login (root-level fallback)
+    ])];
 
     for (const loginUrl of appLoginUrls) {
       try {
@@ -958,8 +966,10 @@ async function triggerMigration(context) {
     const token = await login();
     const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
 
-    // Determine source path: prefer explicit context override, then BoxTestDataAgent-captured path, then root
-    const sourcePath = context.sourcePath || context.sourceTestDataPath || '/';
+    // Source path: prefer the folder the seed agent ACTUALLY created (sourceTestDataPath —
+    // already includes any " 1" dedup suffix), then an explicit UI override, then root.
+    // The seeded path wins so the CSV reflects the real created folder name.
+    const sourcePath = context.sourceTestDataPath || context.sourcePath || '/';
 
     // Determine destination path based on cloud type (can be overridden via context.destinationPath)
     let destinationPath = context.destinationPath;
@@ -971,6 +981,10 @@ async function triggerMigration(context) {
     }
 
     logger.info(`CloudFuze triggerMigration (content team): sourcePath="${sourcePath}", destinationPath="${destinationPath}", srcCloud=${context.sourceCloudId}, dstCloud=${context.destCloudId}`);
+    if (sourcePath === '/' || destinationPath === '/') {
+      logger.warn(`CloudFuze content: ${sourcePath === '/' ? 'SOURCE' : 'DESTINATION'} path is ROOT ("/") — the migration will run at account root and the Workspaces dashboard will show a blank path. `
+        + `Set the folder path in the Run Agent "Content Mapping" fields, or ensure the test-data agent created its folder (source path is captured from it).`);
+    }
 
     // ── Step 1: Upload path mapping CSV ──────────────────────────────────────
     const csvContent = [
@@ -994,6 +1008,12 @@ async function triggerMigration(context) {
       logger.warn(`CloudFuze content CSV upload failed (${csvErr?.response?.status || csvErr.message}) — using direct workspace pair`);
     }
 
+    // CloudFuze identifies the source folder by its cloud FOLDER ID (e.g. Box folder id),
+    // not a path string. Prefer the seeded folder's real id (captured from BoxTestDataAgent);
+    // the path-mapping CSV is best-effort and often returns empty cfMappingCachesList.
+    const fromRootId = context.sourceRootId || sourcePath;
+    logger.info(`CloudFuze content fromRootId="${fromRootId}" (${context.sourceRootId ? 'Box folder id' : 'path fallback'}), toRootId="${destinationPath}"`);
+
     // ── Step 2: Create multiuser migration job ────────────────────────────────
     const workspacePairs = csvData.length > 0
       ? csvData.map((row) => ({
@@ -1001,7 +1021,7 @@ async function triggerMigration(context) {
           toCloudId: { id: context.destCloudId },
           fromMailId: row?.sourceCloudDetails?.emailId || row?.fromMailId || context.sourceEmail,
           toMailId: row?.destCloudDetails?.emailId || row?.toMailId || context.destinationEmail,
-          fromRootId: row?.fromRootId || sourcePath,
+          fromRootId: row?.fromRootId || fromRootId,
           toRootId: row?.toRootId || destinationPath,
           fromCloudName: context.sourceCloudName,
           toCloudName: context.destCloudName,
@@ -1011,7 +1031,7 @@ async function triggerMigration(context) {
           toCloudId: { id: context.destCloudId },
           fromMailId: context.sourceEmail,
           toMailId: context.destinationEmail,
-          fromRootId: sourcePath,
+          fromRootId,
           toRootId: destinationPath,
           fromCloudName: context.sourceCloudName,
           toCloudName: context.destCloudName,
@@ -1036,31 +1056,37 @@ async function triggerMigration(context) {
 
     // ── Step 3: Update job options (migration settings) ───────────────────────
     const isDelta = context.migrationType === 'DELTA';
-    const jobName = `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`.slice(0, 80);
+    const jobName = (context.jobName || `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`).slice(0, 80);
     const toDate = new Date().toISOString().slice(0, 10) + ' 00:00:00';
+
+    // Migration options selected in the Run Agent "Options" step (context.contentOptions).
+    // Each maps to a CloudFuze newmultiuser param. Default = true to preserve prior
+    // behaviour when the caller doesn't pass explicit options.
+    const o = context.contentOptions || {};
+    const opt = (key, def = true) => (o[key] === undefined ? def : Boolean(o[key]));
 
     const updateParams = [
       `jobName=${encodeURIComponent(jobName)}`,
       `migrateFolderName=${encodeURIComponent('/')}`,
       `isDeltaMigration=${isDelta}`,
-      'fileFolderLink=true',
-      'externalUsers=true',
-      'metaData=true',
-      'sendComments=true',
-      'innerFolderPerms=true',
-      'innerFilePerms=true',
-      'versioning=true',
-      'embeddedLinks=true',
-      'rootFolderPerms=true',
-      'rootFilePerms=true',
-      'addExternalUserAsGuest=true',
-      'withPermissions=true',
-      'notifyInternalUsers=true',
-      'notifyExternalUsers=true',
+      `fileFolderLink=${opt('sharedLinks')}`,            // Shared Links
+      `externalUsers=${opt('externalShares')}`,          // External Shares
+      `metaData=${opt('customMetadata')}`,               // Custom Metadata
+      `sendComments=${opt('comments')}`,                 // Comments
+      `innerFolderPerms=${opt('subFolderPermissions')}`, // Sub-Folder Permissions
+      `innerFilePerms=${opt('subFilePermissions')}`,     // Sub-File Permissions
+      `versioning=${opt('versionHistory')}`,             // Version History
+      `embeddedLinks=${opt('workbookLinks')}`,           // Workbook / embedded links
+      `rootFolderPerms=${opt('rootFolderPermissions')}`, // Root Folder Permissions
+      `rootFilePerms=${opt('rootFilePermissions')}`,     // Root File Permissions
+      `addExternalUserAsGuest=${opt('externalShares')}`,
+      `withPermissions=${opt('permissions')}`,
+      `notifyInternalUsers=${opt('notifyInternalUsers', false)}`,
+      `notifyExternalUsers=${opt('notifyExternalUsers', false)}`,
       'fromDate=null',
       `toDate=${encodeURIComponent(toDate)}`,
       'createdTimeForFiles=false',
-      'modifiedTimeForFiles=true',
+      `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
     ].join('&');
 
     const updateUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/update/${jobId}?${updateParams}`;

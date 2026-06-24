@@ -315,10 +315,12 @@ class AgentOrchestrator {
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
-        // For content migrations: capture source folder path so MigrationAgent can build the CSV
+        // For content migrations: capture source folder path AND its cloud folder ID so the
+        // MigrationAgent can pass a real fromRootId (CloudFuze needs the folder ID, not a path string).
         if (sourceData?.rootFolderName) {
           context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
-          log.info(`Content source path captured from ${dataAgent.getName()}: ${context.sourceTestDataPath}`);
+          if (sourceData.rootFolderId) context.sourceRootId = String(sourceData.rootFolderId);
+          log.info(`Content source captured from ${dataAgent.getName()}: path=${context.sourceTestDataPath} folderId=${context.sourceRootId || '(none)'}`);
         }
       } else if (dataAgent === null) {
         log.info('Step 1: Skipped (no TestDataAgent registered for this combination)');
