@@ -7,7 +7,7 @@ import useMessageAgentExecution from '../hooks/useMessageAgentExecution';
 import { MESSAGE_MIGRATION_COMBINATIONS } from '../constants/messageCombinations';
 import {
   getConnectedAccounts, getMessageTargets, getCustomTestCases,
-  getSourceUsers, getDestinationUsers, uploadMappingCsv,
+  getSourceUsers, getDestinationUsers,
 } from '../services/api';
 
 const STEPS = ['Source & Destination', 'Map Users', 'Channels & DMs', 'Migration Server', 'Summary'];
@@ -50,32 +50,13 @@ export default function MessageWizard() {
   // position and source/destination selection instead of resetting to step 1.
   const [step, setStep] = usePersistedState('msgwiz:step', 1);
 
-  const errorRef = useRef(null);
-
   // Initiate seed/migrate, then jump to the logs page to watch progress.
   async function runAndOpenLogs(fn, payload) {
     try {
       const data = await fn(payload);
       const id = data?.executionId;
       if (id) navigate(`/logs?id=${encodeURIComponent(id)}&domain=message`);
-    } catch (err) {
-      // If the error is an auth failure (400 from pre-flight), jump back to Step 4 so the
-      // user can fix their credentials immediately instead of hunting in the logs.
-      const errMsg = err?.response?.data?.error || err?.message || '';
-      const isAuthErr = err?.response?.status === 400 && (
-        errMsg.toLowerCase().includes('401') ||
-        errMsg.toLowerCase().includes('rejected') ||
-        errMsg.toLowerCase().includes('auth') ||
-        errMsg.toLowerCase().includes('credentials')
-      );
-      if (isAuthErr) {
-        setStep(4);
-        setStep4Error(errMsg);
-        return;
-      }
-      // Other errors: scroll the error message into view on the Summary page
-      setTimeout(() => errorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
-    }
+    } catch { /* error surfaces via msg.*Error below */ }
   }
   const [accounts, setAccounts] = useState([]);
 
@@ -92,13 +73,6 @@ export default function MessageWizard() {
   const [mapBusy, setMapBusy] = useState(false);
   const [mapError, setMapError] = useState(null);
   const [mapKey, setMapKey] = useState(''); // src/dst pair already fetched for
-  // Step 2 — CSV upload
-  const [csvUploading, setCsvUploading] = useState(false);
-  const [csvFilename, setCsvFilename] = usePersistedState('msgwiz:csvFilename', '');
-  const [csvRows, setCsvRows] = usePersistedState('msgwiz:csvRows', 0);
-  const [csvCfPairs, setCsvCfPairs] = usePersistedState('msgwiz:csvCfPairs', 0);
-  const [csvError, setCsvError] = useState(null);
-  const [csvServerPath, setCsvServerPath] = usePersistedState('msgwiz:csvServerPath', '');
 
   // Step 3 — channels & DMs
   const [targets, setTargets] = useState(null);
@@ -119,8 +93,6 @@ export default function MessageWizard() {
   // For SSO (Google-login) CloudFuze accounts that have no API password — paste the
   // "Authorization: Basic …" token from DevTools. Takes priority over email/password.
   const [serverToken, setServerToken] = usePersistedState('msgwiz:serverToken', '');
-  // Step 4 — error shown when migration pre-flight fails (navigates back here)
-  const [step4Error, setStep4Error] = useState(null);
 
   // Step 5 — seed scenario (optional)
   const [scenarios, setScenarios] = useState([]);
@@ -197,66 +169,21 @@ export default function MessageWizard() {
     if (targets && srcEmail) cacheSet(`targets:${srcPlatform}:${srcEmail}`, { targets, selChannels, selDms });
   }, [targets, selChannels, selDms, srcPlatform, srcEmail]);
 
-  // Step 2 — auto-fetch source + destination users, then auto-map them.
+  // Step 2 — auto-fetch source + destination users and auto-map them by first name.
   const fetchMapUsers = useCallback(async (force = false) => {
     if (!srcEmail || !dstEmail) return;
     const key = `${srcPlatform}:${srcEmail}|${dstPlatform}:${dstEmail}`;
-
-    // Build matched pairs from src/dst arrays.
-    // Priority: 1) exact email  2) first name  3) email username (john@a.com → john@b.com)
-    function buildPairs(src, dst) {
-      const used = new Set();
-      const mapped = [];
-      const left = [];
-      for (const s of src) {
-        const sEmail = (s.email || '').toLowerCase();
-        const sFirst = (s.firstName || '').toLowerCase().trim();
-        const sUser  = sEmail.split('@')[0];
-        const find   = (pred) => dst.find((d) => !used.has(d.id) && pred(d));
-        const m =
-          find((d) => (d.email || '').toLowerCase() === sEmail) ||
-          (sFirst && find((d) => (d.firstName || '').toLowerCase().trim() === sFirst)) ||
-          (sUser  && find((d) => (d.email || '').toLowerCase().split('@')[0] === sUser));
-        if (m) { mapped.push({ sourceEmail: s.email, destinationEmail: m.email }); used.add(m.id); }
-        else left.push(s);
-      }
-      return { mapped, left };
-    }
-
-    // Guarantee the selected admin accounts (srcEmail → dstEmail) are always paired.
-    // Runs on both the fresh-fetch path AND the cache-restore path so the admin pair
-    // is never missing just because the cache was set before this logic existed.
-    function ensureAdminPair(mapped, left) {
-      if (mapped.some((p) => p.sourceEmail.toLowerCase() === srcEmail.toLowerCase())) return;
-      // Free dstEmail if it was claimed by a first-name / username match.
-      const dstIdx = mapped.findIndex((p) => p.destinationEmail.toLowerCase() === dstEmail.toLowerCase());
-      if (dstIdx !== -1) mapped.splice(dstIdx, 1);
-      // Pull admin from unmatched list if present; otherwise insert directly — some
-      // platforms don't include the workspace admin in the regular member list.
-      const leftIdx = left.findIndex((s) => s.email.toLowerCase() === srcEmail.toLowerCase());
-      if (leftIdx !== -1) {
-        mapped.push({ sourceEmail: left[leftIdx].email, destinationEmail: dstEmail });
-        left.splice(leftIdx, 1);
-      } else {
-        mapped.push({ sourceEmail: srcEmail, destinationEmail: dstEmail });
-      }
-    }
-
     if (force !== true) {
       const cached = cacheGet(`map:${key}`);
-      if (cached?.srcUsers?.length > 0 && cached?.dstUsers?.length > 0) {
-        const cachedPairs     = [...(cached.pairs     || [])];
-        const cachedUnmatched = [...(cached.unmatched || [])];
-        ensureAdminPair(cachedPairs, cachedUnmatched);
+      if (cached?.srcUsers) {
         setSrcUsers(cached.srcUsers);
-        setDstUsers(cached.dstUsers);
-        setPairs(cachedPairs);
-        setUnmatched(cachedUnmatched);
+        setDstUsers(cached.dstUsers || []);
+        setPairs(cached.pairs || []);
+        setUnmatched(cached.unmatched || []);
         setMapKey(key);
         return;
       }
     }
-
     setMapBusy(true); setMapError(null);
     try {
       const [srcRes, dstRes] = await Promise.all([
@@ -266,8 +193,14 @@ export default function MessageWizard() {
       const src = srcRes.data.users || [];
       const dst = dstRes.data.users || [];
       setSrcUsers(src); setDstUsers(dst);
-      const { mapped, left } = buildPairs(src, dst);
-      ensureAdminPair(mapped, left);
+      // Auto-map by first name (same heuristic as the Mail/Content wizard).
+      const used = new Set(); const mapped = []; const left = [];
+      for (const s of src) {
+        const f = (s.firstName || '').toLowerCase().trim();
+        const m = f ? dst.find((d) => !used.has(d.id) && (d.firstName || '').toLowerCase().trim() === f) : null;
+        if (m) { mapped.push({ sourceEmail: s.email, destinationEmail: m.email }); used.add(m.id); }
+        else left.push(s);
+      }
       setPairs(mapped);
       setUnmatched(left);
       setMapKey(key);
@@ -297,37 +230,6 @@ export default function MessageWizard() {
     setUnmatched((u) => u.filter((s) => s.email !== srcEmailVal));
   }
 
-  async function handleCsvUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setCsvUploading(true); setCsvError(null);
-    try {
-      const text = await file.text();
-      // Parse: skip header if present, split on comma
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const start = lines[0]?.toLowerCase().includes('source') ? 1 : 0;
-      const parsed = [];
-      for (let i = start; i < lines.length; i++) {
-        const [src, dst] = lines[i].split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
-        if (src && dst) parsed.push({ sourceEmail: src, destinationEmail: dst });
-      }
-      if (parsed.length === 0) throw new Error('No valid rows found. Expected: Source User,Destination User');
-      setPairs(parsed);
-      setUnmatched([]);
-      setCsvFilename(file.name);
-      setCsvRows(parsed.length);
-      // Save CSV to server AND immediately push to CF server for all combinations.
-      const res = await uploadMappingCsv(text, file.name);
-      setCsvServerPath(res.data.filePath || '');
-      setCsvCfPairs(res.data.cfUploaded || 0);
-    } catch (err) {
-      setCsvError(err?.response?.data?.error || err.message);
-    } finally {
-      setCsvUploading(false);
-      e.target.value = '';
-    }
-  }
-
   const channelObjects = targets
     ? [...targets.publicChannels, ...targets.privateChannels].filter((c) => selChannels.includes(c.id))
     : [];
@@ -350,17 +252,19 @@ export default function MessageWizard() {
       destinationEmail: dstEmail,
       channelIds: selChannels,
       dmIds: selDms,
+      channelObjects,
+      dmObjects,
       ...(pairs.length ? { userMappings: pairs } : {}),
-      ...(csvServerPath ? { userMappingCsvPath: csvServerPath } : {}),
       ...(serverUrl ? { migrationServerUrl: serverUrl } : {}),
       ...(serverEmail ? { migrationServerEmail: serverEmail } : {}),
       ...(serverPassword ? { migrationServerPassword: serverPassword } : {}),
+      ...(serverToken ? { migrationServerBasicAuth: serverToken } : {}),
     };
   }
 
   const canAdvance = {
     1: !!(combination && srcEmail && dstEmail),
-    2: true,
+    2: pairs.length > 0,
     3: selChannels.length > 0 || selDms.length > 0,
     4: true,
     5: true,
@@ -449,32 +353,6 @@ export default function MessageWizard() {
                 ))}
               </div>
             )}
-
-            {/* CSV upload — replaces auto-mapping with your own file */}
-            <div className="border border-dashed border-gray-300 rounded-xl p-4 bg-gray-50/50">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-700">Upload mapping CSV</p>
-                  <p className="text-xs text-gray-400 mt-0.5">Format: <span className="font-mono">Source User,Destination User</span> — replaces current mapping and uploads to server</p>
-                </div>
-                <label className={`cursor-pointer px-3 py-1.5 text-xs font-semibold rounded-lg border ${csvUploading ? 'opacity-50 cursor-not-allowed border-gray-200 bg-white text-gray-400' : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}>
-                  {csvUploading ? 'Uploading…' : 'Browse CSV'}
-                  <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleCsvUpload} disabled={csvUploading} />
-                </label>
-              </div>
-              {csvFilename && !csvError && (
-                <p className="mt-2 text-xs text-green-700 font-medium">
-                  ✓ {csvFilename} — {csvRows} row(s) loaded
-                  {csvServerPath ? ' · saved to server' : ''}
-                  {csvCfPairs > 0
-                    ? ` · uploaded to CF server (${csvCfPairs} combination${csvCfPairs !== 1 ? 's' : ''})`
-                    : csvServerPath ? ' · CF upload pending (will run at migration)' : ''}
-                </p>
-              )}
-              {csvError && (
-                <p className="mt-2 text-xs text-red-600">{csvError}</p>
-              )}
-            </div>
           </div>
         )}
 
@@ -546,31 +424,23 @@ export default function MessageWizard() {
         {step === 4 && (
           <div className="space-y-4">
             <p className="text-sm text-gray-500">
-              Enter the CloudFuze server URL and credentials to override the default server. Leave blank to use the pre-configured server from environment settings.
+              Your CloudFuze account that has the Slack / Teams / Google&nbsp;Chat clouds connected. These credentials
+              are used for this migration only — any CloudFuze server works, nothing is hardcoded on the backend.
             </p>
-
-            <Field label="Server URL">
-              <input value={serverUrl} onChange={(e) => { setServerUrl(e.target.value); setStep4Error(null); }}
-                placeholder="https://s2cdev.cloudfuze.com/"
+            <Field label="Server URL"><input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://s2cdev.cloudfuze.com/proxyservices/v1" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" /></Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Email"><input value={serverEmail} onChange={(e) => setServerEmail(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
+              <Field label="Password"><input type="password" value={serverPassword} onChange={(e) => setServerPassword(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
+            </div>
+            <Field label="API Token (Basic) — for Google/SSO accounts">
+              <input value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="paste the value after 'Authorization: Basic '"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
             </Field>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Email">
-                <input value={serverEmail} onChange={(e) => { setServerEmail(e.target.value); setStep4Error(null); }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-              </Field>
-              <Field label="Password">
-                <input type="password" value={serverPassword} onChange={(e) => { setServerPassword(e.target.value); setStep4Error(null); }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
-              </Field>
-            </div>
-
-            {step4Error && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
-                <p className="font-semibold">Login failed — check your credentials and try again</p>
-                <p className="text-xs mt-1 text-red-600">{step4Error}</p>
-              </div>
-            )}
+            <p className="text-xs text-gray-400">
+              If your CloudFuze account signs in with Google (no API password), open DevTools → Network on any
+              CloudFuze request, copy the <span className="font-mono">Authorization: Basic …</span> value, and paste it
+              here. The token takes priority over email/password.
+            </p>
           </div>
         )}
 
@@ -582,7 +452,6 @@ export default function MessageWizard() {
               <Card title="Accounts" lines={[`Src: ${srcEmail || '—'}`, `Dst: ${dstEmail || '—'}`]} />
               <Card title="Targets" lines={[`${selChannels.length} channel(s)`, `${selDms.length} DM(s)`]} />
               <Card title="User pairs" lines={[`${pairs.length} mapped`]} />
-              <Card title="Migration Server" lines={[serverUrl || '— not set —', serverEmail || '— no credentials —']} />
             </div>
 
             <div>
@@ -599,17 +468,15 @@ export default function MessageWizard() {
                 className="px-6 py-2.5 bg-amber-600 text-white text-sm font-semibold rounded-lg hover:bg-amber-700 disabled:opacity-50">
                 {msg.seedLoading ? 'Seeding…' : 'Seed test data'}
               </button>
-              <button type="button" disabled={!hasTargets || msg.migrateLoading}
+              <button type="button" disabled={!hasTargets || pairs.length === 0 || msg.migrateLoading}
                 onClick={() => runAndOpenLogs(msg.migrate, basePayload())}
                 className="px-6 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50">
                 {msg.migrateLoading ? 'Migrating…' : 'Run migration'}
               </button>
             </div>
 
-            <div ref={errorRef}>
-              {msg.seedError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">Seed: {msg.seedError}</div>}
-              {msg.migrateError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">Migration: {msg.migrateError}</div>}
-            </div>
+            {msg.seedError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">Seed: {msg.seedError}</div>}
+            {msg.migrateError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">Migration: {msg.migrateError}</div>}
             {msg.seedExecution && (
               <div className="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
                 <span className="text-sm text-gray-700">Seed: {msg.seedExecution.progress || msg.seedExecution.status}</span>

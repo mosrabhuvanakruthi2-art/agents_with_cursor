@@ -976,7 +976,7 @@ async function triggerMigration(context) {
     const csvContent = [
       'Source Cloud,Source Path,Destination Cloud,Destination Path',
       `${context.sourceEmail},${sourcePath},${context.destinationEmail},${destinationPath}`,
-    ].join('\n');
+    ].join('\r\n');
 
     const csvParams = `sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=500`;
     const csvUrl = `${contentOrigin}/proxyservices/v1/mapping/user/path/csv?${csvParams}`;
@@ -985,7 +985,7 @@ async function triggerMigration(context) {
     let csvData = [];
     try {
       const csvRes = await axios.post(csvUrl, csvContent, migrationAxiosConfig({
-        headers: { Authorization: token, 'Content-Type': 'application/json' },
+        headers: { Authorization: token, 'Content-Type': 'text/csv' },
         timeout: 30000,
       }));
       csvData = Array.isArray(csvRes.data) ? csvRes.data : (csvRes.data ? [csvRes.data] : []);
@@ -995,14 +995,23 @@ async function triggerMigration(context) {
     }
 
     // ── Step 2: Create multiuser migration job ────────────────────────────────
-    const workspacePairs = csvData.length > 0
-      ? csvData.map((row) => ({
+    // CSV response wraps entries inside cfMappingCachesList — extract those first.
+    // Fall back to the outer response rows only if cfMappingCachesList is absent.
+    const mappingRows = csvData.flatMap((item) =>
+      Array.isArray(item?.cfMappingCachesList) && item.cfMappingCachesList.length > 0
+        ? item.cfMappingCachesList
+        : (item?.fromRootId || item?.fromMailId ? [item] : [])
+    );
+    logger.info(`CloudFuze content mapping rows extracted: ${mappingRows.length}`);
+
+    const workspacePairs = mappingRows.length > 0
+      ? mappingRows.map((row) => ({
           fromCloudId: { id: context.sourceCloudId },
           toCloudId: { id: context.destCloudId },
           fromMailId: row?.sourceCloudDetails?.emailId || row?.fromMailId || context.sourceEmail,
           toMailId: row?.destCloudDetails?.emailId || row?.toMailId || context.destinationEmail,
-          fromRootId: row?.fromRootId || sourcePath,
-          toRootId: row?.toRootId || destinationPath,
+          fromRootId: row?.fromRootId || row?.sourcePath || sourcePath,
+          toRootId: row?.toRootId || row?.destPath || destinationPath,
           fromCloudName: context.sourceCloudName,
           toCloudName: context.destCloudName,
         }))

@@ -61,12 +61,6 @@ export async function runExecution(payload) {
   try {
     const { data, status } = await runAgents(payload);
     store.loading = false;
-    // Bulk runs still return 200 with full results inline (synchronous on server).
-    if (data.bulk) {
-      store.execution = data;
-      notify();
-      return data;
-    }
     if (data.executionId && (status === 202 || data.status === 'RUNNING')) {
       store.execution = data;
       notify();

@@ -294,7 +294,6 @@ export function runMessageAgent(payload) { return api.post('/agents/message-run'
 export function seedMessageAgent(payload) { return api.post('/agents/message-seed', payload); }
 export function migrateMessageAgent(payload) { return api.post('/agents/message-migrate', payload); }
 export function uploadMappingCsv(content, filename) { return api.post('/agents/upload-mapping-csv', { content, filename }); }
-export function testCFAuth(payload) { return api.post('/agents/cf-test-auth', payload); }
 export function getMessageTargets(provider, adminEmail) {
   const params = new URLSearchParams({ provider, adminEmail });
   return api.get(`/agents/message-targets?${params}`);
@@ -333,7 +332,6 @@ export function getCFDMs(params = {}) { return api.get('/agents/cf-dms', { param
 export function getCFChannelsAll(params = {}) { return api.get('/agents/cf-channels-all', { params }); }
 export function getCFChannelsCache(params = {}) { return api.get('/agents/cf-channels-cache', { params }); }
 export function getCFReports(params = {}) { return api.get('/agents/cf-reports', { params }); }
-export function getCFJobWorkspaces(jobId, params = {}) { return api.get('/agents/cf-job-workspaces', { params: { jobId, ...params } }); }
 // CF browser automation (requires playwright on the backend — errors if not installed)
 export function startCFBrowserMigration(payload) { return api.post('/agents/cf-browser-migrate', payload); }
 export function abortCFBrowserMigration() { return api.post('/agents/cf-browser-abort'); }

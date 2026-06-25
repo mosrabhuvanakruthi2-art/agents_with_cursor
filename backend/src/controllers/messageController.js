@@ -151,8 +151,6 @@ function parseMessagePayload(req) {
     migrationServerEmail,
     migrationServerPassword,
     migrationServerBasicAuth,
-    userMappings,
-    userMappingCsvPath,
   } = req.body;
 
   const normalizeIds = (v) => {
@@ -187,12 +185,6 @@ function parseMessagePayload(req) {
       migrationServerEmail: (migrationServerEmail || '').trim() || null,
       migrationServerPassword: migrationServerPassword || null,
       migrationServerBasicAuth: (migrationServerBasicAuth || '').trim() || null,
-      // User mappings from the Map Users wizard step — forwarded to CloudFuze as emailPairs.
-      userMappings: Array.isArray(userMappings) ? userMappings : [],
-      // Path to the uploaded CSV on the server — used as fallback when userMappings array is empty.
-      userMappingCsvPath: typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim()
-        ? userMappingCsvPath.trim()
-        : null,
     },
   };
 }
@@ -327,23 +319,6 @@ async function getCFReports(req, res) {
     res.json({ jobs });
   } catch (err) {
     logger.error(`getCFReports error: ${err.message}`);
-    res.status(500).json({ error: err.message });
-  }
-}
-
-/**
- * GET /api/agents/cf-job-workspaces?jobId=<id>&processStatus=all
- * Returns per-channel migration status (PICKING / MOVING / PROCESSED) for a CF job.
- * Used by the Reports & Logs panel to show picking/moving progress per channel.
- */
-async function getCFJobWorkspaces(req, res) {
-  try {
-    const { jobId, processStatus = 'all' } = req.query;
-    if (!jobId) return res.status(400).json({ error: 'jobId query param is required' });
-    const workspaces = await migrationClient.getJobWorkspaces({ jobId, processStatus });
-    res.json({ workspaces });
-  } catch (err) {
-    logger.error(`getCFJobWorkspaces error: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 }
@@ -631,7 +606,10 @@ async function migrateMessageAgent(req, res) {
       return res.status(400).json({ error: 'messageCombination is required' });
     }
     if ((sharedOpts.channelIds.length + sharedOpts.dmIds.length) === 0) {
-      return res.status(400).json({ error: 'Select at least one Channel or DM to migrate.' });
+      return res.status(400).json({
+        error:
+          'Select at least one posted Channel ID or DM ID to migrate. Run the seed step first, then pick targets.',
+      });
     }
 
     // Message migration is CHANNEL/DM-level (workspace → workspace), NOT per-user.
@@ -651,21 +629,6 @@ async function migrateMessageAgent(req, res) {
       destinationEmail: dstWorkspace,
     });
     context.validate();
-
-    // Pre-flight: validate CF credentials synchronously so the user gets an immediate
-    // error instead of waiting for the async migration to fail minutes later.
-    if (sharedOpts.migrationServerUrl) {
-      try {
-        await migrationClient.testCFAuth(context);
-        logger.info(`CF auth pre-flight passed for ${sharedOpts.migrationServerUrl}`);
-      } catch (authErr) {
-        logger.error(`CF auth pre-flight failed: ${authErr.message}`);
-        return res.status(400).json({
-          error: authErr.message,
-          hint: 'Check the Migration Server URL, email and password in Step 4.',
-        });
-      }
-    }
 
     executionService.create(context);
     executionService.update(context.executionId, {
@@ -697,9 +660,9 @@ async function migrateMessageAgent(req, res) {
 /**
  * POST /api/agents/upload-mapping-csv
  * Body: { filename?: string, content: string }   (content = raw CSV text)
- * 1. Saves the CSV to a server temp file (for Playwright browser-automation).
- * 2. IMMEDIATELY uploads the same CSV to the CF server for every connected
- *    cloud-account pair (covers S2T, S2C, G2T, C2T, etc. in one call).
+ * Saves the CSV to a server temp file and returns the absolute path.
+ * The path is then passed back in the CF-browser-migrate payload as userMappingCsvPath
+ * so Playwright can upload the exact file to the CloudFuze UI.
  */
 async function uploadMappingCsv(req, res) {
   try {
@@ -708,27 +671,13 @@ async function uploadMappingCsv(req, res) {
       return res.status(400).json({ error: 'content (CSV text) is required' });
     }
 
-    // 1 — save file to disk for browser-automation / future migration runs
     const os = require('os');
     const safe = (filename || 'mapping').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
     const filePath = path.join(os.tmpdir(), `cf_user_mapping_${Date.now()}_${safe}`);
     fs.writeFileSync(filePath, content, 'utf8');
-    const rowCount = content.split('\n').filter(Boolean).length - 1;
-    logger.info(`[uploadMappingCsv] Saved ${rowCount} row(s) to ${filePath}`);
 
-    // 2 — push CSV to CF server for all connected cloud pairs immediately
-    let cfUploaded = 0;
-    let cfError = null;
-    try {
-      // Use an empty context so getSession() falls back to env credentials
-      cfUploaded = await migrationClient.uploadUserMappingCsvToAllPairs(content);
-      logger.info(`[uploadMappingCsv] CF server updated: ${cfUploaded} cloud pair(s)`);
-    } catch (cfErr) {
-      cfError = cfErr.message;
-      logger.warn(`[uploadMappingCsv] CF upload failed (non-fatal): ${cfErr.message}`);
-    }
-
-    res.json({ filePath, rows: rowCount, cfUploaded, cfError });
+    logger.info(`[uploadMappingCsv] Saved ${content.split('\n').length - 1} row(s) to ${filePath}`);
+    res.json({ filePath, rows: content.split('\n').filter(Boolean).length - 1 });
   } catch (err) {
     logger.error(`uploadMappingCsv error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -1131,47 +1080,10 @@ async function abortCFBrowserMigration(req, res) {
 }
 
 
-/**
- * POST /api/agents/cf-test-auth
- * Body: { migrationServerUrl, migrationServerEmail, migrationServerPassword?, migrationServerBasicAuth? }
- * Tests CloudFuze credentials synchronously without starting any migration.
- * Returns { ok: true, userId, accountCount } or 400 with { error, hint }.
- */
-async function testCFAuth(req, res) {
-  try {
-    const {
-      migrationServerUrl,
-      migrationServerEmail,
-      migrationServerPassword,
-    } = req.body || {};
-
-    if (!migrationServerUrl) {
-      return res.status(400).json({ error: 'migrationServerUrl is required' });
-    }
-    if (!migrationServerEmail) {
-      return res.status(400).json({ error: 'migrationServerEmail is required' });
-    }
-    if (!migrationServerPassword) {
-      return res.status(400).json({ error: 'migrationServerPassword is required' });
-    }
-
-    const result = await migrationClient.testCFAuth({
-      migrationServerUrl,
-      migrationServerEmail,
-      migrationServerPassword,
-    });
-    res.json(result);
-  } catch (err) {
-    logger.error(`testCFAuth error: ${err.message}`);
-    res.status(400).json({ error: err.message });
-  }
-}
-
 module.exports = {
   runMessageAgent, seedMessageAgent, migrateMessageAgent, uploadMappingCsv,
   getMessageTargets, getMessageUserStatus, debugGoogleChat, debugTeams,
   getCFCloudAccounts, getCFChannels, getCFDMs, getCFChannelsAll, getCFChannelsCache,
-  getCFReports, getCFJobWorkspaces, closeCFChatJobs, validateCFChatMigration,
-  testCFAuth,
+  getCFReports, closeCFChatJobs, validateCFChatMigration,
   startCFBrowserMigration, getCFBrowserEvents, abortCFBrowserMigration,
 };

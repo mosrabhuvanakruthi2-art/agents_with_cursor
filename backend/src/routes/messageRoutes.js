@@ -17,7 +17,6 @@ router.get('/message-user-status', controller.getMessageUserStatus);
 router.get('/debug-google-chat', controller.debugGoogleChat);
 router.get('/debug-teams', controller.debugTeams);
 router.get('/cf-cloud-accounts', controller.getCFCloudAccounts);
-router.post('/cf-test-auth', controller.testCFAuth);
 
 // ── CF server login accounts (email/password for the chat-migration CF server) ──
 const CF_EXTRA_FILE = path.join(__dirname, '../../data/cf-extra-accounts.json');
@@ -56,7 +55,6 @@ router.get('/cf-dms', controller.getCFDMs);
 router.get('/cf-channels-all', controller.getCFChannelsAll);
 router.get('/cf-channels-cache', controller.getCFChannelsCache);
 router.get('/cf-reports', controller.getCFReports);
-router.get('/cf-job-workspaces', controller.getCFJobWorkspaces);
 router.post('/cf-close-migration', controller.closeCFChatJobs);
 router.post('/cf-validate-migration', controller.validateCFChatMigration);
 // CF browser-automation (requires playwright — returns an error if not installed)

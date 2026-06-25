@@ -1,6 +1,5 @@
 const https = require('https');
 const axios = require('axios');
-const md5 = require('md5');
 const env = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
@@ -108,7 +107,7 @@ async function getSession(context = {}) {
   if (!cfg.url) {
     throw new Error('CloudFuze migration server URL is missing — enter it in the wizard (Migration Server step).');
   }
-  const key = `${cfg.url}::${cfg.basicAuth || cfg.bearer || (cfg.username ? `${cfg.username}:${cfg.password}` : '') || 'anon'}`;
+  const key = `${cfg.url}::${cfg.basicAuth || cfg.bearer || cfg.username || 'anon'}`;
   if (sessionCache.has(key)) return sessionCache.get(key);
 
   let session;
@@ -124,118 +123,30 @@ async function getSession(context = {}) {
     session = { auth: `Bearer ${bearer}`, userId: null, baseURL: cfg.url };
     logger.info(`CloudFuze: using Bearer token for ${cfg.url} (${cfg.source})`);
   } else if (cfg.username && cfg.password) {
-    logger.info(`CloudFuze: resolving session for ${cfg.username} @ ${cfg.url} (${cfg.source})…`);
-
-    const md5Pass = md5(cfg.password);
-
-    // Strategy 1 — GET /users/validateUser (no auth required).
-    // CF exposes this endpoint without authentication; it returns the internal userId for
-    // an email address.  We combine userId + md5(password) to form the Basic credential.
-    // This mirrors the approach used by devemailClient.js for the devemail server.
-    let userId = null;
+    logger.info(`CloudFuze: logging in as ${cfg.username} @ ${cfg.url} (${cfg.source})…`);
+    const loginBasic = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+    let res;
     try {
-      const valRes = await axios.get(`${cfg.url}/users/validateUser`, migrationAxiosConfig({
-        params:  { searchUser: cfg.username.trim(), _: Date.now() },
-        timeout: 20000,
-      }));
-      const data = valRes.data;
-      userId = (typeof data === 'string' && data.length > 5)
-        ? data.trim()
-        : (data?.id || data?.userId || null);
-      if (userId) logger.info(`CloudFuze: validateUser → userId=${userId} for ${cfg.username}`);
-    } catch (valErr) {
-      logger.warn(`CloudFuze: validateUser failed for ${cfg.username} (${valErr.response?.status || valErr.message}) — trying /auth/user next`);
-    }
-
-    if (userId) {
-      const token = Buffer.from(`${userId}:${md5Pass}`).toString('base64');
-      session = { auth: `Basic ${token}`, userId, baseURL: cfg.url };
-      sessionCache.set(key, session);
-      return session;
-    }
-
-    // Strategy 2 — POST /auth/user (some CF deployments return userId here).
-    const plainB64 = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
-    const md5B64   = Buffer.from(`${cfg.username}:${md5Pass}`).toString('base64');
-
-    const loginAttempts = [
-      { label: 'Basic-md5',          useMd5: true,  body: null,
-        headers: { 'Content-Type': 'application/json', Authorization: `Basic ${md5B64}` } },
-      { label: 'JSON-email-md5',     useMd5: true,  body: { email: cfg.username, password: md5Pass },
-        headers: { 'Content-Type': 'application/json' } },
-      { label: 'JSON-userName-md5',  useMd5: true,  body: { userName: cfg.username, passWord: md5Pass },
-        headers: { 'Content-Type': 'application/json' } },
-      { label: 'Basic-plain',        useMd5: false, body: null,
-        headers: { 'Content-Type': 'application/json', Authorization: `Basic ${plainB64}` } },
-      { label: 'JSON-email-plain',   useMd5: false, body: { email: cfg.username, password: cfg.password },
-        headers: { 'Content-Type': 'application/json' } },
-      { label: 'JSON-userName-plain', useMd5: false, body: { userName: cfg.username, passWord: cfg.password },
-        headers: { 'Content-Type': 'application/json' } },
-    ];
-
-    let loginData     = null;
-    let winningAttempt = null;
-    let lastLoginErr  = null;
-    let lastLoginStatus = null;
-
-    for (const attempt of loginAttempts) {
-      try {
-        const r = await axios.post(`${cfg.url}/auth/user`, attempt.body, migrationAxiosConfig({
-          headers: attempt.headers,
+      res = await retryWithBackoff(
+        () => axios.post(`${cfg.url}/auth/user`, null, migrationAxiosConfig({
+          headers: { 'Content-Type': 'application/json', Authorization: `Basic ${loginBasic}` },
           timeout: 30000,
-        }));
-        loginData      = r.data;
-        winningAttempt = attempt;
-        logger.info(`CloudFuze login succeeded with format '${attempt.label}' for ${cfg.username}`);
-        break;
-      } catch (err) {
-        const st    = err.response?.status;
-        const cfMsg = err.response?.data?.message || err.response?.data?.error || JSON.stringify(err.response?.data || '');
-        logger.warn(`CloudFuze login '${attempt.label}' → HTTP ${st || 'no-response'}: ${cfMsg || err.message}`);
-        if (err.response) { lastLoginErr = err; lastLoginStatus = st; continue; }
-        throw new Error(`Cannot reach CloudFuze server at ${cfg.url}: ${err.message}`);
-      }
-    }
-
-    if (!loginData) {
-      // Strategy 3 — env pre-fetched token fallback.
-      // Accounts that use Google / SSO have no CF API password, so all direct login
-      // attempts return 401.  Fall back to the stored Basic token from env — identical
-      // pattern to devemailClient.js which falls back to MIGRATION_API_BASIC_AUTH via
-      // POST /mail/login when browser login is unavailable.
-      const envBasicRaw = (env.CHAT_MIGRATION_API_BASIC_AUTH || env.CHAT_MIGRATION_API_KEY || '').trim();
-      const envBasic    = normalizeBasic(envBasicRaw);
-      if (envBasic) {
-        logger.info(`CloudFuze: API login failed for ${cfg.username} — using CHAT_MIGRATION_API_BASIC_AUTH from env (same fallback as devemailClient)`);
-        let envUserId = null;
-        try { envUserId = Buffer.from(envBasic, 'base64').toString().split(':')[0] || null; } catch { /* ignore */ }
-        session = { auth: `Basic ${envBasic}`, userId: envUserId, baseURL: cfg.url };
-        sessionCache.set(key, session);
-        return session;
-      }
-      const statusInfo = lastLoginStatus ? ` (HTTP ${lastLoginStatus})` : '';
-      const cfBody     = lastLoginErr?.response?.data;
-      const cfDetail   = cfBody?.message || cfBody?.error || '';
-      throw new Error(
-        `CloudFuze login failed for ${cfg.username}${statusInfo}.` +
-        (cfDetail ? ` Server said: "${cfDetail}".` : '') +
-        ` Verify the email and password are correct for ${cfg.url}.`
+        })),
+        { label: 'CloudFuze /auth/user login', maxRetries: 3 }
       );
+    } catch (err) {
+      if (err.response?.status === 401) {
+        throw new Error(
+          `CloudFuze rejected ${cfg.username} (401). This usually means the account signs in with Google/SSO and has `
+          + `no API password. Paste the "Authorization: Basic …" token from DevTools into the API Token field instead.`
+        );
+      }
+      throw err;
     }
-
-    const resolvedUserId = loginData.id || loginData.userId || loginData.user?.id || loginData.user_id || null;
-    const bearerTok      = loginData.token || loginData.accessToken || loginData.jwtToken || loginData.jwt || null;
-    const sessionPass    = winningAttempt?.useMd5 ? md5Pass : cfg.password;
-
-    if (bearerTok && !resolvedUserId) {
-      session = { auth: `Bearer ${bearerTok}`, userId: null, baseURL: cfg.url };
-      logger.info(`CloudFuze login → Bearer token for ${cfg.username} @ ${cfg.url}`);
-    } else if (resolvedUserId) {
-      session = { auth: `Basic ${Buffer.from(`${resolvedUserId}:${sessionPass}`).toString('base64')}`, userId: resolvedUserId, baseURL: cfg.url };
-      logger.info(`CloudFuze login OK (userId=${resolvedUserId}, format=${winningAttempt?.label}) @ ${cfg.url}`);
-    } else {
-      throw new Error('CloudFuze login failed: response had no user ID or token — check credentials.');
-    }
+    const userId = res.data?.id;
+    if (!userId) throw new Error('CloudFuze login failed: no user ID in response (check the migration server email/password).');
+    session = { auth: `Basic ${Buffer.from(`${userId}:${cfg.password}`).toString('base64')}`, userId, baseURL: cfg.url };
+    logger.info(`CloudFuze login successful (userId=${userId}) @ ${cfg.url}`);
   } else {
     throw new Error('CloudFuze credentials missing — enter the migration server, email and password in the wizard (Migration Server step).');
   }
@@ -481,42 +392,78 @@ async function setupUserMappingInCF(auth, baseURL, srcCloudId, dstCloudId, rawCs
     const res = await jsonClient.get(`mapping/get/permissioncachedetails/${srcCloudId}/${dstCloudId}`);
     const d = res.data;
     cacheExists = Array.isArray(d) ? d.length > 0 : !!(d && typeof d === 'object' && Object.keys(d).length > 0);
-  } catch (_) { /* will create below */ }
+    logger.info(`CF permission cache ${cacheExists ? 'exists' : 'missing'} for ${srcCloudId}→${dstCloudId}`);
+  } catch (err) {
+    logger.warn(`CF permission cache check error ${srcCloudId}→${dstCloudId}: ${err.message}`);
+  }
 
   // 2. Create cache if missing
   if (!cacheExists) {
     try {
-      await jsonClient.post(`mapping/permissiondetiails/${srcCloudId}/${dstCloudId}`);
-    } catch (_) { /* non-fatal */ }
+      const cr = await jsonClient.post(`mapping/permissiondetiails/${srcCloudId}/${dstCloudId}`);
+      logger.info(`CF permission cache created ${srcCloudId}→${dstCloudId} | ${JSON.stringify(cr.data).slice(0, 80)}`);
+    } catch (err) {
+      logger.warn(`CF permission cache create failed ${srcCloudId}→${dstCloudId}: ${err.message}`);
+    }
   }
 
   // 3. Upload CSV — POST /messagemove/message/usermapping/csv?sourceCloudId=...&destCloudId=...
-  //    multipart/form-data, field name = "file"
-  const boundary = `----CloudFuzeFormBoundary${Date.now()}`;
-  const CRLF = '\r\n';
-  const csvBuffer = Buffer.from(rawCsvText, 'utf8');
-  const multipartBody = Buffer.concat([
-    Buffer.from(`--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="user_mapping.csv"${CRLF}Content-Type: text/csv${CRLF}${CRLF}`),
-    csvBuffer,
-    Buffer.from(`${CRLF}--${boundary}--${CRLF}`),
-  ]);
-
+  //    Fresh axios instance (no Content-Type:application/json default).
+  //    Part uses only Content-Disposition — no per-part Content-Type so CF's parser
+  //    treats it as plain text rather than trying to validate the MIME type.
   try {
-    const uploadRes = await jsonClient.post(
+    const boundary = `CFBoundary${Date.now()}`;
+    const CRLF = '\r\n';
+    // Strip BOM, normalise to \r\n, then force CF-expected headers
+    let cleanCsv = rawCsvText.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const csvLines = cleanCsv.split('\n');
+    // Ensure CF's expected header "Source User,Destination User" is present
+    if (csvLines.length > 0) {
+      const firstLine = csvLines[0].trim();
+      const firstLineIsData = firstLine.includes('@');  // email addresses contain @
+      if (firstLineIsData) {
+        // No header at all — prepend it
+        csvLines.unshift('Source User,Destination User');
+        logger.info(`CF CSV: prepended missing header (first line looks like data: ${firstLine.slice(0, 60)})`);
+      } else if (firstLine !== 'Source User,Destination User') {
+        // Has a header but wrong column names — replace it
+        csvLines[0] = 'Source User,Destination User';
+        logger.info(`CF CSV: normalised header "${firstLine}" → "Source User,Destination User"`);
+      }
+    }
+    cleanCsv = csvLines.join('\n').replace(/\n/g, '\r\n');
+    const csvBuffer = Buffer.from(cleanCsv, 'utf8');
+    const multipartBody = Buffer.concat([
+      Buffer.from(`--${boundary}${CRLF}`),
+      Buffer.from(`Content-Disposition: form-data; name="file"; filename="user_mapping.csv"${CRLF}${CRLF}`),
+      csvBuffer,
+      Buffer.from(`${CRLF}--${boundary}--${CRLF}`),
+    ]);
+
+    const uploadClient = axios.create(migrationAxiosConfig({ baseURL, timeout: 60000 }));
+    const rowCount = cleanCsv.split('\r\n').filter(Boolean).length - 1;
+    logger.info(`CF CSV preview (${srcCloudId}→${dstCloudId}): rows=${rowCount} | first200: ${cleanCsv.slice(0, 200).replace(/\r\n/g, '\\n')}`);
+    const uploadRes = await uploadClient.post(
       `messagemove/message/usermapping/csv?sourceCloudId=${srcCloudId}&destCloudId=${dstCloudId}`,
       multipartBody,
-      {
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': multipartBody.length,
-        },
-        timeout: 60000,
-      }
+      { headers: { Authorization: auth, 'Content-Type': `multipart/form-data; boundary=${boundary}` } }
     );
-    const rowCount = rawCsvText.split('\n').filter(Boolean).length - 1;
-    logger.info(`CF user mapping: ${rowCount} row(s) uploaded for ${srcCloudId}→${dstCloudId} | server: ${JSON.stringify(uploadRes.data).slice(0, 150)}`);
+    logger.info(`CF user mapping upload ${srcCloudId}→${dstCloudId}: ${rowCount} row(s) | HTTP ${uploadRes.status} | server response: ${JSON.stringify(uploadRes.data)}`);
+
+    // Verify rows were actually saved — use pageSize=200 to get real total
+    try {
+      const vr = await jsonClient.get(
+        `mapping/user/clouds/get/permissions?sourceCloudId=${srcCloudId}&destCloudId=${dstCloudId}&pageNo=1&pageSize=200`
+      );
+      const d = vr.data;
+      const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : []);
+      const total = d?.totalCount ?? d?.total ?? items.length;
+      logger.info(`CF mapping verified ${srcCloudId}→${dstCloudId}: total=${total} | response: ${JSON.stringify(d).slice(0, 400)}`);
+    } catch (err) {
+      logger.warn(`CF mapping verify error: ${err.message}`);
+    }
   } catch (err) {
-    logger.warn(`CF user mapping upload failed ${srcCloudId}→${dstCloudId}: ${err.message}`);
+    logger.warn(`CF user mapping upload failed ${srcCloudId}→${dstCloudId}: HTTP ${err.response?.status} — ${err.message}`);
   }
 }
 
@@ -677,11 +624,10 @@ async function triggerChatMigration(context) {
   let srcCloudId = null;
   let dstCloudId = null;
   let srcAcct    = null;
-  let allAccounts = [];
   try {
-    allAccounts    = await getCloudAccounts(context);
-    srcAcct        = findCloudAccount(allAccounts, srcCloudName, context.sourceEmail);
-    const dstAcct  = findCloudAccount(allAccounts, dstCloudName, context.destinationEmail);
+    const accounts = await getCloudAccounts(context);
+    srcAcct        = findCloudAccount(accounts, srcCloudName, context.sourceEmail);
+    const dstAcct  = findCloudAccount(accounts, dstCloudName, context.destinationEmail);
     srcCloudId = srcAcct?.id || null;
     dstCloudId = dstAcct?.id || null;
     if (srcCloudId) logger.info(`CloudFuze: source cloud ${srcCloudName} → id=${srcCloudId} (${srcAcct?.emailId})`);
@@ -690,17 +636,6 @@ async function triggerChatMigration(context) {
     if (!dstCloudId) logger.warn(`CloudFuze: no cloud account found for ${dstCloudName}/${context.destinationEmail}`);
   } catch (err) {
     logger.warn(`CloudFuze: getCloudAccounts failed: ${err.message} — continuing without cloud IDs`);
-  }
-
-  // Upload user mapping CSV for ONLY this src→dst pair before triggering migration.
-  // (The wizard step-2 upload already covers all pairs globally; this is a targeted
-  // refresh so the mapping is current even if credentials changed.)
-  if (srcCloudId && dstCloudId) {
-    const rawCsvText = resolveCsvFromContext(context);
-    if (rawCsvText) {
-      logger.info(`CF: uploading user mapping for ${srcCloudId}→${dstCloudId} before migration`);
-      await setupUserMappingInCF(auth, baseURL, srcCloudId, dstCloudId, rawCsvText);
-    }
   }
 
   // Map our internal kind → CloudFuze channelType string
@@ -739,61 +674,34 @@ async function triggerChatMigration(context) {
 
   const results = [];
 
-  // Build channels enriched purely from CF metadata (cfChannelMap built above)
+  // Enrich target list with metadata from context.channelObjects / context.dmObjects
+  const channelObjects = Array.isArray(context.channelObjects) ? context.channelObjects : [];
+  const dmObjects      = Array.isArray(context.dmObjects)      ? context.dmObjects      : [];
+
+  // Batch channels and DMs separately (different endpoints). CF metadata wins for the
+  // fields CloudFuze actually uses (channelDate, privacy, dest names).
   const channels = targets
     .filter((t) => !t.isDm)
     .map((t) => {
+      const enriched = channelObjects.find((c) => c.id === t.id) || {};
       const cf = cfChannelMap[t.id] || {};
       return {
         ...t,
-        channelName:     cf.channelName || t.name,
-        channelDate:     cf.channelDate || t.channelDate,
+        ...enriched,
+        channelName:     enriched.name || enriched.channelName || cf.channelName || t.name,
+        channelDate:     cf.channelDate || enriched.channelDate || t.channelDate,
         cfChannelType:   cf._cfType || cf.channelType,
-        destChannelName: cf.destChannelName,
-        destTeamName:    cf.destTeamName,
-        workSpaceName:   cf.workSpaceName,
+        destChannelName: enriched.destChannelName || cf.destChannelName,
+        destTeamName:    enriched.destTeamName || cf.destTeamName,
+        workSpaceName:   enriched.workSpaceName || cf.workSpaceName,
         cfMatched:       !!cf.channelDate,
       };
     });
-
-  // Build DM metadata from CF cache — CF's DM object carries participant user IDs in
-  // emailPairs (e.g. ["U01...", "U08..."]) which are required by the migration payload.
-  let cfDmMap = {};
-  if (targets.some((t) => t.isDm)) {
-    try {
-      const cached = channelCache.get(combination, srcCloudId, dstCloudId);
-      for (const d of (cached?.dms || [])) {
-        const k = d.fromRootId || d.channelId || d.id;
-        if (k) cfDmMap[k] = d;
-      }
-      if (Object.keys(cfDmMap).length === 0 && srcCloudId && dstCloudId) {
-        logger.info('CF: DM metadata not in cache — fetching from CF now');
-        const dmList = await getCloudDMs({ srcCloudId, dstCloudId, context });
-        for (const d of dmList) {
-          const k = d.fromRootId || d.channelId || d.id;
-          if (k) cfDmMap[k] = d;
-        }
-      }
-      logger.info(`CF: DM metadata loaded (${Object.keys(cfDmMap).length} DMs available)`);
-    } catch (err) {
-      logger.warn(`CF: DM metadata fetch failed: ${err.message}`);
-    }
-  }
-
   const dms = targets
     .filter((t) => t.isDm)
     .map((t) => {
-      const cf = cfDmMap[t.id] || {};
-      // Prefer CF's channelName / emailPairs (participant user IDs) over bare ID
-      return {
-        ...t,
-        kind:       'dm',
-        channelName: cf.channelName || t.channelName || t.id,
-        channelDate: cf.channelDate || t.channelDate,
-        channelType: cf.channelType || 'im',
-        workSpaceName: cf.workSpaceName,
-        emailPairs:  cf.emailPairs || [],
-      };
+      const enriched = dmObjects.find((d) => d.id === t.id) || {};
+      return { ...t, kind: 'dm', ...enriched };
     });
 
   async function initiateTargets(batch, isDm) {
@@ -814,7 +722,7 @@ async function triggerChatMigration(context) {
         toRootId: '/',
         channelDate: String(t.channelDate || Math.floor(Date.now() / 1000)),
         dateChanged: false,
-        channelType: t.cfChannelType || t.channelType || toChannelType(t.kind),
+        channelType: t.cfChannelType || toChannelType(t.kind),
         channelName,
         workSpaceName: t.workSpaceName || srcAcct?.metadataUrl || '',
         destChannelName: t.destChannelName || channelName,
@@ -826,12 +734,8 @@ async function triggerChatMigration(context) {
         reactionToPick: false,
         skipFileContent: false,
         externalShared: t.externalShared || false,
+        emailPairs: t.emailPairs || [],
         combination,
-        // Channels: emailPairs omitted — user mapping was uploaded to CF via CSV above.
-        // DMs:      emailPairs = Slack participant user IDs from CF's DM object.
-        ...(isDm && Array.isArray(t.emailPairs) && t.emailPairs.length > 0
-          ? { emailPairs: t.emailPairs }
-          : {}),
       };
       if (srcCloudId) obj.fromCloudId = { id: srcCloudId };
       if (dstCloudId) obj.toCloudId   = { id: dstCloudId };
@@ -989,16 +893,10 @@ async function getCloudDMs({ srcCloudId, dstCloudId, context = {} } = {}) {
  * Get migration jobs/reports from CloudFuze.
  * GET /messagemove/get/moveJob?combination=S2T&migrationStatus=All
  */
-async function getMigrationReports({ combination = '', migrationStatus = 'All', pageNo = 1, pageSize = 50, context = {} } = {}) {
+async function getMigrationReports({ combination = '', migrationStatus = 'All', context = {} } = {}) {
   const { auth, baseURL } = await getSession(context);
   const client = getAuthClient(auth, baseURL);
-  const params = {
-    migrationStatus,
-    teamStatus: 'All',
-    deltaMessages: 'ALL',
-    page_nbr: pageNo,
-    page_size: pageSize,
-  };
+  const params = { migrationStatus };
   if (combination) params.combination = combination;
   const res = await retryWithBackoff(
     () => client.get('messagemove/get/moveJob', { params }),
@@ -1081,52 +979,8 @@ function clearToken() {
   sessionCache.clear();
 }
 
-/**
- * Test CF credentials without running a full migration.
- * Attempts login + getCloudAccounts so we can verify both auth and API access.
- * Returns { ok: true, userId, accountCount } on success or throws with a user-readable message.
- */
-/**
- * Fetch per-channel migration status (workspaces) for a given job.
- * GET /messagemove/list/Channelworkspaces?jobId=...&page_nbr=1&page_size=50&...
- *
- * Returns array of channel-level objects, each with processStatus (PICKING/MOVING/PROCESSED)
- * and message counts. Used to show live picking/moving status per channel in reports.
- */
-async function getJobWorkspaces({ jobId, pageNo = 1, pageSize = 50, processStatus = 'all', context = {} } = {}) {
-  if (!jobId) throw new Error('getJobWorkspaces: jobId is required');
-  const { auth, baseURL } = await getSession(context);
-  const client = getAuthClient(auth, baseURL);
-  const params = {
-    jobId,
-    page_nbr:    pageNo,
-    page_size:   pageSize,
-    isAscen:     false,
-    orderField:  'createdTime',
-    processStatus,
-    Jobtype:     'all',
-  };
-  const res = await retryWithBackoff(
-    () => client.get('messagemove/list/Channelworkspaces', { params }),
-    { label: `getJobWorkspaces jobId=${jobId}`, maxRetries: 2 }
-  );
-  return Array.isArray(res.data) ? res.data : [];
-}
-
-async function testCFAuth(context = {}) {
-  // This will throw with a descriptive message on 401 / missing credentials / network error
-  const { userId } = await getSession(context);
-  let accountCount = 0;
-  try {
-    const accounts = await getCloudAccounts(context);
-    accountCount = Array.isArray(accounts) ? accounts.length : 0;
-  } catch { /* auth worked, accounts call is bonus info */ }
-  return { ok: true, userId, accountCount };
-}
-
 module.exports = {
   login,
-  testCFAuth,
   validateUser,
   triggerMigration,
   triggerChatMigration,
@@ -1135,9 +989,7 @@ module.exports = {
   getCloudChannels,
   getCloudDMs,
   getMigrationReports,
-  getJobWorkspaces,
   closeChatMigrationJobs,
-  uploadUserMappingCsvToAllPairs,
   clearToken,
   migrationAxiosConfig,
 };

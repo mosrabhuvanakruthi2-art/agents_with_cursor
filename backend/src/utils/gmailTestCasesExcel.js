@@ -258,7 +258,7 @@ function rowToMailDef(row, { qaIds, snoozeId, ccEmail, bccEmail, sourceEmail, sa
       lg.info(`Applied Snoozed label to message ${msgId}`);
     };
   } else if (truthyCell(row.postsnooze) && !snoozeId) {
-    log.warn(`Excel mail row "${subject}": PostSnooze=Y but no Snooze label — post-insert skipped`);
+    log.info(`Excel mail row "${subject}": PostSnooze=Y but no Snooze label — skipping (Snoozed label only exists after manual snooze in Gmail UI)`);
   }
 
   return def;

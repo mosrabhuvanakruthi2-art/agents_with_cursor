@@ -302,12 +302,25 @@ function loadTestCases(testType, log) {
 
 // ── Message builder ───────────────────────────────────────────────────────────
 
+/**
+ * Per-domain static user lists — checked BEFORE OUTLOOK_ACCOUNTS env config.
+ * internal: same-domain users; external: cross-domain senders.
+ */
+const OUTLOOK_DOMAIN_USERS = {
+  'qatestagent.com': {
+    internal: ['Alex@qatestagent.com', 'ben@qatestagent.com', 'dan@qatestagent.com', 'ron@qatestagent.com', 'Blueteam1@qatestagent.com', 'Blueteam2@qatestagent.com', 'Blueteam3@qatestagent.com'],
+    external: ['mia@pepperwood.club', 'oilver@pepperwood.club', 'sophia@pepperwood.club'],
+  },
+  'gajha.com': {
+    internal: ['alex@gajha.com', 'mia@gajha.com', 'harry@gajha.com', 'Taylor@gajha.com', 'Martin@gajha.com', 'Wilson@gajha.com', 'Clark@gajha.com', 'kim@gajha.com'],
+    external: ['mia@pepperwood.club', 'oilver@pepperwood.club', 'sophia@pepperwood.club'],
+  },
+};
+
 const FALLBACK_EXTERNAL_SENDERS = [
-  { name: 'Ben',       address: 'ben@qatestagent.com' },
-  { name: 'Dan',       address: 'dan@qatestagent.com' },
-  { name: 'Ron',       address: 'ron@qatestagent.com' },
-  { name: 'Granger',   address: 'granger@qatestagent.com' },
-  { name: 'Blueteam1', address: 'blueteam1@qatestagent.com' },
+  { name: 'Mia',      address: 'mia@pepperwood.club' },
+  { name: 'Oliver',   address: 'oilver@pepperwood.club' },
+  { name: 'Sophia',   address: 'sophia@pepperwood.club' },
 ];
 
 function toSenderObject(addressOrObj) {
@@ -383,13 +396,23 @@ class OutlookTestDataAgent extends BaseAgent {
 
     log.info(`Starting — testType=${testType}  user=${userEmail}`);
 
-    const senderRotation = typeof env.buildOutlookInboundSenders === 'function'
-      ? env.buildOutlookInboundSenders(userEmail)
-      : [];
-    if (senderRotation.length > 0) {
-      log.info(`Inbound senders (OUTLOOK_ACCOUNTS, insert-only): ${senderRotation.join(', ')}`);
+    const userDomain = (userEmail.split('@')[1] || '').toLowerCase();
+    const staticDomainMap = OUTLOOK_DOMAIN_USERS[userDomain];
+    let senderRotation;
+    if (staticDomainMap) {
+      const internal = staticDomainMap.internal.filter((e) => e.toLowerCase() !== userEmail.toLowerCase());
+      const external = staticDomainMap.external || [];
+      senderRotation = [...internal, ...external];
+      log.info(`Using static domain map for ${userDomain}: ${internal.length} internal + ${external.length} external senders`);
     } else {
-      log.warn('OUTLOOK_ACCOUNTS is empty or contains only the source user — falling back to fake external senders');
+      senderRotation = typeof env.buildOutlookInboundSenders === 'function'
+        ? env.buildOutlookInboundSenders(userEmail)
+        : [];
+      if (senderRotation.length > 0) {
+        log.info(`Inbound senders (OUTLOOK_ACCOUNTS, insert-only): ${senderRotation.join(', ')}`);
+      } else {
+        log.warn('OUTLOOK_ACCOUNTS is empty or contains only the source user — falling back to fake external senders');
+      }
     }
 
     const summary = {

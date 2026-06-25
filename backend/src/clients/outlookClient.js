@@ -472,7 +472,10 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
       };
     }
   } catch (err) {
-    logger.warn(`resolveDestinationByInternetMessageId: $search fallback failed for ${userId}: ${err.message}`);
+    // 400 = tenant doesn't support $search on /messages (no Advanced Query) — not critical, mailbox scan follows
+    if (err?.response?.status !== 400) {
+      logger.warn(`resolveDestinationByInternetMessageId: $search fallback failed for ${userId}: ${err.message}`);
+    }
   }
 
   if (skipMailboxScan) {
@@ -904,6 +907,20 @@ async function deleteAllMessagesInFolder(userId, folderId) {
 
 function deleteFolder(userId, folderId) {
   return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}`, userId);
+}
+
+/**
+ * Permanently delete a mail folder via the Graph permanentDelete action — removes the folder
+ * (and any remaining items) directly, WITHOUT first moving it to Deleted Items. Requires
+ * Mail.ReadWrite (the same permission the message permanentDelete already uses, mirroring
+ * batchDelete({ permanent: true })). Falls back to soft delete at the call site if unavailable.
+ */
+function permanentDeleteFolder(userId, folderId) {
+  return graphPost(
+    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/permanentDelete`,
+    {},
+    userId
+  );
 }
 
 /**
@@ -1352,9 +1369,75 @@ async function cleanRecoverableItems(userId) {
 }
 
 /**
+ * Empty the visible Deleted Items folder — both its messages AND any soft-deleted child folders.
+ *
+ * When a custom folder is deleted (DELETE /mailFolders/{id}), Graph re-parents it under Deleted
+ * Items as a child folder; nothing else removes it, so it lingers in the mailbox UI (the QA-*
+ * folders seen under "Deleted Items"). This deletes those child folders and purges any residual
+ * messages so Deleted Items is truly empty after a full wipe.
+ *
+ * Note: deleting a folder that is ALREADY in Deleted Items removes it permanently (there is no
+ * further soft-delete target). Anything that does land in Recoverable Items is then cleared by
+ * the cleanRecoverableItems() step that runs next.
+ *
+ * @returns {Promise<{ foldersRemoved: number, messagesRemoved: number }>}
+ */
+async function emptyDeletedItems(userId) {
+  const log = require('../utils/logger');
+  let foldersRemoved = 0;
+  let lastCount = -1;
+
+  for (let iter = 0; iter < 50; iter++) {
+    let children = [];
+    try {
+      const token = await getAccessToken(userId);
+      const res = await axios.get(
+        `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/deleteditems/childFolders?$top=200&$select=id,displayName`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      children = res.data.value || [];
+    } catch (err) {
+      log.warn(`[emptyDeletedItems ${userId}] Could not list Deleted Items child folders: ${err.response?.status || err.message}`);
+      break;
+    }
+    if (children.length === 0) break;
+    if (children.length === lastCount) {
+      log.warn(`[emptyDeletedItems ${userId}] No progress removing child folders (${children.length} remain) — stopping`);
+      break;
+    }
+    lastCount = children.length;
+
+    for (const child of children) {
+      try {
+        await deleteFolder(userId, child.id); // already in Deleted Items → permanent removal
+        foldersRemoved++;
+        log.info(`[emptyDeletedItems ${userId}] Removed folder "${child.displayName}" from Deleted Items`);
+      } catch (err) {
+        const status = err.response?.status || err.message;
+        if (!/404/.test(String(status))) {
+          log.warn(`[emptyDeletedItems ${userId}] Could not remove "${child.displayName}": ${err.message}`);
+        }
+      }
+    }
+  }
+
+  // Purge any messages sitting directly in Deleted Items (uses permanentDelete batch internally)
+  let messagesRemoved = 0;
+  try {
+    messagesRemoved = await deleteAllMessagesInFolder(userId, 'deleteditems');
+  } catch (err) {
+    log.warn(`[emptyDeletedItems ${userId}] Could not purge Deleted Items messages: ${err.message}`);
+  }
+
+  log.info(`[emptyDeletedItems ${userId}] Done — removed ${foldersRemoved} folder(s), ${messagesRemoved} message(s) from Deleted Items`);
+  return { foldersRemoved, messagesRemoved };
+}
+
+/**
  * Clean the entire destination mailbox:
  * 1. Delete ALL messages mailbox-wide (fast — no folder enumeration)
  * 2. Delete custom folders (now empty, so deletion is instant)
+ * 2b. Empty Deleted Items — purge the now-soft-deleted custom folders + any residual messages
  * 3. Purge recoverable items
  * 4. Delete calendar events and non-default calendars
  */
@@ -1386,9 +1469,17 @@ async function cleanMailbox(userId) {
 
   for (const folder of customFolders) {
     try {
-      await deleteFolder(userId, folder.id);
+      try {
+        // Primary: permanently delete the folder directly — it never enters Deleted Items.
+        await permanentDeleteFolder(userId, folder.id);
+        log.info(`[clean ${userId}]   Permanently deleted folder "${folder.displayName}" (no Deleted Items transit)`);
+      } catch (permErr) {
+        // permanentDelete unavailable on this tenant → soft delete; Step 2b purges it from Deleted Items.
+        if (/404/.test(String(permErr.response?.status || ''))) throw permErr; // already gone
+        await deleteFolder(userId, folder.id);
+        log.info(`[clean ${userId}]   Soft-deleted folder "${folder.displayName}" (permanentDelete fallback: ${permErr.response?.status || permErr.message})`);
+      }
       summary.foldersDeleted++;
-      log.info(`[clean ${userId}]   Deleted folder "${folder.displayName}"`);
     } catch (err) {
       const status = err.response?.status || err.message;
       if (/404/.test(String(status))) {
@@ -1402,6 +1493,18 @@ async function cleanMailbox(userId) {
     }
   }
   log.info(`[clean ${userId}] Step 2 done — ${summary.foldersDeleted} folders deleted`);
+
+  // Step 2b: Empty Deleted Items — the folders just deleted in Step 2 are soft-deleted and
+  // re-parented under Deleted Items, so remove them (and any residual messages) for a clean mailbox.
+  log.info(`[clean ${userId}] Step 2b: Emptying Deleted Items (incl. soft-deleted folders)...`);
+  try {
+    const di = await emptyDeletedItems(userId);
+    summary.foldersDeleted += di.foldersRemoved;
+    summary.messagesDeleted += di.messagesRemoved;
+  } catch (err) {
+    summary.errors.push(`Empty Deleted Items: ${err.message}`);
+    log.warn(`[clean ${userId}] Step 2b error: ${err.message}`);
+  }
 
   // Step 3: Purge recoverable items
   log.info(`[clean ${userId}] Step 3: Purging recoverable items...`);
@@ -3391,6 +3494,8 @@ module.exports = {
   getOrCreateMailFolder,
   getContactsCount,
   emptyFolderViaApi,
+  emptyDeletedItems,
+  permanentDeleteFolder,
   deleteAllMessagesInFolder,
   deleteFolder,
   deleteAllEventsInCalendar,

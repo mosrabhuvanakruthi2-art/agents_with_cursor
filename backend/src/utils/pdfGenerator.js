@@ -274,6 +274,114 @@ function drawPageHeader(doc, execution, validation, context, result) {
   doc.y = 140;
 }
 
+// Shared CF status → { label, bg, fg } badge styling (used by single + bulk status tables).
+function cfStatusBadge(cfStatusRaw) {
+  const up = String(cfStatusRaw || '—').toUpperCase();
+  let label;
+  if (up === 'PROCESSED_WITH_CONFLICTS' || up === 'PROCESS_WITH_CONFLICTS') label = 'Proc. w/ Conflicts';
+  else if (/^PROCESS(ED)?$/.test(up)) label = 'Processed';
+  else if (up === 'COMPLETED')   label = 'Completed';
+  else if (up === 'IN_PROGRESS') label = 'In Progress';
+  else if (up === 'INITIATED')   label = 'Initiated';
+  else if (up === 'FAILED')      label = 'Failed';
+  else if (up === 'CANCELLED')   label = 'Cancelled';
+  else label = String(cfStatusRaw || '—').replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+  let bg = '#f1f5f9', fg = C.subtle;
+  if (/^PROCESS(ED)?$/.test(up) || up === 'COMPLETED') { bg = C.passBg; fg = C.pass; }
+  else if (up === 'PROCESSED_WITH_CONFLICTS' || up === 'PROCESS_WITH_CONFLICTS') { bg = C.warnBg; fg = C.warn; }
+  else if (/FAIL|ERROR/.test(up)) { bg = C.failBg; fg = C.fail; }
+  else if (/PROGRESS|INPROG|QUEUE|INIT|RUN/.test(up)) { bg = '#dbeafe'; fg = '#1d4ed8'; }
+  return { label, bg, fg };
+}
+
+// ── Combined CloudFuze Migration Status — one row per pair (bulk report) ──────
+// Job ID is shared across a bulk run, so it's shown once in the strip; each row carries the
+// pair's own Workspace ID / counts / CF status.
+function drawBulkMigrationStatus(doc, executions) {
+  const rows = (executions || []).map((ex) => ({
+    migJob: ex.context?.migrationJobDetails
+      || ex.result?.migrationResult?.migrationJobDetails
+      || ex.result?.validationSummary?.migrationJobDetails
+      || null,
+    src: ex.context?.sourceEmail || '—',
+    dst: ex.context?.destinationEmail || '—',
+  }));
+  if (rows.length === 0) return;
+
+  drawSectionHeader(doc, 'CloudFuze Migration Status');
+
+  const migJob0 = rows.find((r) => r.migJob)?.migJob || null;
+  const serverUrl = String(migJob0?.serverUrl || '—');
+  if (serverUrl && serverUrl !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Server: ${serverUrl}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+  const jobIdFull = String(migJob0?.jobId || migJob0?.jobName || '—');
+  if (jobIdFull && jobIdFull !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Job ID: ${jobIdFull}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+
+  const COLS = [
+    { label: 'Workspace ID', w: 110 },
+    { label: 'From Email',   w: 110 },
+    { label: 'To Email',     w: 110 },
+    { label: 'Total',        w:  45 },
+    { label: 'Processed',    w:  52 },
+    { label: 'CF Status',    w:  CONTENT_W - 110 - 110 - 110 - 45 - 52 },
+  ];
+  const TABLE_W = COLS.reduce((s, c) => s + c.w, 0);
+  const HDR_H = 22, ROW_H = 26;
+  ensureSpace(doc, HDR_H + ROW_H * rows.length + 20);
+
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, TABLE_W, HDR_H).fill().restore();
+  let hx = MARGIN;
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  COLS.forEach((c) => { doc.text(c.label, hx + 5, y + 6, { width: c.w - 10, lineBreak: false }); hx += c.w; });
+  doc.save().strokeColor('#94a3b8').lineWidth(0.5)
+    .moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + TABLE_W, y + HDR_H).stroke().restore();
+  y += HDR_H;
+
+  rows.forEach((row, idx) => {
+    const mj = row.migJob;
+    const workspaceId    = String(mj?.workspaceId || '—');
+    const totalCount     = mj?.totalCount     != null ? String(mj.totalCount)     : '—';
+    const processedCount = mj?.processedCount != null ? String(mj.processedCount) : '—';
+    const badge = cfStatusBadge(mj?.cfStatus || '—');
+
+    doc.save().fillColor(idx % 2 ? '#fafafa' : '#ffffff').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
+
+    const cells = [
+      { text: workspaceId,    w: COLS[0].w, badge: false },
+      { text: row.src,        w: COLS[1].w, badge: false },
+      { text: row.dst,        w: COLS[2].w, badge: false },
+      { text: totalCount,     w: COLS[3].w, badge: false },
+      { text: processedCount, w: COLS[4].w, badge: false },
+      { text: null,           w: COLS[5].w, badge: true  },
+    ];
+    let rx = MARGIN;
+    cells.forEach((cell) => {
+      if (!cell.badge) {
+        doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text)
+          .text(cell.text, rx + 5, y + 8, { width: cell.w - 10, lineBreak: false });
+      } else {
+        const tagW = cell.w - 10;
+        doc.save().fillColor(badge.bg).roundedRect(rx + 5, y + 6, tagW, 15, 3).fill().restore();
+        doc.fontSize(7).font(F_BOLD).fillColor(badge.fg)
+          .text(badge.label, rx + 5, y + 10, { width: tagW, align: 'center', lineBreak: false });
+      }
+      rx += cell.w;
+    });
+    y += ROW_H;
+  });
+  doc.save().strokeColor('#e2e8f0').lineWidth(0.5)
+    .moveTo(MARGIN, y).lineTo(MARGIN + TABLE_W, y).stroke().restore();
+  doc.y = y + 8;
+}
+
 // ── CloudFuze Migration Status (before Section 1) ────────────────────────────
 function drawMigrationJobSection(doc, context, result) {
   // migrationJobDetails is set on context *during* the run but context is snapshotted at
@@ -299,18 +407,27 @@ function drawMigrationJobSection(doc, context, result) {
     doc.moveDown(0.35);
   }
 
+  // Full Job ID / Name strip — the table column truncates long job names, so show it in full here.
+  const jobIdFull = String(migJob?.jobId || migJob?.jobName || '—');
+  if (jobIdFull && jobIdFull !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Job ID: ${jobIdFull}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+
   // ── header row ─────────────────────────────────────────────────────────────
   // Total / Processed counts come from the same CF reports API that provides workspaceId
   const totalCount     = migJob?.totalCount     != null ? String(migJob.totalCount)     : '—';
   const processedCount = migJob?.processedCount != null ? String(migJob.processedCount) : '—';
 
   const COLS = [
-    { label: 'Workspace ID',  w:  95 },
-    { label: 'From Email',    w: 110 },
-    { label: 'To Email',      w: 110 },
-    { label: 'Total',         w:  52 },
-    { label: 'Processed',     w:  52 },
-    { label: 'CF Status',     w:  CONTENT_W - 95 - 110 - 110 - 52 - 52 },
+    { label: 'Job ID',        w:  95 },
+    { label: 'Workspace ID',  w:  78 },
+    { label: 'From Email',    w:  85 },
+    { label: 'To Email',      w:  85 },
+    { label: 'Total',         w:  38 },
+    { label: 'Processed',     w:  44 },
+    { label: 'CF Status',     w:  CONTENT_W - 95 - 78 - 85 - 85 - 38 - 44 },
   ];
   const TABLE_W = COLS.reduce((s, c) => s + c.w, 0);
   const HDR_H = 22;
@@ -331,7 +448,8 @@ function drawMigrationJobSection(doc, context, result) {
   y += HDR_H;
 
   // ── data row ───────────────────────────────────────────────────────────────
-  const workspaceId = String(migJob?.workspaceId || context?.jobId || '—');
+  const jobIdCell   = String(migJob?.jobId || migJob?.jobName || '—');
+  const workspaceId = String(migJob?.workspaceId || '—');
   const cfStatusRaw = String(migJob?.cfStatus || '—');
   const cfStatusUp  = cfStatusRaw.toUpperCase();
 
@@ -361,12 +479,13 @@ function drawMigrationJobSection(doc, context, result) {
   doc.save().fillColor('#fafafa').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
 
   const cells = [
-    { text: workspaceId,    w: COLS[0].w },
-    { text: srcEmail,       w: COLS[1].w },
-    { text: dstEmail,       w: COLS[2].w },
-    { text: totalCount,     w: COLS[3].w },
-    { text: processedCount, w: COLS[4].w },
-    { text: null,           w: COLS[5].w },
+    { text: jobIdCell,      w: COLS[0].w },
+    { text: workspaceId,    w: COLS[1].w },
+    { text: srcEmail,       w: COLS[2].w },
+    { text: dstEmail,       w: COLS[3].w },
+    { text: totalCount,     w: COLS[4].w },
+    { text: processedCount, w: COLS[5].w },
+    { text: null,           w: COLS[6].w },
   ];
 
   let rx = MARGIN;
@@ -1003,11 +1122,11 @@ function drawFooter(doc, context) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-function generateValidationPdf(execution, stream) {
-  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
-  registerUnicodeFonts(doc);
-  doc.pipe(stream);
-
+// Render ONE execution's full report into an existing doc (no doc.end()). Shared by the
+// single-execution and bulk (all-pairs-in-one) generators so each pair renders identically.
+// opts.bulkStatusExecutions → draw the combined all-pairs CloudFuze Migration Status table here.
+// opts.skipMigrationStatus  → don't draw this pair's own single-row status table.
+function renderExecutionReport(doc, execution, opts = {}) {
   const result = execution.result;
   let validation = result?.validationSummary;
   if (!validation && result?.agentResults) {
@@ -1019,15 +1138,21 @@ function generateValidationPdf(execution, stream) {
 
   drawPageHeader(doc, execution, validation, context, result);
 
+  // Combined CloudFuze Migration Status (all pairs) — drawn even if this pair lacks validation.
+  if (opts.bulkStatusExecutions) {
+    drawBulkMigrationStatus(doc, opts.bulkStatusExecutions);
+  }
+
   if (!validation) {
     doc.fontSize(10).font(F_REGULAR).fillColor(C.subtle)
       .text('No validation data is available for this execution.', MARGIN, doc.y, { width: CONTENT_W });
     drawFooter(doc, context);
-    doc.end();
     return;
   }
 
-  drawMigrationJobSection(doc, context, result);
+  if (!opts.skipMigrationStatus) {
+    drawMigrationJobSection(doc, context, result);
+  }
   drawSummarySection(doc, validation, context, result);
   drawFailureBreakdown(doc, validation);
 
@@ -1040,8 +1165,45 @@ function generateValidationPdf(execution, stream) {
   drawAdvisoryWarnings(doc, validation);
   drawKeyIssues(doc, validation);
   drawFooter(doc, context);
+}
+
+function generateValidationPdf(execution, stream) {
+  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
+  registerUnicodeFonts(doc);
+  doc.pipe(stream);
+  renderExecutionReport(doc, execution);
+  doc.end();
+}
+
+/**
+ * Consolidated report for a bulk run: every user pair's validation in ONE PDF, each pair on its
+ * own page (its own header + CloudFuze Migration Status with Job ID / Workspace ID + validation).
+ * @param {object[]} executions  all pair executions of one bulk run (order preserved)
+ */
+function generateBulkValidationPdf(executions, stream) {
+  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
+  registerUnicodeFonts(doc);
+  doc.pipe(stream);
+
+  const list = Array.isArray(executions) ? executions.filter(Boolean) : [];
+  if (list.length === 0) {
+    doc.fontSize(10).font(F_REGULAR).fillColor(C.subtle)
+      .text('No executions found for this bulk run.', MARGIN, doc.y, { width: CONTENT_W });
+    doc.end();
+    return;
+  }
+
+  list.forEach((execution, i) => {
+    if (i > 0) doc.addPage();
+    // Combined CloudFuze Migration Status (every pair, one row each) shows once on the first page;
+    // each pair's own single-row status table is suppressed to avoid repetition.
+    renderExecutionReport(doc, execution, {
+      bulkStatusExecutions: i === 0 ? list : null,
+      skipMigrationStatus: true,
+    });
+  });
 
   doc.end();
 }
 
-module.exports = { generateValidationPdf };
+module.exports = { generateValidationPdf, generateBulkValidationPdf };
