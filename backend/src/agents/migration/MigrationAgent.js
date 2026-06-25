@@ -170,13 +170,29 @@ class MigrationAgent extends BaseAgent {
       // but we only have Mail JWT (🟣) from /mail/login, so the live lookup often 401s.
       const devOutlookCloudId = env.CLOUDFUZE_DEVEMAIL_OUTLOOK_CLOUD_ID || env.CLOUDFUZE_OUTLOOK_CLOUD_ID;
       const devGmailCloudId   = env.CLOUDFUZE_DEVEMAIL_GMAIL_CLOUD_ID   || env.CLOUDFUZE_GMAIL_CLOUD_ID;
-      if (devOutlookCloudId && devGmailCloudId) {
-        sourceCloud = isOutlookSrc
-          ? { id: devOutlookCloudId, cloudName: 'OUTLOOK' }
-          : { id: devGmailCloudId,   cloudName: 'GMAIL'   };
-        destCloud = isGmailDst
-          ? { id: devGmailCloudId,   cloudName: 'GMAIL'   }
-          : { id: devOutlookCloudId, cloudName: 'OUTLOOK' };
+
+      // Cross-tenant same-type migrations (Gmail→Gmail, Outlook→Outlook) need two DIFFERENT
+      // clouds of the same provider. Resolve a per-side ID: prefer the SOURCE/DEST-specific var,
+      // else fall back to the single typed cloud ID (same-tenant user-to-user within one cloud).
+      const gmailSrcId   = env.CLOUDFUZE_GMAIL_SOURCE_CLOUD_ID   || devGmailCloudId;
+      const gmailDstId   = env.CLOUDFUZE_GMAIL_DEST_CLOUD_ID     || devGmailCloudId;
+      const outlookSrcId = env.CLOUDFUZE_OUTLOOK_SOURCE_CLOUD_ID || devOutlookCloudId;
+      const outlookDstId = env.CLOUDFUZE_OUTLOOK_DEST_CLOUD_ID   || devOutlookCloudId;
+
+      const srcCloudId = isOutlookSrc ? outlookSrcId : gmailSrcId;
+      const dstCloudId = isGmailDst   ? gmailDstId   : outlookDstId;
+
+      if (srcCloudId && dstCloudId) {
+        sourceCloud = { id: srcCloudId, cloudName: isOutlookSrc ? 'OUTLOOK' : 'GMAIL' };
+        destCloud   = { id: dstCloudId, cloudName: isGmailDst   ? 'GMAIL'   : 'OUTLOOK' };
+        if (sourceCloud.cloudName === destCloud.cloudName && sourceCloud.id === destCloud.id) {
+          // Same provider AND same cloud ID — a cross-tenant run would silently become same-tenant.
+          log.warn(
+            `CloudFuze devemail: ${sourceCloud.cloudName}→${destCloud.cloudName} source and destination ` +
+            `resolve to the SAME cloud ID (${sourceCloud.id}). If this is a cross-tenant migration, set ` +
+            `CLOUDFUZE_${sourceCloud.cloudName}_SOURCE_CLOUD_ID and CLOUDFUZE_${sourceCloud.cloudName}_DEST_CLOUD_ID.`
+          );
+        }
         log.info(`CloudFuze devemail: cloud IDs from env — source: ${sourceCloud.id} (${sourceCloud.cloudName}), dest: ${destCloud.id} (${destCloud.cloudName})`);
         bump('MigrationAgent: cloud IDs loaded from devemail env vars...');
       } else {
@@ -576,15 +592,57 @@ class MigrationAgent extends BaseAgent {
       );
     }
 
-    // Store migration job details in context so PDF generator can show them
+    // Store migration job details in context so PDF generator can show them.
+    // jobId = parent migration job (shared across pairs in a bulk run); workspaceId = this pair's sub-task.
+    // Treat the placeholder 'initiated' (from a "Sucess" initiate response) as no real id.
+    const realTriggerJobId = this.jobId && this.jobId !== 'initiated' ? this.jobId : null;
     context.migrationJobDetails = {
       serverUrl: useDevemail ? devemailClient.BASE_URL : migrationClient.getActiveBaseUrl(),
+      jobId: polledJobDetails.jobId || realTriggerJobId || null,
+      jobName: polledJobDetails.jobName || triggerResult.jobName || null,
       workspaceId: polledJobDetails.workspaceId || null,
       totalCount: polledJobDetails.totalCount,
       processedCount: polledJobDetails.processedCount,
       cfStatus: finalStatus,
     };
-    log.info(`CloudFuze job details: workspaceId=${context.migrationJobDetails.workspaceId}, total=${context.migrationJobDetails.totalCount}, processed=${context.migrationJobDetails.processedCount}, status=${finalStatus}`);
+
+    // Enrich from GET /mail/reports/{jobId} — authoritative per-pair breakdown (Job ID + Workspace
+    // ID + counts), fetched with fresh auth after completion. Best-effort: never blocks the run.
+    if (useDevemail && context.migrationJobDetails.jobId) {
+      try {
+        const breakdown = await devemailClient.getJobReport(context.migrationJobDetails.jobId);
+        const norm = (s) => String(s || '').toLowerCase().trim();
+        const pair = (breakdown || []).find(
+          (p) => norm(p.fromMailId || p.fromEmail) === norm(context.sourceEmail)
+        );
+        if (pair) {
+          const jobDetailId = pair.id || pair.jobDetailId || null;          // per-pair sub-task id
+          context.migrationJobDetails.workspaceId = jobDetailId || context.migrationJobDetails.workspaceId;
+          if (pair.totalCount != null) context.migrationJobDetails.totalCount = Number(pair.totalCount);
+          if (pair.processedCount != null) context.migrationJobDetails.processedCount = Number(pair.processedCount);
+          const ps = String(pair.processStatus || pair.syncStatus || '').toUpperCase().trim();
+          if (ps && (finalStatus === 'TIMEOUT' || !finalStatus)) context.migrationJobDetails.cfStatus = ps;
+          log.info(`CloudFuze /mail/reports/${context.migrationJobDetails.jobId}: pair jobDetailId=${jobDetailId}, counts=${context.migrationJobDetails.processedCount}/${context.migrationJobDetails.totalCount}`);
+
+          // Drill into /mail/workSpaces/{jobDetailId} for the pair's workspace id (deepest record).
+          if (jobDetailId) {
+            try {
+              const ws = await devemailClient.getWorkspaceRecords(jobDetailId);
+              if (Array.isArray(ws) && ws.length > 0) {
+                const root = ws.find((w) => w.sourceId === '/' || w.destFolderPath === '/') || ws[0];
+                if (root?.id) context.migrationJobDetails.workspaceId = root.id;
+                log.info(`CloudFuze /mail/workSpaces/${jobDetailId}: ${ws.length} workspace record(s), workspaceId=${context.migrationJobDetails.workspaceId}`);
+              }
+            } catch (wErr) {
+              log.warn(`CloudFuze getWorkspaceRecords failed (non-fatal): ${wErr.message}`);
+            }
+          }
+        }
+      } catch (e) {
+        log.warn(`CloudFuze getJobReport enrichment failed (non-fatal): ${e.message}`);
+      }
+    }
+    log.info(`CloudFuze job details: jobId=${context.migrationJobDetails.jobId}, jobName=${context.migrationJobDetails.jobName}, workspaceId=${context.migrationJobDetails.workspaceId}, total=${context.migrationJobDetails.totalCount}, processed=${context.migrationJobDetails.processedCount}, status=${finalStatus}`);
 
     // ── Content migration: check if this is a stop status ─────────
     // When mode === 'content' and status is a stop status, skip validation and return a content report.

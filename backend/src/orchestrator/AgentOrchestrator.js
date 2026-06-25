@@ -97,9 +97,12 @@ class AgentOrchestrator {
       }
     }));
 
-    // ── Phase 1: Create test data for all pairs in parallel ──────────────────
-    log.info('Bulk Phase 1/3: creating test data for all pairs in parallel');
-    await Promise.all(pairs.map(async (pair) => {
+    // ── Phase 1: Create test data for all pairs sequentially (one by one) ───
+    // Sequential order ensures each source mailbox is fully seeded before the
+    // next starts — avoids Gmail API rate-limit collisions and guarantees all
+    // data is present before migration is triggered.
+    log.info('Bulk Phase 1/3: creating test data for all pairs one by one (sequential)');
+    for (const pair of pairs) {
       const { context, dataAgent } = pair;
       // Content migrations have no test-data agent — source data already exists in the cloud.
       if (pair.isContentMode || !dataAgent) {
@@ -107,7 +110,7 @@ class AgentOrchestrator {
           status: 'RUNNING',
           progress: '[1/3] Skipping test-data creation (content migration)…',
         });
-        return;
+        continue;
       }
       executionService.update(context.executionId, {
         status: 'RUNNING',
@@ -129,14 +132,42 @@ class AgentOrchestrator {
         });
         log.error(`Pair ${context.sourceEmail}: Phase 1 error: ${err.message}`);
       }
-    }));
+    }
 
     // ── Phase 2: Migrate all pairs sequentially ───────────────────────────────
+    // For devemail bulk runs: all pairs go into ONE job (payload array with N workspaces).
+    // Only the first non-errored pair (lead) triggers migration; the rest share its jobId.
     log.info('Bulk Phase 2/3: running migrations sequentially');
+    const leadPair    = pairs.find((p) => !p.error) || null;
+    const isDevemailBulk = pairs.length > 1 &&
+      (leadPair?.context?.migrationServerUrl || '').toLowerCase().includes('devemail');
+
+    // For devemail bulk: mark non-lead pairs immediately so the UI shows a meaningful
+    // status rather than stale "cleanup" progress while the lead pair polls (up to 30 min).
+    if (isDevemailBulk) {
+      for (const pair of pairs) {
+        if (pair === leadPair || pair.error) continue;
+        executionService.update(pair.context.executionId, {
+          currentAgent: 'MigrationAgent',
+          status: 'RUNNING',
+          progress: '[2/3] MigrationAgent: waiting — migration triggered by lead pair…',
+        });
+        log.info(`Pair ${pair.context.sourceEmail}: devemail bulk — pre-marked as waiting for shared job`);
+      }
+    }
+
     for (const pair of pairs) {
       if (pair.error) continue;
       const { context, migrationAgent } = pair;
       if (executionService.isCancelled(context.executionId)) continue;
+
+      // Non-lead pairs: skip trigger entirely — lead already fired one job with all workspaces.
+      if (isDevemailBulk && pair !== leadPair) {
+        pair.migrationResult = { jobId: 'pending', status: 'INITIATED', sharedJob: true };
+        log.info(`Pair ${context.sourceEmail}: Phase 2 skipped — will share job ID from lead pair`);
+        continue;
+      }
+
       executionService.update(context.executionId, {
         currentAgent: migrationAgent.getName(),
         progress: '[2/3] MigrationAgent: triggering and monitoring migration…',
@@ -144,6 +175,19 @@ class AgentOrchestrator {
       try {
         pair.migrationResult = await migrationAgent.run(context);
         log.info(`Pair ${context.sourceEmail}: Phase 2 complete`);
+
+        // After lead finishes, propagate its actual jobId to all non-lead pairs.
+        if (isDevemailBulk) {
+          const leadJobId = pair.migrationResult?.jobId || 'shared';
+          for (const other of pairs) {
+            if (other === pair || other.error) continue;
+            other.migrationResult = { jobId: leadJobId, status: 'INITIATED', sharedJob: true };
+            executionService.update(other.context.executionId, {
+              progress: `[2/3] MigrationAgent: shared job ${leadJobId} complete`,
+            });
+            log.info(`Pair ${other.context.sourceEmail}: shared job ${leadJobId} propagated`);
+          }
+        }
       } catch (err) {
         pair.error = err.message;
         const wasCancelled = executionService.isCancelled(context.executionId);
@@ -213,6 +257,23 @@ class AgentOrchestrator {
           completedAt: new Date().toISOString(),
         });
         log.info(`Pair ${context.sourceEmail}: Phase 3 complete`);
+
+        // Auto-raise Neutara bug on validation failure (fire-and-forget)
+        if (pair.validationResult?.overallStatus === 'FAIL') {
+          const execRecord = executionService.get(context.executionId);
+          neutaraClient.createBug(execRecord).then((issue) => {
+            if (issue?.knownLimitationsOnly) {
+              const note = `All ${issue.count} mismatch(es) are known limitations — no bug raised`;
+              log.info(note);
+              executionService.update(context.executionId, { knownLimitationsNote: note });
+            } else if (issue) {
+              log.info(`Neutara bug raised: ${issue.key}  ${issue.url}`);
+              executionService.update(context.executionId, { jiraIssue: issue });
+            }
+          }).catch((err) => {
+            log.warn(`Neutara bug creation failed: ${err.message}`);
+          });
+        }
       } catch (err) {
         pair.error = err.message;
         const wasCancelled = executionService.isCancelled(context.executionId);

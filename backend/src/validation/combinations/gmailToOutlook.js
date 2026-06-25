@@ -45,6 +45,7 @@ const {
   stripQuotedLines,
   validateOutlookToGmailThreadChains,
   validateOutlookToOutlookThreadChains,
+  validateGmailToOutlookThreadChains,
   tierBHashesGmailToGmail,
 } = require('../shared/deepMailCore');
 
@@ -398,7 +399,18 @@ async function validateGmailSource({
       subject: full.subject || '',
       pass: !hasError,
       diffs,
+      _gmailThreadId: full.threadId || null,
+      _conversationId: destFull.conversationId || null,
     });
+  }
+
+  // Thread chain validation: check Gmail threads landed in the same Outlook conversation.
+  // Non-fatal: a thread-chain failure must NEVER break the core per-message G→O validation
+  // (which worked correctly before this was added). Wrapped so any error is logged, not thrown.
+  try {
+    await validateGmailToOutlookThreadChains(result, srcUser, destUser, log, { tierC, tierB, tierAOpts });
+  } catch (threadErr) {
+    log.warn(`Thread chain validation (G→O) failed (non-fatal): ${threadErr.message}`);
   }
 }
 
