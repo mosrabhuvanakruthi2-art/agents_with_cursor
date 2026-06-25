@@ -89,7 +89,7 @@ class MigrationAgent extends BaseAgent {
     bump('MigrationAgent: authenticating with migration server…');
     if (useDevemail) {
       // devemail: POST /auth/user → App JWT, then POST /mail/register → Mail JWT
-      const devEmail = context.migrationServerEmail || env.CLOUDFUZE_OWNER_EMAIL || '';
+      const devEmail = context.migrationServerEmail || '';
       const devPassword = context.migrationServerPassword || env.MIGRATION_APP_LOGIN_PASSWORD || '';
       // Set runtime config so resolveEmail() / ownerEmailId use the UI credentials for all
       // subsequent devemailClient calls (triggerMigration, cacheUserMapping, uploadUserCSV, etc.)
@@ -711,7 +711,7 @@ class MigrationAgent extends BaseAgent {
     } finally {
       // Always clear the runtime config so subsequent runs use env defaults
       migrationClient.clearRuntimeConfig();
-      devemailClient.clearState();
+      devemailClient.clearRuntimeConfig();
     }
   }
 
