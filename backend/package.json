@@ -1,0 +1,45 @@
+{
+  "name": "migration-qa-backend",
+  "version": "1.0.0",
+  "description": "AI Agent System for Gmail to Outlook Migration QA",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "node test/googleAccountsPicker.test.js && node test/mailMigrationComparator.test.js",
+    "lint": "eslint src",
+    "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js",
+    "import-test-repository": "node scripts/import-test-repository.js",
+    "push-test-repository-json-to-mongo": "node scripts/push-test-repository-json-to-mongo.js",
+    "backfill-test-expanded-details": "node scripts/backfill-test-expanded-details.js",
+    "audit-test-steps-mongo": "node scripts/audit-test-steps-mongo.js",
+    "mongo-connect-test": "node scripts/mongo-connect-test.js",
+    "debug-test-steps": "node scripts/debug-test-steps.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "@azure/msal-node": "^2.16.2",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "docx": "^9.7.1",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "googleapis": "^144.0.0",
+    "md5": "^2.3.0",
+    "mongodb": "^7.1.1",
+    "node-cron": "^3.0.3",
+    "openai": "^6.39.0",
+    "pdfkit": "^0.18.0",
+    "playwright": "^1.61.0",
+    "uuid": "^11.0.5",
+    "winston": "^3.17.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "globals": "^17.6.0",
+    "nodemon": "^3.1.14"
+  }
+}

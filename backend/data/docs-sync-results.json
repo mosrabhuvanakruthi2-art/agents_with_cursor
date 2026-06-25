@@ -1,0 +1,32 @@
+{
+  "lastSyncAt": "2026-06-15T12:52:17.912Z",
+  "newInscopeFeatures": [
+    {
+      "combination": "Outlook to Outlook",
+      "feature": "test",
+      "description": "",
+      "generatedTestCase": {
+        "subject": "QA E2E - Feature Test",
+        "scenarioName": "Outlook to Outlook Feature Migration",
+        "dataToSeed": "Seed an email message with unique subject, body content including a mix of text and images, attachments, and specific metadata for testing migration.",
+        "validationCheck": "Verify that the email subject, body (including inline images), attachments, and metadata are accurately preserved post-migration.",
+        "keyFields": [
+          "subject",
+          "body",
+          "attachments",
+          "metadata"
+        ],
+        "agentFile": "OutlookTestDataAgent.js",
+        "status": "pending_implementation"
+      }
+    }
+  ],
+  "newOutscopeFeatures": [],
+  "noChanges": false,
+  "apiPartiallyUnreachable": false,
+  "autoAddSummary": {
+    "success": true,
+    "added": [],
+    "errors": []
+  }
+}

@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Secrets — use .env.example only in git
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Service-account keys / credential JSON — never commit
+backend/config/
+**/*service-account*.json
+**/*-credentials.json
+
+# Build / logs
+frontend/dist/
+backend/logs/*
+!backend/logs/.gitkeep
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Runtime / sensitive data
+backend/data/oauth-tokens.json
+backend/data/executions.json
+backend/data/custom-test-cases.json
+backend/data/test-repository.json
+backend/data/channel-cache.json
+
+# Claude IDE local config
+.claude/settings.local.json
+.claude/settings.json
+.claude/scheduled_tasks.lock
+backend/config/gem-co-service-account.json
+backend/config/*.json
