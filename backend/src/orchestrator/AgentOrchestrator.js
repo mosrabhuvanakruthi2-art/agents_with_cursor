@@ -299,11 +299,82 @@ class AgentOrchestrator {
         }
       }
 
+      // Multi-user content: per-user folder entries come from the UI table
+      // (context.contentUserFolders); fall back to one entry per Map-Users pair. Align the
+      // base seed name to the first entry so Step 1's single seed IS entry[0]'s dataset.
+      const cufEntries = (Array.isArray(context.contentUserFolders) && context.contentUserFolders.length > 0)
+        ? context.contentUserFolders
+        : (Array.isArray(context.userEmailMappings)
+            ? context.userEmailMappings.map((m) => ({ sourceEmail: m.sourceEmail, destinationEmail: m.destinationEmail }))
+            : []);
+      if (isContentMode) log.info(`Content: useExistingSource=${context.useExistingSource} (true = skip seeding, migrate existing folder)`);
+      if (isContentMode && cufEntries.length > 0) {
+        // Resolve each entry's SOURCE email → Box user id so we seed As-User into that user's
+        // OWN account (not the connected admin). Requires the OAuth app's as-user header + the
+        // admin (erik) + "Manage users" scope. If a user can't be resolved, that entry falls
+        // back to the connected account (still a distinct dataset).
+        if (context.sourceProvider === 'box') {
+          try {
+            const boxClient = require('../clients/boxClient');
+            const adminEmail = String(context.sourceAdminEmail || context.sourceEmail || '').toLowerCase();
+            const users = await boxClient.getUsers(adminEmail);
+            const byEmail = {};
+            for (const u of users) byEmail[String(u.login || '').toLowerCase()] = u.id;
+            for (const e of cufEntries) {
+              // Don't As-User into the CONNECTED admin account itself — Box 403s on self-
+              // impersonation for uploads. That user seeds directly with the OAuth token.
+              const email = String(e.sourceEmail || '').toLowerCase();
+              e._boxUserId = (email === adminEmail) ? null : (byEmail[email] || null);
+            }
+            const resolved = cufEntries.filter((e) => e._boxUserId).length;
+            log.info(`Content multi-user: resolved ${resolved}/${cufEntries.length} source user(s) to their Box account (As-User seeding)`);
+          } catch (err) {
+            log.warn(`Content multi-user: could not list Box users (${err.message}) — seeding falls back to the connected account`);
+          }
+        }
+        // Align Step 1's single seed to entry[0]: its folder name AND its As-User target.
+        if ((cufEntries[0].sourceFolderName || '').trim()) context.sourceFolderName = cufEntries[0].sourceFolderName.trim();
+        if (cufEntries[0]._boxUserId) context.boxTargetUserId = cufEntries[0]._boxUserId;
+      }
+
+      // ── Use-existing-folder mode: skip seeding, resolve each user's EXISTING folder ──────
+      // When context.useExistingSource is set, the source folder(s) already exist — we resolve
+      // each path to its Box folder id (As-User per user) and migrate directly. No data creation.
+      if (isContentMode && context.useExistingSource && context.sourceProvider === 'box' && cufEntries.length > 0) {
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing folder(s)`);
+        const boxClient = require('../clients/boxClient');
+        const adminEmail = context.sourceAdminEmail || context.sourceEmail;
+        const token = await boxClient.getValidToken(adminEmail);
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          const folderPath = (e.sourceFolderName || '').trim().replace(/^\/?/, '/');
+          try {
+            const found = await boxClient.resolveFolderByPath(folderPath, token, e._boxUserId || null);
+            if (!found) { log.warn(`Content useExistingSource: folder "${folderPath}" not found for ${e.sourceEmail} — skipping`); continue; }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: found.path,
+              sourceRootId: String(found.id),
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "${found.path}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderPath}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      }
+
       // Step 1: Generate test data.
       // Skipped when: explicitly skipped on resume (skipTestData), OR no TestDataAgent registered
-      // for this combination (content combinations without a seeding agent).
+      // for this combination, OR useExistingSource (migrate an existing folder, no seeding).
       let sourceData = null;
-      if (!context.skipTestData && dataAgent !== null) {
+      if (!context.skipTestData && dataAgent !== null && !context.useExistingSource) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: dataAgent.getName(),
@@ -321,6 +392,44 @@ class AgentOrchestrator {
           context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
           if (sourceData.rootFolderId) context.sourceRootId = String(sourceData.rootFolderId);
           log.info(`Content source captured from ${dataAgent.getName()}: path=${context.sourceTestDataPath} folderId=${context.sourceRootId || '(none)'}`);
+
+          // Multi-user: one transfer unit per per-user entry. unit 0 reuses the folder Step 1
+          // just seeded (its name was aligned to entry[0]); each additional entry gets its own
+          // seeded dataset, using the entry's folder name (or "<base> <user>" when blank).
+          // (Box As-User needs an enterprise admin token — absent here — so all folders live in
+          // the connected source account; the structure is identical to true per-user and
+          // upgrades automatically once As-User is available.)
+          if (cufEntries.length > 0) {
+            const baseName = (context.sourceFolderName || '').trim() || 'Agent Box Data';
+            context.userFolderMappings = [{
+              sourceEmail: cufEntries[0].sourceEmail,
+              destinationEmail: cufEntries[0].destinationEmail,
+              sourcePath: context.sourceTestDataPath,
+              sourceRootId: context.sourceRootId,
+              destinationPath: cufEntries[0].destinationPath || context.destinationPath || '',
+            }];
+            for (let i = 1; i < cufEntries.length; i++) {
+              const entry = cufEntries[i];
+              const localPart = String(entry.sourceEmail || `user${i + 1}`).split('@')[0];
+              const folderName = (entry.sourceFolderName || '').trim() || `${baseName} ${localPart}`;
+              try {
+                const extraAgent = new TestDataAgent();
+                // Seed As-User into THIS user's own Box account (null → connected account fallback).
+                const data = await extraAgent.run({ ...context, sourceFolderName: folderName, boxTargetUserId: entry._boxUserId || null });
+                context.userFolderMappings.push({
+                  sourceEmail: entry.sourceEmail,
+                  destinationEmail: entry.destinationEmail,
+                  sourcePath: `/${data.rootFolderName}`,
+                  sourceRootId: String(data.rootFolderId),
+                  destinationPath: entry.destinationPath || context.destinationPath || '',
+                });
+                log.info(`Content multi-user: seeded for ${entry.sourceEmail} → /${data.rootFolderName} (id=${data.rootFolderId})`);
+              } catch (seedErr) {
+                log.warn(`Content multi-user: seeding for ${entry.sourceEmail} failed (${seedErr.message}) — skipping this user`);
+              }
+            }
+            log.info(`Content multi-user: ${context.userFolderMappings.length} transfer unit(s) prepared from ${cufEntries.length} entry(ies)`);
+          }
         }
       } else if (dataAgent === null) {
         log.info('Step 1: Skipped (no TestDataAgent registered for this combination)');
@@ -355,17 +464,20 @@ class AgentOrchestrator {
         throw new Error('Execution cancelled by user');
       }
 
-      // Step 3: Validate — skip for content migrations (box/sharepoint/onedrive/dropbox)
-      // UNLESS the ValidationAgent class declares `static supportsDeepValidation = true`,
-      // which means it has a real file/folder comparison (e.g. BoxToSharepointValidationAgent).
-      // Always skip when MigrationAgent returned skipValidation (e.g. content stop status).
+      // Step 3: Validate.
+      // A content combination with a real destination validator (static supportsDeepValidation =
+      // true, e.g. BoxToSharepointValidationAgent) ALWAYS runs once the flow completes — even when
+      // CloudFuze reported NOT_PROCESSED / conflict — because the validator checks the actual
+      // destination state. This gives content the same UX as mail: a downloadable report is always
+      // produced after the run. Skip only when no deep validator is registered for the combination.
       const isContentProviders =
         ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
         ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
       const ValidationAgentClass = agentsFor(context)?.ValidationAgent;
       const hasDeepValidation = Boolean(ValidationAgentClass?.supportsDeepValidation);
-      const skipValidation = migrationResult?.skipValidation ||
-        (isContentMode && isContentProviders && !hasDeepValidation);
+      const skipValidation = hasDeepValidation
+        ? false
+        : (migrationResult?.skipValidation || (isContentMode && isContentProviders));
 
       let validationResult = null;
       if (skipValidation) {

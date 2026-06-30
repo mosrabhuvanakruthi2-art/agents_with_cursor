@@ -253,6 +253,20 @@ class MigrationAgent extends BaseAgent {
       }
       log.info(`CloudFuze: ${clouds.length} cloud(s) returned`);
 
+      // Diagnostic: dump every cloud this CloudFuze login can see (id, name, owner email).
+      // Lets us confirm whether a pinned CONTENT_SOURCE/DEST_CLOUD_ID actually belongs to this
+      // account — a cloud not in this list can't have its paths/members resolved (→ 0 mappings).
+      if (context.mode === 'content' || (!context.includeMail && (context.includeCalendar || context.includeContacts))) {
+        try {
+          const dump = (clouds || []).map((c) => {
+            const id = c.id || c.vendorId || c.cloudId;
+            const email = c.adminEmailId || c.email || c.emailId || c.ownerEmailId || '?';
+            return `${id} [${c.cloudName || c.cloud || '?'}] ${email}`;
+          });
+          log.info(`CloudFuze content clouds visible to this login:\n  ${dump.join('\n  ')}`);
+        } catch (e) { log.warn(`CloudFuze cloud dump failed: ${e.message}`); }
+      }
+
       // For email migrations: prefer .env admin email override (set up for devemail/newtestemail5).
       // For content migrations (Box, SharePoint, etc.): skip env override — use context admin email
       // from the form (e.g. erik@filefuze.co for Box/SharePoint on qarelease).
@@ -285,6 +299,31 @@ class MigrationAgent extends BaseAgent {
             `CloudFuze: destination "${destLookup}" not found in /mail/clouds. ` +
             `Available: ${clouds.map((c) => c.adminEmailId || c.email).join(', ')}`
           );
+        }
+      }
+      // Cloud-id PREFERENCE (content). When multiple Box/SharePoint clouds exist for the same
+      // email, findCloudId() may pick the wrong registration. CONTENT_SOURCE_CLOUD_ID /
+      // CONTENT_DEST_CLOUD_ID bias toward a known-good registration — but ONLY when that cloud
+      // actually belongs to the logged-in account (present in /mail/clouds). For a different
+      // account the pin won't match, so we keep findCloudId's auto-pick. This makes switching
+      // accounts work purely from the UI Migration Server step (no .env edits needed).
+      if (isContentMode) {
+        const cloudById = (id) => clouds.find((x) => (x.id || x.vendorId || x.cloudId) === id);
+        const srcOverride = (context.sourceCloudIdOverride || env.CONTENT_SOURCE_CLOUD_ID || '').trim();
+        const dstOverride = (context.destCloudIdOverride || env.CONTENT_DEST_CLOUD_ID || '').trim();
+        const srcMatch = srcOverride && cloudById(srcOverride);
+        const dstMatch = dstOverride && cloudById(dstOverride);
+        if (srcMatch) {
+          sourceCloud = { id: srcOverride, cloudName: srcMatch.cloudName || sourceCloud.cloudName, memberId: srcMatch.memberId };
+          log.info(`CloudFuze: source cloud preferred (present in this account) → ${srcOverride} (${sourceCloud.cloudName})`);
+        } else if (srcOverride) {
+          log.info(`CloudFuze: source pin ${srcOverride} not in this account's clouds — using auto-picked ${sourceCloud.id} (${sourceCloud.cloudName})`);
+        }
+        if (dstMatch) {
+          destCloud = { id: dstOverride, cloudName: dstMatch.cloudName || destCloud.cloudName, memberId: dstMatch.memberId };
+          log.info(`CloudFuze: dest cloud preferred (present in this account) → ${dstOverride} (${destCloud.cloudName})`);
+        } else if (dstOverride) {
+          log.info(`CloudFuze: dest pin ${dstOverride} not in this account's clouds — using auto-picked ${destCloud.id} (${destCloud.cloudName})`);
         }
       }
       log.info(
@@ -505,6 +544,10 @@ class MigrationAgent extends BaseAgent {
       throw new Error(`[Step 5 POST initiate] ${err?.response?.status ? `HTTP ${err?.response.status}: ` : ''}${err?.message}`);
     }
     this.jobId = triggerResult.jobId;
+    // Permission mapping + per-user units used by the migration — persisted for the UI/report.
+    if (triggerResult.permissionMapping) context.permissionMapping = triggerResult.permissionMapping;
+    if (triggerResult.migratedUsers) context.migratedUsers = triggerResult.migratedUsers;
+    if (triggerResult.skippedUsers) context.skippedUsers = triggerResult.skippedUsers;
 
     const rawStr = typeof triggerResult.rawResponse === 'string'
       ? triggerResult.rawResponse
@@ -617,6 +660,8 @@ class MigrationAgent extends BaseAgent {
         ownerValidation,
         migrationJobDetails: context.migrationJobDetails,
         contentMigrationReport: contentReport,
+        permissionMapping: context.permissionMapping,
+        migratedUsers: context.migratedUsers,
         skipValidation: true,
         cloudIds: {
           sourceCloudId: sourceCloud?.id,
@@ -639,6 +684,8 @@ class MigrationAgent extends BaseAgent {
       rawResponse: triggerResult.rawResponse,
       ownerValidation,
       migrationJobDetails: context.migrationJobDetails,
+      permissionMapping: context.permissionMapping,
+      migratedUsers: context.migratedUsers,
       contentMigrationReport: (isContentMode && polledJobReport) ? {
         workspaceId: context.migrationJobDetails.workspaceId,
         status: finalStatus,

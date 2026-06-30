@@ -58,7 +58,9 @@ export default function useRunWizard() {
   // Migration server (step 4)
   const [migrationServerUrl, setMigrationServerUrl] = usePersistedState('rw-serverUrl', 'https://devemail.cloudfuze.com/proxyservices/v1');
   const [migrationServerEmail, setMigrationServerEmail] = usePersistedState('rw-serverEmail', '');
-  const [migrationServerPassword, setMigrationServerPassword] = useState(''); // never persisted
+  // Persisted so the password is entered ONCE in the UI and reused across runs (credentials
+  // come from the UI, not env). Internal QA tool — stored in localStorage like the URL/email.
+  const [migrationServerPassword, setMigrationServerPassword] = usePersistedState('rw-serverPassword', '');
 
   // Options (step 5)
   const [testType, setTestType] = usePersistedState('rw-testType', 'E2E');
@@ -81,6 +83,37 @@ export default function useRunWizard() {
   // destination → backend uses the cloud default (SharePoint /SANITY DATAA/Documents, Drive /OSM).
   const [contentPaths, setContentPaths] = usePersistedState('rw-contentPaths', { sourceFolderName: '', destinationPath: '' });
   const setContentPath = (key, val) => setContentPaths((p) => ({ ...p, [key]: val }));
+  // When true: the source folder(s) already exist — skip the data-creation agent and migrate
+  // the folder at the given path directly. The "Source folder" fields become existing paths.
+  const [useExistingSource, setUseExistingSource] = usePersistedState('rw-useExistingSource', false);
+  // Per-user folder overrides for multi-user content migration, keyed by source email:
+  //   { [sourceEmail]: { sourceFolderName, destinationPath } }
+  // A row left blank falls back to the shared base fields above. Editable in the table and
+  // importable via CSV (Source User, Source Folder, Destination User, Destination Path).
+  const [contentUserFolders, setContentUserFolders] = usePersistedState('rw-contentUserFolders', {});
+  const setContentUserFolder = (email, key, val) =>
+    setContentUserFolders((m) => ({ ...m, [email]: { ...(m[email] || {}), [key]: val } }));
+  const clearContentUserFolders = () => setContentUserFolders({});
+  // Parse a pasted/uploaded CSV into per-user folder overrides (matched by source email).
+  function importContentUserFoldersCsv(text) {
+    const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return 0;
+    const start = /source\s*user|source\s*cloud|source\s*email/i.test(lines[0]) ? 1 : 0;
+    const next = {};
+    let n = 0;
+    for (let i = start; i < lines.length; i++) {
+      const cols = lines[i].split(',').map((c) => c.trim());
+      const [srcUser, srcFolder, , destPath] = cols;
+      if (!srcUser) continue;
+      next[srcUser.toLowerCase()] = {
+        sourceFolderName: srcFolder || '',
+        destinationPath: destPath || '',
+      };
+      n++;
+    }
+    setContentUserFolders((m) => ({ ...m, ...next }));
+    return n;
+  }
   const toggleContentOption = (key) => setContentOptions((o) => ({ ...o, [key]: !o[key] }));
   const setContentOption = (key, val) => setContentOptions((o) => ({ ...o, [key]: !!val }));
   const setJobOption = (key, val) => setJobOptions((o) => ({ ...o, [key]: val }));
@@ -180,6 +213,29 @@ export default function useRunWizard() {
     } catch { /* ignore */ }
   }
 
+  // Default CloudFuze migration server per product: Mail → devemail, Content → qarelease.
+  // (Message uses its own wizard.) Switching domains resets the server URL to the right default.
+  const SERVER_URL_BY_DOMAIN = {
+    mail: 'https://devemail.cloudfuze.com/proxyservices/v1',
+    // Content server (qarelease) stays BARE — the backend detects a content server by the
+    // absence of /proxyservices/ in the URL and adds the path itself. A /proxyservices/ URL
+    // would force the legacy login branch and break content auth.
+    content: 'https://qarelease.cloudfuze.com',
+  };
+
+  // Self-correct a stale persisted URL: if it's blank or a known default for a DIFFERENT
+  // domain (e.g. devemail left over while on the Content tab), snap it to this domain's
+  // default. A custom URL matches no known default, so it is preserved.
+  useEffect(() => {
+    const want = SERVER_URL_BY_DOMAIN[domain];
+    if (!want) return;
+    const knownDefaults = Object.values(SERVER_URL_BY_DOMAIN);
+    if (!migrationServerUrl || (knownDefaults.includes(migrationServerUrl) && migrationServerUrl !== want)) {
+      setMigrationServerUrl(want);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain]);
+
   // Switch migration domain (tab). Resets provider/email selection + mapping to the new
   // domain's defaults so a half-built mail run never leaks into a content run.
   function setDomain(next) {
@@ -189,6 +245,7 @@ export default function useRunWizard() {
     setSrcProvider(cfg.defaultSrc);
     setDstProvider(cfg.defaultDst);
     setSrcEmail(''); setDstEmail('');
+    if (SERVER_URL_BY_DOMAIN[next]) setMigrationServerUrl(SERVER_URL_BY_DOMAIN[next]);
     resetMapping();
     setStep(1);
   }
@@ -316,10 +373,33 @@ export default function useRunWizard() {
         replaceSpecialChar: jobOptions.replaceSpecialChar,
         sourceFolderName: contentPaths.sourceFolderName || undefined,
         destinationPath: contentPaths.destinationPath || undefined,
+        useExistingSource: useExistingSource || undefined,
+        // Per-user folder mapping (one entry per selected user). Each falls back to the shared
+        // base fields above when its row is left blank. Backend seeds + migrates one per entry.
+        contentUserFolders: selectedPairs.map((p) => {
+          const ov = contentUserFolders[(p.source.email || '').toLowerCase()] || {};
+          return {
+            sourceEmail: p.source.email,
+            destinationEmail: p.destination.email,
+            sourceFolderName: ov.sourceFolderName || contentPaths.sourceFolderName || undefined,
+            destinationPath: ov.destinationPath || contentPaths.destinationPath || undefined,
+          };
+        }),
       } : {}),
     };
-    if (pairs.length === 1) {
-      return { ...base, sourceEmail: pairs[0].sourceEmail, destinationEmail: pairs[0].destinationEmail, sourceProvider: srcProvider, destinationProvider: dstProvider };
+    // Content multi-user is ONE execution: a single CloudFuze job with one workspace pair per
+    // user (the orchestrator seeds each user and builds the N-pair job from userEmailMappings /
+    // contentUserFolders). So content NEVER fans out to the bulk path — it always returns a
+    // single-execution payload, which runs async and redirects to /logs immediately.
+    // Mail/message keep bulk fan-out (N independent migrations) when more than one pair.
+    if (domain === 'content' || pairs.length === 1) {
+      return {
+        ...base,
+        sourceEmail: pairs[0]?.sourceEmail || srcEmail,
+        destinationEmail: pairs[0]?.destinationEmail || dstEmail,
+        sourceProvider: srcProvider,
+        destinationProvider: dstProvider,
+      };
     }
     return { ...base, mappedPairs: pairs };
   }
@@ -344,6 +424,8 @@ export default function useRunWizard() {
     testType, setTestType, migrationType, setMigrationType,
     contentOptions, toggleContentOption, setContentOption, jobOptions, setJobOption,
     contentPaths, setContentPath,
+    contentUserFolders, setContentUserFolder, clearContentUserFolders, importContentUserFoldersCsv,
+    useExistingSource, setUseExistingSource,
     selectedPairs, buildPayload, reset,
     busy, error, setError,
   };

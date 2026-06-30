@@ -24,6 +24,8 @@ const FONT_CANDIDATES = {
   regular: ['C:/Windows/Fonts/arial.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
   bold:    ['C:/Windows/Fonts/arialbd.ttf', '/System/Library/Fonts/Supplemental/Arial Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
   italic:  ['C:/Windows/Fonts/ariali.ttf', '/System/Library/Fonts/Supplemental/Arial Italic.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf'],
+  // Monospace — needed so the ├──└── folder-tree connectors line up. Box-drawing glyphs supported.
+  mono:    ['C:/Windows/Fonts/consola.ttf', 'C:/Windows/Fonts/cour.ttf', '/System/Library/Fonts/Menlo.ttc', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'],
 };
 
 function firstExistingPath(paths) {
@@ -34,14 +36,17 @@ function firstExistingPath(paths) {
 let F_REGULAR = 'Helvetica';
 let F_BOLD    = 'Helvetica-Bold';
 let F_ITALIC  = 'Helvetica-Oblique';
+let F_MONO    = 'Courier';
 
 function registerUnicodeFonts(doc) {
   const reg  = firstExistingPath(FONT_CANDIDATES.regular);
   const bold = firstExistingPath(FONT_CANDIDATES.bold);
   const ital = firstExistingPath(FONT_CANDIDATES.italic);
+  const mono = firstExistingPath(FONT_CANDIDATES.mono);
   if (reg)  { try { doc.registerFont('Unicode',       reg);  F_REGULAR = 'Unicode';       } catch { F_REGULAR = 'Helvetica';         } }
   if (bold) { try { doc.registerFont('UnicodeBold',   bold); F_BOLD    = 'UnicodeBold';   } catch { F_BOLD    = 'Helvetica-Bold';    } }
   if (ital) { try { doc.registerFont('UnicodeItalic', ital); F_ITALIC  = 'UnicodeItalic'; } catch { F_ITALIC  = 'Helvetica-Oblique'; } }
+  if (mono) { try { doc.registerFont('Mono',          mono); F_MONO    = 'Mono';          } catch { F_MONO    = 'Courier';           } }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -1044,4 +1049,311 @@ function generateValidationPdf(execution, stream) {
   doc.end();
 }
 
-module.exports = { generateValidationPdf };
+// ── Content validation (Box → SharePoint etc.) ─────────────────────────────────
+function drawContentSummaryCards(doc, checks) {
+  const pass = checks.filter((c) => c.status === 'PASS').length;
+  const warn = checks.filter((c) => c.status === 'WARN').length;
+  const fail = checks.filter((c) => c.status === 'FAIL').length;
+
+  const cards = [
+    { value: pass, label: 'Passed',   vc: C.pass, bg: C.passBg, bd: C.passBorder },
+    { value: warn, label: 'Warnings', vc: warn > 0 ? C.warn : C.subtle, bg: warn > 0 ? C.warnBg : C.bg, bd: warn > 0 ? C.warnBorder : C.border },
+    { value: fail, label: 'Failed',   vc: fail > 0 ? C.fail : C.subtle, bg: fail > 0 ? C.failBg : C.bg, bd: fail > 0 ? C.failBorder : C.border },
+  ];
+  const gap = 10, cols = 3;
+  const cardW = (CONTENT_W - gap * (cols - 1)) / cols;
+  const cardH = 64;
+  ensureSpace(doc, cardH + 16);
+  const startY = doc.y;
+  cards.forEach((m, i) => {
+    const cx = MARGIN + i * (cardW + gap);
+    doc.save().fillColor(m.bg).roundedRect(cx, startY, cardW, cardH, 6).fill().restore();
+    doc.save().strokeColor(m.bd).lineWidth(1).roundedRect(cx, startY, cardW, cardH, 6).stroke().restore();
+    doc.fontSize(22).font(F_BOLD).fillColor(m.vc).text(String(m.value), cx + 6, startY + 12, { width: cardW - 12, align: 'center' });
+    doc.fontSize(8.5).font(F_BOLD).fillColor(C.text).text(m.label, cx + 6, startY + cardH - 22, { width: cardW - 12, align: 'center' });
+  });
+  doc.y = startY + cardH + 10;
+}
+
+function drawContentChecksTable(doc, checks) {
+  const COL_CHECK = 170;
+  const COL_STATUS = 60;
+  const COL_DETAIL = CONTENT_W - COL_CHECK - COL_STATUS;
+  const HDR_H = 20;
+
+  ensureSpace(doc, HDR_H + 24);
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, HDR_H).fill().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Check',  MARGIN + 6, y + 6, { width: COL_CHECK - 10, lineBreak: false });
+  doc.text('Status', MARGIN + COL_CHECK + 6, y + 6, { width: COL_STATUS - 10, lineBreak: false });
+  doc.text('Detail', MARGIN + COL_CHECK + COL_STATUS + 6, y + 6, { width: COL_DETAIL - 10, lineBreak: false });
+  doc.save().strokeColor('#94a3b8').lineWidth(0.5).moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + CONTENT_W, y + HDR_H).stroke().restore();
+  y += HDR_H;
+  doc.y = y;
+
+  checks.forEach((c, idx) => {
+    const detail = String(c.detail || '');
+    doc.fontSize(8).font(F_REGULAR);
+    const checkH  = doc.heightOfString(String(c.name || ''), { width: COL_CHECK - 12 });
+    const detailH = doc.heightOfString(detail, { width: COL_DETAIL - 12 });
+    const rowH = Math.max(22, checkH + 10, detailH + 10);
+    ensureSpace(doc, rowH + 2);
+    y = doc.y;
+
+    const tag = c.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : c.status === 'WARN' ? { bg: C.warnBg, fg: C.warn } : { bg: C.failBg, fg: C.fail };
+    if (c.status === 'FAIL') doc.save().fillColor(C.failBg).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    else if (idx % 2 === 0) doc.save().fillColor('#fafafa').rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+
+    doc.fontSize(8).font(F_BOLD).fillColor(C.text).text(String(c.name || ''), MARGIN + 6, y + 5, { width: COL_CHECK - 12 });
+    const tagW = COL_STATUS - 12;
+    doc.save().fillColor(tag.bg).roundedRect(MARGIN + COL_CHECK + 6, y + 5, tagW, 14, 3).fill().restore();
+    doc.fontSize(7).font(F_BOLD).fillColor(tag.fg).text(c.status, MARGIN + COL_CHECK + 6, y + 8, { width: tagW, align: 'center', lineBreak: false });
+    doc.fontSize(8).font(F_REGULAR).fillColor(C.darkAlt).text(detail, MARGIN + COL_CHECK + COL_STATUS + 6, y + 5, { width: COL_DETAIL - 12 });
+
+    doc.save().strokeColor(C.border).lineWidth(0.3).moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
+    doc.y = y + rowH;
+  });
+  doc.moveDown(0.5);
+}
+
+// Per-user banner: status pill + the migration mapping as a 4-column table
+// (Source Email | Source Location | Dest Email | Dest Location).
+function drawContentUserHeader(doc, idx, u) {
+  const m = u.mapping || { sourceEmail: u.sourceEmail, sourceLocation: u.sourcePath, destEmail: u.destinationEmail, destLocation: u.destinationPath };
+  const st = u.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : u.status === 'FAIL' ? { bg: C.failBg, fg: C.fail } : { bg: C.warnBg, fg: C.warn };
+
+  // Status line
+  ensureSpace(doc, 18);
+  let y = doc.y;
+  const pillW = 70;
+  doc.fontSize(9).font(F_BOLD).fillColor(C.text).text(`User ${idx}`, MARGIN, y + 2, { width: 120, lineBreak: false });
+  doc.save().fillColor(st.bg).roundedRect(MARGIN + CONTENT_W - pillW, y, pillW, 15, 3).fill().restore();
+  doc.fontSize(7.5).font(F_BOLD).fillColor(st.fg).text(`${u.status} · ${u.summary?.split(' ')[0] || ''}`, MARGIN + CONTENT_W - pillW, y + 4, { width: pillW, align: 'center', lineBreak: false });
+  doc.y = y + 18;
+
+  // Mapping table
+  const cols = [
+    { k: 'sourceEmail', label: 'Source Email', w: 0.24 },
+    { k: 'sourceLocation', label: 'Source Location', w: 0.22 },
+    { k: 'destEmail', label: 'Dest Email', w: 0.24 },
+    { k: 'destLocation', label: 'Dest Location', w: 0.30 },
+  ];
+  const HDR_H = 16;
+  ensureSpace(doc, HDR_H + 28);
+  y = doc.y;
+  doc.save().fillColor('#eef2ff').rect(MARGIN, y, CONTENT_W, HDR_H).fill().restore();
+  let cx = MARGIN;
+  doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+  for (const c of cols) { const w = CONTENT_W * c.w; doc.text(c.label, cx + 5, y + 4, { width: w - 8, lineBreak: false }); cx += w; }
+  y += HDR_H;
+  // value row height
+  doc.fontSize(7.5).font(F_REGULAR);
+  let rowH = 16;
+  for (const c of cols) { const w = CONTENT_W * c.w; rowH = Math.max(rowH, doc.heightOfString(String(m[c.k] || '—'), { width: w - 8 }) + 6); }
+  ensureSpace(doc, rowH + 8);
+  cx = MARGIN;
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, y, CONTENT_W, rowH).stroke().restore();
+  for (const c of cols) {
+    const w = CONTENT_W * c.w;
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text).text(String(m[c.k] || '—'), cx + 5, y + 3, { width: w - 8 });
+    cx += w;
+  }
+  doc.y = y + rowH + 8;
+}
+
+// Build an ASCII folder tree (├──/└──/│) from a list of relative folder paths.
+function buildAsciiTree(rootName, relPaths) {
+  const root = {};
+  for (const p of relPaths || []) {
+    let node = root;
+    for (const seg of p.split('/').filter(Boolean)) { node[seg] = node[seg] || {}; node = node[seg]; }
+  }
+  const lines = [rootName];
+  const walk = (node, prefix) => {
+    const keys = Object.keys(node).sort((a, b) => a.localeCompare(b));
+    keys.forEach((k, i) => {
+      const last = i === keys.length - 1;
+      lines.push(`${prefix}${last ? '└── ' : '├── '}${k}`);
+      walk(node[k], prefix + (last ? '    ' : '│   '));
+    });
+  };
+  walk(root, '');
+  return lines;
+}
+
+function drawTreeBlock(doc, title, lines) {
+  ensureSpace(doc, 26);
+  doc.fontSize(9).font(F_BOLD).fillColor(C.text).text(title, MARGIN, doc.y);
+  doc.moveDown(0.15);
+  doc.fontSize(7.5).font(F_MONO).fillColor(C.darkAlt);
+  for (const ln of lines) {
+    ensureSpace(doc, 9.5);
+    doc.text(ln, MARGIN + 4, doc.y, { width: CONTENT_W - 8, lineBreak: false });
+  }
+  doc.moveDown(0.5);
+}
+
+// Folder-only structure validation: 6 metric cells + PASS/FAIL + the two ASCII trees + diffs.
+function drawFolderStructureSection(doc, fs) {
+  const cells = [
+    ['Source Folders', fs.totalSource, false],
+    ['Dest Folders', fs.totalDest, false],
+    ['Matched', fs.matched, false],
+    ['Missing', fs.missing.length, fs.missing.length > 0],
+    ['Extra', fs.extra.length, fs.extra.length > 0],
+    ['Misplaced', fs.misplaced.length, fs.misplaced.length > 0],
+  ];
+  const gap = 6, n = cells.length;
+  const cw = (CONTENT_W - gap * (n - 1)) / n;
+  const ch = 36;
+  ensureSpace(doc, ch + 26);
+  const y0 = doc.y;
+  cells.forEach(([label, value, bad], i) => {
+    const cx = MARGIN + i * (cw + gap);
+    doc.save().fillColor(bad ? C.failBg : '#f8fafc').roundedRect(cx, y0, cw, ch, 4).fill().restore();
+    doc.save().strokeColor(bad ? C.failBorder : C.border).lineWidth(0.5).roundedRect(cx, y0, cw, ch, 4).stroke().restore();
+    doc.fontSize(14).font(F_BOLD).fillColor(bad ? C.fail : C.text).text(String(value), cx + 2, y0 + 5, { width: cw - 4, align: 'center' });
+    doc.fontSize(6).font(F_REGULAR).fillColor(C.subtle).text(label, cx + 2, y0 + ch - 11, { width: cw - 4, align: 'center', lineBreak: false });
+  });
+  doc.y = y0 + ch + 8;
+
+  ensureSpace(doc, 18);
+  const st = fs.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : { bg: C.failBg, fg: C.fail };
+  const sy = doc.y;
+  doc.save().fillColor(st.bg).roundedRect(MARGIN, sy, 150, 16, 3).fill().restore();
+  doc.fontSize(8.5).font(F_BOLD).fillColor(st.fg).text(`Structure: ${fs.status}${fs.status === 'PASS' ? ' — identical' : ''}`, MARGIN, sy + 4, { width: 150, align: 'center', lineBreak: false });
+  doc.y = sy + 22;
+
+  drawTreeBlock(doc, 'Box (Source)', buildAsciiTree(fs.boxRootName, fs.boxFolderPaths));
+  drawTreeBlock(doc, 'SharePoint (Destination)', buildAsciiTree(fs.spRootName, fs.spFolderPaths));
+
+  if (fs.status !== 'PASS') {
+    const diffs = [];
+    fs.missing.forEach((p) => diffs.push(['MISSING', p]));
+    fs.extra.forEach((p) => diffs.push(['EXTRA', p]));
+    fs.misplaced.forEach((m) => diffs.push(['MISPLACED', `${m.source}  →  ${m.dest}`]));
+    if (diffs.length) {
+      ensureSpace(doc, 16);
+      doc.fontSize(8.5).font(F_BOLD).fillColor(C.text).text('Differences (full paths)', MARGIN, doc.y);
+      doc.moveDown(0.2);
+      for (const [k, p] of diffs) {
+        ensureSpace(doc, 11);
+        const yy = doc.y;
+        doc.fontSize(7.5).font(F_BOLD).fillColor(C.fail).text(k, MARGIN + 4, yy, { width: 64, lineBreak: false });
+        doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt).text(p, MARGIN + 72, yy, { width: CONTENT_W - 76 });
+        doc.y = yy + Math.max(10, doc.heightOfString(p, { width: CONTENT_W - 76 }));
+      }
+      doc.moveDown(0.4);
+    }
+  }
+}
+
+// Full folder structure with per-item validation — indented tree of folders/files by name,
+// each with a Found/Missing tag, its permission rows (Box role → mapped user → SP role), and
+// version/timestamp notes.
+function drawContentItemTree(doc, items, opts = {}) {
+  const MAX = opts.max || 250;
+  const shown = items.slice(0, MAX);
+  for (const it of shown) {
+    const indent = Math.min(it.depth || 0, 8) * 12;
+    const x = MARGIN + indent;
+    const tagW = 50;
+    const availW = CONTENT_W - indent - tagW - 8;
+    const label = `${it.type === 'folder' ? '📁' : '📄'} ${it.name}${it.spName && it.spName !== it.name ? `  →  ${it.spName}` : ''}`;
+    doc.fontSize(8).font(F_BOLD);
+    const nameH = doc.heightOfString(label, { width: availW });
+    const rowH = Math.max(14, nameH + 3);
+    ensureSpace(doc, rowH + 2);
+    const y = doc.y;
+    const tag = it.found ? { bg: C.passBg, fg: C.pass, txt: 'Found' } : { bg: C.failBg, fg: C.fail, txt: 'Missing' };
+    doc.fontSize(8).font(F_BOLD).fillColor(it.found ? C.text : C.fail).text(label, x, y + 1, { width: availW });
+    doc.save().fillColor(tag.bg).roundedRect(MARGIN + CONTENT_W - tagW, y + 1, tagW, 12, 2).fill().restore();
+    doc.fontSize(6.5).font(F_BOLD).fillColor(tag.fg).text(tag.txt, MARGIN + CONTENT_W - tagW, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
+    doc.y = y + rowH;
+
+    for (const p of (it.permissions || [])) {
+      const pStr = `↳ ${p.user}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: Box "${p.boxRole}" → SP ${p.spRoles && p.spRoles.length ? p.spRoles.join('/') : 'no access'} ${p.match ? '✓' : '✗'}`;
+      const pw = CONTENT_W - indent - 14;
+      ensureSpace(doc, 11);
+      const py = doc.y;
+      doc.fontSize(7).font(F_REGULAR).fillColor(p.match ? C.subtle : C.fail).text(pStr, x + 14, py, { width: pw });
+      doc.y = py + Math.max(9, doc.heightOfString(pStr, { width: pw }));
+    }
+    const extras = [];
+    if (it.versions) extras.push(`versions Box ${it.versions.box} → SP ${it.versions.sp}${it.versions.sp < it.versions.box ? ' ✗' : ' ✓'}`);
+    if (it.timestamps) extras.push(`modified ${it.timestamps.match ? 'preserved ✓' : 'changed ✗'}`);
+    if (it.author) extras.push(`modifiedBy ${it.author.spModBy || '?'} ${it.author.match ? '✓' : '✗'}`);
+    if (it.comments) extras.push(`${it.comments} comment(s) (Box)`);
+    if (it.sharedLink) extras.push(`shared link ${it.sharedLink.onDest ? 'present ✓' : 'not on dest ✗'}`);
+    if (extras.length) {
+      ensureSpace(doc, 10);
+      const ey = doc.y;
+      doc.fontSize(6.8).font(F_REGULAR).fillColor(C.subtle).text(`↳ ${extras.join('  ·  ')}`, x + 14, ey, { width: CONTENT_W - indent - 14 });
+      doc.y = ey + 9;
+    }
+  }
+  if (items.length > MAX) {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle).text(`… ${items.length - MAX} more item(s) not shown`, MARGIN, doc.y + 2);
+    doc.moveDown(0.5);
+  }
+}
+
+function generateContentValidationPdf(execution, stream) {
+  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
+  registerUnicodeFonts(doc);
+  doc.pipe(stream);
+
+  const result  = execution.result || {};
+  const v       = result.validationSummary || {};
+  const checks  = Array.isArray(v.checks) ? v.checks : [];
+  const perUser = Array.isArray(v.perUser) ? v.perUser : [];
+  const context = execution.context || {};
+  // Global (non-user) checks: site access, CloudFuze status, skipped pairs.
+  const globalChecks = checks.filter((c) => !/^\[/.test(String(c.name || '')));
+
+  drawPageHeader(doc, execution, { overallStatus: v.status || 'N/A' }, context, result);
+  drawMigrationJobSection(doc, context, result);
+
+  drawSectionHeader(doc, '1 — Validation Summary');
+  if (checks.length === 0) {
+    doc.fontSize(9).font(F_REGULAR).fillColor(C.subtle)
+      .text('No content validation checks are available for this execution.', MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.6);
+    drawFooter(doc, context);
+    doc.end();
+    return;
+  }
+
+  drawContentSummaryCards(doc, checks);
+
+  if (perUser.length > 0) {
+    // Migration / site-level checks first, then one section per migrated user.
+    if (globalChecks.length > 0) {
+      drawSectionHeader(doc, '2 — Migration & Site Checks');
+      drawContentChecksTable(doc, globalChecks);
+    }
+    perUser.forEach((u, i) => {
+      drawSectionHeader(doc, `${globalChecks.length > 0 ? i + 3 : i + 2} — User ${i + 1}: ${u.sourceEmail || ''}`);
+      drawContentUserHeader(doc, i + 1, u);
+      drawContentChecksTable(doc, u.checks || []);
+      if (u.folderStructure) {
+        drawSectionHeader(doc, `Folder structure validation — ${u.folderStructure.status}`);
+        drawFolderStructureSection(doc, u.folderStructure);
+      }
+      if ((u.items || []).length > 0) {
+        drawSectionHeader(doc, `Per-item validation (${u.items.length} items — files, permissions, versions)`);
+        drawContentItemTree(doc, u.items);
+      }
+    });
+  } else {
+    // Legacy single-folder report (no per-user breakdown).
+    drawSectionHeader(doc, '2 — Validation Checks (location, name, permissions, versions, timestamps, metadata, comments, shared links)');
+    drawContentChecksTable(doc, checks);
+  }
+
+  drawFooter(doc, context);
+  doc.end();
+}
+
+module.exports = { generateValidationPdf, generateContentValidationPdf };

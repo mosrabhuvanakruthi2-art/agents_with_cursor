@@ -55,9 +55,28 @@ class MigrationContext {
     destinationPath = '',
     /** Folder NAME the test-data agent should create in the source (from the UI). Deduped (" 1") on conflict. */
     sourceFolderName = '',
+    /**
+     * Per-user folder mapping from the UI table (one entry per selected user):
+     * [{ sourceEmail, destinationEmail, sourceFolderName, destinationPath }].
+     * Drives per-user seeding; blank fields fall back to the shared base (sourceFolderName/destinationPath).
+     */
+    contentUserFolders = [],
+    /**
+     * Multi-user content migration: one transfer unit per selected Map-Users pair.
+     * [{ sourceEmail, destinationEmail, sourcePath, sourceRootId, destinationPath }]
+     * Populated by the orchestrator after per-user seeding; consumed by migrationClient
+     * to build one CloudFuze workspace pair per user. Empty = single-folder (legacy) flow.
+     */
+    userFolderMappings = [],
+    /** When true (content): skip the test-data seeding agent and migrate the EXISTING folder(s)
+     *  at the given source path(s) — the agent resolves each path to its Box folder id. */
+    useExistingSource = false,
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
+    this.userFolderMappings = Array.isArray(userFolderMappings) ? userFolderMappings : [];
+    this.contentUserFolders = Array.isArray(contentUserFolders) ? contentUserFolders : [];
+    this.useExistingSource = Boolean(useExistingSource);
 
     const mt = String(migrationType || 'FULL').toUpperCase();
     this.migrationType = ['FULL', 'DELTA'].includes(mt) ? mt : 'FULL';

@@ -466,6 +466,79 @@ const CONTENT_PERMS = [
   ['workbookLinks', 'Workbook Links'],
   ['comments', 'Comments'],
 ];
+// Per-user folder mapping table for multi-user content migration. One row per selected user
+// (from Map Users). Each row's source folder / destination path defaults to the shared base
+// fields; editing a row overrides just that user. CSV import matches by source email.
+function PerUserFolderTable({ wiz, destDefault }) {
+  const pairs = wiz.selectedPairs || [];
+  if (pairs.length === 0) {
+    return (
+      <p className="sm:col-span-2 text-xs text-amber-600">
+        No users selected on the Map Users step — map at least one user to migrate.
+      </p>
+    );
+  }
+  const baseName = wiz.contentPaths.sourceFolderName || 'Agent Box Data';
+  const onCsv = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const n = wiz.importContentUserFoldersCsv(text);
+    e.target.value = '';
+    alert(`Imported folder overrides for ${n} user(s).`);
+  };
+  return (
+    <div className="sm:col-span-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-gray-700">Per-user folders ({pairs.length})</span>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium text-indigo-600 hover:text-indigo-700 cursor-pointer">
+            Import CSV
+            <input type="file" accept=".csv,text/csv" onChange={onCsv} className="hidden" />
+          </label>
+          <button type="button" onClick={() => wiz.clearContentUserFolders()}
+            className="text-xs font-medium text-gray-500 hover:text-gray-700">Reset to base</button>
+        </div>
+      </div>
+      <div className="overflow-x-auto border border-gray-200 rounded-lg">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 text-gray-600">
+            <tr>
+              <th className="text-left font-semibold px-3 py-2">Source user</th>
+              <th className="text-left font-semibold px-3 py-2">Source folder</th>
+              <th className="text-left font-semibold px-3 py-2">Destination user</th>
+              <th className="text-left font-semibold px-3 py-2">Destination path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.map((p) => {
+              const email = (p.source.email || '').toLowerCase();
+              const ov = wiz.contentUserFolders[email] || {};
+              return (
+                <tr key={email} className="border-t border-gray-100">
+                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.source.email}</td>
+                  <td className="px-2 py-1.5">
+                    <input value={ov.sourceFolderName || ''} onChange={(e) => wiz.setContentUserFolder(email, 'sourceFolderName', e.target.value)}
+                      placeholder={baseName} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.destination.email}</td>
+                  <td className="px-2 py-1.5">
+                    <input value={ov.destinationPath || ''} onChange={(e) => wiz.setContentUserFolder(email, 'destinationPath', e.target.value)}
+                      placeholder={destDefault} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-400 mt-1.5">
+        CSV columns: <span className="font-mono">Source User, Source Folder, Destination User, Destination Path</span> (matched by source email).
+      </p>
+    </div>
+  );
+}
+
 function ContentOptions({ wiz }) {
   const o = wiz.contentOptions;
   const allOn = CONTENT_PERMS.every(([k]) => o[k]);
@@ -479,19 +552,29 @@ function ContentOptions({ wiz }) {
     <div className="border border-gray-200 rounded-xl overflow-hidden mb-5">
       <div className="bg-indigo-600 text-white px-4 py-2.5 text-sm font-semibold">Content Mapping</div>
       <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Field label="Source folder name (created in source)">
+        <label className="sm:col-span-2 flex items-center gap-2.5 text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 cursor-pointer">
+          <input type="checkbox" checked={wiz.useExistingSource} onChange={(e) => wiz.setUseExistingSource(e.target.checked)} className="w-4 h-4 text-indigo-600 rounded" />
+          <span><strong>Use existing source folder</strong> — skip data creation and migrate the folder(s) that already exist at the paths below.</span>
+        </label>
+        <Field label={wiz.useExistingSource ? 'Existing source folder path' : 'Source folder base name'}>
           <input value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
-            placeholder="e.g. NEWDATA (default: Agent Box Data)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+            placeholder={wiz.useExistingSource ? 'e.g. /NEWDATA or /Projects/Q1' : 'e.g. NEWDATA (default: Agent Box Data)'} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
         </Field>
         <Field label="Destination path">
           <input value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
             placeholder={`default ${destDefault}`} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
         </Field>
         <p className="sm:col-span-2 text-xs text-gray-500">
-          The test-data agent creates this folder in the source and migrates it. If the name already exists it appends “ 1”
-          (e.g. <span className="font-mono">NEWDATA 1</span>) and the path CSV is updated with the actual created name.
-          Leave Destination blank to use the cloud default ({destDefault}). CSV: <span className="font-mono">Source Cloud, Source Path, Destination Cloud, Destination Path</span>.
+          {wiz.useExistingSource ? (
+            <><strong>Using existing folders.</strong> The agent does NOT create data — it resolves each user row's path to the
+            existing Box folder and migrates it. Per-user paths in the table override the base path above.</>
+          ) : (
+            <><strong>Per-user mapping below.</strong> The two fields above are <strong>bulk defaults</strong> — applied to any user
+            row left blank. The agent seeds one dataset per mapped user and migrates each under its Destination path as its own
+            sub-folder. If a name already exists it appends “ 1”. Leave a Destination blank for the cloud default ({destDefault}).</>
+          )}
         </p>
+        <PerUserFolderTable wiz={wiz} destDefault={destDefault} />
       </div>
     </div>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -546,26 +629,117 @@ function ContentOptions({ wiz }) {
 // ── Step 6: Summary ─────────────────────────────────────────────────────────────
 export function StepSummary({ wiz, onRun, running }) {
   const pairs = wiz.selectedPairs;
+  const isContent = wiz.domain === 'content';
+  const o = wiz.contentOptions || {};
+  const enabledPerms = CONTENT_PERMS.filter(([k]) => o[k]).map(([, label]) => label);
+  const baseFolder = wiz.contentPaths.sourceFolderName || 'Agent Box Data';
+  const baseDest = wiz.contentPaths.destinationPath || '(cloud default)';
+
   return (
     <div className="space-y-5">
-      <p className="text-sm text-gray-500">Review your selections, then run the migration QA flow.</p>
+      <p className="text-sm text-gray-500">Review everything you selected, then run the migration QA flow.</p>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SummaryCard title="Source" lines={[`${provMeta(wiz.srcProvider).short}`, wiz.srcEmail || '—']} />
         <SummaryCard title="Destination" lines={[`${provMeta(wiz.dstProvider).short}`, wiz.dstEmail || '—']} />
-        <SummaryCard title="User pairs" lines={[`${pairs.length} selected`, pairs.length === 1 ? `${pairs[0].source.email} → ${pairs[0].destination.email}` : 'bulk run']} />
-        <SummaryCard title="Options" lines={[`Test: ${wiz.testType}`, `Type: ${wiz.migrationType === 'FULL' ? 'One Time' : 'Delta'}`]} />
-        <SummaryCard title="Migration server" lines={[wiz.migrationServerUrl || '—', wiz.migrationServerEmail || '(.env credentials)']} />
+        <SummaryCard title="Migration server" lines={[wiz.migrationServerUrl || '—', wiz.migrationServerEmail || '—']} />
+        <SummaryCard title="Run type" lines={[`Test: ${wiz.testType}`, `Migration: ${wiz.migrationType === 'FULL' ? 'One Time' : 'Delta'}`]} />
       </div>
-      {pairs.length > 1 && (
-        <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 max-h-48 overflow-y-auto text-sm">
-          {pairs.map((p, i) => <div key={i} className="px-4 py-2 truncate">{p.source.email} <span className="text-gray-400">→</span> {p.destination.email}</div>)}
-        </div>
+
+      {/* Permission / user mapping — ALL mapped users (applies to every collaborator on the
+          migrated content, not just the users selected for migration). */}
+      {(() => {
+        const allMappings = wiz.mappings || [];
+        const selected = new Set(pairs.map((p) => (p.source.email || '').toLowerCase()));
+        return (
+          <SummarySection title={`Permission Mapping · ${allMappings.length} user${allMappings.length === 1 ? '' : 's'}`}
+            subtitle="Applies to EVERY collaborator on the migrated content (not only the selected users). Each source user's permissions are re-granted to the mapped destination user. ★ = selected for content migration.">
+            {allMappings.length === 0
+              ? <p className="px-4 py-3 text-xs text-amber-600">No user mapping yet — fetch/map users in the Map Users step.</p>
+              : (
+                <div className="divide-y divide-gray-100 max-h-56 overflow-y-auto">
+                  {allMappings.map((m, i) => {
+                    const isSel = selected.has((m.source.email || '').toLowerCase());
+                    return (
+                      <div key={i} className="px-4 py-2 flex items-center gap-2 text-sm">
+                        <span className="w-3 text-amber-500">{isSel ? '★' : ''}</span>
+                        <span className="font-mono text-gray-700 truncate flex-1">{m.source.email}</span>
+                        <span className="text-indigo-400">→</span>
+                        <span className="font-mono text-gray-700 truncate flex-1 text-right">{m.destination.email}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+          </SummarySection>
+        );
+      })()}
+
+      {isContent && (
+        <>
+          {/* Per-user folder mapping */}
+          <SummarySection title="Content Mapping · per-user folders"
+            subtitle={`Base folder "${baseFolder}", base destination "${baseDest}" — overrides shown per user.`}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr><th className="text-left px-4 py-2 font-semibold">Source user</th><th className="text-left px-2 py-2 font-semibold">Source folder</th><th className="text-left px-2 py-2 font-semibold">Destination path</th></tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {pairs.map((p, i) => {
+                    const ov = wiz.contentUserFolders[(p.source.email || '').toLowerCase()] || {};
+                    return (
+                      <tr key={i}>
+                        <td className="px-4 py-1.5 font-mono text-gray-700">{p.source.email}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.sourceFolderName || baseFolder}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.destinationPath || baseDest}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </SummarySection>
+
+          {/* Migration options (permission flags) */}
+          <SummarySection title={`Migration Options · ${enabledPerms.length} enabled`}>
+            <div className="px-4 py-3 flex flex-wrap gap-1.5">
+              {enabledPerms.length === 0
+                ? <span className="text-xs text-gray-400">None selected</span>
+                : enabledPerms.map((label) => (
+                    <span key={label} className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{label}</span>
+                  ))}
+            </div>
+          </SummarySection>
+
+          {/* Job options */}
+          <SummarySection title="Job Options">
+            <div className="px-4 py-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+              <div><span className="text-gray-500">Job name: </span><span className="font-mono">{wiz.jobOptions.jobName || '(auto)'}</span></div>
+              <div><span className="text-gray-500">Replace special chars: </span><span className="font-mono">{wiz.jobOptions.replaceSpecialChar || '-'}</span></div>
+              <div><span className="text-gray-500">Exclude file types: </span><span className="font-mono">{wiz.jobOptions.excludeFileTypes || '(none)'}</span></div>
+            </div>
+          </SummarySection>
+        </>
       )}
+
       <button type="button" onClick={onRun} disabled={running || pairs.length === 0}
         className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50">
-        {running ? 'Starting…' : `Run Migration · ${wiz.testType}${pairs.length > 1 ? ` (${pairs.length} pairs)` : ''}`}
+        {running ? 'Starting…' : `Run Migration · ${wiz.testType}${pairs.length > 1 ? ` (${pairs.length} users)` : ''}`}
       </button>
-      {pairs.length === 0 && <p className="text-xs text-amber-600">Select at least one user pair in step 3.</p>}
+      {pairs.length === 0 && <p className="text-xs text-amber-600">Select at least one user pair in the Map Users step.</p>}
+    </div>
+  );
+}
+
+function SummarySection({ title, subtitle, children }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-gray-100">
+        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">{title}</p>
+        {subtitle && <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>}
+      </div>
+      {children}
     </div>
   );
 }
