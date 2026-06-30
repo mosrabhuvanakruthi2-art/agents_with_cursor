@@ -29,12 +29,32 @@ export default function ResultsView({ exec }) {
             <p className="text-sm text-gray-600 mb-3">
               This run didn't complete the validation step — it likely failed during migration or was cancelled before validation ran.
             </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-              <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
-              <Mini label="Status" value={<StatusBadge status={exec.status} />} />
-              <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />
-              <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
-            </div>
+            {(() => {
+              const mappings = Array.isArray(ctx.userEmailMappings) && ctx.userEmailMappings.length > 1
+                ? ctx.userEmailMappings : null;
+              return (
+                <>
+                  <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
+                    <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
+                    <Mini label="Status" value={<StatusBadge status={exec.status} />} />
+                    {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
+                    <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
+                  </div>
+                  {mappings && (
+                    <div className="bg-gray-50 rounded-lg p-3 mt-3">
+                      <p className="text-xs text-gray-500 mb-2">Direction · {mappings.length} pairs</p>
+                      <div className="space-y-1">
+                        {mappings.map((p, i) => (
+                          <p key={i} className="text-xs text-gray-800">
+                            {p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             {exec.error && (
               <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3">
                 <p className="text-xs font-semibold text-red-700 mb-1">Error</p>
@@ -50,6 +70,8 @@ export default function ResultsView({ exec }) {
 
   return (
     <div className="space-y-6">
+      {/* Run info — stays visible after validation completes; shows all pairs for bulk runs */}
+      <RunInfoCard exec={exec} ctx={ctx} />
       {/* Overall status */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center gap-4 mb-2">
@@ -197,6 +219,38 @@ export default function ResultsView({ exec }) {
                 { key: 'isAllDay', label: 'All Day', render: (v) => v ? 'Yes' : 'No' },
               ]} />
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Run metadata card — Execution ID, Status, Created, and the Direction (single pair) or a full
+ * "Direction · N pairs" list (bulk runs). Rendered both in the empty state and above the validation
+ * results so the pair context (esp. all bulk pairs) stays visible after validation completes.
+ */
+function RunInfoCard({ exec, ctx }) {
+  const mappings = Array.isArray(ctx.userEmailMappings) && ctx.userEmailMappings.length > 1
+    ? ctx.userEmailMappings : null;
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4">
+      <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
+        <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
+        <Mini label="Status" value={<StatusBadge status={exec.status} />} />
+        {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
+        <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
+      </div>
+      {mappings && (
+        <div className="bg-gray-50 rounded-lg p-3 mt-3">
+          <p className="text-xs text-gray-500 mb-2">Direction · {mappings.length} pairs</p>
+          <div className="space-y-1">
+            {mappings.map((p, i) => (
+              <p key={i} className="text-xs text-gray-800">
+                {p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}
+              </p>
+            ))}
+          </div>
         </div>
       )}
     </div>

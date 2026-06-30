@@ -14,16 +14,28 @@ const {
 } = require('../../utils/gmailTestCasesExcel');
 
 /**
- * When domain users are unavailable (empty GOOGLE_ACCOUNTS, tenant3 with no Admin SDK results, etc.),
- * fall back to these external addresses so inbound/outbound mail is NOT self-addressed.
- * Inbox mail should appear to come FROM another person; Sent mail should go TO another person.
+ * Per-domain static user lists — checked BEFORE Admin SDK / GOOGLE_ACCOUNTS.
+ * internal: same-domain users (used for To/CC/BCC and inbound mail)
+ * external: cross-domain senders (added to inbound senders for variety)
+ */
+const DOMAIN_KNOWN_USERS = {
+  'migrationn.com': {
+    internal: ['alex@migrationn.com', 'ben@migrationn.com', 'dan@migrationn.com', 'ron@migrationn.com', 'blue1@migrationn.com', 'blue2@migrationn.com', 'blue3@migrationn.com'],
+    external: ['mia@cloudfuze.com', 'sophia@cloudfuze.com', 'oliver@cloudfuze.com'],
+  },
+  'storefuze.com': {
+    internal: ['collins-gd@storefuze.com', 'davidgd@storefuze.com', 'rebel-gd@storefuze.com', 'hyma-gd@storefuze.com', 'guru-gd@storefuze.com', 'dev1-gd@storefuze.com', 'dev2-gd@storefuze.com', 'presales1-gd@storefuze.com', 'presales2-gd@storefuze.com'],
+    external: ['mia@cloudfuze.com', 'sophia@cloudfuze.com', 'oliver@cloudfuze.com'],
+  },
+};
+
+/**
+ * Generic fallback when no domain map and no Admin SDK / GOOGLE_ACCOUNTS users are available.
  */
 const FALLBACK_EXTERNAL_CORRESPONDENTS = [
-  'alice.johnson@external-qa.com',
-  'bob.smith@testdomain.net',
-  'carol.white@external-test.com',
-  'david.lee@qamail.io',
-  'eve.chen@sample-domain.org',
+  'mia@cloudfuze.com',
+  'sophia@cloudfuze.com',
+  'oliver@cloudfuze.com',
 ];
 
 const SAMPLE_ATTACHMENT_DATA = Buffer.from('Sample attachment content for QA testing').toString('base64');
@@ -128,7 +140,25 @@ async function resolveCustomLabelIds(sourceEmail, labelIds) {
  */
 async function reconcileInsertedMessageLabels(sourceEmail, emailDef, messageId, log) {
   if (!messageId) return;
-  if (requestedTrashOrSpam(emailDef.labelIds)) return;
+
+  if (requestedTrashOrSpam(emailDef.labelIds)) {
+    // A Spam/Trash test mail must live ONLY in Spam/Trash. users.messages.insert auto-adds SENT
+    // (and sometimes INBOX) for outbound mail, so e.g. "Spam folder" became SENT|SPAM — which the
+    // validator then flagged as a folder mismatch vs the destination (SPAM only). Strip the
+    // auto-added SENT/INBOX unless the def explicitly asked for SENT.
+    const wantsSent = (emailDef.labelIds || []).some((l) => String(l).toUpperCase() === 'SENT');
+    if (!wantsSent) {
+      try {
+        await gmailClient.modifyMessageLabels(sourceEmail, 'me', messageId, [], ['SENT', 'INBOX']);
+      } catch (e) {
+        // "Invalid label: SENT" means it was never attached — safe to ignore
+        if (!e.message?.includes('Invalid label')) {
+          log.warn(`Gmail seed: could not strip SENT/INBOX from spam/trash message ${messageId}: ${e.message}`);
+        }
+      }
+    }
+    return;
+  }
 
   if (emailDef.mailDirection === 'incoming') {
     try {
@@ -525,7 +555,18 @@ class GmailTestDataAgent extends BaseAgent {
 
     let correspondentEmail, ccEmail, bccEmail, effectiveInboundSenders;
 
-    if (isDWDTenant) {
+    // Static domain map takes priority over Admin SDK and GOOGLE_ACCOUNTS env config.
+    const staticMap = DOMAIN_KNOWN_USERS[sourceDomain];
+    if (staticMap) {
+      const internal = staticMap.internal.filter((e) => e.toLowerCase() !== sourceEmail.toLowerCase());
+      const external = staticMap.external || [];
+      const all = [...internal, ...external];
+      correspondentEmail      = all[0]  || FALLBACK_EXTERNAL_CORRESPONDENTS[0];
+      ccEmail                 = all[1]  || FALLBACK_EXTERNAL_CORRESPONDENTS[1];
+      bccEmail                = all[2]  || FALLBACK_EXTERNAL_CORRESPONDENTS[2];
+      effectiveInboundSenders = all.length > 0 ? all : FALLBACK_EXTERNAL_CORRESPONDENTS;
+      log.info(`Using static domain map for ${sourceDomain}: ${internal.length} internal + ${external.length} external users`);
+    } else if (isDWDTenant) {
       const tenantLabel = isTenant2 ? 'Tenant 2' : 'Tenant 3';
       const knownUsersEnvKey = isTenant2 ? 'GOOGLE_TENANT_2_KNOWN_USERS' : 'GOOGLE_TENANT_3_KNOWN_USERS';
       let domainUserEmails = [];
@@ -672,7 +713,7 @@ class GmailTestDataAgent extends BaseAgent {
     const snoozeHit = labels.find((l) => /snooz/i.test(l.name || ''));
     if (snoozeHit) log.info(`E2E: Snooze label "${snoozeHit.name}" (${snoozeHit.id})`);
     const snoozeId = snoozeHit?.id || null;
-    if (!snoozeId) log.warn('E2E: No "Snoozed" label in mailbox — skipping snooze sample');
+    if (!snoozeId) log.info('E2E: No "Snoozed" label in mailbox — skipping snooze sample (label only exists after manual snooze in Gmail UI)');
     return { qaIds, snoozeId };
   }
 
@@ -1801,11 +1842,12 @@ class GmailTestDataAgent extends BaseAgent {
       if (cancelled()) return;
       if (s.dir === 'draft') {
         try {
-          await gmailClient.createDraft(sourceEmail, {
-            to: toEmail, subject: s.subject,
+          const rawDraft = gmailClient.buildRawMessage({
+            to: toEmail, from: sourceEmail, subject: s.subject,
             textBody: `Draft with ${s.filename} attachment for folder-level attachment migration QA.`,
             attachments: [{ filename: s.filename, mimeType: s.mime, data: s.data }],
           });
+          await gmailClient.createDraft(sourceEmail, 'me', rawDraft);
           summary.emailsCreated++;
           log.info(`✓ Extended E2E: "${s.subject}"`);
         } catch (err) { log.warn(`Draft attachment failed: ${err.message}`); }

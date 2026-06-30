@@ -55,7 +55,7 @@ let cachedUserId = null;
 /** When true, appJwt came from /mail/login and IS already the Mail JWT — skip /mail/register */
 let appJwtIsMailJwt = false;
 /** Last observed job details (populated by pollReports) — cleared on each triggerMigration */
-let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+let lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
 
 /**
  * Optional runtime credentials injected by MigrationAgent from the form submission.
@@ -105,7 +105,7 @@ function clearRuntimeConfig() {
   appJwt         = null;
   mailJwt        = null;
   cachedUserId   = null;
-  lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+  lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
 }
 
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
@@ -830,7 +830,7 @@ async function triggerMigration(context) {
   const ownerEmailId = resolveEmail() || context.sourceEmail;
 
   // Reset job details so getLastJobDetails() reflects this run only
-  lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+  lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
 
   const fromCloud = (context.sourceCloudName || 'GMAIL').toUpperCase();
   const toCloud   = (context.destCloudName   || 'OUTLOOK').toUpperCase();
@@ -842,30 +842,34 @@ async function triggerMigration(context) {
   const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   const jobName  = `OneTime-${fromCloud}-${toCloud}-${datePart}-${timePart}`;
 
-  const payload = [
-    {
-      fromCloudName:   fromCloud,
-      toCloudName:     toCloud,
-      fromMailId:      context.sourceEmail,
-      toMailId:        context.destinationEmail,
-      ownerEmailId,
-      fromRootId:      '/',
-      toRootId:        '/',
-      deltaMigration:  context.migrationType === 'DELTA',
-      jobName,
-      onlineMove:      false,
-      contacts:        Boolean(context.includeContacts),
-      drawings:        false,
-      backup:          true, // Archive Mailbox (Migration Options) — enabled for both O→G and G→O
-      orphanWorkSpace: Boolean(context.migrateOrphanedLabels), // Migrate Orphaned Labels toggle
-      archivedMailBox: false, // Migrate As In-Place Archive (Job Options) — different feature, keep false
-      teamFolder:      false,
-      cronExpression:  '1H0M',
-      disableGroups:   false,
-      processedCount:  null,
-      inProgressCount: null,
-    },
-  ];
+  // Build one workspace entry per mapped pair so all users land in one job.
+  // Falls back to the single context.sourceEmail/destinationEmail for single-user runs.
+  const pairsToMigrate = (Array.isArray(context.userEmailMappings) && context.userEmailMappings.length > 0)
+    ? context.userEmailMappings
+    : [{ sourceEmail: context.sourceEmail, destinationEmail: context.destinationEmail }];
+
+  const payload = pairsToMigrate.map((pair) => ({
+    fromCloudName:   fromCloud,
+    toCloudName:     toCloud,
+    fromMailId:      pair.sourceEmail || context.sourceEmail,
+    toMailId:        pair.destinationEmail || context.destinationEmail,
+    ownerEmailId,
+    fromRootId:      '/',
+    toRootId:        '/',
+    deltaMigration:  context.migrationType === 'DELTA',
+    jobName,
+    onlineMove:      false,
+    contacts:        Boolean(context.includeContacts),
+    drawings:        false,
+    backup:          true,
+    orphanWorkSpace: Boolean(context.migrateOrphanedLabels),
+    archivedMailBox: false,
+    teamFolder:      false,
+    cronExpression:  '1H0M',
+    disableGroups:   false,
+    processedCount:  null,
+    inProgressCount: null,
+  }));
 
   logger.info(`devemailClient triggerMigration payload: ${JSON.stringify(payload)}`);
 
@@ -907,6 +911,7 @@ async function triggerMigration(context) {
 
       return {
         jobId:       res.data?.id || res.data?.[0]?.id || res.data?.jobId || 'initiated',
+        jobName,
         status:      'INITIATED',
         rawResponse: res.data,
         initiatePath: path,
@@ -951,9 +956,16 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
   const maxPolls    = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
   const normFrom    = String(fromMailId || '').toLowerCase().trim();
   const execService = require('../services/executionService');
-  const MAX_NO_MATCH = 5;
+  // /mail/reports only shows COMPLETED jobs; /email/user/jobs may return them earlier.
+  // We try /mail/reports first; if it returns 0 jobs once, we permanently switch to /email/user/jobs.
+  // MAX_NO_MATCH = maxPolls means we never give up the full window just due to no-match streak.
+  const MAX_NO_MATCH = maxPolls;
   let noMatchStreak  = 0;
   let consecutiveAuthErrors = 0;
+
+  const reportsUrlCandidates = [`${BASE_URL}/mail/reports`, `${BASE_URL}/email/user/jobs`];
+  let reportsUrl = reportsUrlCandidates[0];
+  let reportsUrlFallbackIdx = 1;
 
   logger.info(
     `devemailClient pollReports: watching ${fromMailId}, max ${maxMinutes} min (${maxPolls} polls)`
@@ -983,7 +995,7 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
 
     try {
       const res = await axios.get(
-        `${BASE_URL}/mail/reports`,
+        reportsUrl,
         axiosCfg({
           headers: { Authorization: `Bearer ${activeJwt}` },
           params:  { pageNo: 0, pageSize: 50, _: Date.now() },
@@ -1020,12 +1032,19 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       }
 
       if (!matchedJob) {
+        // If current URL returned 0 jobs and a fallback exists, switch once immediately
+        if (jobs.length === 0 && reportsUrlFallbackIdx < reportsUrlCandidates.length) {
+          const nextUrl = reportsUrlCandidates[reportsUrlFallbackIdx++];
+          logger.info(`devemailClient reports poll ${attempt}: 0 jobs from ${reportsUrl} — switching to ${nextUrl}`);
+          reportsUrl = nextUrl;
+          continue;
+        }
         noMatchStreak++;
         if (attempt === 1 && jobs.length > 0) {
           logger.info(`devemailClient reports sample job keys: ${Object.keys(jobs[0]).join(', ')}`);
         }
         logger.info(
-          `devemailClient pollReports ${attempt}/${maxPolls}: job for ${fromMailId} not found ` +
+          `devemailClient pollReports ${attempt}/${maxPolls} [${reportsUrl.split('/').pop()}]: job for ${fromMailId} not found ` +
           `(${jobs.length} job(s), no-match streak ${noMatchStreak}/${MAX_NO_MATCH})`
         );
         if (noMatchStreak >= MAX_NO_MATCH) {
@@ -1052,8 +1071,11 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       const countsDone     = totalCount > 0 && processedCount >= totalCount;
 
       // Keep module-level lastJobDetails current for getLastJobDetails() / fetchCurrentJobStatus()
+      // jobId = parent migration job (shared across pairs); workspaceId = this pair's sub-task.
       lastJobDetails = {
-        workspaceId:    matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || matchedDetail?.workspaceId || null,
+        jobId:          matchedJob.id || matchedJob.jobId || null,
+        jobName:        matchedJob.jobName || matchedJob.name || null,
+        workspaceId:    matchedDetail?.id || matchedDetail?.workspaceId || matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || null,
         totalCount:     totalCount     || null,
         processedCount: processedCount || null,
       };
@@ -1221,6 +1243,56 @@ function getLastJobDetails() {
   return { ...lastJobDetails };
 }
 
+/**
+ * GET /mail/reports/{jobId} — per-user-pair sub-task breakdown for a specific migration job.
+ * Returns the raw array of pair sub-tasks, e.g.
+ *   [{ id, fromMailId, toMailId, fromCloud, toCloud, processStatus, totalCount, processedCount }]
+ * Used to populate the validation report's CloudFuze Migration Status table (Job ID + per-pair
+ * Workspace ID / counts) after the migration completes, with fresh auth.
+ *
+ * @param {string} jobId  Parent migration job id (matchedJob.id from /mail/reports)
+ * @returns {Promise<Array>} pair sub-tasks, or [] on failure
+ */
+async function getJobReport(jobId) {
+  if (!jobId || jobId === 'initiated') return [];
+  try {
+    const { mailJwt: jwt } = await authenticate();
+    const res = await axios.get(
+      `${BASE_URL}/mail/reports/${encodeURIComponent(jobId)}`,
+      axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { _: Date.now() }, timeout: 30000 })
+    );
+    const data = res.data;
+    return Array.isArray(data) ? data : (data?.content || data?.details || data?.mailMigrationDetails || []);
+  } catch (err) {
+    logger.warn(`devemailClient getJobReport(${jobId}) failed: ${err.response?.status || err.message}`);
+    return [];
+  }
+}
+
+/**
+ * GET /mail/workSpaces/{jobDetailId} — folder-level migration records for one pair sub-task
+ * (the deepest drill-down). jobDetailId is the per-pair `id` from /mail/reports/{jobId}.
+ * Returns the raw array, e.g. [{ id, sourceId, destId, destFolderPath, processStatus, ... }].
+ *
+ * @param {string} jobDetailId  per-pair sub-task (workspace) id from /mail/reports/{jobId}
+ * @returns {Promise<Array>} folder-level workspace records, or [] on failure
+ */
+async function getWorkspaceRecords(jobDetailId) {
+  if (!jobDetailId) return [];
+  try {
+    const { mailJwt: jwt } = await authenticate();
+    const res = await axios.get(
+      `${BASE_URL}/mail/workSpaces/${encodeURIComponent(jobDetailId)}`,
+      axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { pageNo: 0, pageSize: 50, _: Date.now() }, timeout: 30000 })
+    );
+    const data = res.data;
+    return Array.isArray(data) ? data : (data?.content || []);
+  } catch (err) {
+    logger.warn(`devemailClient getWorkspaceRecords(${jobDetailId}) failed: ${err.response?.status || err.message}`);
+    return [];
+  }
+}
+
 // ─── clearToken / clearState ──────────────────────────────────────────────────
 
 function clearToken() {
@@ -1265,6 +1337,8 @@ module.exports = {
   pollReports,
   fetchCurrentJobStatus,
   getLastJobDetails,
+  getJobReport,
+  getWorkspaceRecords,
 
   // Constants
   BASE_URL,

@@ -63,6 +63,18 @@ export default function ExecutionLogs() {
 
   const counts = productCounts(executions);
   const visibleExecutions = product === 'all' ? executions : executions.filter((e) => productOf(e) === product);
+  // Collapse a bulk run into ONE entry (keyed by bulkId) so the list shows one row per run and
+  // there's a single PDF button — its download already combines all pairs into one report.
+  const groupedExecutions = (() => {
+    const seen = new Set();
+    const out = [];
+    for (const e of visibleExecutions) {
+      const bid = e.context?.bulkId;
+      if (bid) { if (seen.has(bid)) continue; seen.add(bid); }
+      out.push(e);
+    }
+    return out;
+  })();
   const selectedExec = executions.find((e) => e.executionId === selectedId);
   const steps = deriveSteps(selectedExec);
   const ctx = selectedExec?.context || {};
@@ -113,7 +125,13 @@ export default function ExecutionLogs() {
       const res = await downloadValidationPdf(selectedId);
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       const a = document.createElement('a');
-      a.href = url; a.download = `validation-report-${selectedId.slice(0, 8)}.pdf`;
+      // Bulk runs return one combined report (all pairs) — name the file accordingly so repeated
+      // downloads (from any pair) resolve to the same file rather than N per-pair names.
+      const bulkId = selectedExec?.context?.bulkId;
+      a.href = url;
+      a.download = bulkId
+        ? `bulk-validation-report-${String(bulkId).slice(0, 8)}.pdf`
+        : `validation-report-${selectedId.slice(0, 8)}.pdf`;
       document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
     } catch (err) { alert('Failed to download PDF: ' + (err.response?.data?.error || err.message)); }
     finally { setDownloading(false); }
@@ -126,14 +144,22 @@ export default function ExecutionLogs() {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900">Reports &amp; Logs</h1>
-          {selectedExec ? (
-            <p className="text-sm text-gray-500 truncate">
-              {ctx.sourceEmail && ctx.destinationEmail
-                ? <>{ctx.sourceEmail} <span className="text-gray-400">→</span> {ctx.destinationEmail} · </>
-                : null}
-              <span className="font-mono text-gray-400">{selectedId.slice(0, 8)}</span>
-            </p>
-          ) : <p className="text-sm text-gray-500">Open the menu to pick a run</p>}
+          {selectedExec ? (() => {
+            const pairCount = Array.isArray(ctx.userEmailMappings) ? ctx.userEmailMappings.length : 0;
+            const isBulk = pairCount > 1;
+            return (
+              <p className="text-sm text-gray-500 truncate">
+                {isBulk ? (
+                  <span className="inline-flex items-center gap-1 mr-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
+                    Bulk · {pairCount} pairs
+                  </span>
+                ) : ctx.sourceEmail && ctx.destinationEmail ? (
+                  <>{ctx.sourceEmail} <span className="text-gray-400">→</span> {ctx.destinationEmail} · </>
+                ) : null}
+                <span className="font-mono text-gray-400">{selectedId.slice(0, 8)}</span>
+              </p>
+            );
+          })() : <p className="text-sm text-gray-500">Open the menu to pick a run</p>}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -169,24 +195,27 @@ export default function ExecutionLogs() {
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 mt-2 w-96 max-w-[92vw] bg-white rounded-xl shadow-2xl border border-gray-200 z-20 overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100 space-y-2">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Previous runs ({visibleExecutions.length})</p>
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Previous runs ({groupedExecutions.length})</p>
                     <ProductTabs value={product} onChange={setProduct} counts={counts} />
                   </div>
                   <div className="max-h-[60vh] overflow-y-auto divide-y divide-gray-50">
-                    {visibleExecutions.length === 0 && <p className="p-4 text-sm text-gray-400">No {product === 'all' ? '' : PRODUCT_LABEL[product] + ' '}runs yet.</p>}
-                    {visibleExecutions.map((e) => {
+                    {groupedExecutions.length === 0 && <p className="p-4 text-sm text-gray-400">No {product === 'all' ? '' : PRODUCT_LABEL[product] + ' '}runs yet.</p>}
+                    {groupedExecutions.map((e) => {
                       const active = e.executionId === selectedId;
                       const src = e.context?.sourceEmail, dst = e.context?.destinationEmail;
+                      const mappings = e.context?.userEmailMappings;
+                      const bulkCount = Array.isArray(mappings) && mappings.length > 1 ? mappings.length : 0;
                       return (
                         <button key={e.executionId} type="button" onClick={() => pickExecution(e.executionId)}
                           className={`w-full px-4 py-2.5 text-left transition-colors ${active ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-sm font-medium text-gray-800">{e.executionId.slice(0, 8)}</span>
+                            {bulkCount > 0 && <span className="text-[10px] font-semibold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">Bulk · {bulkCount}</span>}
                             {active && <span className="text-[10px] font-semibold bg-indigo-600 text-white px-1.5 py-0.5 rounded-full">active</span>}
                             <span className="ml-auto"><StatusBadge status={e.status} /></span>
                           </div>
                           <p className="text-xs text-gray-500 truncate mt-0.5">
-                            {src && dst ? `${src} → ${dst}` : (e.status || '')}
+                            {bulkCount > 0 ? `${bulkCount} pairs` : (src && dst ? `${src} → ${dst}` : (e.status || ''))}
                             {e.createdAt ? ` · ${new Date(e.createdAt).toLocaleString()}` : ''}
                           </p>
                         </button>

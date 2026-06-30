@@ -24,49 +24,65 @@ async function runAgents(req, res) {
       sourceAdminEmail,
       destAdminEmail,
       mode,
+      migrationServerUrl,
+      migrationServerEmail,
+      migrationServerPassword,
     } = req.body;
     const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
 
     // Bulk migration: multiple mapped pairs — phased execution
-    // Phase 1 (parallel): create test data in all source accounts
-    // Phase 2 (sequential): migrate each pair one at a time
+    // Phase 0 (parallel): cleanup all accounts
+    // Phase 1 (sequential): create test data one by one
+    // Phase 2 (sequential): migrate via devemail
     // Phase 3 (parallel): validate all destination mailboxes
     if (mappedPairs && Array.isArray(mappedPairs) && mappedPairs.length > 0) {
-      const pairsData = mappedPairs.map((pair) => ({
-        sourceEmail: pair.sourceEmail,
-        destinationEmail: pair.destinationEmail,
-        migrationType: migrationType || 'FULL',
-        includeMail,
-        includeCalendar,
-        includeContacts,
-        testType: testType || 'E2E',
-        sourceProvider: pair.sourceProvider || 'google',
-        destinationProvider: pair.destinationProvider || 'microsoft',
-        userEmailMappings: normalizedUserMappings,
-        sourceAdminEmail: sourceAdminEmail || '',
-        destAdminEmail: destAdminEmail || '',
-        migrationServerUrl: req.body.migrationServerUrl || '',
-        migrationServerEmail: req.body.migrationServerEmail || '',
-        migrationServerPassword: req.body.migrationServerPassword || '',
-        mode: mode || 'email',
-        contentOptions: req.body.contentOptions || null,
-        jobName: req.body.jobName || '',
-        excludeFileTypes: req.body.excludeFileTypes || '',
-        replaceSpecialChar: req.body.replaceSpecialChar,
-        sourcePath: req.body.sourcePath || '',
-        destinationPath: req.body.destinationPath || '',
-        sourceFolderName: req.body.sourceFolderName || '',
-        contentUserFolders: Array.isArray(req.body.contentUserFolders) ? req.body.contentUserFolders : [],
-        useExistingSource: Boolean(req.body.useExistingSource),
-      }));
-      const results = await orchestrator.runBulkFlow(pairsData);
-      return res.json({
-        bulk: true,
-        totalPairs: mappedPairs.length,
-        completed: results.filter((r) => r.status === 'COMPLETED').length,
-        failed: results.filter((r) => r.status === 'FAILED').length,
-        results,
+      // Shared id links every pair of this bulk run so all pairs render into ONE combined report.
+      const bulkId = mappedPairs.length > 1 ? require('crypto').randomUUID() : null;
+      const contexts = mappedPairs.map((pair) => {
+        const ctx = new MigrationContext({
+          sourceEmail: pair.sourceEmail,
+          destinationEmail: pair.destinationEmail,
+          migrationType: migrationType || 'FULL',
+          includeMail,
+          includeCalendar,
+          includeContacts,
+          testType: testType || 'E2E',
+          sourceProvider: pair.sourceProvider || 'google',
+          destinationProvider: pair.destinationProvider || 'microsoft',
+          userEmailMappings: normalizedUserMappings,
+          sourceAdminEmail: sourceAdminEmail || '',
+          destAdminEmail: destAdminEmail || '',
+          migrationServerUrl: migrationServerUrl || '',
+          migrationServerEmail: migrationServerEmail || '',
+          migrationServerPassword: migrationServerPassword || '',
+          mode: mode || 'email',
+          bulkId,
+        });
+        executionService.create(ctx);
+        executionService.update(ctx.executionId, {
+          status: 'RUNNING',
+          currentAgent: 'Starting',
+          progress: 'Queued — bulk QA flow will start shortly',
+        });
+        return ctx;
       });
+
+      // Respond immediately so the UI can navigate to Logs; orchestration runs in background.
+      res.status(202).json({
+        bulk: true,
+        executionId: contexts[0].executionId,
+        totalPairs: contexts.length,
+        executionIds: contexts.map((c) => c.executionId),
+        status: 'RUNNING',
+        message: 'Bulk execution started. Poll GET /api/agents/executions to watch progress.',
+      });
+
+      setImmediate(() => {
+        orchestrator.runBulkFlow(contexts).catch((err) => {
+          logger.error(`Background bulk orchestration failed: ${err.message}`);
+        });
+      });
+      return;
     }
 
     // Single pair migration — return 202 immediately so the UI can poll execution progress
@@ -599,9 +615,24 @@ async function generatePdf(req, res) {
   try {
     const execution = executionService.get(req.params.id);
     if (!execution) return res.status(404).json({ error: 'Execution not found' });
-    if (!execution.result) return res.status(400).json({ error: 'Execution has no results yet' });
 
-    const { generateValidationPdf, generateContentValidationPdf } = require('../utils/pdfGenerator');
+    const { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf } = require('../utils/pdfGenerator');
+    const bulkId = execution.context?.bulkId;
+
+    // Bulk run → ONE combined report containing every pair (ordered by creation), regardless of
+    // which pair's row the download was triggered from.
+    if (bulkId) {
+      const siblings = executionService.getAll()
+        .filter((e) => e.context?.bulkId === bulkId && e.result)
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+      if (siblings.length === 0) return res.status(400).json({ error: 'Bulk run has no results yet' });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="bulk-validation-report-${String(bulkId).slice(0, 8)}.pdf"`);
+      generateBulkValidationPdf(siblings, res);
+      return;
+    }
+
+    if (!execution.result) return res.status(400).json({ error: 'Execution has no results yet' });
 
     // Content migrations have their own check-list report (structure/permissions/versions/
     // shared links); mail uses the deep-mail report.

@@ -10,6 +10,7 @@
 const axios = require('axios');
 const env   = require('../config/env');
 const logger = require('../utils/logger');
+const { retryWithBackoff } = require('../utils/retry');
 
 function baseUrl() {
   return String(env.NEUTARA_BASE_URL || 'https://neutaraticketing.cftools.live').replace(/\/$/, '');
@@ -192,17 +193,24 @@ async function createBug(execution) {
   logger.info(`[neutaraClient] Raising ${type} with priority=${priority} (${bugCount} bug(s), ${limitCount} known limitation(s))`);
 
   try {
-    const res = await axios.post(
-      `${baseUrl()}/api/issues`,
-      body,
-      {
-        headers: {
-          Authorization: authHeader(),
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        timeout: 15000,
-      }
+    // Retry on transient 5xx / network errors. In bulk runs, multiple pairs fire createBug
+    // near-simultaneously; Neutara has been seen to 500 on the concurrent second create, so a
+    // backoff retry (by which time the first has completed) recovers the dropped ticket.
+    // 4xx errors are not retried (retryWithBackoff breaks on 400-499 except 429).
+    const res = await retryWithBackoff(
+      () => axios.post(
+        `${baseUrl()}/api/issues`,
+        body,
+        {
+          headers: {
+            Authorization: authHeader(),
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          timeout: 15000,
+        }
+      ),
+      { label: `neutaraClient createBug (${ctx.sourceEmail} → ${ctx.destinationEmail})`, maxRetries: 4, baseDelay: 1500 }
     );
 
     const key = res.data?.key || res.data?.id;

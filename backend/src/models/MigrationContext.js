@@ -71,6 +71,8 @@ class MigrationContext {
     /** When true (content): skip the test-data seeding agent and migrate the EXISTING folder(s)
      *  at the given source path(s) — the agent resolves each path to its Box folder id. */
     useExistingSource = false,
+    /** Shared id linking all pairs of one bulk run — used to build a single combined report */
+    bulkId = null,
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -104,6 +106,7 @@ class MigrationContext {
         ? TEST_TYPES.E2E
         : TEST_TYPES[tt] || TEST_TYPES.E2E;
     this.executionId = executionId || uuidv4();
+    this.bulkId = bulkId || null;
     this.sourceProvider = sourceProvider || 'google';
     this.destinationProvider = destinationProvider || 'microsoft';
     this.userEmailMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
@@ -154,6 +157,7 @@ class MigrationContext {
       includeContacts: this.includeContacts,
       testType: this.testType,
       executionId: this.executionId,
+      bulkId: this.bulkId,
       sourceProvider: this.sourceProvider,
       destinationProvider: this.destinationProvider,
       domain: this.domain,

@@ -411,6 +411,46 @@ async function validateGmailToGmailSource({
       }
     }
 
+    // IMPORTANT marker (G→G inscope): source IMPORTANT label should be preserved — warning.
+    // Gmail recomputes the importance marker per-mailbox, so this is advisory, not a hard failure.
+    {
+      const srcImportant = (full.labelIds || []).includes('IMPORTANT');
+      const dstImportant = (destFull.labelIds || []).includes('IMPORTANT');
+      if (srcImportant !== dstImportant) {
+        diffs.push({
+          field: 'important',
+          ok: false,
+          expected: srcImportant ? 'IMPORTANT' : 'not IMPORTANT',
+          actual: dstImportant ? 'IMPORTANT' : 'not IMPORTANT',
+          displaySource: srcImportant ? 'Important' : 'Not important',
+          displayDestination: dstImportant ? 'Important' : 'Not important',
+          severity: 'warning',
+          note: 'Gmail IMPORTANT marker should be preserved during G→G migration.',
+        });
+      }
+    }
+
+    // CATEGORY tabs (Social / Updates / Forums / Promotions / Personal): CloudFuze preserves
+    // the category label during G→G, but Gmail may re-classify on arrival — surface as warning.
+    {
+      const CATEGORY_LABELS = ['CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS'];
+      const srcCats = (full.labelIds || []).filter((l) => CATEGORY_LABELS.includes(l)).sort();
+      const dstCats = (destFull.labelIds || []).filter((l) => CATEGORY_LABELS.includes(l)).sort();
+      if (srcCats.join('|') !== dstCats.join('|')) {
+        const pretty = (arr) => arr.map((c) => c.replace('CATEGORY_', '')).join(', ') || '(none)';
+        diffs.push({
+          field: 'category',
+          ok: false,
+          expected: srcCats.join(', ') || '(none)',
+          actual: dstCats.join(', ') || '(none)',
+          displaySource: pretty(srcCats),
+          displayDestination: pretty(dstCats),
+          severity: 'warning',
+          note: 'Gmail category tab differs; CloudFuze preserves categories but Gmail may re-classify on arrival.',
+        });
+      }
+    }
+
     // sentDateTime: Gmail Date header comparison between source and destination (warning)
     {
       const toleranceMs = intEnv('DEEP_VALIDATION_SENT_TIME_TOLERANCE_MINUTES', 5) * 60000;
