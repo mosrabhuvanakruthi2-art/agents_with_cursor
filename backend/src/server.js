@@ -103,6 +103,15 @@ async function start() {
         } catch (e) {
           logger.warn(`MongoDB: token sync failed — ${e?.message || e}`);
         }
+        try {
+          const executionService = require('./services/executionService');
+          const r = await executionService.hydrateFromMongo();
+          logger.info(
+            `MongoDB: executions hydrated (${r.hydrated} loaded, ${r.backfilled} migrated from file, ${r.interrupted} orphaned→interrupted)`
+          );
+        } catch (e) {
+          logger.warn(`MongoDB: execution hydrate failed — ${e?.message || e}`);
+        }
       })
       .catch((e) => {
         logger.error(
