@@ -18,11 +18,36 @@ function saveExecutions(executions) {
   }
 }
 
-// On startup: clear all executions so the Reports & Logs page starts fresh.
-// Any run that was in progress is dead (the server restarted), and stale data
-// from previous sessions should not appear automatically in the UI.
-const executions = new Map();
-saveExecutions(executions);
+function loadExecutions() {
+  try {
+    if (fs.existsSync(executionsFile)) {
+      const arr = JSON.parse(fs.readFileSync(executionsFile, 'utf-8'));
+      if (Array.isArray(arr)) return new Map(arr.map((e) => [e.executionId, e]));
+    }
+  } catch (err) {
+    logger.warn(`[executionService] loadExecutions failed (${err.message}) — starting empty`);
+  }
+  return new Map();
+}
+
+// Load persisted executions so Reports & Logs survives a backend restart.
+const executions = loadExecutions();
+
+// Any execution still RUNNING/PENDING was orphaned by the restart — mark INTERRUPTED
+// so the UI can offer Resume instead of showing a stuck run.
+let _orphansFixed = false;
+for (const exec of executions.values()) {
+  if (exec.status === 'RUNNING' || exec.status === 'PENDING') {
+    Object.assign(exec, {
+      status: 'INTERRUPTED',
+      error: 'Server restarted while execution was in progress',
+      progress: 'Interrupted — server was restarted. Click Resume to continue.',
+      completedAt: new Date().toISOString(),
+    });
+    _orphansFixed = true;
+  }
+}
+if (_orphansFixed) saveExecutions(executions);
 
 // In-memory only — not persisted (if server restarts, running jobs are already dead)
 const cancelledIds = new Set();

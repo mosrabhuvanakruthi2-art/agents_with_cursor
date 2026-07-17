@@ -33,6 +33,7 @@ const {
   compareZoomLinks,
   extractOneDriveLinks,
   compareOneDriveLinks,
+  compareClickableLinks,
   boolEnv,
   intEnv,
   buildDestinationUnmatchedNote,
@@ -69,6 +70,9 @@ async function validateOutlookSource({
     compareBcc: true,
     bccAsError: true,
     recipientMapping: recipientMap.size > 0 ? recipientMap : null,
+    // O→O remaps the mailbox-owner identity (source-tenant user → dest-tenant user), so the sender
+    // (From) must satisfy the same permission mapping as To/Cc/Bcc — not just recipients.
+    mapFrom: true,
   };
 
   const candidates = await collectOutlookQaCandidates(
@@ -78,6 +82,24 @@ async function validateOutlookSource({
   );
 
   result.deepMailValidation.scannedSourceMessages = candidates.length;
+
+  // One-time destination index: scan the destination mailbox ONCE up front so that pairing each
+  // source message is an O(1) lookup instead of a full mailbox scan per message (which turned a
+  // large run into a ~20-minute hang). If the build fails, resolve/fallback revert to the original
+  // per-message scan automatically (index is optional).
+  let destIndexOO = null;
+  try {
+    destIndexOO = await outlookClient.buildDestinationMessageIndex(
+      destUser,
+      intEnv('DEEP_VALIDATION_SCAN_MAX', 3000)
+    );
+    log.info(
+      `Deep validation (O→O): built destination index — ${destIndexOO.size} message(s), ` +
+      `complete=${destIndexOO.complete}. Pairing is now O(1) per source message.`
+    );
+  } catch (e) {
+    log.warn(`Deep validation (O→O): destination index build failed (${e.message}); using per-message scan.`);
+  }
 
   for (const summary of candidates) {
     const mid = summary.internetMessageId || '';
@@ -121,6 +143,7 @@ async function validateOutlookSource({
     const windowMinOO = intEnv('DEEP_VALIDATION_SUBJECT_TIME_WINDOW_MINUTES', 120);
     const resolvedOO = await outlookClient.resolveDestinationByInternetMessageId(destUser, mid, {
       maxScan: scanMaxOO,
+      index: destIndexOO || undefined,
     });
     let matches = resolvedOO.matches;
     let pairingStrategyOO = 'internetMessageId';
@@ -136,7 +159,8 @@ async function validateOutlookSource({
           normSub,
           anchorMsOO,
           windowMinOO,
-          scanMaxOO
+          scanMaxOO,
+          destIndexOO?.scanned || null
         );
         if (fb.match) {
           matches = [fb.match];
@@ -329,6 +353,8 @@ async function validateOutlookSource({
       diffs = diffs.concat(compareZoomLinks(srcBodyRawOO, dstBodyRawOO));
       // OneDrive / SharePoint link check
       diffs = diffs.concat(compareOneDriveLinks(srcBodyRawOO, dstBodyRawOO));
+      // Clickable-link preservation: a hyperlink clickable at source must stay clickable at dest
+      diffs = diffs.concat(compareClickableLinks(srcBodyRawOO, dstBodyRawOO));
     }
 
     if (tierB && (graphAttSrc || []).length > 0) {

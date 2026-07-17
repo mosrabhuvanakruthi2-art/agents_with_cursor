@@ -173,16 +173,22 @@ function compareTierA(source, dest, opts = {}) {
     opts.recipientMapping instanceof Map && opts.recipientMapping.size > 0 ? opts.recipientMapping : null;
   const diffs = [];
 
-  // From: migration preserves the original sender address (e.g. Peter stays Peter in migrated Sent Items).
-  // Compare raw source vs destination; do NOT apply user-mapping — that's for recipients in the dest tenant.
+  // From: by default migration preserves the original sender address (e.g. Peter stays Peter in
+  // migrated Sent Items), so compare raw source vs destination without user-mapping.
+  // When opts.mapFrom is set (Outlook→Outlook, where the mailbox-owner identity is remapped to a
+  // destination-tenant user), apply the SAME permission mapping used for To/Cc/Bcc so a sender that
+  // should have been remapped (e.g. ben@… → kim@…) is reported consistently instead of silently
+  // passing because the source and destination both still read the original address.
   {
     const sFromRaw = sourceTierAFromEmails(source);
     const dFrom = destTierAFromEmails(dest);
-    if (sFromRaw.length > 0 && JSON.stringify(sFromRaw) !== JSON.stringify(dFrom)) {
+    const expectedFrom =
+      opts.mapFrom && mappingMap ? expectedDestRecipientsFromSource(sFromRaw, mappingMap) : sFromRaw;
+    if (sFromRaw.length > 0 && JSON.stringify(expectedFrom) !== JSON.stringify(dFrom)) {
       diffs.push({
         field: 'from',
         ok: false,
-        expected: sFromRaw.join(','),
+        expected: expectedFrom.join(','),
         actual: dFrom.join(','),
         displaySource: sFromRaw.join(','),
         displayDestination: dFrom.join(','),

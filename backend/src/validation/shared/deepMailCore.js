@@ -102,6 +102,77 @@ function compareOneDriveLinks(srcBody, dstBody) {
   return diffs;
 }
 
+/**
+ * Extract the set of URLs that are CLICKABLE hyperlinks (inside <a href="...">) in an HTML body.
+ * Plain-text URLs are ignored — a URL is only "clickable" if it is wrapped in an anchor tag.
+ */
+function extractAnchorHrefs(html) {
+  if (!html) return [];
+  const out = [];
+  const rx = /<a\b[^>]*?\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))/gi;
+  let m;
+  while ((m = rx.exec(html)) !== null) {
+    const url = (m[2] ?? m[3] ?? m[4] ?? '').trim();
+    if (/^(https?:\/\/|mailto:)/i.test(url)) out.push(url);
+  }
+  return out;
+}
+
+/** Normalise a URL for loose equality: strip angle brackets, trailing punctuation, trailing slash, lowercase. */
+function normalizeLinkForCompare(u) {
+  return String(u || '')
+    .trim()
+    .replace(/^<+|>+$/g, '')
+    .replace(/[.,;:!?)]+$/, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+/**
+ * Clickable-link preservation (applies to ALL combinations).
+ * Every hyperlink that is clickable (<a href>) in the SOURCE body must also be clickable in the
+ * DESTINATION body. If a source hyperlink is flattened to plain text (or dropped) at the destination,
+ * recipients can no longer click it — reported as an error so validation files it as a bug.
+ *
+ * IMPORTANT: both arguments must be RAW HTML bodies (with anchor tags), not plain-text-normalised
+ * bodies — flattening to plain text removes the <a> tags this check relies on.
+ */
+function compareClickableLinks(srcHtml, dstHtml) {
+  const srcAnchors = extractAnchorHrefs(srcHtml);
+  if (srcAnchors.length === 0) return [];
+  const stripQuery = (s) => s.replace(/[?#].*$/, '');
+  const dstAnchorsNorm = extractAnchorHrefs(dstHtml).map(normalizeLinkForCompare).filter(Boolean);
+  const dstAnchorSet = new Set(dstAnchorsNorm);
+  const dstAnchorSetNoQuery = new Set(dstAnchorsNorm.map(stripQuery));
+  const dstTextLower = String(dstHtml || '').toLowerCase();
+  const diffs = [];
+  const seen = new Set();
+  for (const rawUrl of srcAnchors) {
+    const norm = normalizeLinkForCompare(rawUrl);
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    const clickableAtDest = dstAnchorSet.has(norm) || dstAnchorSetNoQuery.has(stripQuery(norm));
+    if (clickableAtDest) continue;
+    const presentAsText =
+      dstTextLower.includes(norm) || dstTextLower.includes(String(rawUrl).toLowerCase());
+    diffs.push({
+      field: 'clickableLink',
+      ok: false,
+      expected: `Clickable hyperlink: ${rawUrl}`,
+      actual: presentAsText
+        ? 'Present as plain text only — no longer clickable'
+        : 'Missing from destination',
+      displaySource: `${rawUrl} (clickable link)`,
+      displayDestination: presentAsText ? `${rawUrl} (plain text — not clickable)` : 'Missing',
+      severity: 'error',
+      note: presentAsText
+        ? 'A hyperlink that was clickable at the source lost its <a href> anchor during migration and is now plain text, so recipients cannot click it.'
+        : 'A hyperlink present and clickable at the source is missing from the destination body.',
+    });
+  }
+  return diffs;
+}
+
 function boolEnv(name, defaultVal = false) {
   const v = process.env[name];
   if (v === undefined || v === '') return defaultVal;
@@ -123,6 +194,10 @@ function buildDestinationUnmatchedNote(resolved, scanMax) {
   }
   if (d === 'no-odata-or-search-match') {
     return 'No destination with matching Message-ID via OData or Graph search; mailbox scan skipped (DEEP_VALIDATION_SKIP_MAILBOX_SCAN=true).';
+  }
+  if (d === 'no-match-in-dest-index') {
+    const n = resolved.scannedMessages ?? scanMax;
+    return `No destination with matching Message-ID in the one-time destination index (${n} messages scanned once). Message-ID was likely rewritten during migration; a subject+time fallback is attempted next.`;
   }
   if (typeof d === 'string' && d.startsWith('mailbox-scan-error')) {
     return `Destination lookup failed during mailbox scan: ${d}`;
@@ -728,6 +803,12 @@ async function validateOutlookToGmailThreadChains(result, srcUser, destUser, log
           }));
         }
 
+        // Clickable-link preservation (O→G thread chain): compare RAW HTML anchors on both sides
+        {
+          const dstHtmlOG = gmailClient.extractHtmlBodyFromPayload(gmFull.payload) || '';
+          diffs = diffs.concat(compareClickableLinks(omFull.body?.content || '', dstHtmlOG));
+        }
+
         // Tier B attachment hash for O→G
         if (tierB && graphAttSrc.length > 0) {
           try {
@@ -896,64 +977,106 @@ async function validateOutlookToOutlookThreadChains(result, srcUser, destUser, l
     if (srcMsgs.length < 2 && pairedEntries.length < 2) continue;
 
     // 2. Build the destination message list.
-    //    For source messages already resolved in the main loop: use knownDestIds.
-    //    For others (RE: replies the main scan skipped): resolve fresh by internetMessageId.
+    //    Robust approach (mirrors the Gmail→Outlook thread-chain path): resolving each source
+    //    message to a destination message BY internetMessageId fails in O→O because migration
+    //    RE-STAMPS Message-IDs — replies then stay unpaired, get falsely reported as "missing",
+    //    and their bodies are never compared. Instead we fetch the ENTIRE destination conversation
+    //    once (any single paired/anchored message gives us its conversationId) and pair positionally.
     const scanMaxOO = intEnv('DEEP_VALIDATION_SCAN_MAX', 3000);
-    const dstMsgSummaries = []; // { srcId, dstId, sentDateTime, internetMessageId }
-
-    for (const sm of srcMsgs) {
-      const srcId = sm.id;
-      const srcMid = sm.internetMessageId || '';
-
-      // Check if already resolved by main loop
-      let dstId = knownDestIds.get(srcId) || null;
-
-      // If not, try to resolve by internetMessageId
-      if (!dstId && srcMid) {
-        try {
-          const resolved = await outlookClient.resolveDestinationByInternetMessageId(destUser, srcMid, {
-            maxScan: scanMaxOO,
-          });
-          if (resolved.matches.length > 0) {
-            dstId = resolved.matches[0].id;
-          }
-        } catch (e) {
-          log.warn(`Thread chain (O→O): resolve dest for ${srcId}: ${e.message}`);
-        }
-      }
-
-      dstMsgSummaries.push({
-        srcId,
-        dstId,
-        srcInternetMessageId: srcMid,
-        srcSentDateTime: sm.sentDateTime,
-      });
-    }
-
-    // 3. Sort destination summaries by sentDateTime (fetch sentDateTime for newly resolved msgs)
-    //    For entries where dstId is known but sentDateTime isn't, do a lightweight fetch.
-    for (const entry of dstMsgSummaries) {
-      if (!entry.dstId || entry.dstSentDateTime) continue;
-      try {
-        const dstSummary = await outlookClient.getMessageById(
-          destUser, entry.dstId,
-          'id,sentDateTime,internetMessageId'
-        );
-        entry.dstSentDateTime = dstSummary.sentDateTime || null;
-        entry.dstInternetMessageId = dstSummary.internetMessageId || '';
-      } catch (e) {
-        log.warn(`Thread chain (O→O): fetch dest summary ${entry.dstId}: ${e.message}`);
-      }
-    }
-
-    // Sort by destination sentDateTime ASC (nulls last)
-    const dstSorted = [...dstMsgSummaries]
-      .filter((e) => e.dstId)
-      .sort((a, b) => {
+    const sortByDstTime = (arr) =>
+      arr.sort((a, b) => {
         const ta = a.dstSentDateTime ? new Date(a.dstSentDateTime).getTime() : Infinity;
         const tb = b.dstSentDateTime ? new Date(b.dstSentDateTime).getTime() : Infinity;
         return ta - tb;
       });
+
+    /** @type {{dstId:string, dstSentDateTime:(string|null), dstInternetMessageId:string}[]} */
+    let dstSorted = [];
+    let destConvId = null;
+
+    // 2a. Find an anchor destination message id: prefer one the main loop already paired…
+    let anchorDstId = null;
+    for (const sm of srcMsgs) {
+      const kd = knownDestIds.get(sm.id);
+      if (kd) { anchorDstId = kd; break; }
+    }
+    // …otherwise resolve any source message (by Message-ID, then subject+time) to get a foothold.
+    if (!anchorDstId) {
+      for (const sm of srcMsgs) {
+        const srcMid = sm.internetMessageId || '';
+        if (srcMid) {
+          try {
+            const r = await outlookClient.resolveDestinationByInternetMessageId(destUser, srcMid, { maxScan: scanMaxOO });
+            if (r.matches.length > 0) { anchorDstId = r.matches[0].id; break; }
+          } catch (e) { log.warn(`Thread chain (O→O): anchor resolve for ${sm.id}: ${e.message}`); }
+        }
+        if (boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true)) {
+          const normSub = normalizeSubject(sm.subject);
+          const anchorMs = new Date(sm.sentDateTime || sm.receivedDateTime || 0).getTime();
+          if (normSub && Number.isFinite(anchorMs)) {
+            try {
+              const fb = await outlookClient.findBestMessageBySubjectAndTime(
+                destUser, normSub, anchorMs, intEnv('DEEP_VALIDATION_SUBJECT_TIME_WINDOW_MINUTES', 120), scanMaxOO
+              );
+              if (fb.match) { anchorDstId = fb.match.id; break; }
+            } catch (e) { log.warn(`Thread chain (O→O): anchor subject+time for ${sm.id}: ${e.message}`); }
+          }
+        }
+      }
+    }
+
+    // 2b. From the anchor, read its conversationId and fetch the WHOLE destination conversation.
+    if (anchorDstId) {
+      try {
+        const anchorFull = await outlookClient.getMessageById(destUser, anchorDstId, 'id,conversationId');
+        destConvId = anchorFull?.conversationId || null;
+      } catch (e) {
+        log.warn(`Thread chain (O→O): anchor conversationId fetch failed: ${e.message}`);
+      }
+    }
+    if (destConvId) {
+      try {
+        const dc = await outlookClient.getConversationMessages(destUser, destConvId);
+        if (dc.available && Array.isArray(dc.messages) && dc.messages.length > 0) {
+          dstSorted = sortByDstTime(
+            dc.messages.map((m) => ({
+              dstId: m.id,
+              dstSentDateTime: m.sentDateTime || null,
+              dstInternetMessageId: m.internetMessageId || '',
+            }))
+          );
+        } else if (!dc.available) {
+          log.warn(`Thread chain (O→O): destination conversation ${destConvId}: ${dc.note}`);
+        }
+      } catch (e) {
+        log.warn(`Thread chain (O→O): destination conversation ${destConvId} fetch failed: ${e.message}`);
+      }
+    }
+
+    // 2c. Fallback: if the destination conversation could not be read, resolve each source message
+    //     individually (original behaviour) so pairing never regresses to zero.
+    if (dstSorted.length === 0) {
+      const dstMsgSummaries = [];
+      for (const sm of srcMsgs) {
+        let dstId = knownDestIds.get(sm.id) || null;
+        const srcMid = sm.internetMessageId || '';
+        if (!dstId && srcMid) {
+          try {
+            const resolved = await outlookClient.resolveDestinationByInternetMessageId(destUser, srcMid, { maxScan: scanMaxOO });
+            if (resolved.matches.length > 0) dstId = resolved.matches[0].id;
+          } catch (e) { log.warn(`Thread chain (O→O): resolve dest for ${sm.id}: ${e.message}`); }
+        }
+        if (dstId) dstMsgSummaries.push({ dstId, dstSentDateTime: null, dstInternetMessageId: '' });
+      }
+      for (const entry of dstMsgSummaries) {
+        try {
+          const s = await outlookClient.getMessageById(destUser, entry.dstId, 'id,sentDateTime,internetMessageId');
+          entry.dstSentDateTime = s.sentDateTime || null;
+          entry.dstInternetMessageId = s.internetMessageId || '';
+        } catch (e) { log.warn(`Thread chain (O→O): fetch dest summary ${entry.dstId}: ${e.message}`); }
+      }
+      dstSorted = sortByDstTime(dstMsgSummaries);
+    }
 
     const srcCount = srcMsgs.length;
     const dstCount = dstSorted.length;
@@ -1155,6 +1278,8 @@ async function validateOutlookToOutlookThreadChains(result, srcUser, destUser, l
           const dstBodyRaw = dmFull.body?.content || dmFull.bodyPreview || '';
           diffs = diffs.concat(compareZoomLinks(srcBodyRaw, dstBodyRaw));
           diffs = diffs.concat(compareOneDriveLinks(srcBodyRaw, dstBodyRaw));
+          // Clickable-link preservation: source hyperlinks must stay clickable at destination
+          diffs = diffs.concat(compareClickableLinks(srcBodyRaw, dstBodyRaw));
         }
 
         // Tier B attachment hash
@@ -1834,6 +1959,8 @@ module.exports = {
   compareZoomLinks,
   extractOneDriveLinks,
   compareOneDriveLinks,
+  extractAnchorHrefs,
+  compareClickableLinks,
   boolEnv,
   intEnv,
   buildDestinationUnmatchedNote,

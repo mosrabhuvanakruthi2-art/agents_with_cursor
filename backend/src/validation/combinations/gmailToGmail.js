@@ -32,6 +32,7 @@ const {
   compareZoomLinks,
   extractOneDriveLinks,
   compareOneDriveLinks,
+  compareClickableLinks,
   boolEnv,
   intEnv,
   buildDestinationUnmatchedNote,
@@ -560,6 +561,8 @@ async function validateGmailToGmailSource({
         ? htmlToPlainLoose(dstHtmlRaw)
         : gmailClient.extractPlainBodyFromPayload(destFull.payload) || destFull.snippet || '';
       diffs = diffs.concat(compareZoomLinks(srcBodyRaw, dstBodyRaw));
+      // Clickable-link preservation — compare RAW HTML (anchors), not the plain-text bodies above
+      diffs = diffs.concat(compareClickableLinks(srcHtmlRaw || '', dstHtmlRaw || ''));
     }
 
     // ── Tier B: attachment hash comparison ──

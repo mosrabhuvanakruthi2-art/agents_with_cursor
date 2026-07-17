@@ -668,7 +668,11 @@ async function getSourceMailboxStats(req, res) {
     const gmailClientCheck = require('../clients/gmailClient');
     const tenant2Dwd = Array.isArray(envCheck.GOOGLE_TENANT_2_DOMAINS) && envCheck.GOOGLE_TENANT_2_DOMAINS.includes(emailDomain) && gmailClientCheck.hasServiceAccount('2');
     const tenant3Dwd = Array.isArray(envCheck.GOOGLE_TENANT_3_DOMAINS) && envCheck.GOOGLE_TENANT_3_DOMAINS.includes(emailDomain);
-    const isDwdUser = tenant2Dwd || tenant3Dwd;
+    // The single shared service account (GOOGLE_SERVICE_ACCOUNT_KEY) serves every domain not
+    // matched to a tenant-specific key, so any email is reachable when it's set. Without this,
+    // shared-SA deployments short-circuit to noToken:true and mailbox stats never load.
+    const sharedSaDwd = !!envCheck.GOOGLE_SERVICE_ACCOUNT_KEY;
+    const isDwdUser = tenant2Dwd || tenant3Dwd || sharedSaDwd;
     if (!isDwdUser && !envCheck.googleAccounts.has(email.toLowerCase())) {
       return res.json({ email, mailCount: 0, folderCount: 0, calendarCount: 0, eventCount: 0, noToken: true });
     }

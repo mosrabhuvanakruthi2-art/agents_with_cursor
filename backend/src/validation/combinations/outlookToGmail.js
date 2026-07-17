@@ -32,6 +32,7 @@ const {
   compareZoomLinks,
   extractOneDriveLinks,
   compareOneDriveLinks,
+  compareClickableLinks,
   boolEnv,
   intEnv,
   buildDestinationUnmatchedNote,
@@ -421,6 +422,8 @@ async function validateOutlookToGmailDestination({
       diffs = diffs.concat(compareZoomLinks(srcBodyRaw, dstBodyRaw));
       // OneDrive / SharePoint link check
       diffs = diffs.concat(compareOneDriveLinks(srcBodyRaw, dstBodyRaw));
+      // Clickable-link preservation — compare RAW HTML (anchors), not the plain-text bodies above
+      diffs = diffs.concat(compareClickableLinks(srcBodyRaw, dstHtmlRaw || ''));
     }
 
     // Tier B attachment hash for Outlook→Gmail

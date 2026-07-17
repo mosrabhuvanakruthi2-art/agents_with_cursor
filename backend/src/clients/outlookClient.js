@@ -462,6 +462,24 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
   }
 
   const inner = stripAngleBrackets(raw);
+
+  // Fast path: a prebuilt destination index (one shared mailbox scan) turns pairing from
+  // O(N sources × mailbox) into O(1) per source message. Only used when the caller supplies
+  // options.index (buildDestinationMessageIndex); every existing caller omits it and is unaffected.
+  if (options.index && options.index.byMsgId instanceof Map) {
+    const hit = options.index.byMsgId.get(inner.toLowerCase());
+    if (hit) {
+      return { matches: [{ id: hit.id, internetMessageId: hit.internetMessageId }], strategy: 'dest-index', detail: null, scannedMessages: options.index.size || 0 };
+    }
+    if (options.index.complete) {
+      // The whole destination mailbox is in the index and this Message-ID isn't in it — an
+      // authoritative miss. Skip the per-message OData/$search/live-scan; the caller's
+      // subject+time fallback takes over (reusing the same prescanned list).
+      return { matches: [], strategy: 'none', detail: 'no-match-in-dest-index', scannedMessages: options.index.size || 0 };
+    }
+    // Index incomplete (mailbox exceeded the scan cap) — fall through to the exact OData/$search paths below.
+  }
+
   /** @type {string[]} */
   const variants = [];
   const addVariant = (v) => {
@@ -564,6 +582,39 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
 }
 
 /**
+ * Scan the destination mailbox ONCE and build an index for deep-validation pairing.
+ * Returned to callers as options.index for resolveDestinationByInternetMessageId (O(1) lookup)
+ * and as preScanned for findBestMessageBySubjectAndTime (subject+time fallback) — so a full
+ * validation run does a single mailbox scan instead of one (or two) per source message.
+ *
+ * @param {string} userId – destination mailbox (UPN)
+ * @param {number} [maxScan] – cap on messages to scan (defaults to DEEP_VALIDATION_SCAN_MAX or 3000)
+ * @returns {Promise<{ byMsgId: Map<string,{id:string,internetMessageId:string}>, scanned: object[], size: number, complete: boolean }>}
+ */
+async function buildDestinationMessageIndex(userId, maxScan) {
+  const cap =
+    typeof maxScan === 'number' && maxScan > 0
+      ? maxScan
+      : parseInt(process.env.DEEP_VALIDATION_SCAN_MAX, 10) || 3000;
+  const scanned = await listMessagesInFolderPaged(
+    userId,
+    null,
+    cap,
+    'id,internetMessageId,subject,receivedDateTime,sentDateTime',
+    'receivedDateTime desc'
+  );
+  const byMsgId = new Map();
+  for (const m of scanned) {
+    const key = stripAngleBrackets(m.internetMessageId).toLowerCase();
+    if (key && !byMsgId.has(key)) {
+      byMsgId.set(key, { id: m.id, internetMessageId: m.internetMessageId });
+    }
+  }
+  // complete = we reached the end of the mailbox before hitting the cap, so a miss is authoritative.
+  return { byMsgId, scanned, size: byMsgId.size, complete: scanned.length < cap };
+}
+
+/**
  * Paginate message list (folder-scoped or all mail) until maxTotal rows.
  */
 async function listMessagesInFolderPaged(userId, folderId, maxTotal = 500, selectFields, orderBy) {
@@ -597,7 +648,7 @@ async function listMessagesInFolderPaged(userId, folderId, maxTotal = 500, selec
  *
  * @returns {{ match: { id: string, internetMessageId?: string } | null, candidatesCount: number, detail: string, bestDeltaMs: number | null }}
  */
-async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchorEpochMs, windowMinutes, maxScan) {
+async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchorEpochMs, windowMinutes, maxScan, preScanned) {
   const ns = String(normalizedSubject || '').trim();
   if (!ns || !Number.isFinite(anchorEpochMs)) {
     return { match: null, candidatesCount: 0, detail: 'invalid-input', bestDeltaMs: null };
@@ -605,13 +656,17 @@ async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchor
   const wm = Number(windowMinutes);
   const windowMs = Math.max(1, Number.isFinite(wm) && wm > 0 ? wm : 30) * 60 * 1000;
   const cap = typeof maxScan === 'number' && maxScan > 0 ? maxScan : 3000;
-  const scanned = await listMessagesInFolderPaged(
-    userId,
-    null,
-    cap,
-    'id,subject,internetMessageId,receivedDateTime,sentDateTime',
-    'receivedDateTime desc'
-  );
+  // Reuse a prebuilt scan (from buildDestinationMessageIndex) when supplied, so the fallback
+  // doesn't re-scan the whole mailbox per source message. Falls back to a live scan otherwise.
+  const scanned = Array.isArray(preScanned) && preScanned.length
+    ? preScanned
+    : await listMessagesInFolderPaged(
+        userId,
+        null,
+        cap,
+        'id,subject,internetMessageId,receivedDateTime,sentDateTime',
+        'receivedDateTime desc'
+      );
   const candidates = [];
   for (const m of scanned) {
     if (normalizeSubject(m.subject) !== ns) continue;
@@ -4137,6 +4192,7 @@ module.exports = {
   findMessagesByInternetMessageId,
   findBestMessageBySubjectAndTime,
   resolveDestinationByInternetMessageId,
+  buildDestinationMessageIndex,
   stripAngleBrackets,
   internetMessageIdsEqual,
   listMessagesInFolderPaged,

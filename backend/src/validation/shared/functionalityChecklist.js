@@ -104,7 +104,19 @@ function evalFields(ctx, targets, noun) {
   }
   const fail = countFieldMismatches(ctx, targets);
   if (fail > 0) {
-    return { status: 'fail', evidence: `${fail} of ${ctx.paired.length} message(s) — ${noun} mismatch` };
+    // Name an example so the report points to the actual failing message and its values
+    // (not just a bare count — which reads as if any flagged/important message failed).
+    let example = '';
+    for (const m of ctx.paired) {
+      const d = (m.diffs || []).find((x) => x && x.ok === false && fieldInSet(x.field, targets));
+      if (d) {
+        const from = d.displaySource ?? d.expected ?? '?';
+        const to = d.displayDestination ?? d.actual ?? '?';
+        example = ` (e.g. "${m.subject || '(no subject)'}": ${d.field} ${from}→${to})`;
+        break;
+      }
+    }
+    return { status: 'fail', evidence: `${fail} of ${ctx.paired.length} message(s) — ${noun} mismatch${example}` };
   }
   return { status: 'pass', evidence: `${ctx.paired.length} message(s) — no ${noun} mismatch` };
 }
@@ -430,7 +442,7 @@ function buildFeatureList(isDelta) {
     { name: 'To',                           family: 'Mail Fields',    ev: (c) => evalFields(c, ['to'], 'to') },
     { name: 'Cc',                           family: 'Mail Fields',    ev: (c) => evalFields(c, ['cc'], 'cc') },
     { name: 'Signature in mail body',       family: 'Content',        ev: (c) => evalFields(c, ['body'], 'body/signature') },
-    { name: 'Links redirection in mail body', family: 'Content',      ev: (c) => evalFields(c, ['zoomLink', 'oneDriveLink'], 'link') },
+    { name: 'Links redirection in mail body', family: 'Content',      ev: (c) => evalFields(c, ['zoomLink', 'oneDriveLink', 'clickableLink'], 'link/clickability') },
     { name: 'No duplicate mails at destination', family: 'Integrity', ev: (c) => evalDuplicateMails(c) },
   ];
 

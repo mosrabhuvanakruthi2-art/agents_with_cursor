@@ -32,6 +32,7 @@ const {
   compareZoomLinks,
   extractOneDriveLinks,
   compareOneDriveLinks,
+  compareClickableLinks,
   boolEnv,
   intEnv,
   buildDestinationUnmatchedNote,
@@ -405,6 +406,14 @@ async function validateGmailSource({
           destHasAttachments: (graphAtt || []).length > 0,
         })
       );
+    }
+
+    // Clickable-link preservation (runs regardless of tierC): a hyperlink clickable at the Gmail
+    // source must remain clickable in the Outlook destination. Compare RAW HTML on both sides.
+    {
+      const srcHtmlRawGO = gmailClient.extractHtmlBodyFromPayload(full.payload) || '';
+      const dstHtmlRawGO = destFull.body?.content || '';
+      diffs = diffs.concat(compareClickableLinks(srcHtmlRawGO, dstHtmlRawGO));
     }
 
     if (tierB && (full.attachments || []).length > 0) {
