@@ -77,8 +77,12 @@ export default function ExecutionLogs() {
   })();
   const selectedExec = executions.find((e) => e.executionId === selectedId);
   const steps = deriveSteps(selectedExec);
-  const hasResults = !!selectedExec?.result?.validationSummary;
   const ctx = selectedExec?.context || {};
+  const isContentRun = ctx.domain === 'content' || ctx.mode === 'content';
+  // Show the PDF button when a report exists, OR for any completed content run — the download
+  // endpoint generates the validation on demand if it wasn't produced in-flow (NOT_PROCESSED etc.).
+  const hasResults = !!selectedExec?.result?.validationSummary
+    || (isContentRun && selectedExec?.status === 'COMPLETED' && !!selectedExec?.result);
 
   useEffect(() => { loadExecutions(); }, []);
   useEffect(() => { if (selectedId) loadLogs(selectedId); }, [selectedId]);

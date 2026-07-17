@@ -220,8 +220,9 @@ class BoxTestDataAgent extends BaseAgent {
 
     logger.info(`[BoxTestDataAgent] Starting — admin: ${adminEmail}${asUserId ? `, as-user: ${asUserId}` : ''}`);
 
-    // 1. Root folder at Box root (parent id "0") — increment name on conflict (409)
-    const BASE_ROOT_NAME = 'Agent Box Data';
+    // 1. Root folder at Box root (parent id "0") — increment name on conflict (409).
+    // Folder name comes from the Run Agent UI (context.sourceFolderName); falls back to a default.
+    const BASE_ROOT_NAME = (context.sourceFolderName || '').trim() || 'Agent Box Data';
     let rootFolder;
     let rootFolderName = BASE_ROOT_NAME;
     for (let attempt = 0; attempt <= 9; attempt++) {

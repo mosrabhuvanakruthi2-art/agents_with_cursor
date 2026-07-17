@@ -464,6 +464,27 @@ module.exports = {
   CONTENT_MIGRATION_SERVER_URL: (process.env.CONTENT_MIGRATION_SERVER_URL || '').trim(),
   CONTENT_MIGRATION_SERVER_EMAIL: (process.env.CONTENT_MIGRATION_SERVER_EMAIL || '').trim(),
   CONTENT_MIGRATION_SERVER_PASSWORD: (process.env.CONTENT_MIGRATION_SERVER_PASSWORD || '').trim(),
+  /**
+   * Pin the exact qarelease cloud registrations for content migration.
+   * Multiple Box/SharePoint registrations exist for the same email/domain; only one
+   * resolves path mappings. Captured from the working UI request. When set, MigrationAgent
+   * overrides findCloudId's pick with these IDs.
+   */
+  CONTENT_SOURCE_CLOUD_ID: (process.env.CONTENT_SOURCE_CLOUD_ID || '').trim(),
+  CONTENT_DEST_CLOUD_ID: (process.env.CONTENT_DEST_CLOUD_ID || '').trim(),
+  /**
+   * Diagnostic source-path pin. CONTENT_SOURCE_PATH_OVERRIDE forces the content migration
+   * source path (e.g. /NEWDATA) and CONTENT_SOURCE_ROOT_ID_OVERRIDE its matching Box folder id.
+   * Use to test whether the path-mapping CSV resolves for an already-indexed folder vs a
+   * freshly-created one. Leave blank in normal operation.
+   */
+  CONTENT_SOURCE_PATH_OVERRIDE: (process.env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim(),
+  CONTENT_SOURCE_ROOT_ID_OVERRIDE: (process.env.CONTENT_SOURCE_ROOT_ID_OVERRIDE || '').trim(),
+  /**
+   * When the path-mapping CSV resolves 0 pairs, abort before creating a (0-pair) job.
+   * Defaults to enabled; set to the string 'false' to proceed anyway (legacy behaviour).
+   */
+  CONTENT_REQUIRE_CSV_MAPPING: (process.env.CONTENT_REQUIRE_CSV_MAPPING || '').trim() || 'true',
 
   // ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
   /** 4th Google tenant (message product). */

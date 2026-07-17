@@ -108,6 +108,15 @@ async function runAgents(req, res) {
       migrationServerEmail: req.body.migrationServerEmail || '',
       migrationServerPassword: req.body.migrationServerPassword || '',
       mode: mode || 'email',
+      contentOptions: req.body.contentOptions || null,
+      jobName: req.body.jobName || '',
+      excludeFileTypes: req.body.excludeFileTypes || '',
+      replaceSpecialChar: req.body.replaceSpecialChar,
+      sourcePath: req.body.sourcePath || '',
+      destinationPath: req.body.destinationPath || '',
+      sourceFolderName: req.body.sourceFolderName || '',
+      contentUserFolders: Array.isArray(req.body.contentUserFolders) ? req.body.contentUserFolders : [],
+      useExistingSource: Boolean(req.body.useExistingSource),
     });
     context.validate();
 
@@ -276,9 +285,19 @@ function mapConfigUsers(admin) {
   }));
 }
 
+// Content uses fine-grained service keys (googledrive/onedrive/sharepoint/…) but user
+// listing is done at the ACCOUNT level (Gmail/Graph/Box). Normalize so a service key
+// resolves to the right listing path instead of falling through to an empty list.
+const USER_LISTING_PROVIDER = {
+  googledrive: 'google', googleshareddrive: 'google', gmail: 'google', // (googleshareddrive kept)
+  onedrive: 'microsoft', outlook: 'microsoft',
+  sharepoint: 'sharepoint', box: 'box',
+};
+
 async function getSourceUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
     const config = loadUsersConfig();
@@ -291,6 +310,7 @@ async function getSourceUsers(req, res) {
     // only. This keeps the list current — a stale config entry no longer silently caps it.
     let liveUsers = null;
     let domainHint = null;
+    let liveErrMsg = null;
     try {
       if (provider === 'microsoft') {
         const outlookClient = require('../clients/outlookClient');
@@ -315,6 +335,7 @@ async function getSourceUsers(req, res) {
       }
     } catch (liveErr) {
       logger.warn(`getSourceUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
+      liveErrMsg = liveErr.message;
     }
 
     if (liveUsers && liveUsers.length > 0) {
@@ -354,6 +375,16 @@ async function getSourceUsers(req, res) {
       return res.json({ adminEmail, users: configUsers, source: 'config' });
     }
     if (domainHint) return res.status(400).json({ error: domainHint });
+    // Google: a live failure with no fallback almost always means the service account
+    // isn't authorized for Domain-Wide Delegation in THIS user's Workspace domain.
+    if ((provider === 'google' || !provider) && liveErrMsg) {
+      const domain = (adminEmail.split('@')[1] || '').toLowerCase();
+      return res.status(400).json({
+        error: `Couldn't list Google users for @${domain}: ${liveErrMsg}. `
+          + `Authorize the service account's Client ID for Domain-Wide Delegation in the ${domain} `
+          + `Google Admin console (scopes: admin.directory.user.readonly, drive), then retry.`,
+      });
+    }
     return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
@@ -363,7 +394,8 @@ async function getSourceUsers(req, res) {
 
 async function getDestinationUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
 
     const config = loadUsersConfig();
     const admin = config.destination?.admins?.find(
@@ -544,12 +576,47 @@ async function cleanDestination(req, res) {
   }
 }
 
-function generatePdf(req, res) {
+/**
+ * Run the content validation agent on demand for an execution that completed without a
+ * validationSummary (e.g. CloudFuze returned NOT_PROCESSED so the in-flow validation was skipped,
+ * or the run predates deep validation). Persists the result so the PDF + Results view light up.
+ * Returns the validationSummary, or null if this isn't a content run / no validator is registered.
+ */
+async function ensureContentValidation(execution) {
+  const ctx = execution.context || {};
+  const result = execution.result || {};
+  const isContent = ctx.domain === 'content' || ctx.mode === 'content';
+  if (!isContent || result.validationSummary) return result.validationSummary || null;
+
+  const { resolve } = require('../orchestrator/agentRegistry');
+  const set = resolve(ctx.domain || 'content', ctx.sourceProvider, ctx.destinationProvider);
+  if (!set?.ValidationAgent) return null;
+
+  const mr = result.migrationResult || {};
+  // Rebuild the context the validation agent reads, pulling migration outputs from the stored result.
+  const context = {
+    ...ctx,
+    executionId: execution.id || ctx.executionId,
+    migratedUsers: ctx.migratedUsers || mr.migratedUsers || [],
+    skippedUsers: ctx.skippedUsers || mr.skippedUsers || [],
+    permissionMapping: ctx.permissionMapping || mr.permissionMapping || null,
+    contentMigrationReport: result.contentMigrationReport || mr.contentMigrationReport || null,
+    migrationJobDetails: ctx.migrationJobDetails || mr.migrationJobDetails || null,
+  };
+
+  logger.info(`[generatePdf] No validationSummary for ${execution.id} — running content validation on demand`);
+  const summary = await new set.ValidationAgent().run(context);
+  executionService.update(execution.id, { result: { ...result, validationSummary: summary } });
+  execution.result = { ...result, validationSummary: summary };
+  return summary;
+}
+
+async function generatePdf(req, res) {
   try {
     const execution = executionService.get(req.params.id);
     if (!execution) return res.status(404).json({ error: 'Execution not found' });
 
-    const { generateValidationPdf, generateBulkValidationPdf } = require('../utils/pdfGenerator');
+    const { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf } = require('../utils/pdfGenerator');
     const bulkId = execution.context?.bulkId;
 
     // Bulk run → ONE combined report containing every pair (ordered by creation), regardless of
@@ -566,9 +633,25 @@ function generatePdf(req, res) {
     }
 
     if (!execution.result) return res.status(400).json({ error: 'Execution has no results yet' });
+
+    // Content migrations have their own check-list report (structure/permissions/versions/
+    // shared links); mail uses the deep-mail report.
+    const ctx = execution.context || {};
+    const isContent = ctx.domain === 'content' || ctx.mode === 'content'
+      || execution.result?.validationSummary?.domain === 'content';
+
+    // Content: if validation never ran (e.g. CloudFuze NOT_PROCESSED skipped it), run it now so a
+    // report is always downloadable after a completed run — same UX as mail.
+    if (isContent && !execution.result.validationSummary) {
+      try { await ensureContentValidation(execution); }
+      catch (err) { logger.warn(`[generatePdf] on-demand validation failed for ${req.params.id}: ${err.message}`); }
+    }
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="validation-report-${req.params.id.slice(0, 8)}.pdf"`);
-    generateValidationPdf(execution, res);
+
+    if (isContent) generateContentValidationPdf(execution, res);
+    else generateValidationPdf(execution, res);
   } catch (err) {
     logger.error(`generatePdf error: ${err.message}`);
     res.status(500).json({ error: err.message });

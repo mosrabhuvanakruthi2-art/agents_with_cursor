@@ -44,11 +44,41 @@ class MigrationContext {
     fromFolderId = '/',
     /** Destination folder path for content migrations (e.g. '/SANITY DATAA/Documents/BOX AUTOMATION') */
     toFolderId = '/',
+    /** Content Team-Migration permission flags selected in the Options step. */
+    contentOptions = null,
+    /** Content job options. */
+    jobName = '',
+    excludeFileTypes = '',
+    replaceSpecialChar = '_',
+    /** Content path mapping (overrides). Source defaults to the seeded folder; destination to the cloud default. */
+    sourcePath = '',
+    destinationPath = '',
+    /** Folder NAME the test-data agent should create in the source (from the UI). Deduped (" 1") on conflict. */
+    sourceFolderName = '',
+    /**
+     * Per-user folder mapping from the UI table (one entry per selected user):
+     * [{ sourceEmail, destinationEmail, sourceFolderName, destinationPath }].
+     * Drives per-user seeding; blank fields fall back to the shared base (sourceFolderName/destinationPath).
+     */
+    contentUserFolders = [],
+    /**
+     * Multi-user content migration: one transfer unit per selected Map-Users pair.
+     * [{ sourceEmail, destinationEmail, sourcePath, sourceRootId, destinationPath }]
+     * Populated by the orchestrator after per-user seeding; consumed by migrationClient
+     * to build one CloudFuze workspace pair per user. Empty = single-folder (legacy) flow.
+     */
+    userFolderMappings = [],
+    /** When true (content): skip the test-data seeding agent and migrate the EXISTING folder(s)
+     *  at the given source path(s) — the agent resolves each path to its Box folder id. */
+    useExistingSource = false,
     /** Shared id linking all pairs of one bulk run — used to build a single combined report */
     bulkId = null,
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
+    this.userFolderMappings = Array.isArray(userFolderMappings) ? userFolderMappings : [];
+    this.contentUserFolders = Array.isArray(contentUserFolders) ? contentUserFolders : [];
+    this.useExistingSource = Boolean(useExistingSource);
 
     const mt = String(migrationType || 'FULL').toUpperCase();
     this.migrationType = ['FULL', 'DELTA'].includes(mt) ? mt : 'FULL';
@@ -94,6 +124,14 @@ class MigrationContext {
       : (this.mode === 'content' ? 'content' : 'mail');
     this.fromFolderId = String(fromFolderId || '').trim() || '/';
     this.toFolderId = String(toFolderId || '').trim() || '/';
+    this.contentOptions = contentOptions && typeof contentOptions === 'object' ? contentOptions : null;
+    this.jobName = String(jobName || '').trim();
+    this.excludeFileTypes = String(excludeFileTypes || '').trim();
+    this.replaceSpecialChar = replaceSpecialChar === undefined ? '_' : replaceSpecialChar;
+    // Optional path overrides; blank → migrationClient uses the seeded folder / cloud default.
+    this.sourcePath = String(sourcePath || '').trim();
+    this.destinationPath = String(destinationPath || '').trim();
+    this.sourceFolderName = String(sourceFolderName || '').trim();
   }
 
   validate() {
