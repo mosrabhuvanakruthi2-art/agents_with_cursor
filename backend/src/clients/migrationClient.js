@@ -38,9 +38,12 @@ function setRuntimeConfig(cfg) {
   if (cfg?.baseUrl) {
     let url = normalizeBaseUrl(cfg.baseUrl);
     const lc = url.toLowerCase();
-    // Auto-add /proxyservices/v1 for devemail URLs that arrive without the path prefix
+    // Auto-add /proxyservices/v1 ONLY for devemail (a legacy server). Content servers like
+    // qarelease must stay bare — isNewServer() treats a /proxyservices/ URL as legacy, and the
+    // content path (Basic auth via validateUser) builds /proxyservices/v1 itself. Appending it
+    // here would force the legacy login branch and break content auth.
     if (lc.includes('devemail') && !lc.includes('/proxyservices/')) {
-      url = url + '/proxyservices/v1';
+      url = url.replace(/\/+$/, '') + '/proxyservices/v1';
       logger.info(`CloudFuze: auto-appended /proxyservices/v1 to devemail URL → ${url}`);
     }
     cfg = { ...cfg, baseUrl: url };
@@ -225,6 +228,9 @@ async function register() {
 // ─────────────────────────────────────────────────────────────
 async function login() {
   if (loginToken && !isJwtExpired(loginToken)) return loginToken;
+
+  // Diagnostic: shows why we take the content-server (browser-login) path vs the legacy one.
+  logger.info(`CloudFuze login(): isNewServer=${isNewServer()} runtimeBaseUrl=${runtimeConfig?.baseUrl || '(none)'} hasEmail=${!!runtimeConfig?.email} hasPassword=${!!runtimeConfig?.password}`);
 
   // New server: email + password via POST /email/app/login
   // Different CloudFuze servers (newtestemail5, qarelease, etc.) vary in:
@@ -427,12 +433,17 @@ async function login() {
     // Root base = strip /proxyservices/... suffix so we can try root-level /app/login
     const rootBase = appLoginBase.replace(/\/proxyservices\/.*/i, '');
     const ent = (() => { try { return new URL(appLoginBase).host; } catch { return ''; } })();
+    // The API lives under /proxyservices/v1 even when CONTENT_MIGRATION_SERVER_URL is set
+    // without that prefix (e.g. https://qarelease.cloudfuze.com). Build the API base so the
+    // login doesn't hit the website root (which returns a 404 HTML page).
+    const apiBase = appLoginBase.includes('/proxyservices/') ? appLoginBase : `${rootBase}/proxyservices/v1`;
 
-    const appLoginUrls = [
-      `${appLoginBase}/app/login`,                   // /proxyservices/v1/app/login
-      ...(rootBase !== appLoginBase ? [`${rootBase}/app/login`] : []),  // /app/login (root)
-      `${appLoginBase}/email/app/login`,             // /proxyservices/v1/email/app/login
-    ];
+    const appLoginUrls = [...new Set([
+      `${apiBase}/app/login`,            // /proxyservices/v1/app/login  (content server primary)
+      `${apiBase}/users/app/login`,      // /proxyservices/v1/users/app/login
+      `${apiBase}/email/app/login`,      // /proxyservices/v1/email/app/login
+      `${rootBase}/app/login`,           // /app/login (root-level fallback)
+    ])];
 
     for (const loginUrl of appLoginUrls) {
       try {
@@ -958,78 +969,284 @@ async function triggerMigration(context) {
     const token = await login();
     const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
 
-    // Determine source path: prefer explicit context override, then BoxTestDataAgent-captured path, then root
-    const sourcePath = context.sourcePath || context.sourceTestDataPath || '/';
+    // The qarelease Team-Migration UI authenticates content calls with HTTP Basic auth —
+    // base64(`${userId}:${md5(password)}`) — NOT the JWT bearer token. The path-mapping
+    // endpoint resolves the user's clouds from this Basic credential; with the JWT it can't,
+    // so cfMappingCachesList comes back empty (confirmed via a DevTools capture of the working
+    // request). Build the same credential here and use it for all content newmultiuser calls.
+    const contentAuth = (() => {
+      if (runtimeConfig.basicAuth) {
+        const raw = String(runtimeConfig.basicAuth).trim();
+        return raw.toLowerCase().startsWith('basic ') ? raw : `Basic ${raw}`;
+      }
+      const md5pw = require('crypto').createHash('md5').update(runtimeConfig.password || '').digest('hex');
+      const b64 = Buffer.from(`${runtimeConfig.userId}:${md5pw}`).toString('base64');
+      return `Basic ${b64}`;
+    })();
+    logger.info(`CloudFuze content: using Basic auth for userId=${runtimeConfig.userId}`);
 
-    // Determine destination path based on cloud type (can be overridden via context.destinationPath)
-    let destinationPath = context.destinationPath;
-    if (!destinationPath) {
+    // Resolve the destination path/folder-id defaults by cloud type.
+    const resolveDestPath = (p) => {
+      if (p) return p;
       const dcn = String(context.destCloudName || context.destinationProvider || '').toUpperCase();
-      if (dcn.includes('SHAREPOINT')) destinationPath = '/SANITY DATAA/Documents';
-      else if (dcn.includes('SHARED_DRIVE') || dcn.includes('GOOGLEDRIVE') || dcn.includes('GOOGLE_DRIVE')) destinationPath = '/OSM';
-      else destinationPath = '/';
+      if (dcn.includes('SHAREPOINT')) return '/SANITY DATAA/Documents';
+      if (dcn.includes('SHARED_DRIVE') || dcn.includes('GOOGLEDRIVE') || dcn.includes('GOOGLE_DRIVE')) return '/OSM';
+      return '/';
+    };
+    const dcnUpper = String(context.destCloudName || context.destinationProvider || '').toUpperCase();
+    const destFolderId = context.destRootId || (dcnUpper.includes('SHAREPOINT') ? '200' : 'root');
+
+    const pathOverride   = (env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim();
+    const rootIdOverride = (env.CONTENT_SOURCE_ROOT_ID_OVERRIDE || '').trim();
+
+    // ── Build transfer units: one CloudFuze workspace pair per selected user ──
+    // Multi-user: context.userFolderMappings has one entry per Map-Users pair (each with its
+    // own seeded folder). Single-user / legacy: synthesize one unit from the seeded folder.
+    // A diagnostic CONTENT_SOURCE_PATH_OVERRIDE forces the single-unit path.
+    let units;
+    if (Array.isArray(context.userFolderMappings) && context.userFolderMappings.length > 0 && !pathOverride) {
+      units = context.userFolderMappings.map((u) => ({
+        sourceEmail: u.sourceEmail || context.sourceEmail,
+        destinationEmail: u.destinationEmail || context.destinationEmail,
+        sourcePath: u.sourcePath || '/',
+        fromRootId: u.sourceRootId || u.sourcePath || '/',
+        destinationPath: resolveDestPath(u.destinationPath),
+      }));
+    } else {
+      const sourcePath = pathOverride || context.sourceTestDataPath || context.sourcePath || '/';
+      units = [{
+        sourceEmail: context.sourceEmail,
+        destinationEmail: context.destinationEmail,
+        sourcePath,
+        fromRootId: rootIdOverride || context.sourceRootId || sourcePath,
+        destinationPath: resolveDestPath(context.destinationPath),
+      }];
     }
 
-    logger.info(`CloudFuze triggerMigration (content team): sourcePath="${sourcePath}", destinationPath="${destinationPath}", srcCloud=${context.sourceCloudId}, dstCloud=${context.destCloudId}`);
+    logger.info(`CloudFuze triggerMigration (content team): ${units.length} unit(s), adminSrc=${context.sourceCloudId}, adminDst=${context.destCloudId}`);
 
-    // ── Step 1: Upload path mapping CSV ──────────────────────────────────────
-    const csvContent = [
-      'Source Cloud,Source Path,Destination Cloud,Destination Path',
-      `${context.sourceEmail},${sourcePath},${context.destinationEmail},${destinationPath}`,
-    ].join('\r\n');
-
-    const csvParams = `sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=500`;
-    const csvUrl = `${contentOrigin}/proxyservices/v1/mapping/user/path/csv?${csvParams}`;
-
-    logger.info(`CloudFuze content CSV upload: POST ${csvUrl}\n${csvContent}`);
-    let csvData = [];
+    // ── Per-user sub-clouds ───────────────────────────────────────────────────
+    // Each provisioned user has its OWN source/dest sub-cloud id under the admin cloud
+    // (e.g. alex = 69e73afd…c91, not the admin 69e73af9…c8b). Using the admin cloud id makes
+    // EVERY workspace show admin→admin. So we initiate the permission mapping, read
+    // get/permissions, and attach each user's sub-cloud ids — the migration is then attributed
+    // to the right source/destination user.
     try {
-      const csvRes = await axios.post(csvUrl, csvContent, migrationAxiosConfig({
-        headers: { Authorization: token, 'Content-Type': 'text/csv' },
+      await axios.post(`${contentOrigin}/proxyservices/v1/mapping/permissiondetiails/${context.sourceCloudId}/${context.destCloudId}`, {},
+        migrationAxiosConfig({ headers: { Authorization: contentAuth, 'Content-Type': 'application/json' }, timeout: 40000 }));
+    } catch (e) { logger.warn(`CloudFuze permission init failed (${e?.response?.status || e.message})`); }
+
+    // Upload OUR permission mapping (Map Users pairs) as the manual mapping CSV — the same
+    // step + endpoint the CloudFuze UI uses. This OVERRIDES the email auto-match with our
+    // explicit source→destination user pairs (e.g. leo@gmail.com.com → leo@fuzebot.io) before
+    // the migration reads them. Header: "Source Email,Destination Email".
+    if (context.contentOptions?.permissions !== false) {
+      const permRows = (context.userEmailMappings || [])
+        .filter((m) => m?.sourceEmail && m?.destinationEmail)
+        .map((m) => `${m.sourceEmail},${m.destinationEmail}`);
+      if (permRows.length > 0) {
+        const permCsv = ['Source Email,Destination Email', ...permRows].join('\r\n');
+        const mmUrl = `${contentOrigin}/proxyservices/v1/mapping/user/manualmapping/csv`
+          + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}`;
+        try {
+          const mmRes = await axios.post(mmUrl, permCsv, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            timeout: 40000,
+          }));
+          const errLines = Array.isArray(mmRes.data) ? mmRes.data.length : 0;
+          logger.info(`CloudFuze permission mapping CSV uploaded (manualmapping/csv): ${permRows.length} pair(s), HTTP ${mmRes.status}${errLines ? `, ${errLines} unmatched/error line(s)` : ''}`);
+        } catch (mmErr) {
+          logger.warn(`CloudFuze manualmapping/csv upload failed (${mmErr?.response?.status || mmErr.message}) — falling back to CloudFuze email auto-match`);
+        }
+      }
+    }
+
+    const subCloudByEmail = {};        // by SOURCE email → { src sub-cloud, auto-dst, destEmail }
+    const destSubCloudByEmail = {};    // by DEST email → that user's DEST sub-cloud id
+    const permissionMapping = []; // surfaced in the result + logged for visibility
+    try {
+      const gp = `${contentOrigin}/proxyservices/v1/mapping/user/clouds/get/permissions`
+        + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=500`;
+      const gpRes = await axios.get(gp, migrationAxiosConfig({ headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' }, timeout: 40000 }));
+      for (const p of (Array.isArray(gpRes.data) ? gpRes.data : [])) {
+        const email = String(p?.sourceCloudDetails?.emailId || '').toLowerCase();
+        const destEmail = p?.destCloudDetails?.emailId || null;
+        // Index each user's DESTINATION sub-cloud by their email so we can route a unit to its
+        // MAPPED destination user (e.g. alex→erik uses erik's dest sub-cloud, not alex's).
+        const destEmailLc = String(destEmail || '').toLowerCase();
+        if (destEmailLc && p?.destCloudDetails?.id) destSubCloudByEmail[destEmailLc] = p.destCloudDetails.id;
+        if (email && p?.sourceCloudDetails?.id) {
+          subCloudByEmail[email] = { src: p.sourceCloudDetails.id, dst: p?.destCloudDetails?.id, destEmail };
+          permissionMapping.push({
+            sourceEmail: p.sourceCloudDetails.emailId,
+            destinationEmail: destEmail,
+            sourceSubCloudId: p.sourceCloudDetails.id,
+            destSubCloudId: p?.destCloudDetails?.id || null,
+            provisioned: p?.sourceCloudDetails?.provisionedUser !== false,
+          });
+        }
+      }
+      // ── PERMISSION MAPPING (this is what the migration applies) ──────────────
+      logger.info(`CloudFuze PERMISSION MAPPING — ${permissionMapping.length} user pair(s) (source user → destination user, by CloudFuze email match):`);
+      for (const pm of permissionMapping) {
+        logger.info(`  • ${pm.sourceEmail}  →  ${pm.destinationEmail}  ${pm.sourceEmail.toLowerCase() === String(pm.destinationEmail || '').toLowerCase() ? '(same)' : '(remapped)'} [src ${pm.sourceSubCloudId} → dst ${pm.destSubCloudId}]`);
+      }
+    } catch (e) {
+      logger.warn(`CloudFuze content get/permissions failed (${e?.response?.status || e.message}) — falling back to admin cloud (workspaces will show admin)`);
+    }
+    // Which mapping each migrated user actually uses (intersection of Map-Users selection × permission mapping).
+    logger.info(`CloudFuze PERMISSION MAPPING applied to this run (${units.length} user(s)):`);
+    for (const u of units) {
+      const sc = subCloudByEmail[String(u.sourceEmail || '').toLowerCase()];
+      u.srcCloudId = sc?.src || context.sourceCloudId;
+      // Destination sub-cloud = the MAPPED destination user's sub-cloud (from Map Users), NOT
+      // the source user's auto-matched dest. This is what makes alex→erik route to erik.
+      const mappedDestSub = destSubCloudByEmail[String(u.destinationEmail || '').toLowerCase()];
+      u.dstCloudId = mappedDestSub || sc?.dst || context.destCloudId;
+      u.attributed = Boolean(sc?.src);
+      u.permDestEmail = u.destinationEmail || sc?.destEmail;
+      logger.info(`  • ${u.sourceEmail} → ${u.permDestEmail}  | folder "${u.sourcePath}" (id=${u.fromRootId}) → "${u.destinationPath}"  | src-cloud ${u.srcCloudId} → dst-cloud ${u.dstCloudId}${u.attributed ? '' : ' (admin fallback)'}${mappedDestSub ? '' : ' [dest not in permission list — using source auto-dest]'}`);
+    }
+
+    // ── Force explicit permission overrides into CloudFuze's permission store ──────────
+    // manualmapping/csv only fills users with NO email auto-match; it can't override an
+    // existing same-email match (e.g. a swap alex→erik). PUT /mapping/user/permission/update
+    // (source user's sub-cloud → MAPPED dest user's sub-cloud, empty body) forces it — the same
+    // call the UI's pencil-edit makes. We apply it only where our mapped dest differs from the
+    // current (auto) dest, so the Permission Mapping store matches our mapping.
+    if (context.contentOptions?.permissions !== false) {
+      for (const m of (context.userEmailMappings || [])) {
+        const se = String(m?.sourceEmail || '').toLowerCase();
+        const de = String(m?.destinationEmail || '').toLowerCase();
+        if (!se || !de) continue;
+        const sc = subCloudByEmail[se];
+        const currentDest = String(sc?.destEmail || '').toLowerCase();
+        if (!sc?.src || currentDest === de) continue; // not resolvable, or already correct
+        const dstSub = destSubCloudByEmail[de];
+        if (!dstSub) continue; // mapped dest user not provisioned on destination
+        try {
+          const upUrl = `${contentOrigin}/proxyservices/v1/mapping/user/permission/update`
+            + `?sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`
+            + `&sourceCloudId=${encodeURIComponent(sc.src)}&destCloudId=${encodeURIComponent(dstSub)}`;
+          await axios.put(upUrl, {}, migrationAxiosConfig({ headers: { Authorization: contentAuth, 'Content-Type': 'application/json' }, timeout: 30000 }));
+          logger.info(`CloudFuze permission override forced: ${m.sourceEmail} → ${m.destinationEmail} (was → ${sc.destEmail || '?'})`);
+        } catch (upErr) {
+          logger.warn(`CloudFuze permission/update ${se}→${de} failed (${upErr?.response?.status || upErr.message})`);
+        }
+      }
+    }
+
+    // ── Step 1: Map each unit's source folder → destination (creates one pair each) ──
+    // POST /mapping/user/unmapped/list with the user's SUB-cloud ids attributes the pair to that
+    // user. Clear stale mappings once, then map every unit.
+    try {
+      const delUrl = `${contentOrigin}/proxyservices/v1/mapping/deleteAll/mapplist`
+        + `?sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`;
+      const delRes = await axios.delete(delUrl, migrationAxiosConfig({
+        headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
         timeout: 30000,
       }));
-      csvData = Array.isArray(csvRes.data) ? csvRes.data : (csvRes.data ? [csvRes.data] : []);
-      logger.info(`CloudFuze content CSV upload response: ${JSON.stringify(csvData)}`);
-    } catch (csvErr) {
-      logger.warn(`CloudFuze content CSV upload failed (${csvErr?.response?.status || csvErr.message}) — using direct workspace pair`);
+      logger.info(`CloudFuze content: cleared stale mappings (HTTP ${delRes.status})`);
+    } catch (delErr) {
+      logger.warn(`CloudFuze content deleteAll/mapplist failed (${delErr?.response?.status || delErr.message}) — continuing`);
     }
 
-    // ── Step 2: Create multiuser migration job ────────────────────────────────
-    // CSV response wraps entries inside cfMappingCachesList — extract those first.
-    // Fall back to the outer response rows only if cfMappingCachesList is absent.
-    const mappingRows = csvData.flatMap((item) =>
-      Array.isArray(item?.cfMappingCachesList) && item.cfMappingCachesList.length > 0
-        ? item.cfMappingCachesList
-        : (item?.fromRootId || item?.fromMailId ? [item] : [])
-    );
-    logger.info(`CloudFuze content mapping rows extracted: ${mappingRows.length}`);
+    let resolvedMappings = [];
+    for (const u of units) {
+      const unmappedUrl = `${contentOrigin}/proxyservices/v1/mapping/user/unmapped/list`
+        + `?sourceCloudId=${encodeURIComponent(u.srcCloudId)}`
+        + `&destCloudId=${encodeURIComponent(u.dstCloudId)}`
+        + `&sourcePath=${encodeURIComponent(u.sourcePath)}`
+        + `&destPath=${encodeURIComponent(u.destinationPath)}`
+        + `&sourceFolderId=${encodeURIComponent(u.fromRootId)}`
+        + `&destFolderId=${encodeURIComponent(destFolderId)}`
+        + `&isFolder=true`;
+      try {
+        const unmappedRes = await axios.post(unmappedUrl, {}, migrationAxiosConfig({
+          headers: { Authorization: contentAuth, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          timeout: 40000,
+        }));
+        const mapped = Array.isArray(unmappedRes.data) ? unmappedRes.data : (unmappedRes.data ? [unmappedRes.data] : []);
+        resolvedMappings.push(...mapped);
+        const m0 = mapped[0] || {};
+        // ── CSV-style validation (Source Path Review / Destination Path Review) ──
+        // A resolved, provisioned pair = the source folder exists and the destination resolves =
+        // PASS (equivalent to CloudFuze's validated-CSV PASS / CREATED-PASS). No pair = FAIL.
+        const srcResolved = Boolean(m0?.sourceCloudDetails?.emailId);
+        const provisionedOk = m0?.sourceCloudDetails?.provisionedUser !== false;
+        u.srcReview = (mapped.length > 0 && srcResolved) ? 'PASS' : 'FAIL';
+        u.dstReview = (mapped.length > 0) ? 'CREATED-PASS' : 'FAIL';
+        u.validated = mapped.length > 0 && srcResolved && provisionedOk;
+        logger.info(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}"]: ${u.validated ? 'PASS ✓' : 'FAIL ✗'}  (Source Path Review: ${u.srcReview}, Destination Path Review: ${u.dstReview})`);
+      } catch (mapErr) {
+        u.validated = false;
+        u.srcReview = 'FAIL';
+        u.dstReview = 'FAIL';
+        logger.warn(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}"]: FAIL ✗ (unmapped/list error ${mapErr?.response?.status || mapErr.message})`);
+      }
+    }
 
-    const workspacePairs = mappingRows.length > 0
-      ? mappingRows.map((row) => ({
-          fromCloudId: { id: context.sourceCloudId },
-          toCloudId: { id: context.destCloudId },
-          fromMailId: row?.sourceCloudDetails?.emailId || row?.fromMailId || context.sourceEmail,
-          toMailId: row?.destCloudDetails?.emailId || row?.toMailId || context.destinationEmail,
-          fromRootId: row?.fromRootId || row?.sourcePath || sourcePath,
-          toRootId: row?.toRootId || row?.destPath || destinationPath,
-          fromCloudName: context.sourceCloudName,
-          toCloudName: context.destCloudName,
-        }))
-      : [{
-          fromCloudId: { id: context.sourceCloudId },
-          toCloudId: { id: context.destCloudId },
-          fromMailId: context.sourceEmail,
-          toMailId: context.destinationEmail,
-          fromRootId: sourcePath,
-          toRootId: destinationPath,
-          fromCloudName: context.sourceCloudName,
-          toCloudName: context.destCloudName,
-        }];
+    // cache/list — secondary log only (the unmapped/list results above are authoritative).
+    try {
+      const cacheUrl = `${contentOrigin}/proxyservices/v1/mapping/user/cache/list`
+        + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=50&matchBy=`;
+      const cacheRes = await axios.get(cacheUrl, migrationAxiosConfig({
+        headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
+        timeout: 30000,
+      }));
+      const cached = Array.isArray(cacheRes.data) ? cacheRes.data : [];
+      logger.info(`CloudFuze content cache/list: ${cached.length} cached pair(s)`);
+    } catch (cacheErr) {
+      logger.warn(`CloudFuze content cache/list failed (${cacheErr?.response?.status || cacheErr.message})`);
+    }
+
+    // ── Validation gate: per-pair — skip failed, migrate the rest ──────────────
+    // Each pair is validated via CloudFuze's unmapped/list resolution. Pairs that FAIL are
+    // dropped (never submitted to create/job, so they don't even produce a conflict row);
+    // passing pairs migrate. Only abort if NOTHING passes (a 0-pair job is pointless).
+    const passedUnits = units.filter((u) => u.validated);
+    const failedUnits = units.filter((u) => !u.validated);
+    logger.info(`CloudFuze CSV VALIDATION summary: ${passedUnits.length}/${units.length} PASS, ${failedUnits.length} FAIL`);
+    for (const u of failedUnits) {
+      logger.warn(`CloudFuze CSV VALIDATION: SKIPPING ${u.sourceEmail} "${u.sourcePath}" — failed validation (Source ${u.srcReview}/Destination ${u.dstReview}); this pair is NOT migrated`);
+    }
+    if (passedUnits.length === 0 && env.CONTENT_REQUIRE_CSV_MAPPING !== 'false') {
+      throw new Error(
+        `CloudFuze content: ALL ${units.length} pair(s) failed validation — nothing to migrate. `
+        + `Failed: ${failedUnits.map((u) => `${u.sourceEmail} "${u.sourcePath}"`).join('; ')}. `
+        + `Verify the source folder(s) exist and the destination is valid.`
+      );
+    }
+    logger.info(`CloudFuze CSV VALIDATION: migrating ${passedUnits.length} passed pair(s)${failedUnits.length ? `, skipping ${failedUnits.length} failed` : ''} (destFolderId="${destFolderId}")`);
+
+    // (Permission mapping was initialized + our overrides forced earlier — do NOT re-run
+    // permissiondetiails here; it would reset our explicit overrides back to email auto-match.)
+
+    // ── Step 2: Create multiuser migration job (documented body shape) ────────
+    // Body uses fromRootId/toRootId (real folder IDs), sourceFolderPath/destFolderPath, and
+    // folder:"true" — NOT fromMailId/cloudName. totalPairsCount is 0 in this immediate
+    // response; it appears as 1+ in the get/moveJob job list once the pair is attached.
+    // One workspace pair per VALIDATED transfer unit (failed pairs are never migrated). The
+    // folder IDs are the real Box folder ids; toRootId is the resolved destination root.
+    const workspacePairs = passedUnits.map((u) => ({
+      // Per-user SUB-cloud ids (fallback to admin) so CloudFuze attributes each workspace to the
+      // right source/destination user instead of the admin.
+      fromCloudId: { id: u.srcCloudId },
+      toCloudId: { id: u.dstCloudId },
+      fromMailId: u.sourceEmail,
+      toMailId: u.destinationEmail,
+      fromRootId: u.fromRootId,
+      toRootId: destFolderId,
+      sourceFolderPath: u.sourcePath,
+      destFolderPath: u.destinationPath,
+      destinationFolderName: 'null',
+      folder: 'true',
+    }));
 
     const createJobUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/job`;
     logger.info(`CloudFuze create multiuser job: POST ${createJobUrl} pairs=${JSON.stringify(workspacePairs)}`);
     const createJobRes = await axios.post(createJobUrl, workspacePairs, migrationAxiosConfig({
-      headers: { Authorization: token, 'Content-Type': 'application/json' },
+      headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
       timeout: 30000,
     }));
     logger.info(`CloudFuze multiuser job created: ${JSON.stringify(createJobRes.data)}`);
@@ -1045,37 +1262,47 @@ async function triggerMigration(context) {
 
     // ── Step 3: Update job options (migration settings) ───────────────────────
     const isDelta = context.migrationType === 'DELTA';
-    const jobName = `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`.slice(0, 80);
+    const jobName = (context.jobName || `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`).slice(0, 80);
     const toDate = new Date().toISOString().slice(0, 10) + ' 00:00:00';
+
+    // Migration options selected in the Run Agent "Options" step (context.contentOptions).
+    // Each maps to a CloudFuze newmultiuser param. Default = true to preserve prior
+    // behaviour when the caller doesn't pass explicit options.
+    const o = context.contentOptions || {};
+    const opt = (key, def = true) => (o[key] === undefined ? def : Boolean(o[key]));
 
     const updateParams = [
       `jobName=${encodeURIComponent(jobName)}`,
       `migrateFolderName=${encodeURIComponent('/')}`,
       `isDeltaMigration=${isDelta}`,
-      'fileFolderLink=true',
-      'externalUsers=true',
-      'metaData=true',
-      'sendComments=true',
-      'innerFolderPerms=true',
-      'innerFilePerms=true',
-      'versioning=true',
-      'embeddedLinks=true',
-      'rootFolderPerms=true',
-      'rootFilePerms=true',
-      'addExternalUserAsGuest=true',
-      'withPermissions=true',
-      'notifyInternalUsers=true',
-      'notifyExternalUsers=true',
+      `fileFolderLink=${opt('sharedLinks')}`,            // Shared Links
+      `externalUsers=${opt('externalShares')}`,          // External Shares
+      `metaData=${opt('customMetadata')}`,               // Custom Metadata
+      `sendComments=${opt('comments')}`,                 // Comments
+      `innerFolderPerms=${opt('subFolderPermissions')}`, // Sub-Folder Permissions
+      `innerFilePerms=${opt('subFilePermissions')}`,     // Sub-File Permissions
+      `versioning=${opt('versionHistory')}`,             // Version History
+      `embeddedLinks=${opt('workbookLinks')}`,           // Workbook / embedded links
+      `rootFolderPerms=${opt('rootFolderPermissions')}`, // Root Folder Permissions
+      `rootFilePerms=${opt('rootFilePermissions')}`,     // Root File Permissions
+      `addExternalUserAsGuest=${opt('externalShares')}`,
+      `withPermissions=${opt('permissions')}`,
+      `notifyInternalUsers=${opt('notifyInternalUsers', false)}`,
+      `notifyExternalUsers=${opt('notifyExternalUsers', false)}`,
       'fromDate=null',
       `toDate=${encodeURIComponent(toDate)}`,
       'createdTimeForFiles=false',
-      'modifiedTimeForFiles=true',
+      `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
+      // Job Options step: "Replace special characters with" + "Exclude file types"
+      `specialCharacter=${encodeURIComponent(context.replaceSpecialChar || '-')}`,
+      // notToMoveExtension: comma-separated extensions (no dots), e.g. mp3,mp4,psd
+      ...(context.excludeFileTypes ? [`notToMoveExtension=${encodeURIComponent(context.excludeFileTypes)}`] : []),
     ].join('&');
 
     const updateUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/update/${jobId}?${updateParams}`;
     logger.info(`CloudFuze update job options: PUT ${updateUrl}`);
     const updateRes = await axios.put(updateUrl, null, migrationAxiosConfig({
-      headers: { Authorization: token },
+      headers: { Authorization: contentAuth },
       timeout: 30000,
     }));
     logger.info(`CloudFuze update job options response: ${JSON.stringify(updateRes.data)}`);
@@ -1084,7 +1311,7 @@ async function triggerMigration(context) {
     const startUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/${jobId}`;
     logger.info(`CloudFuze start migration: POST ${startUrl}`);
     const startRes = await axios.post(startUrl, null, migrationAxiosConfig({
-      headers: { Authorization: token },
+      headers: { Authorization: contentAuth },
       timeout: 60000,
     }));
     logger.info(`CloudFuze start migration response: ${JSON.stringify(startRes.data)}`);
@@ -1096,6 +1323,23 @@ async function triggerMigration(context) {
       status: 'INITIATED',
       rawResponse: startRes.data,
       initiatePath: 'move/newmultiuser',
+      // Permission mapping used (source user → destination user, per CloudFuze email match) +
+      // the per-user units actually migrated — surfaced for the UI / report.
+      permissionMapping,
+      migratedUsers: passedUnits.map((u) => ({
+        sourceEmail: u.sourceEmail,
+        destinationEmail: u.permDestEmail || u.destinationEmail,
+        sourcePath: u.sourcePath,
+        destinationPath: u.destinationPath,
+        attributed: Boolean(u.attributed),
+      })),
+      // Pairs that failed validation and were skipped (not migrated) — surfaced for the report.
+      skippedUsers: failedUnits.map((u) => ({
+        sourceEmail: u.sourceEmail,
+        destinationEmail: u.destinationEmail,
+        sourcePath: u.sourcePath,
+        reason: `validation failed (Source ${u.srcReview}/Destination ${u.dstReview})`,
+      })),
     };
   }
 
@@ -1252,6 +1496,14 @@ const TERMINAL_STATUSES = new Set([
 //   Primary:  GET /proxyservices/v1/move/queue/status?jobId={jobId}
 //   Fallback: GET /proxyservices/v1/move/clouds/status/{moveId}  (legacy consumer jobs)
 // ─────────────────────────────────────────────────────────────
+// Content migration: real terminal states. NOT_PROCESSED / VERSION_NOT_PROCESSED /
+// IN_PROGRESS / QUEUED are TRANSIENT (the job is queued or running) — keep polling.
+const CONTENT_TERMINAL_STATUSES = new Set([
+  'PROCESSED', 'PROCESS', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
+  'PROCESSED_WITH_CONFLICT_AND_PAUSE', 'CONFLICT', 'CONFLICTS', 'PAUSE',
+  'FAILED', 'ERROR', 'VERSION_PROCESSED',
+]);
+
 async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 30000, onProgress, executionId } = {}) {
   const contentOrigin = (() => { try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; } })();
   const queueStatusUrl = `${contentOrigin}/proxyservices/v1/move/queue/status?jobId=${moveId}`;
@@ -1260,6 +1512,10 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
   const token = await login();
   const executionService = require('../services/executionService');
   const maxPolls = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
+
+  // Stop early if the job sits NOT_PROCESSED with 0 files for this many consecutive polls.
+  let stuckPolls = 0;
+  const STUCK_LIMIT = 6;
 
   for (let attempt = 1; attempt <= maxPolls; attempt++) {
     const sliceMs = 5000;
@@ -1309,7 +1565,27 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
 
     if (onProgress) onProgress(attempt, maxPolls, status || null);
 
-    if (TERMINAL_STATUSES.has(status)) return status;
+    // Real terminal state → done.
+    if (CONTENT_TERMINAL_STATUSES.has(status)) return status;
+
+    // NOT_PROCESSED / IN_PROGRESS / QUEUED are transient — keep polling so a queued job
+    // gets time to start and scan. Guard: if it stays NOT_PROCESSED with zero files for
+    // several consecutive polls, the job has nothing to migrate (e.g. empty path mapping)
+    // — stop early instead of waiting the full window.
+    if (status === 'NOT_PROCESSED' || status === 'VERSION_NOT_PROCESSED') {
+      if (!totalCount) {
+        stuckPolls += 1;
+        if (stuckPolls >= STUCK_LIMIT) {
+          logger.warn(`CloudFuze content poll: status ${status} with 0 files for ${stuckPolls} polls — job has nothing to migrate (check path mapping). Stopping.`);
+          return status;
+        }
+      } else {
+        stuckPolls = 0; // files detected — it's progressing
+      }
+      logger.info(`CloudFuze content poll ${attempt}/${maxPolls}: ${status} (queued, total=${totalCount || 0}) — continuing`);
+    } else {
+      stuckPolls = 0;
+    }
   }
 
   logger.warn(`CloudFuze content poll: max wait (${maxMinutes} min) reached for jobId=${moveId}`);

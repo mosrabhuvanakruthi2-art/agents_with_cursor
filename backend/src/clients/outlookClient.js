@@ -148,14 +148,20 @@ async function getAccessToken(email) {
   return getAppAccessToken(tenant);
 }
 
-async function graphGet(url, userId = null) {
+// Timeout guard for Graph reads. Without it, a stalled connection (socket open, no data —
+// common on flaky networks) never rejects, so retryWithBackoff never retries and the whole
+// execution hangs indefinitely. A timeout turns the stall into a retryable error.
+const GRAPH_GET_TIMEOUT_MS = 60000;
+
+async function graphGet(url, userId = null, retryOpts = {}) {
   const token = await getAccessToken(userId);
   return retryWithBackoff(
     () =>
       axios.get(url, {
         headers: { Authorization: `Bearer ${token}` },
+        timeout: GRAPH_GET_TIMEOUT_MS,
       }),
-    { label: `Graph GET ${url.replace(GRAPH_BASE, '')}` }
+    { label: `Graph GET ${url.replace(GRAPH_BASE, '')}`, ...retryOpts }
   );
 }
 
@@ -165,6 +171,7 @@ async function graphGetWithHeaders(url, userId = null, extraHeaders = {}) {
     () =>
       axios.get(url, {
         headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
+        timeout: GRAPH_GET_TIMEOUT_MS,
       }),
     { label: `Graph GET ${url.replace(GRAPH_BASE, '')}` }
   );
@@ -212,7 +219,8 @@ async function getAllFoldersFlat(userId) {
       all.push(f);
       let children = f.childFolders || [];
       if ((f.childFolderCount || 0) > children.length && f.id) {
-        try { children = await getChildFolders(userId, f.id); } catch (_) {}
+        try { children = await getChildFolders(userId, f.id); }
+        catch (e) { logger.warn(`getAllFoldersFlat: could not fetch children of "${f.displayName || f.id}" (childFolderCount=${f.childFolderCount}) — nested subtree omitted: ${e.message}`); }
       }
       if (children.length > 0) {
         await flatten(children);
@@ -339,9 +347,14 @@ async function getEventCount(userId, calendarId) {
 }
 
 async function getAttachments(userId, messageId) {
+  // Attachment fetch is a skippable, read-only validation call. Cap retries lower than the default 5
+  // so a transient Microsoft Graph 5xx storm degrades quickly (~7s worst case) instead of stalling
+  // deep validation for ~15s PER message across hundreds of messages. Callers already catch failures
+  // and skip the attachment comparison, so fewer retries only means faster graceful degradation.
   const res = await graphGet(
     `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(messageId)}/attachments`,
-    userId
+    userId,
+    { maxRetries: 3 }
   );
   return res.data.value || [];
 }
@@ -350,15 +363,39 @@ async function getAttachments(userId, messageId) {
 const MESSAGE_SELECT_DEEP =
   'internetMessageId,subject,bodyPreview,body,hasAttachments,receivedDateTime,sentDateTime,toRecipients,ccRecipients,bccRecipients,replyTo,from,parentFolderId,flag,importance,isRead,categories,conversationId';
 
+// Sensitivity (Normal/Personal/Private/Confidential) is NOT a first-class Graph message property —
+// $select=sensitivity returns HTTP 400. It lives in the MAPI extended property PidTagSensitivity
+// (tag 0x0036, Integer): 0=Normal, 1=Personal, 2=Private, 3=Confidential. Read it via $expand.
+const SENSITIVITY_EXT_PROP_ID = 'Integer 0x0036';
+const SENSITIVITY_BY_VALUE = { 0: 'normal', 1: 'personal', 2: 'private', 3: 'confidential' };
+
 /**
  * Single message by Graph id with recipient + body fields.
  */
 async function getMessageById(userId, messageId, selectOverride) {
   const uid = graphUserPath(userId);
   const select = encodeURIComponent(selectOverride || MESSAGE_SELECT_DEEP);
-  const url = `${GRAPH_BASE}/users/${uid}/messages/${encodeURIComponent(messageId)}?$select=${select}`;
-  const res = await graphGet(url, userId);
-  return res.data;
+  const base = `${GRAPH_BASE}/users/${uid}/messages/${encodeURIComponent(messageId)}?$select=${select}`;
+
+  // Read sensitivity via the PidTagSensitivity extended property ($expand). Best-effort: if the
+  // expand ever fails, fall back to the plain select fetch so message loading never breaks.
+  const expand = encodeURIComponent(`singleValueExtendedProperties($filter=id eq '${SENSITIVITY_EXT_PROP_ID}')`);
+  let data;
+  try {
+    const res = await graphGet(`${base}&$expand=${expand}`, userId);
+    data = res.data;
+  } catch (expandErr) {
+    logger.warn(`[getMessageById] sensitivity $expand failed (${expandErr.response?.status || ''}) — fetching without it`);
+    const res = await graphGet(base, userId);
+    data = res.data;
+  }
+
+  // Surface sensitivity as a plain field so comparators can use msg.sensitivity.
+  const svep = Array.isArray(data.singleValueExtendedProperties) ? data.singleValueExtendedProperties : [];
+  const sensProp = svep.find((p) => /0x0*36$/i.test(String(p.id || '')));
+  data.sensitivity = sensProp ? (SENSITIVITY_BY_VALUE[Number(sensProp.value)] || 'normal') : 'normal';
+
+  return data;
 }
 
 /**
@@ -1745,6 +1782,53 @@ async function patchDeliveredInboxIsRead(recipientEmail, subject, fromEmail) {
   }
 }
 
+/**
+ * Cap the number of UNREAD messages left in a mailbox's Inbox.
+ *
+ * Test-data seeding creates many messages with isRead:false, which leaves an
+ * unrealistically large unread count. This keeps the `maxUnread` most-recent unread
+ * messages and marks the rest as read (Graph PATCH isRead:true), so the seeded Inbox
+ * looks realistic while still retaining enough unread mail to validate read-state.
+ *
+ * Returns { total, unreadBefore, unreadAfter, markedRead }. Never throws.
+ */
+async function capInboxUnread(userEmail, maxUnread = 12) {
+  const cap = Math.max(0, Number(maxUnread) || 0);
+  const result = { total: 0, unreadBefore: 0, unreadAfter: 0, markedRead: 0 };
+  try {
+    const msgs = await listMessagesInFolderPaged(
+      userEmail, 'inbox', 1000, 'id,isRead,receivedDateTime', 'receivedDateTime desc'
+    );
+    result.total = msgs.length;
+    const unread = msgs.filter((m) => m.isRead === false);
+    result.unreadBefore = unread.length;
+    if (unread.length <= cap) {
+      result.unreadAfter = unread.length;
+      return result;
+    }
+    // Sorted newest-first, so slice(cap) is the older unread mail to mark read.
+    const toMarkRead = unread.slice(cap);
+    const token = await getAppAccessToken(getMsTenant(userEmail));
+    const uid   = graphUserPath(userEmail);
+    for (const m of toMarkRead) {
+      try {
+        await axios.patch(
+          `${GRAPH_BASE}/users/${uid}/messages/${m.id}`,
+          { isRead: true },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        result.markedRead++;
+      } catch (err) {
+        logger.warn(`capInboxUnread: patch ${m.id}: ${err.message}`);
+      }
+    }
+    result.unreadAfter = result.unreadBefore - result.markedRead;
+  } catch (err) {
+    logger.warn(`capInboxUnread(${userEmail}): ${err.message}`);
+  }
+  return result;
+}
+
 // ─── EWS message injection helpers ───────────────────────────────────────────
 
 // EWS well-known folder name mapping (Graph folder key → EWS DistinguishedFolderId)
@@ -1850,6 +1934,12 @@ async function createMessageViaEws(userId, folderId, messageBody) {
   const importanceMap = { low: 'Low', normal: 'Normal', high: 'High' };
   const importance  = importanceMap[(messageBody.importance || 'normal').toLowerCase()] || 'Normal';
 
+  // Sensitivity (Normal | Personal | Private | Confidential). EWS schema order requires it
+  // right after Subject and before Body. Only emitted when non-Normal so normal mail is unaffected.
+  const sensitivityMap = { normal: 'Normal', personal: 'Personal', private: 'Private', confidential: 'Confidential' };
+  const sensitivity    = sensitivityMap[String(messageBody.sensitivity || 'normal').toLowerCase()] || 'Normal';
+  const sensitivityXml = sensitivity !== 'Normal' ? `<t:Sensitivity>${sensitivity}</t:Sensitivity>` : '';
+
   const fromXml   = messageBody.from   ? `<t:From>${ewsMailboxXml(messageBody.from)}</t:From>`                       : '';
   const senderXml = (messageBody.sender || messageBody.from)
     ? `<t:Sender>${ewsMailboxXml(messageBody.sender || messageBody.from)}</t:Sender>` : '';
@@ -1886,6 +1976,7 @@ async function createMessageViaEws(userId, folderId, messageBody) {
       <m:Items>
         <t:Message>
           <t:Subject>${xmlEsc(messageBody.subject || '')}</t:Subject>
+          ${sensitivityXml}
           ${bodyXml}
           <t:Importance>${importance}</t:Importance>
           <t:IsRead>${isRead}</t:IsRead>
@@ -2277,6 +2368,48 @@ async function createGroup(displayName, mailNickname, description = '', isPrivat
     { label: `Graph POST /groups (${displayName})`, maxRetries: 2 }
   );
   return res.data;
+}
+
+/**
+ * Add members to a group (mail-enabled M365 / distribution group).
+ * Resolves each member email to its directory object id, then POSTs to /members/$ref.
+ * Real tenant users only — external/fake addresses cannot be group members.
+ * @returns {Promise<{ added: string[], failed: string[] }>} (never throws)
+ */
+async function addGroupMembers(groupId, memberEmails, userId = null) {
+  const tenant = getMsTenant(userId || (memberEmails && memberEmails[0]) || '');
+  const token  = await getAppAccessToken(tenant);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const added = [];
+  const failed = [];
+  for (const email of memberEmails || []) {
+    const addr = String(email || '').trim();
+    if (!addr) continue;
+    try {
+      const userRes = await axios.get(
+        `${GRAPH_BASE}/users/${graphUserPath(addr)}?$select=id`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const memberId = userRes.data?.id;
+      if (!memberId) { failed.push(addr); continue; }
+      await retryWithBackoff(
+        () => axios.post(
+          `${GRAPH_BASE}/groups/${groupId}/members/$ref`,
+          { '@odata.id': `${GRAPH_BASE}/directoryObjects/${memberId}` },
+          { headers, timeout: 20000 }
+        ),
+        { label: `Graph POST /groups/${groupId}/members (${addr})`, maxRetries: 2 }
+      );
+      added.push(addr);
+    } catch (err) {
+      // "already exists" (400 with One or more added object references already exist) is benign.
+      const msg = String(err.response?.data?.error?.message || err.message || '');
+      if (/already exist/i.test(msg)) { added.push(addr); continue; }
+      logger.warn(`addGroupMembers: "${addr}": ${msg}`);
+      failed.push(addr);
+    }
+  }
+  return { added, failed };
 }
 
 /**
@@ -3188,20 +3321,60 @@ async function countMessagesBySubjectPrefix(userId, prefix) {
  * then retries the upload once.  If the drive still doesn't exist the 404 propagates so
  * the caller can handle it gracefully.
  */
+/**
+ * Upload a file to the user's OneDrive under /QAMigration and return the created driveItem.
+ * Files larger than Graph's ~4 MB simple-upload limit (the 26 MB / 35 MB QA large-file cases)
+ * MUST use a resumable upload session (chunked); a single PUT is unreliable/rejected for them.
+ * Small files use a simple PUT.
+ */
+async function uploadDriveContent(uid, token, filename, buffer) {
+  const SIMPLE_MAX = 4 * 1024 * 1024; // Graph simple-PUT reliable ceiling
+  if (buffer.length <= SIMPLE_MAX) {
+    const res = await axios.put(
+      `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/content`,
+      buffer,
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 180000,
+      }
+    );
+    return res.data;
+  }
+
+  // Resumable upload session — required for files > 4 MB.
+  const sessRes = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/createUploadSession`,
+    { item: { '@microsoft.graph.conflictBehavior': 'replace' } },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+  );
+  const uploadUrl = sessRes.data.uploadUrl;
+  if (!uploadUrl) throw new Error('createUploadSession did not return an uploadUrl');
+
+  const total = buffer.length;
+  const CHUNK = 5 * 1024 * 1024; // 5 MiB — a valid multiple of 320 KiB, as Graph requires
+  let start = 0;
+  let last = null;
+  while (start < total) {
+    const end = Math.min(start + CHUNK, total);
+    const chunk = buffer.subarray(start, end);
+    // The session uploadUrl is pre-authenticated — do NOT send the bearer token to it.
+    last = await axios.put(uploadUrl, chunk, {
+      headers: { 'Content-Length': String(chunk.length), 'Content-Range': `bytes ${start}-${end - 1}/${total}` },
+      maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 180000,
+    });
+    start = end;
+  }
+  if (!last?.data?.id) throw new Error('OneDrive upload session completed without returning a driveItem');
+  return last.data;
+}
+
 async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
   const uid = graphUserPath(userId);
   const token = await getAccessToken(userId);
 
-  const uploadUrl = `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/content`;
-  const uploadHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' };
-
   let uploadRes;
   try {
-    uploadRes = await axios.put(uploadUrl, contentBuffer, {
-      headers: uploadHeaders,
-      maxBodyLength: 10 * 1024 * 1024,
-      timeout: 60000,
-    });
+    uploadRes = { data: await uploadDriveContent(uid, token, filename, contentBuffer) };
   } catch (firstErr) {
     const status = firstErr?.response?.status;
     if (status !== 404) throw firstErr;
@@ -3242,11 +3415,7 @@ async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
     }
     // Brief pause to let the newly-provisioned drive become available
     await new Promise(r => setTimeout(r, 3000));
-    uploadRes = await axios.put(uploadUrl, contentBuffer, {
-      headers: uploadHeaders,
-      maxBodyLength: 10 * 1024 * 1024,
-      timeout: 60000,
-    });
+    uploadRes = { data: await uploadDriveContent(uid, token, filename, contentBuffer) };
   }
 
   const itemId = uploadRes.data.id;
@@ -3293,12 +3462,57 @@ async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
  * Returns { sizeBytes, messageCount, method, available }.
  * Returns available=false gracefully if the tenant's Exchange plan doesn't expose `size`.
  */
-async function getMailboxSizeBytes(userId) {
+/**
+ * Sum folder-level `sizeInBytes` across every mail folder (recursing into subfolders and hidden
+ * folders). This is the reliable mailbox-size source — it works even when the bulk /messages query
+ * omits the per-message `size` property (which some tenants/tokens do).
+ */
+async function sumMailFolderSizes(userId) {
   const uid = graphUserPath(userId);
-  let url = `${GRAPH_BASE}/users/${uid}/messages?$select=id,size&$top=999`;
-  let totalBytes = 0;
-  let messageCount = 0;
+  // mailFolder.sizeInBytes is a BETA-only property (v1.0 $select=sizeInBytes returns HTTP 400).
+  // Query the beta endpoint with the same token/scopes. totalItemCount/childFolderCount exist in both.
+  const betaBase = GRAPH_BASE.replace('/v1.0', '/beta');
+  const sel = '$select=id,displayName,sizeInBytes,totalItemCount,childFolderCount&$top=200';
+  let bytes = 0, items = 0, folderCount = 0, sizedFolders = 0;
+
+  async function walk(listUrl) {
+    let url = listUrl;
+    while (url) {
+      const res = await graphGet(url, userId);
+      for (const f of (res.data.value || [])) {
+        folderCount++;
+        if (f.sizeInBytes != null) { bytes += Number(f.sizeInBytes) || 0; sizedFolders++; }
+        items += Number(f.totalItemCount) || 0;
+        if ((f.childFolderCount || 0) > 0 && f.id) {
+          await walk(`${betaBase}/users/${uid}/mailFolders/${encodeURIComponent(f.id)}/childFolders?${sel}`);
+        }
+      }
+      url = res.data['@odata.nextLink'] || null;
+    }
+  }
+
+  await walk(`${betaBase}/users/${uid}/mailFolders?includeHiddenFolders=true&${sel}`);
+  return { bytes, items, folderCount, sizedFolders };
+}
+
+async function getMailboxSizeBytes(userId) {
+  // Primary: folder-level sizeInBytes (works even when /messages omits per-message `size`).
   try {
+    const f = await sumMailFolderSizes(userId);
+    if (f.bytes > 0) {
+      logger.info(`[getMailboxSizeBytes] ${userId}: ${f.bytes} B via folder sizeInBytes (${f.sizedFolders}/${f.folderCount} folders, ${f.items} items)`);
+      return { sizeBytes: f.bytes, messageCount: f.items, method: 'graph_folder_sizeInBytes', available: true };
+    }
+    logger.warn(`[getMailboxSizeBytes] ${userId}: folder sizeInBytes returned 0 across ${f.folderCount} folder(s) — falling back to per-message size`);
+  } catch (err) {
+    logger.warn(`[getMailboxSizeBytes] ${userId}: folder-size scan failed (${err.response?.status || ''} ${err.message}) — falling back to per-message size`);
+  }
+
+  // Fallback: sum per-message `size` across the whole mailbox.
+  const uid = graphUserPath(userId);
+  let totalBytes = 0, messageCount = 0;
+  try {
+    let url = `${GRAPH_BASE}/users/${uid}/messages?$select=id,size&$top=999`;
     while (url) {
       const res = await graphGet(url, userId);
       for (const msg of (res.data.value || [])) {
@@ -3308,12 +3522,10 @@ async function getMailboxSizeBytes(userId) {
       url = res.data['@odata.nextLink'] || null;
     }
   } catch (err) {
-    if (err.response?.status === 400) {
-      return { sizeBytes: 0, messageCount: 0, method: 'graph_messages_size', available: false };
-    }
-    throw err;
+    logger.warn(`[getMailboxSizeBytes] ${userId}: per-message size scan failed (${err.response?.status || ''} ${err.message})`);
   }
-  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: true };
+  logger.info(`[getMailboxSizeBytes] ${userId}: ${totalBytes} B via per-message size (${messageCount} messages)`);
+  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: totalBytes > 0 };
 }
 
 /**
@@ -3965,6 +4177,7 @@ module.exports = {
   getOrCreateCalendar,
   shareCalendar,
   createGroup,
+  addGroupMembers,
   getGroupsCount,
   createMessageWithLargeAttachment,
   deleteMessageRule,
@@ -3986,6 +4199,7 @@ module.exports = {
   deleteQaSearchFolders,
   ewsGetConditionalFormattingRules,
   countMessagesBySubjectPrefix,
+  capInboxUnread,
   deleteAllInboxRules,
   deleteAllConditionalFormattingRules,
   deleteAllSearchFolders,

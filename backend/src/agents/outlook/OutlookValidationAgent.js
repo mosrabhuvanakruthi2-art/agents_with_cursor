@@ -477,25 +477,35 @@ class OutlookValidationAgent extends BaseAgent {
     for (const folder of folders) {
       const segment = (folder.displayName || '').trim();
       const fullPath = parentPath ? `${parentPath}/${segment}` : segment;
-      const count = folder.totalItemCount || 0;
 
       if (defaults.has(segment)) {
         const gmailId = OUTLOOK_TO_GMAIL_ID[segment];
         if (gmailId) {
+          // Use messages/$count (mail-only) instead of totalItemCount which includes
+          // meeting requests and other non-mail item types causing false count mismatches.
+          let count = folder.totalItemCount || 0;
+          if (userId && folder.id) {
+            try {
+              count = await outlookClient.getMessageCount(userId, folder.id);
+            } catch (_) { /* fall back to totalItemCount */ }
+          }
           defaultLabels.push({ id: gmailId, name: segment, messageCount: count });
         } else {
           if (log) log.warn(`OutlookValidationAgent: skipping default folder with no Gmail ID mapping: "${segment}"`);
         }
       } else {
-        customLabels.push({ id: fullPath, name: fullPath, messageCount: count });
+        customLabels.push({ id: fullPath, name: fullPath, messageCount: folder.totalItemCount || 0 });
       }
 
       let children = folder.childFolders || [];
       if ((folder.childFolderCount || 0) > children.length && userId && folder.id) {
         try {
           children = await outlookClient.getChildFolders(userId, folder.id);
-        } catch (_) {
-          // use what we have
+        } catch (e) {
+          // Do NOT swallow silently — a failed fetch here drops the ENTIRE nested subtree
+          // below this folder, so the report would be quietly incomplete (e.g. deep nested
+          // folders missing). Surface it so it's diagnosable and obviously not a clean pass.
+          if (log) log.warn(`Source folder enumeration: could not fetch children of "${fullPath}" (childFolderCount=${folder.childFolderCount}) — nested subtree omitted: ${e.message}`);
         }
       }
       if (children.length) {
@@ -512,11 +522,12 @@ class OutlookValidationAgent extends BaseAgent {
 
       result.destinationData.defaultFolders = [];
       result.destinationData.customFolders = [];
-      await this._walkOutlookFolders(folders, defaults, '', result.destinationData.defaultFolders, result.destinationData.customFolders, destUser);
+      await this._walkOutlookFolders(folders, defaults, '', result.destinationData.defaultFolders, result.destinationData.customFolders, destUser, log);
 
       log.info(`Destination: ${result.destinationData.defaultFolders.length} default folders, ${result.destinationData.customFolders.length} custom folders`);
     } catch (err) {
       log.error(`Failed to fetch destination Outlook data: ${err.message}`);
+      result.destinationData.fetchError = err.message;
     }
   }
 
@@ -525,14 +536,22 @@ class OutlookValidationAgent extends BaseAgent {
    * Outlook uses parent/child folders with separate displayNames.
    * Build slash-separated paths for custom folders so comparison matches Gmail.
    */
-  async _walkOutlookFolders(folders, defaults, parentPath, defaultFolders, customFolders, userId) {
+  async _walkOutlookFolders(folders, defaults, parentPath, defaultFolders, customFolders, userId, log) {
     if (!folders?.length) return;
     for (const folder of folders) {
       const segment = (folder.displayName || '').trim();
       const fullPath = parentPath ? `${parentPath}/${segment}` : segment;
 
       if (defaults.has(segment)) {
-        defaultFolders.push({ name: segment, messageCount: folder.totalItemCount || 0 });
+        // Use messages/$count (mail-only) instead of totalItemCount which includes
+        // meeting requests and other non-mail item types causing false count mismatches.
+        let count = folder.totalItemCount || 0;
+        if (userId && folder.id) {
+          try {
+            count = await outlookClient.getMessageCount(userId, folder.id);
+          } catch (_) { /* fall back to totalItemCount */ }
+        }
+        defaultFolders.push({ name: segment, messageCount: count });
       } else {
         customFolders.push({ name: fullPath, messageCount: folder.totalItemCount || 0 });
       }
@@ -541,12 +560,12 @@ class OutlookValidationAgent extends BaseAgent {
       if ((folder.childFolderCount || 0) > children.length && userId && folder.id) {
         try {
           children = await outlookClient.getChildFolders(userId, folder.id);
-        } catch (_) {
-          // use what we have
+        } catch (e) {
+          if (log) log.warn(`Destination folder enumeration: could not fetch children of "${fullPath}" (childFolderCount=${folder.childFolderCount}) — nested subtree omitted: ${e.message}`);
         }
       }
       if (children.length) {
-        await this._walkOutlookFolders(children, defaults, fullPath, defaultFolders, customFolders, userId);
+        await this._walkOutlookFolders(children, defaults, fullPath, defaultFolders, customFolders, userId, log);
       }
     }
   }

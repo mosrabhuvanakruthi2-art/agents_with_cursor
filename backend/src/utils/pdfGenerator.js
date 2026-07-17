@@ -4,6 +4,22 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const ValidationResult = require('../models/ValidationResult');
 const { findDestCustomFolder, buildPdfValidationView } = require('./gmailOutlookLabelMatch');
+const { computeFunctionalityChecklist } = require('../validation/shared/functionalityChecklist');
+
+const PROVIDER_LABELS = {
+  google:      'Gmail',
+  microsoft:   'Outlook',
+  outlook:     'Outlook',
+  gmail:       'Gmail',
+  box:         'Box',
+  sharepoint:  'SharePoint',
+  onedrive:    'OneDrive',
+  googledrive: 'Google Drive',
+  dropbox:     'Dropbox',
+};
+function providerLabel(p) {
+  return PROVIDER_LABELS[String(p || '').toLowerCase()] || String(p || '—');
+}
 
 const MARGIN     = 45;
 const PAGE_WIDTH = 595;
@@ -24,6 +40,8 @@ const FONT_CANDIDATES = {
   regular: ['C:/Windows/Fonts/arial.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
   bold:    ['C:/Windows/Fonts/arialbd.ttf', '/System/Library/Fonts/Supplemental/Arial Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
   italic:  ['C:/Windows/Fonts/ariali.ttf', '/System/Library/Fonts/Supplemental/Arial Italic.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf'],
+  // Monospace — needed so the ├──└── folder-tree connectors line up. Box-drawing glyphs supported.
+  mono:    ['C:/Windows/Fonts/consola.ttf', 'C:/Windows/Fonts/cour.ttf', '/System/Library/Fonts/Menlo.ttc', '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'],
 };
 
 function firstExistingPath(paths) {
@@ -34,14 +52,17 @@ function firstExistingPath(paths) {
 let F_REGULAR = 'Helvetica';
 let F_BOLD    = 'Helvetica-Bold';
 let F_ITALIC  = 'Helvetica-Oblique';
+let F_MONO    = 'Courier';
 
 function registerUnicodeFonts(doc) {
   const reg  = firstExistingPath(FONT_CANDIDATES.regular);
   const bold = firstExistingPath(FONT_CANDIDATES.bold);
   const ital = firstExistingPath(FONT_CANDIDATES.italic);
+  const mono = firstExistingPath(FONT_CANDIDATES.mono);
   if (reg)  { try { doc.registerFont('Unicode',       reg);  F_REGULAR = 'Unicode';       } catch { F_REGULAR = 'Helvetica';         } }
   if (bold) { try { doc.registerFont('UnicodeBold',   bold); F_BOLD    = 'UnicodeBold';   } catch { F_BOLD    = 'Helvetica-Bold';    } }
   if (ital) { try { doc.registerFont('UnicodeItalic', ital); F_ITALIC  = 'UnicodeItalic'; } catch { F_ITALIC  = 'Helvetica-Oblique'; } }
+  if (mono) { try { doc.registerFont('Mono',          mono); F_MONO    = 'Mono';          } catch { F_MONO    = 'Courier';           } }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -105,6 +126,25 @@ function normalizeDeepMailResultsForPdf(validation) {
   let results = Array.isArray(deep.messageResults) ? [...deep.messageResults] : [];
   if (results.length === 0) results = fallbackDeepMailRowsFromMismatches(validation);
   return { deep, results };
+}
+
+function getExValidation(execution) {
+  const result = execution?.result;
+  let validation = result?.validationSummary;
+  if (!validation && result?.agentResults) {
+    const agent = result.agentResults.find((a) => a.name === 'OutlookValidationAgent');
+    validation = agent?.result || null;
+  }
+  if (validation) validation = buildPdfValidationView(validation);
+  return validation || null;
+}
+
+function getBulkOverallStatus(executions) {
+  for (const ex of (executions || [])) {
+    const v = getExValidation(ex);
+    if (!v || v.overallStatus === 'FAIL') return 'FAIL';
+  }
+  return 'PASS';
 }
 
 function structuredRowsForDeepPdfRow(r) {
@@ -253,10 +293,13 @@ function drawPageHeader(doc, execution, validation, context, result) {
   doc.fontSize(7).font(F_REGULAR).fillColor(C.muted)
     .text(`Exec: ${fullExecId}`, MARGIN, 88, { width: CONTENT_W, lineBreak: false });
 
+  const combination = (context?.sourceProvider || context?.destinationProvider)
+    ? `${providerLabel(context.sourceProvider)} → ${providerLabel(context.destinationProvider)}`
+    : `${src} → ${dest}`;
   const metaItems = [
-    `${src} → ${dest}`,
+    combination,
     `Type: ${context?.testType || 'E2E'}`,
-    `Migration: ${context?.migrationType === 'DELTA' ? 'DELTA' : 'FULL'}`,
+    `Migration: ${context?.migrationType === 'DELTA' ? 'Delta' : 'One-time'}`,
     `Duration: ${result?.duration != null ? formatDurationMs(result.duration) : 'N/A'}`,
   ];
   // Reserve the right side of the meta band for the Initiated date (when the
@@ -317,10 +360,16 @@ function drawBulkMigrationStatus(doc, executions) {
       .text(`Server: ${serverUrl}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
     doc.moveDown(0.35);
   }
-  const jobIdFull = String(migJob0?.jobId || migJob0?.jobName || '—');
-  if (jobIdFull && jobIdFull !== '—') {
+  const jobIdReal = String(migJob0?.jobId || '—');
+  const jobNameStr = String(migJob0?.jobName || '—');
+  if (jobIdReal && jobIdReal !== '—') {
     doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
-      .text(`Job ID: ${jobIdFull}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+      .text(`Job ID: ${jobIdReal}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+  if (jobNameStr && jobNameStr !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Job Name: ${jobNameStr}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
     doc.moveDown(0.35);
   }
 
@@ -382,6 +431,282 @@ function drawBulkMigrationStatus(doc, executions) {
   doc.y = y + 8;
 }
 
+// ── Bulk cover: Pair Overview Grid ───────────────────────────────────────────
+function drawPairOverviewGrid(doc, executions) {
+  const COLS = [
+    { label: 'Source → Destination', w: 165 },
+    { label: 'Overall',              w:  60 },
+    { label: 'Emails Chk',           w:  60 },
+    { label: 'Matched',              w:  60 },
+    { label: 'Mismatches',           w:  65 },
+    { label: 'Duration',             w:  CONTENT_W - 165 - 60 - 60 - 60 - 65 },
+  ];
+  const TABLE_W = COLS.reduce((s, c) => s + c.w, 0);
+  const HDR_H = 22, ROW_H = 30;
+
+  ensureSpace(doc, HDR_H + ROW_H * executions.length + 10);
+  let y = doc.y;
+
+  doc.save().fillColor(C.dark).rect(MARGIN, y, TABLE_W, HDR_H).fill().restore();
+  let hx = MARGIN;
+  doc.fontSize(8).font(F_BOLD).fillColor('#92B5CC');
+  COLS.forEach((c) => {
+    doc.text(c.label, hx + 5, y + 7, { width: c.w - 10, lineBreak: false });
+    hx += c.w;
+  });
+  y += HDR_H;
+
+  executions.forEach((ex) => {
+    const v       = getExValidation(ex);
+    const status  = v?.overallStatus || '—';
+    const isFail  = status === 'FAIL';
+    const deep    = v?.deepMailValidation || {};
+    const { results: dr } = v ? normalizeDeepMailResultsForPdf(v) : { results: [] };
+    const deepFailed = dr.filter((r) => !r.pass).length;
+    const scanned = deep.scannedSourceMessages ?? '—';
+    const paired  = deep.pairedCount ?? '—';
+    const dur     = ex.result?.duration != null ? formatDurationMs(ex.result.duration) : '—';
+    const src     = ex.context?.sourceEmail || '—';
+    const dst     = ex.context?.destinationEmail || '—';
+
+    doc.save().fillColor(isFail ? '#FFF8F8' : '#F7FDF9').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
+    doc.save().fillColor(isFail ? C.fail : C.pass).rect(MARGIN, y, 3, ROW_H).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.5)
+      .moveTo(MARGIN, y + ROW_H).lineTo(MARGIN + TABLE_W, y + ROW_H).stroke().restore();
+
+    let rx = MARGIN;
+    doc.fontSize(8).font(F_BOLD).fillColor(C.dark)
+      .text(src, rx + 5, y + 5, { width: COLS[0].w - 10, lineBreak: false });
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.muted)
+      .text('>', rx + 5, y + 17, { width: 10, lineBreak: false });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(dst, rx + 14, y + 17, { width: COLS[0].w - 20, lineBreak: false });
+    rx += COLS[0].w;
+
+    const bW = COLS[1].w - 10;
+    doc.save().fillColor(isFail ? C.failBg : C.passBg).roundedRect(rx + 3, y + 7, bW, 15, 3).fill().restore();
+    doc.save().strokeColor(isFail ? C.fail : C.pass).lineWidth(0.5).roundedRect(rx + 3, y + 7, bW, 15, 3).stroke().restore();
+    doc.fontSize(8).font(F_BOLD).fillColor(isFail ? C.fail : C.pass)
+      .text(status, rx + 3, y + 11, { width: bW, align: 'center', lineBreak: false });
+    rx += COLS[1].w;
+
+    [[scanned, false], [paired, false], [deepFailed, true], [dur, false]].forEach(([val, isMis], ci) => {
+      const col = COLS[2 + ci];
+      const fc  = (isMis && Number(val) > 0) ? C.fail : C.text;
+      doc.fontSize(9).font(F_BOLD).fillColor(fc)
+        .text(String(val ?? '—'), rx + 5, y + 10, { width: col.w - 10, lineBreak: false });
+      rx += col.w;
+    });
+    y += ROW_H;
+  });
+
+  doc.save().strokeColor(C.border).lineWidth(0.5)
+    .moveTo(MARGIN, y).lineTo(MARGIN + TABLE_W, y).stroke().restore();
+  doc.y = y + 8;
+}
+
+// ── Bulk cover: Failure Index ─────────────────────────────────────────────────
+function drawFailureIndex(doc, executions) {
+  const pairFailures = [];
+  for (const ex of (executions || [])) {
+    const v = getExValidation(ex);
+    if (!v) continue;
+    const { results } = normalizeDeepMailResultsForPdf(v);
+    const failed = results.filter((r) => !r.pass);
+    if (failed.length === 0) continue;
+    pairFailures.push({ src: ex.context?.sourceEmail || '—', dst: ex.context?.destinationEmail || '—', failures: failed });
+  }
+  if (pairFailures.length === 0) return;
+
+  drawSectionHeader(doc, 'Failure Index');
+
+  const FI_COLS = [
+    { label: 'Folder',        w:  90 },
+    { label: 'Email Subject', w: 155 },
+    { label: 'Field',         w:  55 },
+    { label: 'Issue Detail',  w:  CONTENT_W - 90 - 155 - 55 },
+  ];
+  const FI_W   = FI_COLS.reduce((s, c) => s + c.w, 0);
+  const HDR_H  = 18, ROW_H = 28, PH_H = 20;
+
+  const FIELD_MAP = {
+    body_mismatch:     { label: 'Body',        bg: '#FEF3C7', fg: '#92400E' },
+    body_empty:        { label: 'Body',        bg: '#FEF3C7', fg: '#92400E' },
+    body_text_missing: { label: 'Body',        bg: '#FEF3C7', fg: '#92400E' },
+    subject:           { label: 'Subject',     bg: '#EFF6FF', fg: '#1E40AF' },
+    attachments:       { label: 'Attachments', bg: '#F5F3FF', fg: '#5B21B6' },
+    recipients:        { label: 'Headers',     bg: '#F1F5F9', fg: '#475569' },
+    folder_flag:       { label: 'Folder',      bg: '#ECFDF5', fg: '#065F46' },
+    network:           { label: 'Network',     bg: '#EFF6FF', fg: '#1E40AF' },
+  };
+
+  for (const pair of pairFailures) {
+    ensureSpace(doc, PH_H + HDR_H + ROW_H * Math.min(pair.failures.length, 3) + 14);
+
+    let y = doc.y;
+    doc.save().fillColor('#2D4A63').rect(MARGIN, y, FI_W, PH_H).fill().restore();
+    doc.fontSize(8).font(F_BOLD).fillColor('#FFFFFF')
+      .text(pair.src, MARGIN + 8, y + 5, { width: FI_W / 2 - 10, lineBreak: false });
+    doc.fontSize(8).font(F_REGULAR).fillColor('#7CA0BB')
+      .text(`  →  ${pair.dst}`, MARGIN + 8 + FI_W / 2 - 10, y + 5, { width: FI_W / 2 - 60, lineBreak: false });
+    const fcLabel = `${pair.failures.length} failure${pair.failures.length !== 1 ? 's' : ''}`;
+    doc.save().fillColor(C.failBg).roundedRect(MARGIN + FI_W - 66, y + 3, 60, 14, 3).fill().restore();
+    doc.fontSize(7.5).font(F_BOLD).fillColor(C.fail)
+      .text(fcLabel, MARGIN + FI_W - 66, y + 5, { width: 60, align: 'center', lineBreak: false });
+    y += PH_H;
+
+    doc.save().fillColor('#F1F5F9').rect(MARGIN, y, FI_W, HDR_H).fill().restore();
+    doc.save().strokeColor('#CBD5E1').lineWidth(0.5)
+      .moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + FI_W, y + HDR_H).stroke().restore();
+    let hx = MARGIN;
+    doc.fontSize(7.5).font(F_BOLD).fillColor(C.muted);
+    FI_COLS.forEach((c) => {
+      doc.text(c.label.toUpperCase(), hx + 5, y + 5, { width: c.w - 10, lineBreak: false });
+      hx += c.w;
+    });
+    y += HDR_H;
+
+    for (const r of pair.failures) {
+      ensureSpace(doc, ROW_H + 2);
+      y = doc.y;
+
+      const reason     = classifyDeepMailReason(r);
+      const fc         = FIELD_MAP[reason.key] || { label: 'Other', bg: '#F1F5F9', fg: '#475569' };
+      const folderDiff = (r.diffs || []).find((d) => String(d.field || '').toLowerCase() === 'folder');
+      const folderStr  = r.sourceFolder || r.folder || r.sourceFolderName ||
+                         (folderDiff ? String(folderDiff.expected || '—') : '—');
+
+      const structRows = structuredRowsForDeepPdfRow(r);
+      let issueDetail = reason.label;
+      if (['body_mismatch', 'body_empty', 'body_text_missing'].includes(reason.key)) {
+        const bodyRow = structRows.find((s) => String(s.fieldKey || s.fieldLabel || '').toLowerCase() === 'body');
+        if (bodyRow) {
+          const srcLen = String(bodyRow.sourceExpected || '').length;
+          const dstLen = String(bodyRow.destinationActual || '').length;
+          if (srcLen > 0 || dstLen > 0)
+            issueDetail = `src: ${srcLen.toLocaleString()} chars  →  dst: ${dstLen.toLocaleString()} chars`;
+        }
+      }
+
+      doc.save().fillColor('#FEF8F8').rect(MARGIN, y, FI_W, ROW_H).fill().restore();
+      doc.save().strokeColor(C.border).lineWidth(0.3)
+        .moveTo(MARGIN, y + ROW_H).lineTo(MARGIN + FI_W, y + ROW_H).stroke().restore();
+
+      let rx = MARGIN;
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+        .text(truncateRef(folderStr, 18), rx + 5, y + 9, { width: FI_COLS[0].w - 10, lineBreak: false });
+      rx += FI_COLS[0].w;
+
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.dark)
+        .text(truncateRef(String(r.subject || '(no subject)'), 40), rx + 5, y + 9, { width: FI_COLS[1].w - 10, lineBreak: false });
+      rx += FI_COLS[1].w;
+
+      const fbW = FI_COLS[2].w - 10;
+      doc.save().fillColor(fc.bg).roundedRect(rx + 3, y + 8, fbW, 13, 2).fill().restore();
+      doc.fontSize(7).font(F_BOLD).fillColor(fc.fg)
+        .text(fc.label, rx + 3, y + 10, { width: fbW, align: 'center', lineBreak: false });
+      rx += FI_COLS[2].w;
+
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.dark)
+        .text(issueDetail, rx + 5, y + 5, { width: FI_COLS[3].w - 10, lineGap: 1 });
+
+      doc.y = y + ROW_H;
+    }
+
+    doc.save().strokeColor(C.border).lineWidth(0.5)
+      .moveTo(MARGIN, doc.y).lineTo(MARGIN + FI_W, doc.y).stroke().restore();
+    doc.moveDown(0.8);
+  }
+}
+
+// ── Pair divider band (slim slate strip, replaces repeated full header) ────────
+function drawPairDividerBand(doc, pairIndex, totalPairs, execution, status) {
+  const src   = execution.context?.sourceEmail || '—';
+  const dst   = execution.context?.destinationEmail || '—';
+  const bandH = 28;
+
+  doc.save().fillColor('#2D4A63').rect(0, 0, PAGE_WIDTH, bandH).fill().restore();
+
+  doc.fontSize(7).font(F_BOLD).fillColor('#92B5CC')
+    .text(`PAIR ${pairIndex} OF ${totalPairs}`, MARGIN, 9, { width: 68, lineBreak: false });
+
+  const routeW = CONTENT_W - 68 - 58;
+  doc.fontSize(8.5).font(F_BOLD).fillColor('#FFFFFF')
+    .text(`${src}  →  ${dst}`, MARGIN + 72, 9, { width: routeW, lineBreak: false });
+
+  const isFail = status === 'FAIL';
+  const tagW   = 44;
+  const tagX   = PAGE_WIDTH - MARGIN - tagW;
+  doc.save().fillColor(isFail ? C.failBg : C.passBg).roundedRect(tagX, 6, tagW, 16, 3).fill().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(isFail ? C.fail : C.pass)
+    .text(status, tagX, 9, { width: tagW, align: 'center', lineBreak: false });
+
+  doc.y = bandH + 6;
+}
+
+// ── Bulk cover page (shared, rendered once at the start of a bulk report) ──────
+function drawBulkCoverPage(doc, executions) {
+  const overallStatus = getBulkOverallStatus(executions);
+  const ex0  = executions[0];
+  const ctx0 = ex0?.context;
+  const genDate = formatTimestamp(new Date());
+
+  doc.save().fillColor(C.dark).rect(0, 0, PAGE_WIDTH, 82).fill().restore();
+  doc.fontSize(17).font(F_BOLD).fillColor('#ffffff')
+    .text('Migration QA Validation Report', MARGIN, 18, { width: CONTENT_W - 90 });
+  doc.fontSize(8.5).font(F_REGULAR).fillColor(C.muted)
+    .text(
+      `Generated: ${genDate}  ·  Bulk run · ${executions.length} pair${executions.length !== 1 ? 's' : ''}`,
+      MARGIN, 45, { width: CONTENT_W - 90 }
+    );
+  drawStatusBadge(doc, PAGE_WIDTH - MARGIN - 82, 18, overallStatus);
+
+  doc.save().fillColor('#f1f5f9').rect(0, 82, PAGE_WIDTH, 44).fill().restore();
+
+  const combination = (ctx0?.sourceProvider || ctx0?.destinationProvider)
+    ? `${providerLabel(ctx0.sourceProvider)} → ${providerLabel(ctx0.destinationProvider)}`
+    : `${ctx0?.sourceEmail || '?'} → ${ctx0?.destinationEmail || '?'}`;
+  const totalDurationMs = executions.reduce((sum, ex) => sum + (Number(ex.result?.duration) || 0), 0);
+  const initiated = ex0?.createdAt ? formatTimestamp(ex0.createdAt) : 'N/A';
+
+  // 6 meta items spread across full width, matching the proposal
+  const bulkId    = ex0?.context?.bulkRunId || ex0?.executionId || '—';
+  const metaItems = [
+    combination,
+    `Type: ${ctx0?.testType || 'E2E'}`,
+    `Migration: ${ctx0?.migrationType === 'DELTA' ? 'Delta' : 'One-time'}`,
+    `Duration: ${totalDurationMs > 0 ? formatDurationMs(totalDurationMs) : 'N/A'}`,
+    `Initiated: ${initiated}`,
+    `Bulk ID: ${String(bulkId).slice(0, 20)}`,
+  ];
+  const metaColW = CONTENT_W / metaItems.length;
+  doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt);
+  metaItems.forEach((item, i) => {
+    doc.text(item, MARGIN + i * metaColW, 100, { width: metaColW - 4, lineBreak: false });
+  });
+
+  // Start immediately after meta band (ends at y=126) — no large gap
+  doc.y = 126;
+  doc.moveDown(0.3);
+  doc.fontSize(11).font(F_BOLD).fillColor(C.dark).text('Pair Overview', MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.15);
+  hRule(doc, doc.y, '#cbd5e1');
+  doc.moveDown(0.4);
+  drawPairOverviewGrid(doc, executions);
+  drawBulkMigrationStatus(doc, executions);
+  drawFailureIndex(doc, executions);
+
+  ensureSpace(doc, 30);
+  doc.moveDown(0.8);
+  hRule(doc, doc.y, '#cbd5e1');
+  doc.moveDown(0.3);
+  const footY = doc.y;
+  doc.fontSize(8).font(F_REGULAR).fillColor(C.muted)
+    .text('CloudFuze Migration QA · Bulk Validation Report', MARGIN, footY);
+  doc.fontSize(8).font(F_REGULAR).fillColor(C.muted)
+    .text('Page 1', MARGIN + CONTENT_W - 50, footY, { width: 50, align: 'right' });
+}
+
 // ── CloudFuze Migration Status (before Section 1) ────────────────────────────
 function drawMigrationJobSection(doc, context, result) {
   // migrationJobDetails is set on context *during* the run but context is snapshotted at
@@ -407,11 +732,17 @@ function drawMigrationJobSection(doc, context, result) {
     doc.moveDown(0.35);
   }
 
-  // Full Job ID / Name strip — the table column truncates long job names, so show it in full here.
-  const jobIdFull = String(migJob?.jobId || migJob?.jobName || '—');
-  if (jobIdFull && jobIdFull !== '—') {
+  // Show real job ID and display name separately so "Job ID" never shows the display name.
+  const jobIdReal = String(migJob?.jobId || '—');
+  const jobNameStr = String(migJob?.jobName || '—');
+  if (jobIdReal && jobIdReal !== '—') {
     doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
-      .text(`Job ID: ${jobIdFull}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+      .text(`Job ID: ${jobIdReal}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
+    doc.moveDown(0.35);
+  }
+  if (jobNameStr && jobNameStr !== '—') {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.muted)
+      .text(`Job Name: ${jobNameStr}`, MARGIN, doc.y, { width: CONTENT_W, lineBreak: false });
     doc.moveDown(0.35);
   }
 
@@ -530,7 +861,70 @@ function drawMigrationJobSection(doc, context, result) {
     doc.y = barY + barH + 8;
   }
 
+  // CloudFuze's own per-folder breakdown (from /mail/workSpaces/{workspaceId}) — a cross-check
+  // against our folder validation: shows what CloudFuze reports it moved into each folder.
+  drawCloudFuzeFolderBreakdown(doc, migJob);
+
   doc.moveDown(0.6);
+}
+
+// CloudFuze per-folder breakdown table (source folder → dest path, per-folder counts + status).
+function drawCloudFuzeFolderBreakdown(doc, migJob) {
+  const rows = Array.isArray(migJob?.folderBreakdown) ? migJob.folderBreakdown : [];
+  if (rows.length === 0) return;
+
+  doc.moveDown(0.5);
+  doc.fontSize(9).font(F_BOLD).fillColor(C.dark)
+    .text(`CloudFuze Per-Folder Breakdown (${rows.length}) — cross-check vs folder validation`, MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.3);
+
+  const COL_F = CONTENT_W * 0.26;   // source folder
+  const COL_D = CONTENT_W * 0.40;   // dest path
+  const COL_T = CONTENT_W * 0.09;   // total
+  const COL_M = CONTENT_W * 0.09;   // messages
+  const COL_S = CONTENT_W - COL_F - COL_D - COL_T - COL_M; // status
+  const X1 = MARGIN, X2 = X1 + COL_F, X3 = X2 + COL_D, X4 = X3 + COL_T, X5 = X4 + COL_M;
+  const cell = (txt, x, w, yy, opts = {}) =>
+    doc.text(String(txt), x, yy, { width: w - 8, height: 9, ellipsis: true, lineBreak: false, ...opts });
+
+  ensureSpace(doc, 18);
+  let ty = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, ty, CONTENT_W, 18).fill().restore();
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, ty, CONTENT_W, 18).stroke().restore();
+  doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+  cell('Source Folder', X1 + 6, COL_F, ty + 4);
+  cell('Destination Path', X2 + 4, COL_D, ty + 4);
+  cell('Total', X3 + 4, COL_T, ty + 4);
+  cell('Msgs', X4 + 4, COL_M, ty + 4);
+  cell('Status', X5 + 4, COL_S, ty + 4);
+  ty += 18;
+  doc.y = ty;
+
+  for (const [i, r] of rows.entries()) {
+    ensureSpace(doc, 15);
+    ty = doc.y;
+    const st = String(r.status || '').toUpperCase();
+    const bad = /FAIL|ERROR|CONFLICT/.test(st);
+    if (bad) doc.save().fillColor(C.failBg).rect(MARGIN, ty, CONTENT_W, 15).fill().restore();
+    else if (i % 2 === 0) doc.save().fillColor('#fafafa').rect(MARGIN, ty, CONTENT_W, 15).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, ty, CONTENT_W, 15).stroke().restore();
+
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.text);
+    cell(`${r.subFolder ? '  ' : ''}${r.folder}`, X1 + 6, COL_F, ty + 3.5);
+    doc.fillColor(C.subtle);
+    cell(r.destPath || '—', X2 + 4, COL_D, ty + 3.5);
+    doc.fillColor(C.darkAlt);
+    cell(r.total ?? '—', X3 + 4, COL_T, ty + 3.5);
+    cell(r.messages ?? '—', X4 + 4, COL_M, ty + 3.5);
+    doc.font(F_BOLD).fillColor(bad ? C.fail : C.pass);
+    cell(r.status || '—', X5 + 4, COL_S, ty + 3.5);
+    ty += 15;
+    doc.y = ty;
+  }
+  doc.moveDown(0.3);
+  doc.fontSize(7).font(F_ITALIC).fillColor(C.subtle)
+    .text('Source: CloudFuze /mail/workSpaces — counts are what CloudFuze reports it migrated per folder.', MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.4);
 }
 
 // ── Section 1: Summary metric grid ───────────────────────────────────────────
@@ -550,10 +944,12 @@ function drawSummarySection(doc, validation, context, result) {
   const srcMail = srcDefaults.filter((l) => MAPPED_GMAIL.has(String(l.id ?? l.name ?? '').toUpperCase()))
                     .reduce((s, l) => s + (l.messageCount || 0), 0)
                 + srcCustoms.reduce((s, l) => s + (l.messageCount || 0), 0);
-  const dstMail = dstDefaults.filter((f) => MAPPED_OUTLOOK.has(String(f.name ?? '')))
+  const dstFetchError = validation.destinationData?.fetchError || null;
+  const dstMail = dstFetchError ? null
+    : dstDefaults.filter((f) => MAPPED_OUTLOOK.has(String(f.name ?? '')))
                     .reduce((s, f) => s + (f.messageCount || 0), 0)
                 + dstCustoms.reduce((s, f) => s + (f.messageCount || 0), 0);
-  const mailMatch = srcMail === dstMail;
+  const mailMatch = dstMail !== null && srcMail === dstMail;
 
   const scanned  = deep.scannedSourceMessages ?? null;
   const paired   = deep.pairedCount           ?? null;
@@ -590,12 +986,14 @@ function drawSummarySection(doc, validation, context, result) {
       bd: deepFailed > 0 ? C.failBorder : C.passBorder,
     },
     {
-      value: `${srcMail} → ${dstMail}`,
+      value: dstFetchError ? `${srcMail} → N/A` : `${srcMail} → ${dstMail}`,
       label: 'Mailbox Email Count',
-      sub:   'Total emails: source → destination',
-      vc: mailMatch ? C.pass : C.fail,
-      bg: mailMatch ? C.passBg : C.failBg,
-      bd: mailMatch ? C.passBorder : C.failBorder,
+      sub: dstFetchError
+        ? `Dest folder fetch failed: ${dstFetchError.length > 60 ? dstFetchError.slice(0, 57) + '...' : dstFetchError}`
+        : 'Total emails: source → destination',
+      vc: dstFetchError ? C.warn : (mailMatch ? C.pass : C.fail),
+      bg: dstFetchError ? C.warnBg : (mailMatch ? C.passBg : C.failBg),
+      bd: dstFetchError ? C.warnBorder : (mailMatch ? C.passBorder : C.failBorder),
     },
     {
       value: result?.duration != null ? formatDurationMs(result.duration) : '—',
@@ -639,6 +1037,168 @@ function drawSummarySection(doc, validation, context, result) {
   });
 
   doc.y = startY + Math.ceil(metrics.length / cols) * (cardH + gap) + 4;
+}
+
+// ── Email Order Validation bar (after Summary metric cards) ───────────────────
+// ── Section 2: Functionality Check ────────────────────────────────────────────
+// Per-feature pass/fail roll-up against the docs tool's in-scope feature list.
+function drawFunctionalityChecklist(doc, validation, context) {
+  const checklist = computeFunctionalityChecklist(
+    validation,
+    context?.sourceProvider,
+    context?.destinationProvider,
+    { migrationType: context?.migrationType }
+  );
+  if (!checklist) return;
+
+  drawSectionHeader(doc, '3 — Functionality Check');
+
+  const { pass, fail, na, total } = checklist.counts;
+  doc.fontSize(8.5).font(F_REGULAR).fillColor(C.subtle)
+    .text(
+      `${pass} passed  ·  ${fail} failed  ·  ${na} not validated by this run   ` +
+      `(${total} ${checklist.migrationType || ''} features — ${checklist.combination})`,
+      MARGIN, doc.y, { width: CONTENT_W }
+    );
+  doc.moveDown(0.5);
+
+  const ICON_W = 16;
+  const NAME_W = CONTENT_W * 0.42;
+  const EVID_W = CONTENT_W - ICON_W - NAME_W;
+  const colorOf = (s) => (s === 'pass' ? C.pass : s === 'fail' ? C.fail : C.muted);
+
+  // Draw the status mark as a VECTOR shape (not a font glyph): a green check for pass, a red cross
+  // for fail, a gray dash for not-validated. The embedded font lacks ✓/✗ glyphs, so text-based
+  // icons rendered as empty boxes (□) — vector drawing always renders.
+  const drawStatusIcon = (status, x, y) => {
+    doc.save().lineWidth(1.4).lineCap('round').lineJoin('round').strokeColor(colorOf(status));
+    if (status === 'pass') {
+      doc.moveTo(x, y + 5.5).lineTo(x + 3, y + 9).lineTo(x + 8.5, y + 1.5).stroke();
+    } else if (status === 'fail') {
+      doc.moveTo(x + 1, y + 2).lineTo(x + 8, y + 9).stroke();
+      doc.moveTo(x + 8, y + 2).lineTo(x + 1, y + 9).stroke();
+    } else {
+      doc.moveTo(x, y + 5.5).lineTo(x + 8, y + 5.5).stroke();
+    }
+    doc.restore();
+  };
+
+  // Flat list of feature rows — no family sub-headers (they duplicated feature names and added noise).
+  const features = checklist.families.flatMap((fam) => fam.features);
+  for (const feat of features) {
+    ensureSpace(doc, 15);
+    const ry = doc.y;
+    drawStatusIcon(feat.status, MARGIN + 3, ry);
+    // ellipsis:true + one-line height → single clipped line (PDFKit 0.18 ignores lineBreak:false alone).
+    doc.fontSize(8).font(F_REGULAR).fillColor(feat.status === 'na' ? C.subtle : C.text)
+      .text(feat.name, MARGIN + ICON_W, ry, { width: NAME_W - 4, height: 10, ellipsis: true, lineBreak: false });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(feat.evidence || '', MARGIN + ICON_W + NAME_W, ry, { width: EVID_W, height: 10, ellipsis: true, lineBreak: false });
+    doc.y = ry + 12.5;
+  }
+  doc.moveDown(0.4);
+}
+
+// ── Section 3: Mail Order ──────────────────────────────────────────────────────
+function drawEmailOrderSection(doc, validation) {
+  const orderVal = validation?.deepMailValidation?.orderValidation;
+  if (!orderVal) return;
+
+  drawSectionHeader(doc, '4 — Mail Order');
+
+  const skipped       = orderVal.skipped;
+  const pass          = skipped ? null : orderVal.pass;
+  const total         = orderVal.totalChecked ?? 0;
+  const count         = orderVal.outOfOrderCount ?? 0;
+  const folders       = orderVal.foldersChecked ?? 0;
+  const items         = orderVal.outOfOrder ?? [];
+
+  // Order is verified within each folder/label — note how many folders were covered.
+  const simNote = folders > 0 ? `  (order checked within ${folders} folder(s)/label(s))` : '';
+
+  ensureSpace(doc, 40);
+  doc.moveDown(0.5);
+  const y = doc.y;
+  const barH = 28;
+
+  const barColor = skipped ? C.border    : pass ? C.passBorder : C.warnBorder;
+  const barBg    = skipped ? C.surface   : pass ? C.passBg     : C.warnBg;
+  const barText  = skipped ? C.subtle    : pass ? C.pass       : C.warn;
+  const statusLabel = skipped
+    ? `Email Order — Skipped (${orderVal.reason || 'insufficient data'})`
+    : pass
+      ? `Email Order — PASS  (${total} messages checked${simNote})`
+      : `Email Order — ${count} of ${total} message(s) arrived in a different order at destination${simNote}`;
+
+  doc.save().fillColor(barBg).roundedRect(MARGIN, y, CONTENT_W, barH, 4).fill().restore();
+  doc.save().strokeColor(barColor).lineWidth(1).roundedRect(MARGIN, y, CONTENT_W, barH, 4).stroke().restore();
+  doc.fontSize(9).font(F_BOLD).fillColor(barText)
+    .text(statusLabel, MARGIN + 12, y + 9, { width: CONTENT_W - 24, lineBreak: false });
+  doc.y = y + barH + 4;
+
+  if (!skipped && !pass && items.length > 0) {
+    // Location column headers adapt to platform: Gmail → "Label", Outlook → "Folder"
+    const srcHeader  = (orderVal.folderKind     || items[0]?.folderKind)     === 'label' ? 'Source Label'      : 'Source Folder';
+    const destHeader = (orderVal.destFolderKind || items[0]?.destFolderKind) === 'label' ? 'Destination Label' : 'Destination Folder';
+
+    // 6-column table: Subject | Source Folder/Label | Dest Folder/Label | Method | Src Pos | Dest Pos
+    const COL1 = CONTENT_W * 0.27;
+    const COL2 = CONTENT_W * 0.21;
+    const COL3 = CONTENT_W * 0.21;
+    const COL4 = CONTENT_W * 0.09;
+    const COL5 = CONTENT_W * 0.11;
+    const COL6 = CONTENT_W - COL1 - COL2 - COL3 - COL4 - COL5;
+    const X1 = MARGIN;
+    const X2 = X1 + COL1;
+    const X3 = X2 + COL2;
+    const X4 = X3 + COL3;
+    const X5 = X4 + COL4;
+    const X6 = X5 + COL5;
+    const ROW_H = 18;
+    // NOTE: PDFKit 0.18 ignores lineBreak:false when a width is set — long values still wrap and
+    // overlap the next fixed-height row. Passing ellipsis:true + a one-line height forces a single
+    // clipped line ("…"), so every cell stays inside its row.
+    const cell = (txt, x, w, yy, opts = {}) =>
+      doc.text(txt, x, yy, { width: w - 8, height: 9, ellipsis: true, lineBreak: false, ...opts });
+
+    ensureSpace(doc, ROW_H);
+    let ty = doc.y;
+    doc.save().fillColor('#f1f5f9').rect(MARGIN, ty, CONTENT_W, ROW_H).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, ty, CONTENT_W, ROW_H).stroke().restore();
+    doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+    cell('Email Subject', X1 + 6, COL1, ty + 4);
+    cell(srcHeader,       X2 + 4, COL2, ty + 4);
+    cell(destHeader,      X3 + 4, COL3, ty + 4);
+    cell('Method',        X4 + 4, COL4, ty + 4, { align: 'center' });
+    cell('Src Pos',       X5 + 4, COL5, ty + 4, { align: 'center' });
+    cell('Dest Pos',      X6 + 4, COL6, ty + 4, { align: 'center' });
+    ty += ROW_H;
+    doc.y = ty;
+
+    for (const item of items) {
+      const subj        = item.subject || '(no subject)';
+      const srcLoc      = item.folder || '—';
+      const destLoc     = item.destFolder || '—';
+      const methodLabel = item.validatedBy === 'subject-sequence' ? 'seq#' : 'time';
+      ensureSpace(doc, ROW_H);
+      ty = doc.y;
+      doc.save().fillColor(C.surface).rect(MARGIN, ty, CONTENT_W, ROW_H).fill().restore();
+      doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, ty, CONTENT_W, ROW_H).stroke().restore();
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text);
+      cell(subj, X1 + 6, COL1, ty + 4);
+      doc.fontSize(7).font(F_REGULAR).fillColor(C.text);
+      cell(srcLoc,  X2 + 4, COL2, ty + 5);
+      cell(destLoc, X3 + 4, COL3, ty + 5);
+      doc.fillColor(C.subtle);
+      cell(methodLabel, X4 + 4, COL4, ty + 5, { align: 'center' });
+      doc.fontSize(7.5).font(F_BOLD).fillColor(C.warn);
+      cell(`#${item.srcPosition}`, X5 + 4, COL5, ty + 4, { align: 'center' });
+      cell(`#${item.dstPosition}`, X6 + 4, COL6, ty + 4, { align: 'center' });
+      ty += ROW_H;
+      doc.y = ty;
+    }
+    doc.moveDown(0.4);
+  }
 }
 
 // ── Section 2: Failure breakdown ──────────────────────────────────────────────
@@ -712,15 +1272,16 @@ function drawFolderTable(doc, rows, supportNested) {
       doc.save().fillColor('#fafafa').rect(MARGIN, y, TABLE_W, ROW_H).fill().restore();
     }
 
+    // Show the full label PATH with "/" separators (e.g. "QA-Deep-L1/QA-Deep-L2") — that is how
+    // Gmail nests labels. (Previously we showed only the leaf with a "↳" prefix, which rendered as
+    // an empty box because the embedded font lacks that glyph.) Nested rows are slightly indented.
     const isNested = supportNested && row.nested;
-    const label    = isNested
-      ? `↳ ${(row.label || '').split('/').pop()}`
-      : (row.label || '—');
-    const indent = isNested ? 10 : 0;
+    const label    = row.label || '—';
+    const indent   = isNested ? 10 : 0;
 
     let rx = MARGIN;
     doc.fontSize(8.5).font(F_REGULAR).fillColor(C.text)
-      .text(label, rx + 6 + indent, y + 6, { width: COL_W[0] - 12 - indent, lineBreak: false });
+      .text(label, rx + 6 + indent, y + 6, { width: COL_W[0] - 12 - indent, height: 11, ellipsis: true, lineBreak: false });
     rx += COL_W[0];
 
     doc.fillColor(C.subtle)
@@ -748,7 +1309,7 @@ function drawFolderTable(doc, rows, supportNested) {
 
 // ── Section 3: Default folder mapping ────────────────────────────────────────
 function drawDefaultFolderMapping(doc, validation) {
-  drawSectionHeader(doc, '3 — Default Folder Mapping');
+  drawSectionHeader(doc, '5 — Default Folder Mapping');
   const rows = buildComparisonRows(
     validation.sourceData.defaultLabels  || [],
     validation.destinationData.defaultFolders || [],
@@ -759,7 +1320,7 @@ function drawDefaultFolderMapping(doc, validation) {
 
 // ── Section 4: Custom folder mapping ─────────────────────────────────────────
 function drawCustomFolderMapping(doc, validation) {
-  drawSectionHeader(doc, '4 — Custom Folder Mapping');
+  drawSectionHeader(doc, '6 — Custom Folder Mapping');
 
   const customRows = (validation.sourceData.customLabels || []).map((src) => {
     const dest  = findDestCustomFolder(validation.destinationData.customFolders || [], src.name);
@@ -788,7 +1349,7 @@ function drawCustomFolderMapping(doc, validation) {
   doc.save().strokeColor(C.infoBorder).lineWidth(0.75).roundedRect(MARGIN, ibY, CONTENT_W, 26, 5).stroke().restore();
   doc.fontSize(7.5).font(F_ITALIC).fillColor(C.info)
     .text(
-      'Note: Custom folder counts are compared after label mapping. Nested folders (/) are shown with ↳ prefix.',
+      'Note: Custom folder counts are compared after label mapping. Nested folders are shown by their full path with "/" separators (e.g. QA-Parent/QA-Child).',
       MARGIN + 8, ibY + 8, { width: CONTENT_W - 16 }
     );
   doc.y = ibY + 32;
@@ -800,7 +1361,7 @@ function drawSettingsValidationSection(doc, validation) {
   const sv = validation?.settingsValidation;
   if (!sv || !sv.available) return;
 
-  drawSectionHeader(doc, '5 — Mailbox Settings Validation');
+  drawSectionHeader(doc, '7 — Mailbox Settings Validation');
 
   // ── 3-column settings overview table ───────────────────────────────────────
   const settings = [
@@ -913,12 +1474,162 @@ function drawSettingsValidationSection(doc, validation) {
   doc.moveDown(0.6);
 }
 
+// Builds helpers to decide whether a message's SOURCE folder is missing at the destination
+// (its folder did not migrate) vs present. Shared by the "Not Found in Destination" section and
+// the "Key Issues" section so both agree on the root cause. A default folder (Inbox/Sent/…) is
+// always considered present (it maps to a well-known Gmail label); a custom folder is present if
+// its leaf name exists among the destination custom folders.
+function buildFolderMissingChecker(validation) {
+  const normLeaf = (p) => String(p || '').split('/').map((s) => s.trim().toLowerCase()).filter(Boolean).pop() || '';
+  const dstCustom = validation.destinationData?.customFolders || validation.destinationData?.customLabels || [];
+  const dstCustomLeaves = new Set(dstCustom.map((f) => normLeaf(f.name)));
+  const DEFAULTS = new Set(['inbox', 'sent', 'sent items', 'sentitems', 'drafts', 'junk', 'junk email', 'spam', 'deleted items', 'trash', 'archive', 'bin']);
+  const folderOf = (r) => {
+    const d = (r.diffs || []).find((x) => x.field === 'folder');
+    return d && d.displaySource ? d.displaySource : (r._srcFolder || '');
+  };
+  const isMissingPath = (srcFolder) => {
+    if (!srcFolder) return false;
+    const leaf = normLeaf(srcFolder);
+    if (DEFAULTS.has(String(srcFolder).trim().toLowerCase()) || DEFAULTS.has(leaf)) return false;
+    return !dstCustomLeaves.has(leaf);
+  };
+  // A not-found result whose source folder is missing at destination — its folder didn't migrate.
+  const isResultFolderMissing = (r) => !r.destMessageId && isMissingPath(folderOf(r));
+  return { folderOf, isMissingPath, isResultFolderMissing };
+}
+
+// ── Section 7: Not Found in Destination ───────────────────────────────────────
+// Lists every source email that had no matching message at the destination, with the
+// source folder/label it came from. Skipped entirely when all source emails were found.
+function drawNotFoundInDestination(doc, validation, context) {
+  const results = Array.isArray(validation?.deepMailValidation?.messageResults)
+    ? validation.deepMailValidation.messageResults : [];
+  const notFound = results.filter((r) => !r.destMessageId);
+  if (notFound.length === 0) return;
+
+  const srcIsGmail = /google|gmail/i.test(String(context?.sourceProvider || ''));
+  const locHeader = srcIsGmail ? 'Source Label' : 'Source Folder';
+
+  // Tell "the folder itself is missing" (root cause) from "folder exists but this message is missing".
+  const { folderOf, isMissingPath } = buildFolderMissingChecker(validation);
+  const folderMissing = (srcFolder) => isMissingPath(srcFolder);
+
+  // Distinct source folders that are missing at destination (root cause of their mails not migrating).
+  const missingFolders = [...new Set(
+    notFound.map(folderOf).filter((f) => folderMissing(f))
+  )];
+
+  drawSectionHeader(doc, `7 — Not Found in Destination (${notFound.length} message${notFound.length !== 1 ? 's' : ''})`);
+  doc.fontSize(8).font(F_ITALIC).fillColor(C.subtle)
+    .text('Source emails with no matching message at the destination.', MARGIN, doc.y, { width: CONTENT_W, lineGap: 2 });
+  doc.moveDown(0.4);
+
+  // Root-cause callout FIRST: folders that did not migrate — their emails cannot exist at destination.
+  // The missing folders are FULL PATHS (e.g. QA-Nested-Level-01/…/Level-15). Listing them verbatim
+  // repeats every shared ancestor and produces an unreadable run-on string, so instead collapse the
+  // overlapping paths into a single indented hierarchy that mirrors the source folder tree.
+  if (missingFolders.length > 0) {
+    const splitPath = (p) => String(p || '').split('/').map((s) => s.trim()).filter(Boolean);
+    const treeRoot = new Map();
+    for (const fp of missingFolders) {
+      let node = treeRoot;
+      for (const seg of splitPath(fp)) {
+        if (!node.has(seg)) node.set(seg, new Map());
+        node = node.get(seg);
+      }
+    }
+    const treeLines = [];
+    (function walk(node, depth) {
+      for (const [name, child] of node) {
+        treeLines.push({ depth, name });
+        walk(child, depth + 1);
+      }
+    })(treeRoot, 0);
+
+    const headerText =
+      `${treeLines.length} folder(s) are MISSING at the destination (did not migrate) — ` +
+      `emails inside them cannot be found:`;
+    const HDR_FS = 8, LINE_FS = 7.5, LINE_H = 11, INDENT = 12, PAD = 6;
+    const hdrH = doc.heightOfString(headerText, { width: CONTENT_W - 16 });
+    const boxH = PAD + hdrH + 4 + treeLines.length * LINE_H + PAD;
+
+    ensureSpace(doc, boxH + 8);
+    const cy = doc.y;
+    doc.save().fillColor(C.warnBg).roundedRect(MARGIN, cy, CONTENT_W, boxH, 4).fill().restore();
+    doc.save().strokeColor(C.warnBorder).lineWidth(0.75).roundedRect(MARGIN, cy, CONTENT_W, boxH, 4).stroke().restore();
+
+    doc.fontSize(HDR_FS).font(F_BOLD).fillColor(C.warn)
+      .text(headerText, MARGIN + 8, cy + PAD, { width: CONTENT_W - 16 });
+
+    let ly = cy + PAD + hdrH + 4;
+    doc.fontSize(LINE_FS).font(F_REGULAR).fillColor(C.warn);
+    for (const { depth, name } of treeLines) {
+      const x = MARGIN + 8 + depth * INDENT;
+      // Depth is shown by indentation; use an ASCII connector ("- ") for children — the "↳" glyph
+      // is not in the embedded font and rendered as an empty box.
+      const prefix = depth === 0 ? '' : '- ';
+      doc.text(`${prefix}${name}`, x, ly, { width: CONTENT_W - 16 - depth * INDENT, height: LINE_H - 1, ellipsis: true, lineBreak: false });
+      ly += LINE_H;
+    }
+    doc.y = cy + boxH + 6;
+  }
+
+  const COL1 = CONTENT_W * 0.44;
+  const COL2 = CONTENT_W * 0.32;
+  const COL3 = CONTENT_W - COL1 - COL2;
+  const X1 = MARGIN;
+  const X2 = X1 + COL1;
+  const X3 = X2 + COL2;
+  const cell = (txt, x, w, yy, opts = {}) =>
+    doc.text(txt, x, yy, { width: w - 8, height: 9, ellipsis: true, lineBreak: false, ...opts });
+
+  // Show only the actual (leaf) folder each mail lives in, with a "…/" prefix when it is nested,
+  // so the narrow column never truncates mid-path (which made Level-12 vs Level-15 indistinguishable).
+  // The full ancestry is already shown once in the hierarchy tree callout above.
+  const leafLabel = (path) => {
+    const segs = String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
+    if (segs.length === 0) return '—';
+    if (segs.length === 1) return segs[0];
+    return `…/${segs[segs.length - 1]}`;
+  };
+
+  ensureSpace(doc, 18);
+  let ty = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, ty, CONTENT_W, 18).fill().restore();
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, ty, CONTENT_W, 18).stroke().restore();
+  doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+  cell('Email Subject', X1 + 6, COL1, ty + 4);
+  cell(locHeader, X2 + 4, COL2, ty + 4);
+  cell('Reason', X3 + 4, COL3, ty + 4);
+  ty += 18;
+  doc.y = ty;
+
+  for (const r of notFound) {
+    const loc = leafLabel(folderOf(r));
+    const isFolderMissing = folderMissing(folderOf(r));
+    ensureSpace(doc, 16);
+    ty = doc.y;
+    doc.save().fillColor(C.surface).rect(MARGIN, ty, CONTENT_W, 16).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, ty, CONTENT_W, 16).stroke().restore();
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text);
+    cell(r.subject || '(no subject)', X1 + 6, COL1, ty + 4);
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.subtle);
+    cell(loc, X2 + 4, COL2, ty + 4);
+    doc.fontSize(7).font(F_REGULAR).fillColor(isFolderMissing ? C.warn : C.subtle);
+    cell(isFolderMissing ? 'Folder missing at destination' : 'Message not found', X3 + 4, COL3, ty + 4);
+    ty += 16;
+    doc.y = ty;
+  }
+  doc.moveDown(0.4);
+}
+
 function drawAdvisoryWarnings(doc, validation) {
   const { results } = normalizeDeepMailResultsForPdf(validation);
   const warned = results.filter((r) => r.pass && (r.diffs || []).some((d) => d.ok === false));
   if (warned.length === 0) return;
 
-  drawSectionHeader(doc, `6 — Advisory Warnings (${warned.length})`);
+  drawSectionHeader(doc, `8 — Advisory Warnings (${warned.length})`);
   doc.fontSize(8).font(F_ITALIC).fillColor(C.subtle)
     .text(
       'These messages passed core validation but have informational differences that do not affect the overall pass/fail result.',
@@ -972,15 +1683,19 @@ function drawAdvisoryWarnings(doc, validation) {
 // ── Section 6: Key issues (per-message failures) ──────────────────────────────
 function drawKeyIssues(doc, validation) {
   const { results } = normalizeDeepMailResultsForPdf(validation);
-  const failed = results.filter((r) => !r.pass);
+  // Exclude mails that are "not found" ONLY because their folder didn't migrate — those are already
+  // explained in the "Not Found in Destination" section under the missing folder (root cause), so
+  // repeating them here as per-message failures is redundant noise.
+  const { isResultFolderMissing } = buildFolderMissingChecker(validation);
+  const failed = results.filter((r) => !r.pass && !isResultFolderMissing(r));
 
   const bugCount   = failed.filter((r) => r.bugStatus !== 'known_limitation').length;
   const limitCount = failed.filter((r) => r.bugStatus === 'known_limitation').length;
   const issueLabel = failed.length === 0
-    ? '7 — Key Issues'
+    ? '9 — Key Issues'
     : limitCount > 0
-      ? `7 — Key Issues (${bugCount} bug${bugCount !== 1 ? 's' : ''}, ${limitCount} known limitation${limitCount !== 1 ? 's' : ''})`
-      : `7 — Key Issues (${bugCount} failed)`;
+      ? `9 — Key Issues (${bugCount} bug${bugCount !== 1 ? 's' : ''}, ${limitCount} known limitation${limitCount !== 1 ? 's' : ''})`
+      : `9 — Key Issues (${bugCount} failed)`;
   drawSectionHeader(doc, issueLabel);
 
   if (failed.length === 0) {
@@ -1458,7 +2173,10 @@ function renderExecutionReport(doc, execution, opts = {}) {
 
   if (!isMessage && validation) validation = buildPdfValidationView(validation);
 
-  drawPageHeader(doc, execution, validation, context, result);
+  // In bulk pair mode the shared cover page already rendered the combined header.
+  if (!opts.bulkPairMode) {
+    drawPageHeader(doc, execution, validation, context, result);
+  }
 
   // Combined CloudFuze Migration Status (all pairs) — drawn even if this pair lacks validation.
   if (opts.bulkStatusExecutions) {
@@ -1489,13 +2207,17 @@ function renderExecutionReport(doc, execution, opts = {}) {
   }
   drawSummarySection(doc, validation, context, result);
   drawFailureBreakdown(doc, validation);
+  drawFunctionalityChecklist(doc, validation, context);
+  drawEmailOrderSection(doc, validation);
 
   if (validation.sourceData && validation.destinationData) {
     drawDefaultFolderMapping(doc, validation);
     drawCustomFolderMapping(doc, validation);
   }
 
-  drawSettingsValidationSection(doc, validation);
+  // Mailbox Settings Validation section temporarily removed — to be re-added later.
+  // (drawSettingsValidationSection is kept defined for when it returns.)
+  drawNotFoundInDestination(doc, validation, context);
   drawAdvisoryWarnings(doc, validation);
   drawKeyIssues(doc, validation);
   drawFooter(doc, context);
@@ -1527,17 +2249,326 @@ function generateBulkValidationPdf(executions, stream) {
     return;
   }
 
+  // Page 1: Shared cover — title, overall badge, pair overview grid, CF status, failure index.
+  drawBulkCoverPage(doc, list);
+
+  // Pages 2..N+1: Per-pair detail with a slim divider band instead of a repeated full header.
   list.forEach((execution, i) => {
-    if (i > 0) doc.addPage();
-    // Combined CloudFuze Migration Status (every pair, one row each) shows once on the first page;
-    // each pair's own single-row status table is suppressed to avoid repetition.
-    renderExecutionReport(doc, execution, {
-      bulkStatusExecutions: i === 0 ? list : null,
-      skipMigrationStatus: true,
-    });
+    doc.addPage();
+    const v      = getExValidation(execution);
+    const status = v?.overallStatus || '—';
+    drawPairDividerBand(doc, i + 1, list.length, execution, status);
+    renderExecutionReport(doc, execution, { skipMigrationStatus: true, bulkPairMode: true });
   });
 
   doc.end();
 }
 
-module.exports = { generateValidationPdf, generateBulkValidationPdf };
+// ── Content validation (Box → SharePoint etc.) ─────────────────────────────────
+function drawContentSummaryCards(doc, checks) {
+  const pass = checks.filter((c) => c.status === 'PASS').length;
+  const warn = checks.filter((c) => c.status === 'WARN').length;
+  const fail = checks.filter((c) => c.status === 'FAIL').length;
+
+  const cards = [
+    { value: pass, label: 'Passed',   vc: C.pass, bg: C.passBg, bd: C.passBorder },
+    { value: warn, label: 'Warnings', vc: warn > 0 ? C.warn : C.subtle, bg: warn > 0 ? C.warnBg : C.bg, bd: warn > 0 ? C.warnBorder : C.border },
+    { value: fail, label: 'Failed',   vc: fail > 0 ? C.fail : C.subtle, bg: fail > 0 ? C.failBg : C.bg, bd: fail > 0 ? C.failBorder : C.border },
+  ];
+  const gap = 10, cols = 3;
+  const cardW = (CONTENT_W - gap * (cols - 1)) / cols;
+  const cardH = 64;
+  ensureSpace(doc, cardH + 16);
+  const startY = doc.y;
+  cards.forEach((m, i) => {
+    const cx = MARGIN + i * (cardW + gap);
+    doc.save().fillColor(m.bg).roundedRect(cx, startY, cardW, cardH, 6).fill().restore();
+    doc.save().strokeColor(m.bd).lineWidth(1).roundedRect(cx, startY, cardW, cardH, 6).stroke().restore();
+    doc.fontSize(22).font(F_BOLD).fillColor(m.vc).text(String(m.value), cx + 6, startY + 12, { width: cardW - 12, align: 'center' });
+    doc.fontSize(8.5).font(F_BOLD).fillColor(C.text).text(m.label, cx + 6, startY + cardH - 22, { width: cardW - 12, align: 'center' });
+  });
+  doc.y = startY + cardH + 10;
+}
+
+function drawContentChecksTable(doc, checks) {
+  const COL_CHECK = 170;
+  const COL_STATUS = 60;
+  const COL_DETAIL = CONTENT_W - COL_CHECK - COL_STATUS;
+  const HDR_H = 20;
+
+  ensureSpace(doc, HDR_H + 24);
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, HDR_H).fill().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Check',  MARGIN + 6, y + 6, { width: COL_CHECK - 10, lineBreak: false });
+  doc.text('Status', MARGIN + COL_CHECK + 6, y + 6, { width: COL_STATUS - 10, lineBreak: false });
+  doc.text('Detail', MARGIN + COL_CHECK + COL_STATUS + 6, y + 6, { width: COL_DETAIL - 10, lineBreak: false });
+  doc.save().strokeColor('#94a3b8').lineWidth(0.5).moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + CONTENT_W, y + HDR_H).stroke().restore();
+  y += HDR_H;
+  doc.y = y;
+
+  checks.forEach((c, idx) => {
+    const detail = String(c.detail || '');
+    doc.fontSize(8).font(F_REGULAR);
+    const checkH  = doc.heightOfString(String(c.name || ''), { width: COL_CHECK - 12 });
+    const detailH = doc.heightOfString(detail, { width: COL_DETAIL - 12 });
+    const rowH = Math.max(22, checkH + 10, detailH + 10);
+    ensureSpace(doc, rowH + 2);
+    y = doc.y;
+
+    const tag = c.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : c.status === 'WARN' ? { bg: C.warnBg, fg: C.warn } : { bg: C.failBg, fg: C.fail };
+    if (c.status === 'FAIL') doc.save().fillColor(C.failBg).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    else if (idx % 2 === 0) doc.save().fillColor('#fafafa').rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+
+    doc.fontSize(8).font(F_BOLD).fillColor(C.text).text(String(c.name || ''), MARGIN + 6, y + 5, { width: COL_CHECK - 12 });
+    const tagW = COL_STATUS - 12;
+    doc.save().fillColor(tag.bg).roundedRect(MARGIN + COL_CHECK + 6, y + 5, tagW, 14, 3).fill().restore();
+    doc.fontSize(7).font(F_BOLD).fillColor(tag.fg).text(c.status, MARGIN + COL_CHECK + 6, y + 8, { width: tagW, align: 'center', lineBreak: false });
+    doc.fontSize(8).font(F_REGULAR).fillColor(C.darkAlt).text(detail, MARGIN + COL_CHECK + COL_STATUS + 6, y + 5, { width: COL_DETAIL - 12 });
+
+    doc.save().strokeColor(C.border).lineWidth(0.3).moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
+    doc.y = y + rowH;
+  });
+  doc.moveDown(0.5);
+}
+
+// Per-user banner: status pill + the migration mapping as a 4-column table
+// (Source Email | Source Location | Dest Email | Dest Location).
+function drawContentUserHeader(doc, idx, u) {
+  const m = u.mapping || { sourceEmail: u.sourceEmail, sourceLocation: u.sourcePath, destEmail: u.destinationEmail, destLocation: u.destinationPath };
+  const st = u.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : u.status === 'FAIL' ? { bg: C.failBg, fg: C.fail } : { bg: C.warnBg, fg: C.warn };
+
+  // Status line
+  ensureSpace(doc, 18);
+  let y = doc.y;
+  const pillW = 70;
+  doc.fontSize(9).font(F_BOLD).fillColor(C.text).text(`User ${idx}`, MARGIN, y + 2, { width: 120, lineBreak: false });
+  doc.save().fillColor(st.bg).roundedRect(MARGIN + CONTENT_W - pillW, y, pillW, 15, 3).fill().restore();
+  doc.fontSize(7.5).font(F_BOLD).fillColor(st.fg).text(`${u.status} · ${u.summary?.split(' ')[0] || ''}`, MARGIN + CONTENT_W - pillW, y + 4, { width: pillW, align: 'center', lineBreak: false });
+  doc.y = y + 18;
+
+  // Mapping table
+  const cols = [
+    { k: 'sourceEmail', label: 'Source Email', w: 0.24 },
+    { k: 'sourceLocation', label: 'Source Location', w: 0.22 },
+    { k: 'destEmail', label: 'Dest Email', w: 0.24 },
+    { k: 'destLocation', label: 'Dest Location', w: 0.30 },
+  ];
+  const HDR_H = 16;
+  ensureSpace(doc, HDR_H + 28);
+  y = doc.y;
+  doc.save().fillColor('#eef2ff').rect(MARGIN, y, CONTENT_W, HDR_H).fill().restore();
+  let cx = MARGIN;
+  doc.fontSize(7.5).font(F_BOLD).fillColor(C.darkAlt);
+  for (const c of cols) { const w = CONTENT_W * c.w; doc.text(c.label, cx + 5, y + 4, { width: w - 8, lineBreak: false }); cx += w; }
+  y += HDR_H;
+  // value row height
+  doc.fontSize(7.5).font(F_REGULAR);
+  let rowH = 16;
+  for (const c of cols) { const w = CONTENT_W * c.w; rowH = Math.max(rowH, doc.heightOfString(String(m[c.k] || '—'), { width: w - 8 }) + 6); }
+  ensureSpace(doc, rowH + 8);
+  cx = MARGIN;
+  doc.save().strokeColor(C.border).lineWidth(0.4).rect(MARGIN, y, CONTENT_W, rowH).stroke().restore();
+  for (const c of cols) {
+    const w = CONTENT_W * c.w;
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text).text(String(m[c.k] || '—'), cx + 5, y + 3, { width: w - 8 });
+    cx += w;
+  }
+  doc.y = y + rowH + 8;
+}
+
+// Build an ASCII folder tree (├──/└──/│) from a list of relative folder paths.
+function buildAsciiTree(rootName, relPaths) {
+  const root = {};
+  for (const p of relPaths || []) {
+    let node = root;
+    for (const seg of p.split('/').filter(Boolean)) { node[seg] = node[seg] || {}; node = node[seg]; }
+  }
+  const lines = [rootName];
+  const walk = (node, prefix) => {
+    const keys = Object.keys(node).sort((a, b) => a.localeCompare(b));
+    keys.forEach((k, i) => {
+      const last = i === keys.length - 1;
+      lines.push(`${prefix}${last ? '└── ' : '├── '}${k}`);
+      walk(node[k], prefix + (last ? '    ' : '│   '));
+    });
+  };
+  walk(root, '');
+  return lines;
+}
+
+function drawTreeBlock(doc, title, lines) {
+  ensureSpace(doc, 26);
+  doc.fontSize(9).font(F_BOLD).fillColor(C.text).text(title, MARGIN, doc.y);
+  doc.moveDown(0.15);
+  doc.fontSize(7.5).font(F_MONO).fillColor(C.darkAlt);
+  for (const ln of lines) {
+    ensureSpace(doc, 9.5);
+    doc.text(ln, MARGIN + 4, doc.y, { width: CONTENT_W - 8, lineBreak: false });
+  }
+  doc.moveDown(0.5);
+}
+
+// Folder-only structure validation: 6 metric cells + PASS/FAIL + the two ASCII trees + diffs.
+function drawFolderStructureSection(doc, fs) {
+  const cells = [
+    ['Source Folders', fs.totalSource, false],
+    ['Dest Folders', fs.totalDest, false],
+    ['Matched', fs.matched, false],
+    ['Missing', fs.missing.length, fs.missing.length > 0],
+    ['Extra', fs.extra.length, fs.extra.length > 0],
+    ['Misplaced', fs.misplaced.length, fs.misplaced.length > 0],
+  ];
+  const gap = 6, n = cells.length;
+  const cw = (CONTENT_W - gap * (n - 1)) / n;
+  const ch = 36;
+  ensureSpace(doc, ch + 26);
+  const y0 = doc.y;
+  cells.forEach(([label, value, bad], i) => {
+    const cx = MARGIN + i * (cw + gap);
+    doc.save().fillColor(bad ? C.failBg : '#f8fafc').roundedRect(cx, y0, cw, ch, 4).fill().restore();
+    doc.save().strokeColor(bad ? C.failBorder : C.border).lineWidth(0.5).roundedRect(cx, y0, cw, ch, 4).stroke().restore();
+    doc.fontSize(14).font(F_BOLD).fillColor(bad ? C.fail : C.text).text(String(value), cx + 2, y0 + 5, { width: cw - 4, align: 'center' });
+    doc.fontSize(6).font(F_REGULAR).fillColor(C.subtle).text(label, cx + 2, y0 + ch - 11, { width: cw - 4, align: 'center', lineBreak: false });
+  });
+  doc.y = y0 + ch + 8;
+
+  ensureSpace(doc, 18);
+  const st = fs.status === 'PASS' ? { bg: C.passBg, fg: C.pass } : { bg: C.failBg, fg: C.fail };
+  const sy = doc.y;
+  doc.save().fillColor(st.bg).roundedRect(MARGIN, sy, 150, 16, 3).fill().restore();
+  doc.fontSize(8.5).font(F_BOLD).fillColor(st.fg).text(`Structure: ${fs.status}${fs.status === 'PASS' ? ' — identical' : ''}`, MARGIN, sy + 4, { width: 150, align: 'center', lineBreak: false });
+  doc.y = sy + 22;
+
+  drawTreeBlock(doc, 'Box (Source)', buildAsciiTree(fs.boxRootName, fs.boxFolderPaths));
+  drawTreeBlock(doc, 'SharePoint (Destination)', buildAsciiTree(fs.spRootName, fs.spFolderPaths));
+
+  if (fs.status !== 'PASS') {
+    const diffs = [];
+    fs.missing.forEach((p) => diffs.push(['MISSING', p]));
+    fs.extra.forEach((p) => diffs.push(['EXTRA', p]));
+    fs.misplaced.forEach((m) => diffs.push(['MISPLACED', `${m.source}  →  ${m.dest}`]));
+    if (diffs.length) {
+      ensureSpace(doc, 16);
+      doc.fontSize(8.5).font(F_BOLD).fillColor(C.text).text('Differences (full paths)', MARGIN, doc.y);
+      doc.moveDown(0.2);
+      for (const [k, p] of diffs) {
+        ensureSpace(doc, 11);
+        const yy = doc.y;
+        doc.fontSize(7.5).font(F_BOLD).fillColor(C.fail).text(k, MARGIN + 4, yy, { width: 64, lineBreak: false });
+        doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt).text(p, MARGIN + 72, yy, { width: CONTENT_W - 76 });
+        doc.y = yy + Math.max(10, doc.heightOfString(p, { width: CONTENT_W - 76 }));
+      }
+      doc.moveDown(0.4);
+    }
+  }
+}
+
+// Full folder structure with per-item validation — indented tree of folders/files by name,
+// each with a Found/Missing tag, its permission rows (Box role → mapped user → SP role), and
+// version/timestamp notes.
+function drawContentItemTree(doc, items, opts = {}) {
+  const MAX = opts.max || 250;
+  const shown = items.slice(0, MAX);
+  for (const it of shown) {
+    const indent = Math.min(it.depth || 0, 8) * 12;
+    const x = MARGIN + indent;
+    const tagW = 50;
+    const availW = CONTENT_W - indent - tagW - 8;
+    const label = `${it.type === 'folder' ? '📁' : '📄'} ${it.name}${it.spName && it.spName !== it.name ? `  →  ${it.spName}` : ''}`;
+    doc.fontSize(8).font(F_BOLD);
+    const nameH = doc.heightOfString(label, { width: availW });
+    const rowH = Math.max(14, nameH + 3);
+    ensureSpace(doc, rowH + 2);
+    const y = doc.y;
+    const tag = it.found ? { bg: C.passBg, fg: C.pass, txt: 'Found' } : { bg: C.failBg, fg: C.fail, txt: 'Missing' };
+    doc.fontSize(8).font(F_BOLD).fillColor(it.found ? C.text : C.fail).text(label, x, y + 1, { width: availW });
+    doc.save().fillColor(tag.bg).roundedRect(MARGIN + CONTENT_W - tagW, y + 1, tagW, 12, 2).fill().restore();
+    doc.fontSize(6.5).font(F_BOLD).fillColor(tag.fg).text(tag.txt, MARGIN + CONTENT_W - tagW, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
+    doc.y = y + rowH;
+
+    for (const p of (it.permissions || [])) {
+      const pStr = `↳ ${p.user}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: Box "${p.boxRole}" → SP ${p.spRoles && p.spRoles.length ? p.spRoles.join('/') : 'no access'} ${p.match ? '✓' : '✗'}`;
+      const pw = CONTENT_W - indent - 14;
+      ensureSpace(doc, 11);
+      const py = doc.y;
+      doc.fontSize(7).font(F_REGULAR).fillColor(p.match ? C.subtle : C.fail).text(pStr, x + 14, py, { width: pw });
+      doc.y = py + Math.max(9, doc.heightOfString(pStr, { width: pw }));
+    }
+    const extras = [];
+    if (it.versions) extras.push(`versions Box ${it.versions.box} → SP ${it.versions.sp}${it.versions.sp < it.versions.box ? ' ✗' : ' ✓'}`);
+    if (it.timestamps) extras.push(`modified ${it.timestamps.match ? 'preserved ✓' : 'changed ✗'}`);
+    if (it.author) extras.push(`modifiedBy ${it.author.spModBy || '?'} ${it.author.match ? '✓' : '✗'}`);
+    if (it.comments) extras.push(`${it.comments} comment(s) (Box)`);
+    if (it.sharedLink) extras.push(`shared link ${it.sharedLink.onDest ? 'present ✓' : 'not on dest ✗'}`);
+    if (extras.length) {
+      ensureSpace(doc, 10);
+      const ey = doc.y;
+      doc.fontSize(6.8).font(F_REGULAR).fillColor(C.subtle).text(`↳ ${extras.join('  ·  ')}`, x + 14, ey, { width: CONTENT_W - indent - 14 });
+      doc.y = ey + 9;
+    }
+  }
+  if (items.length > MAX) {
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle).text(`… ${items.length - MAX} more item(s) not shown`, MARGIN, doc.y + 2);
+    doc.moveDown(0.5);
+  }
+}
+
+function generateContentValidationPdf(execution, stream) {
+  const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
+  registerUnicodeFonts(doc);
+  doc.pipe(stream);
+
+  const result  = execution.result || {};
+  const v       = result.validationSummary || {};
+  const checks  = Array.isArray(v.checks) ? v.checks : [];
+  const perUser = Array.isArray(v.perUser) ? v.perUser : [];
+  const context = execution.context || {};
+  // Global (non-user) checks: site access, CloudFuze status, skipped pairs.
+  const globalChecks = checks.filter((c) => !/^\[/.test(String(c.name || '')));
+
+  drawPageHeader(doc, execution, { overallStatus: v.status || 'N/A' }, context, result);
+  drawMigrationJobSection(doc, context, result);
+
+  drawSectionHeader(doc, '1 — Validation Summary');
+  if (checks.length === 0) {
+    doc.fontSize(9).font(F_REGULAR).fillColor(C.subtle)
+      .text('No content validation checks are available for this execution.', MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.6);
+    drawFooter(doc, context);
+    doc.end();
+    return;
+  }
+
+  drawContentSummaryCards(doc, checks);
+
+  if (perUser.length > 0) {
+    // Migration / site-level checks first, then one section per migrated user.
+    if (globalChecks.length > 0) {
+      drawSectionHeader(doc, '2 — Migration & Site Checks');
+      drawContentChecksTable(doc, globalChecks);
+    }
+    perUser.forEach((u, i) => {
+      drawSectionHeader(doc, `${globalChecks.length > 0 ? i + 3 : i + 2} — User ${i + 1}: ${u.sourceEmail || ''}`);
+      drawContentUserHeader(doc, i + 1, u);
+      drawContentChecksTable(doc, u.checks || []);
+      if (u.folderStructure) {
+        drawSectionHeader(doc, `Folder structure validation — ${u.folderStructure.status}`);
+        drawFolderStructureSection(doc, u.folderStructure);
+      }
+      if ((u.items || []).length > 0) {
+        drawSectionHeader(doc, `Per-item validation (${u.items.length} items — files, permissions, versions)`);
+        drawContentItemTree(doc, u.items);
+      }
+    });
+  } else {
+    // Legacy single-folder report (no per-user breakdown).
+    drawSectionHeader(doc, '2 — Validation Checks (location, name, permissions, versions, timestamps, metadata, comments, shared links)');
+    drawContentChecksTable(doc, checks);
+  }
+
+  drawFooter(doc, context);
+  doc.end();
+}
+
+module.exports = { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf };

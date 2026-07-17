@@ -440,7 +440,7 @@ class GmailValidationAgent extends BaseAgent {
       const folders  = await outlookClient.getMailFolders(sourceUser);
       result.sourceData.defaultLabels = [];
       result.sourceData.customLabels  = [];
-      this._walkOutlookSourceFolders(folders, '', result.sourceData.defaultLabels, result.sourceData.customLabels, log);
+      await this._walkOutlookSourceFolders(folders, '', result.sourceData.defaultLabels, result.sourceData.customLabels, sourceUser, log);
 
       const total = result.sourceData.defaultLabels.reduce((s, l) => s + l.messageCount, 0)
                   + result.sourceData.customLabels.reduce((s, l) => s + l.messageCount, 0);
@@ -458,7 +458,7 @@ class GmailValidationAgent extends BaseAgent {
     }
   }
 
-  _walkOutlookSourceFolders(folders, parentPath, defaultLabels, customLabels, log) {
+  async _walkOutlookSourceFolders(folders, parentPath, defaultLabels, customLabels, userId, log) {
     if (!folders?.length) return;
     for (const folder of folders) {
       const segment  = (folder.displayName || '').trim();
@@ -476,8 +476,21 @@ class GmailValidationAgent extends BaseAgent {
         customLabels.push({ id: fullPath, name: fullPath, messageCount: count });
       }
 
-      if (folder.childFolders?.length) {
-        this._walkOutlookSourceFolders(folder.childFolders, fullPath, defaultLabels, customLabels, log);
+      // getMailFolders uses $expand=childFolders which only expands ONE level deep, so
+      // deeply nested chains (e.g. QA-Nested-Level-01 … Level-15) would stop after 2 levels.
+      // When a folder reports more children than were expanded, fetch the next level via
+      // getChildFolders (which itself expands one more level) and keep recursing — otherwise
+      // the report silently truncates the nested-folder tree.
+      let children = folder.childFolders || [];
+      if ((folder.childFolderCount || 0) > children.length && userId && folder.id) {
+        try {
+          children = await outlookClient.getChildFolders(userId, folder.id);
+        } catch (e) {
+          if (log) log.warn(`Source folder enumeration: could not fetch children of "${fullPath}" (childFolderCount=${folder.childFolderCount}) — nested subtree omitted: ${e.message}`);
+        }
+      }
+      if (children.length) {
+        await this._walkOutlookSourceFolders(children, fullPath, defaultLabels, customLabels, userId, log);
       }
     }
   }
@@ -572,6 +585,7 @@ class GmailValidationAgent extends BaseAgent {
       );
     } catch (err) {
       log.error(`Failed to fetch destination Gmail data: ${err.message}`);
+      result.destinationData.fetchError = err.message;
     }
   }
 

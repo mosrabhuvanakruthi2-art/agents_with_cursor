@@ -315,6 +315,39 @@ module.exports = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   /** Optional path to gmail-test-cases.xlsx (mail + draft matrix). Empty = backend/data/gmail-test-cases.xlsx */
   GMAIL_TEST_CASES_XLSX: (process.env.GMAIL_TEST_CASES_XLSX || '').trim(),
+  /**
+   * Max UNREAD emails to leave in the Outlook Inbox after seeding. The test data creates
+   * many unread messages; after seeding, the excess (oldest) are marked read so the Inbox
+   * looks realistic while retaining enough unread mail to validate read-state. Default 12.
+   */
+  OUTLOOK_INBOX_MAX_UNREAD: (() => {
+    const n = parseInt(process.env.OUTLOOK_INBOX_MAX_UNREAD ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 12;
+  })(),
+  /**
+   * Address of a PRE-PROVISIONED Microsoft 365 shared mailbox (created once in the Admin Center;
+   * Graph cannot create shared mailboxes). When set, the Outlook test-data agent seeds real content
+   * INTO this shared mailbox via Graph app-only and uses it as the real sender for the shared-mailbox
+   * test case. When empty, the agent falls back to a From-header simulation (no real shared mailbox).
+   */
+  SHARED_MAILBOX_ADDRESS: (process.env.SHARED_MAILBOX_ADDRESS || '').trim().toLowerCase(),
+
+  /**
+   * Address of a PRE-CREATED mail-enabled distribution list on the SOURCE user's domain
+   * (created once in the Admin Center — Graph/our app cannot set a group's SMTP domain, it always
+   * lands on the tenant default). When set, the Outlook test-data agent uses THIS address for the
+   * distribution-list test case instead of creating a new group. When empty, it falls back to
+   * creating a Graph group (which gets the tenant default domain).
+   */
+  DISTRIBUTION_LIST_ADDRESS: (process.env.DISTRIBUTION_LIST_ADDRESS || '').trim().toLowerCase(),
+
+  /**
+   * Path to a saved Playwright storageState JSON that carries an authenticated devemail portal
+   * session (the portal uses Google/Office365 SSO, so headless password login doesn't work). When
+   * set, the Workspace-ID reports scraper reuses this session instead of logging in. Capture it once
+   * with: node scripts/capture-devemail-session.js
+   */
+  DEVEMAIL_STORAGE_STATE: (process.env.DEVEMAIL_STORAGE_STATE || '').trim(),
 
   /** Xray Server/DC + Jira: site base URL, no trailing slash */
   JIRA_BASE_URL: (process.env.JIRA_BASE_URL || '').trim().replace(/\/+$/, '').replace(/\/jira\/?$/i, ''),
@@ -330,7 +363,14 @@ module.exports = {
   /** Neutara Ticketing — new bug tracker replacing Jira for QA bug creation */
   NEUTARA_BASE_URL: (process.env.NEUTARA_BASE_URL || 'https://neutaraticketing.cftools.live').trim(),
   NEUTARA_API_KEY:  (process.env.NEUTARA_API_KEY  || '').trim(),
-  NEUTARA_SPACE:    (process.env.NEUTARA_SPACE     || 'AQ').trim(),
+  NEUTARA_SPACE:    (process.env.NEUTARA_SPACE     || 'QT').trim(),
+  NEUTARA_REPORTER_EMAIL: (process.env.NEUTARA_REPORTER_EMAIL || 'qaagent@cloudfuze.com').trim(),
+  NEUTARA_ATTACH_PDF: (process.env.NEUTARA_ATTACH_PDF || 'true').trim(),
+  NEUTARA_ATTACH_MODE: (process.env.NEUTARA_ATTACH_MODE || 'embed').trim(),
+  // Interval (ms) between creating sibling sub-folders / nested labels at the source, so each gets a
+  // distinct, increasing creation timestamp and the destination preserves folder order (matches manual
+  // creation with natural gaps). Default 30s per QA. Set 0 to disable (faster seed, order may not hold).
+  FOLDER_CREATE_INTERVAL_MS: Number(process.env.FOLDER_CREATE_INTERVAL_MS || 30000),
   /** Grafana base URL for log queries (default: http://logwatch.cloudfuze.com) */
   GRAFANA_BASE_URL: (process.env.GRAFANA_BASE_URL || 'http://logwatch.cloudfuze.com').trim(),
   /** Grafana Service Account Bearer token for programmatic API access */
@@ -424,6 +464,27 @@ module.exports = {
   CONTENT_MIGRATION_SERVER_URL: (process.env.CONTENT_MIGRATION_SERVER_URL || '').trim(),
   CONTENT_MIGRATION_SERVER_EMAIL: (process.env.CONTENT_MIGRATION_SERVER_EMAIL || '').trim(),
   CONTENT_MIGRATION_SERVER_PASSWORD: (process.env.CONTENT_MIGRATION_SERVER_PASSWORD || '').trim(),
+  /**
+   * Pin the exact qarelease cloud registrations for content migration.
+   * Multiple Box/SharePoint registrations exist for the same email/domain; only one
+   * resolves path mappings. Captured from the working UI request. When set, MigrationAgent
+   * overrides findCloudId's pick with these IDs.
+   */
+  CONTENT_SOURCE_CLOUD_ID: (process.env.CONTENT_SOURCE_CLOUD_ID || '').trim(),
+  CONTENT_DEST_CLOUD_ID: (process.env.CONTENT_DEST_CLOUD_ID || '').trim(),
+  /**
+   * Diagnostic source-path pin. CONTENT_SOURCE_PATH_OVERRIDE forces the content migration
+   * source path (e.g. /NEWDATA) and CONTENT_SOURCE_ROOT_ID_OVERRIDE its matching Box folder id.
+   * Use to test whether the path-mapping CSV resolves for an already-indexed folder vs a
+   * freshly-created one. Leave blank in normal operation.
+   */
+  CONTENT_SOURCE_PATH_OVERRIDE: (process.env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim(),
+  CONTENT_SOURCE_ROOT_ID_OVERRIDE: (process.env.CONTENT_SOURCE_ROOT_ID_OVERRIDE || '').trim(),
+  /**
+   * When the path-mapping CSV resolves 0 pairs, abort before creating a (0-pair) job.
+   * Defaults to enabled; set to the string 'false' to proceed anyway (legacy behaviour).
+   */
+  CONTENT_REQUIRE_CSV_MAPPING: (process.env.CONTENT_REQUIRE_CSV_MAPPING || '').trim() || 'true',
 
   // ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
   /** 4th Google tenant (message product). */

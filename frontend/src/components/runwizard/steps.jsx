@@ -5,8 +5,21 @@ import { DOMAINS, PROVIDER_META } from './domains';
 // Icons per provider key; label/short/account come from PROVIDER_META (domains.js).
 const ICONS = {
   google: GoogleIcon, microsoft: MicrosoftIcon, box: BoxIcon,
-  googledrive: GoogleIcon, onedrive: MicrosoftIcon, sharepoint: MicrosoftIcon,
+  gmail: GmailIcon, outlook: OutlookIcon,
+  googledrive: DriveIcon, googleshareddrive: SharedDriveIcon, onedrive: OneDriveIcon, sharepoint: SharePointIcon,
+  dropbox: DropboxIcon, egnyte: EgnyteIcon, citrix: CitrixIcon,
 };
+
+// Service-specific icon key for an account in a given product domain:
+//   mail    → Gmail (google) / Outlook (microsoft)
+//   content → the finer service the account backs (Drive / OneDrive / SharePoint / Box)
+function iconKeyFor(domain, account, serviceKey) {
+  if (domain === 'mail') {
+    if (account === 'google') return 'gmail';
+    if (account === 'microsoft') return 'outlook';
+  }
+  return serviceKey || account;
+}
 function provMeta(key) {
   return { key, ...(PROVIDER_META[key] || { label: key, short: key, account: key }), Icon: ICONS[key] || GenericCloudIcon };
 }
@@ -144,7 +157,7 @@ export function StepSelect({ wiz }) {
     <div className="space-y-4">
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-4 items-stretch">
         <AccountPanel
-          title="Source" subtitle="Choose the account to transfer from" accent="indigo"
+          title="Source" subtitle="Choose the account to transfer from" accent="indigo" domain={wiz.domain}
           accounts={wiz.accounts.filter((a) => srcTypes.includes(a.provider))}
           providerList={cfg.sourceProviders}
           email={wiz.srcEmail} provider={wiz.srcProvider}
@@ -153,7 +166,7 @@ export function StepSelect({ wiz }) {
         />
         <div className="hidden lg:flex items-center justify-center"><ArrowOrb /></div>
         <AccountPanel
-          title="Destination" subtitle="Choose the account to transfer to" accent="emerald"
+          title="Destination" subtitle="Choose the account to transfer to" accent="emerald" domain={wiz.domain}
           accounts={wiz.accounts.filter((a) => dstTypes.includes(a.provider))}
           providerList={cfg.destProviders}
           email={wiz.dstEmail} provider={wiz.dstProvider}
@@ -171,14 +184,22 @@ export function StepSelect({ wiz }) {
   );
 }
 
-function AccountPanel({ title, subtitle, accent, accounts, providerList, email, provider, onSelect, onProvider }) {
+function AccountPanel({ title, subtitle, accent, domain, accounts, providerList, email, provider, onSelect }) {
   const [q, setQ] = useState('');
   const query = q.trim().toLowerCase();
-  const filtered = query ? accounts.filter((a) => a.email.toLowerCase().includes(query)) : accounts;
-  const selectedAcct = accounts.find((a) => a.email === email);
-  // When one account type backs >1 provider in this role (content dest: OneDrive/SharePoint),
-  // offer a service toggle so the user picks which CloudFuze service the migration targets.
-  const serviceOpts = selectedAcct ? providerList.filter((p) => PROVIDER_META[p].account === selectedAcct.provider) : [];
+  // One row per (account × service it backs) — so My Drive, Shared Drive, OneDrive,
+  // SharePoint, Box are each a distinct selectable cloud (no service toggle). Selection
+  // is identified by email + service key, which is unique even when the same email exists
+  // under two account providers.
+  const rows = accounts.flatMap((a) =>
+    providerList
+      .filter((p) => PROVIDER_META[p]?.account === a.provider)
+      .map((service) => ({ a, service })),
+  );
+  const filtered = query
+    ? rows.filter(({ a, service }) =>
+        a.email.toLowerCase().includes(query) || (PROVIDER_META[service]?.label || '').toLowerCase().includes(query))
+    : rows;
   const accentBox = accent === 'emerald' ? 'bg-emerald-100 text-emerald-600' : 'bg-indigo-100 text-indigo-600';
   return (
     <div className="border border-gray-200 rounded-2xl p-5 bg-white flex flex-col gap-4">
@@ -195,16 +216,16 @@ function AccountPanel({ title, subtitle, accent, accounts, providerList, email, 
           className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-400 outline-none" />
       </div>
       <div className="space-y-1.5 max-h-[20rem] overflow-y-auto pr-1">
-        {accounts.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="text-xs text-amber-600 px-1 py-2">No connected accounts for this domain — add one on the <span className="font-semibold">Connect Clouds</span> page.</p>
         ) : filtered.length === 0 ? (
-          <p className="text-xs text-gray-400 px-1 py-2">No accounts match “{q}”.</p>
-        ) : filtered.map((a) => {
-          const selected = email === a.email;
-          const Icon = provMeta(a.provider).Icon;
-          const opts = providerList.filter((p) => PROVIDER_META[p].account === a.provider);
+          <p className="text-xs text-gray-400 px-1 py-2">No clouds match “{q}”.</p>
+        ) : filtered.map(({ a, service }) => {
+          const selected = a.email === email && service === provider;
+          // Service-specific icon: Gmail/Outlook for mail; Drive/Shared Drive/OneDrive/SharePoint/Box for content.
+          const Icon = provMeta(iconKeyFor(domain, a.provider, service)).Icon;
           return (
-            <button key={a.email} type="button" onClick={() => onSelect(a, opts[0])}
+            <button key={`${service}:${a.email}`} type="button" onClick={() => onSelect(a, service)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors ${selected ? 'border-indigo-300 bg-indigo-50/60' : 'border-transparent hover:bg-gray-50'}`}>
               <span className={`shrink-0 w-4 h-4 rounded-full border flex items-center justify-center ${selected ? 'border-indigo-500' : 'border-gray-300'}`}>
                 {selected && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
@@ -212,28 +233,12 @@ function AccountPanel({ title, subtitle, accent, accounts, providerList, email, 
               <span className="shrink-0 w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center"><Icon className="w-5 h-5" /></span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold text-gray-900 truncate">{a.email}</span>
-                <span className="block text-xs text-gray-500 truncate">{provMeta(a.provider).label}{a.isDwd ? ' · DWD' : ''}</span>
+                <span className="block text-xs text-gray-500 truncate">{PROVIDER_META[service]?.label || provMeta(a.provider).label}{a.isDwd ? ' · DWD' : ''}</span>
               </span>
             </button>
           );
         })}
       </div>
-      {serviceOpts.length > 1 && (
-        <div>
-          <p className="text-[11px] text-gray-500 mb-1">Service</p>
-          <div className="flex gap-1.5 p-1 bg-gray-100 rounded-lg">
-            {serviceOpts.map((p) => {
-              const active = provider === p;
-              return (
-                <button key={p} type="button" onClick={() => onProvider(p)}
-                  className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-all ${active ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
-                  {provMeta(p).short}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -274,6 +279,7 @@ function ArrowOrb() {
 
 // ── Step 3: Auto / manual map ──────────────────────────────────────────────────
 export function StepMap({ wiz }) {
+  const [q, setQ] = useState('');
   // Auto-fetch + auto-map as soon as a source and destination are selected.
   useEffect(() => {
     if (wiz.srcEmail && wiz.dstEmail && wiz.needsFetch && !wiz.busy) wiz.fetchUsers();
@@ -283,6 +289,16 @@ export function StepMap({ wiz }) {
   if (!wiz.srcEmail || !wiz.dstEmail) {
     return <p className="text-sm text-amber-600">Choose a source and destination admin in the previous step first.</p>;
   }
+
+  const query = q.trim().toLowerCase();
+  const match = (...vals) => !query || vals.some((v) => (v || '').toLowerCase().includes(query));
+  // Keep original indices so checkbox/select-all operate on the real mapping index.
+  const visibleMappings = wiz.mappings
+    .map((m, idx) => ({ m, idx }))
+    .filter(({ m }) => match(m.source.email, m.destination.email));
+  const visibleUnmapped = wiz.unmappedSource.filter((s) => match(s.email));
+  const visibleIndices = visibleMappings.map(({ idx }) => idx);
+  const allVisibleSelected = visibleIndices.length > 0 && visibleIndices.every((i) => wiz.selectedIndices.has(i));
 
   return (
     <div className="space-y-3">
@@ -297,6 +313,20 @@ export function StepMap({ wiz }) {
             <Pill c="green" t={`${wiz.selectedIndices.size} selected`} />
             {wiz.unmappedSource.length > 0 && <Pill c="yellow" t={`${wiz.unmappedSource.length} unmatched`} />}
           </div>
+
+          {/* Search + bulk select */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-48">
+              <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search users by email"
+                className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-400 outline-none" />
+            </div>
+            <button type="button" onClick={() => wiz.selectAll(visibleIndices)} disabled={visibleIndices.length === 0}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-40">Select all</button>
+            <button type="button" onClick={() => wiz.deselectAll(visibleIndices)} disabled={visibleIndices.length === 0}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40">Deselect all</button>
+          </div>
+
           {wiz.mappings.length === 0 && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-700">
               No users auto-matched by first name. Pick a destination for the source users below — map at least one to continue.
@@ -306,7 +336,16 @@ export function StepMap({ wiz }) {
           <div className="space-y-3">
             {wiz.mappings.length > 0 && (
               <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
-                {wiz.mappings.map((m, idx) => (
+                {/* Header row: select-all checkbox for the visible set */}
+                <label className="px-4 py-2 flex items-center gap-3 text-xs font-semibold text-gray-600 bg-gray-50">
+                  <input type="checkbox" checked={allVisibleSelected}
+                    onChange={() => (allVisibleSelected ? wiz.deselectAll(visibleIndices) : wiz.selectAll(visibleIndices))}
+                    className="w-4 h-4 text-indigo-600 rounded" />
+                  <span>{allVisibleSelected ? 'Deselect' : 'Select'} all{query ? ' (filtered)' : ''} · {visibleIndices.length} pair{visibleIndices.length === 1 ? '' : 's'}</span>
+                </label>
+                {visibleMappings.length === 0 ? (
+                  <p className="px-4 py-3 text-sm text-gray-400">No mapped pairs match “{q}”.</p>
+                ) : visibleMappings.map(({ m, idx }) => (
                   <label key={idx} className={`px-4 py-2.5 flex items-center gap-3 text-sm cursor-pointer ${wiz.selectedIndices.has(idx) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'}`}>
                     <input type="checkbox" checked={wiz.selectedIndices.has(idx)} onChange={() => wiz.togglePair(idx)} className="w-4 h-4 text-indigo-600 rounded" />
                     <span className="flex-1 min-w-0 truncate">{m.source.email} <span className="text-gray-400">→</span> {m.destination.email}</span>
@@ -321,7 +360,9 @@ export function StepMap({ wiz }) {
             {wiz.unmappedSource.length > 0 && (
               <div className="bg-white border border-yellow-200 rounded-xl divide-y divide-gray-100">
                 <div className="px-4 py-2 bg-yellow-50 text-xs font-semibold text-yellow-800 sticky top-0">Unmatched source — map manually</div>
-                {wiz.unmappedSource.map((s) => (
+                {visibleUnmapped.length === 0 ? (
+                  <p className="px-4 py-3 text-sm text-gray-400">No unmatched users match “{q}”.</p>
+                ) : visibleUnmapped.map((s) => (
                   <div key={s.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
                     <span className="flex-1 truncate">{s.email}</span>
                     <span className="text-gray-400">→</span>
@@ -405,33 +446,300 @@ export function StepOptions({ wiz }) {
             : 'Delta — incremental email/folder changes plus contacts and calendars.'}
         </p>
       </div>
+
+      {wiz.domain === 'content' && <ContentOptions wiz={wiz} />}
     </div>
+  );
+}
+
+// CloudFuze Team-Migration permission + job options (content only).
+const CONTENT_PERMS = [
+  ['rootFolderPermissions', 'Root Folder Permissions'],
+  ['rootFilePermissions', 'Root File Permissions'],
+  ['subFolderPermissions', 'Sub-Folder Permissions'],
+  ['subFilePermissions', 'Sub-File Permissions'],
+  ['sharedLinks', 'Shared Links'],
+  ['externalShares', 'External Shares'],
+  ['versionHistory', 'Version History'],
+  ['preserveTimestamp', 'Preserve Timestamp'],
+  ['customMetadata', 'Custom Metadata'],
+  ['workbookLinks', 'Workbook Links'],
+  ['comments', 'Comments'],
+];
+// Per-user folder mapping table for multi-user content migration. One row per selected user
+// (from Map Users). Each row's source folder / destination path defaults to the shared base
+// fields; editing a row overrides just that user. CSV import matches by source email.
+function PerUserFolderTable({ wiz, destDefault }) {
+  const pairs = wiz.selectedPairs || [];
+  if (pairs.length === 0) {
+    return (
+      <p className="sm:col-span-2 text-xs text-amber-600">
+        No users selected on the Map Users step — map at least one user to migrate.
+      </p>
+    );
+  }
+  const baseName = wiz.contentPaths.sourceFolderName || 'Agent Box Data';
+  const onCsv = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const n = wiz.importContentUserFoldersCsv(text);
+    e.target.value = '';
+    alert(`Imported folder overrides for ${n} user(s).`);
+  };
+  return (
+    <div className="sm:col-span-2">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-gray-700">Per-user folders ({pairs.length})</span>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium text-indigo-600 hover:text-indigo-700 cursor-pointer">
+            Import CSV
+            <input type="file" accept=".csv,text/csv" onChange={onCsv} className="hidden" />
+          </label>
+          <button type="button" onClick={() => wiz.clearContentUserFolders()}
+            className="text-xs font-medium text-gray-500 hover:text-gray-700">Reset to base</button>
+        </div>
+      </div>
+      <div className="overflow-x-auto border border-gray-200 rounded-lg">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 text-gray-600">
+            <tr>
+              <th className="text-left font-semibold px-3 py-2">Source user</th>
+              <th className="text-left font-semibold px-3 py-2">Source folder</th>
+              <th className="text-left font-semibold px-3 py-2">Destination user</th>
+              <th className="text-left font-semibold px-3 py-2">Destination path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.map((p) => {
+              const email = (p.source.email || '').toLowerCase();
+              const ov = wiz.contentUserFolders[email] || {};
+              return (
+                <tr key={email} className="border-t border-gray-100">
+                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.source.email}</td>
+                  <td className="px-2 py-1.5">
+                    <input value={ov.sourceFolderName || ''} onChange={(e) => wiz.setContentUserFolder(email, 'sourceFolderName', e.target.value)}
+                      placeholder={baseName} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                  </td>
+                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.destination.email}</td>
+                  <td className="px-2 py-1.5">
+                    <input value={ov.destinationPath || ''} onChange={(e) => wiz.setContentUserFolder(email, 'destinationPath', e.target.value)}
+                      placeholder={destDefault} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-400 mt-1.5">
+        CSV columns: <span className="font-mono">Source User, Source Folder, Destination User, Destination Path</span> (matched by source email).
+      </p>
+    </div>
+  );
+}
+
+function ContentOptions({ wiz }) {
+  const o = wiz.contentOptions;
+  const allOn = CONTENT_PERMS.every(([k]) => o[k]);
+  const setAll = (val) => CONTENT_PERMS.forEach(([k]) => { if (o[k] !== val) wiz.toggleContentOption(k); });
+  // Default destination path shown to the user, based on the chosen destination service.
+  const destDefault = wiz.dstProvider === 'sharepoint' ? '/SANITY DATAA/Documents'
+    : (wiz.dstProvider === 'onedrive' ? '/' : (String(wiz.dstProvider).includes('drive') ? '/OSM' : '/'));
+  return (
+    <>
+    {/* Content Mapping — which folder migrates where (the path CSV the agent uploads) */}
+    <div className="border border-gray-200 rounded-xl overflow-hidden mb-5">
+      <div className="bg-indigo-600 text-white px-4 py-2.5 text-sm font-semibold">Content Mapping</div>
+      <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <label className="sm:col-span-2 flex items-center gap-2.5 text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 cursor-pointer">
+          <input type="checkbox" checked={wiz.useExistingSource} onChange={(e) => wiz.setUseExistingSource(e.target.checked)} className="w-4 h-4 text-indigo-600 rounded" />
+          <span><strong>Use existing source folder</strong> — skip data creation and migrate the folder(s) that already exist at the paths below.</span>
+        </label>
+        <Field label={wiz.useExistingSource ? 'Existing source folder path' : 'Source folder base name'}>
+          <input value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
+            placeholder={wiz.useExistingSource ? 'e.g. /NEWDATA or /Projects/Q1' : 'e.g. NEWDATA (default: Agent Box Data)'} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+        </Field>
+        <Field label="Destination path">
+          <input value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
+            placeholder={`default ${destDefault}`} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+        </Field>
+        <p className="sm:col-span-2 text-xs text-gray-500">
+          {wiz.useExistingSource ? (
+            <><strong>Using existing folders.</strong> The agent does NOT create data — it resolves each user row's path to the
+            existing Box folder and migrates it. Per-user paths in the table override the base path above.</>
+          ) : (
+            <><strong>Per-user mapping below.</strong> The two fields above are <strong>bulk defaults</strong> — applied to any user
+            row left blank. The agent seeds one dataset per mapped user and migrates each under its Destination path as its own
+            sub-folder. If a name already exists it appends “ 1”. Leave a Destination blank for the cloud default ({destDefault}).</>
+          )}
+        </p>
+        <PerUserFolderTable wiz={wiz} destDefault={destDefault} />
+      </div>
+    </div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="border border-gray-200 rounded-xl overflow-hidden">
+        <div className="bg-indigo-600 text-white px-4 py-2.5 text-sm font-semibold">Migration Options</div>
+        <div className="p-4 space-y-2.5">
+          <label className="flex items-center gap-2.5 text-sm font-medium text-gray-800 pb-2 border-b border-gray-100">
+            <input type="checkbox" checked={allOn} onChange={() => setAll(!allOn)} className="w-4 h-4 text-indigo-600 rounded" />
+            Select All
+          </label>
+          {CONTENT_PERMS.map(([key, label]) => (
+            <label key={key} className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox" checked={!!o[key]} onChange={() => wiz.toggleContentOption(key)} className="w-4 h-4 text-indigo-600 rounded" />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="border border-gray-200 rounded-xl overflow-hidden">
+        <div className="bg-indigo-600 text-white px-4 py-2.5 text-sm font-semibold">Job Options</div>
+        <div className="p-4 space-y-3">
+          <Field label="Job Name">
+            <input value={wiz.jobOptions.jobName} onChange={(e) => wiz.setJobOption('jobName', e.target.value)}
+              placeholder="(auto-generated if blank)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          </Field>
+          <Field label="Replace special characters with">
+            <select value={wiz.jobOptions.replaceSpecialChar} onChange={(e) => wiz.setJobOption('replaceSpecialChar', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="_">Underscore ( _ )</option>
+              <option value="-">Hyphen ( - )</option>
+              <option value="">Remove</option>
+            </select>
+          </Field>
+          <Field label="Exclude file types">
+            <input value={wiz.jobOptions.excludeFileTypes} onChange={(e) => wiz.setJobOption('excludeFileTypes', e.target.value)}
+              placeholder="e.g. mp3,mp4,psd" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+          </Field>
+          <label className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer pt-1">
+            <input type="checkbox"
+              checked={!wiz.contentOptions.notifyInternalUsers && !wiz.contentOptions.notifyExternalUsers}
+              onChange={(e) => { const notify = !e.target.checked; wiz.setContentOption('notifyInternalUsers', notify); wiz.setContentOption('notifyExternalUsers', notify); }}
+              className="w-4 h-4 text-indigo-600 rounded" />
+            Suppress email notifications
+          </label>
+        </div>
+      </div>
+    </div>
+    </>
   );
 }
 
 // ── Step 6: Summary ─────────────────────────────────────────────────────────────
 export function StepSummary({ wiz, onRun, running }) {
   const pairs = wiz.selectedPairs;
+  const isContent = wiz.domain === 'content';
+  const o = wiz.contentOptions || {};
+  const enabledPerms = CONTENT_PERMS.filter(([k]) => o[k]).map(([, label]) => label);
+  const baseFolder = wiz.contentPaths.sourceFolderName || 'Agent Box Data';
+  const baseDest = wiz.contentPaths.destinationPath || '(cloud default)';
+
   return (
     <div className="space-y-5">
-      <p className="text-sm text-gray-500">Review your selections, then run the migration QA flow.</p>
+      <p className="text-sm text-gray-500">Review everything you selected, then run the migration QA flow.</p>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SummaryCard title="Source" lines={[`${provMeta(wiz.srcProvider).short}`, wiz.srcEmail || '—']} />
         <SummaryCard title="Destination" lines={[`${provMeta(wiz.dstProvider).short}`, wiz.dstEmail || '—']} />
-        <SummaryCard title="User pairs" lines={[`${pairs.length} selected`, pairs.length === 1 ? `${pairs[0].source.email} → ${pairs[0].destination.email}` : 'bulk run']} />
-        <SummaryCard title="Options" lines={[`Test: ${wiz.testType}`, `Type: ${wiz.migrationType === 'FULL' ? 'One Time' : 'Delta'}`]} />
-        <SummaryCard title="Migration server" lines={[wiz.migrationServerUrl || '—', wiz.migrationServerEmail || '(.env credentials)']} />
+        <SummaryCard title="Migration server" lines={[wiz.migrationServerUrl || '—', wiz.migrationServerEmail || '—']} />
+        <SummaryCard title="Run type" lines={[`Test: ${wiz.testType}`, `Migration: ${wiz.migrationType === 'FULL' ? 'One Time' : 'Delta'}`]} />
       </div>
-      {pairs.length > 1 && (
-        <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 max-h-48 overflow-y-auto text-sm">
-          {pairs.map((p, i) => <div key={i} className="px-4 py-2 truncate">{p.source.email} <span className="text-gray-400">→</span> {p.destination.email}</div>)}
-        </div>
+
+      {/* Permission / user mapping — ALL mapped users (applies to every collaborator on the
+          migrated content, not just the users selected for migration). */}
+      {(() => {
+        const allMappings = wiz.mappings || [];
+        const selected = new Set(pairs.map((p) => (p.source.email || '').toLowerCase()));
+        return (
+          <SummarySection title={`Permission Mapping · ${allMappings.length} user${allMappings.length === 1 ? '' : 's'}`}
+            subtitle="Applies to EVERY collaborator on the migrated content (not only the selected users). Each source user's permissions are re-granted to the mapped destination user. ★ = selected for content migration.">
+            {allMappings.length === 0
+              ? <p className="px-4 py-3 text-xs text-amber-600">No user mapping yet — fetch/map users in the Map Users step.</p>
+              : (
+                <div className="divide-y divide-gray-100 max-h-56 overflow-y-auto">
+                  {allMappings.map((m, i) => {
+                    const isSel = selected.has((m.source.email || '').toLowerCase());
+                    return (
+                      <div key={i} className="px-4 py-2 flex items-center gap-2 text-sm">
+                        <span className="w-3 text-amber-500">{isSel ? '★' : ''}</span>
+                        <span className="font-mono text-gray-700 truncate flex-1">{m.source.email}</span>
+                        <span className="text-indigo-400">→</span>
+                        <span className="font-mono text-gray-700 truncate flex-1 text-right">{m.destination.email}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+          </SummarySection>
+        );
+      })()}
+
+      {isContent && (
+        <>
+          {/* Per-user folder mapping */}
+          <SummarySection title="Content Mapping · per-user folders"
+            subtitle={`Base folder "${baseFolder}", base destination "${baseDest}" — overrides shown per user.`}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 text-gray-500">
+                  <tr><th className="text-left px-4 py-2 font-semibold">Source user</th><th className="text-left px-2 py-2 font-semibold">Source folder</th><th className="text-left px-2 py-2 font-semibold">Destination path</th></tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {pairs.map((p, i) => {
+                    const ov = wiz.contentUserFolders[(p.source.email || '').toLowerCase()] || {};
+                    return (
+                      <tr key={i}>
+                        <td className="px-4 py-1.5 font-mono text-gray-700">{p.source.email}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.sourceFolderName || baseFolder}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.destinationPath || baseDest}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </SummarySection>
+
+          {/* Migration options (permission flags) */}
+          <SummarySection title={`Migration Options · ${enabledPerms.length} enabled`}>
+            <div className="px-4 py-3 flex flex-wrap gap-1.5">
+              {enabledPerms.length === 0
+                ? <span className="text-xs text-gray-400">None selected</span>
+                : enabledPerms.map((label) => (
+                    <span key={label} className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{label}</span>
+                  ))}
+            </div>
+          </SummarySection>
+
+          {/* Job options */}
+          <SummarySection title="Job Options">
+            <div className="px-4 py-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+              <div><span className="text-gray-500">Job name: </span><span className="font-mono">{wiz.jobOptions.jobName || '(auto)'}</span></div>
+              <div><span className="text-gray-500">Replace special chars: </span><span className="font-mono">{wiz.jobOptions.replaceSpecialChar || '-'}</span></div>
+              <div><span className="text-gray-500">Exclude file types: </span><span className="font-mono">{wiz.jobOptions.excludeFileTypes || '(none)'}</span></div>
+            </div>
+          </SummarySection>
+        </>
       )}
+
       <button type="button" onClick={onRun} disabled={running || pairs.length === 0}
         className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50">
-        {running ? 'Starting…' : `Run Migration · ${wiz.testType}${pairs.length > 1 ? ` (${pairs.length} pairs)` : ''}`}
+        {running ? 'Starting…' : `Run Migration · ${wiz.testType}${pairs.length > 1 ? ` (${pairs.length} users)` : ''}`}
       </button>
-      {pairs.length === 0 && <p className="text-xs text-amber-600">Select at least one user pair in step 3.</p>}
+      {pairs.length === 0 && <p className="text-xs text-amber-600">Select at least one user pair in the Map Users step.</p>}
+    </div>
+  );
+}
+
+function SummarySection({ title, subtitle, children }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-gray-100">
+        <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">{title}</p>
+        {subtitle && <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>}
+      </div>
+      {children}
     </div>
   );
 }
@@ -476,8 +784,90 @@ function MicrosoftIcon({ className }) {
 }
 function BoxIcon({ className }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="#0061D5">
-      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2.4 12.6a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2zm4.8 0a1.6 1.6 0 110-3.2 1.6 1.6 0 010 3.2z" />
+    <svg viewBox="0 0 24 24" className={className}>
+      <rect width="24" height="24" rx="5" fill="#0061D5" />
+      <text x="12" y="15.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#fff" fontFamily="Arial, sans-serif">box</text>
+    </svg>
+  );
+}
+function GmailIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <path fill="#fff" d="M3 5h18v14H3z" />
+      <path fill="#EA4335" d="M3 6.5L12 13 21 6.5V5l-9 6.5L3 5z" />
+      <path fill="#34A853" d="M3 5v14h2.7V8.3L12 13 3 5z" />
+      <path fill="#FBBC04" d="M21 5v14h-2.7V8.3L12 13l9-8z" />
+      <path fill="#C5221F" d="M3 5l9 6.5L21 5h-2.2L12 9.8 5.2 5H3z" />
+    </svg>
+  );
+}
+function OutlookIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <rect x="9" y="4" width="13" height="16" rx="1.5" fill="#0A2767" />
+      <rect x="9" y="4" width="13" height="8" fill="#0364B8" />
+      <rect x="2" y="6" width="11" height="12" rx="2" fill="#0078D4" />
+      <text x="7.5" y="15" textAnchor="middle" fontSize="9" fontWeight="700" fill="#fff" fontFamily="Arial, sans-serif">O</text>
+    </svg>
+  );
+}
+function DriveIcon({ className }) {
+  return (
+    <svg viewBox="0 0 88 78" className={className}>
+      <path fill="#0066DA" d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L27.5 53H0c0 1.55.4 3.1 1.2 4.5z" />
+      <path fill="#00AC47" d="M43.65 25L29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5C.4 49.9 0 51.45 0 53h27.5z" />
+      <path fill="#EA4335" d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.8 57c.8-1.4 1.2-2.95 1.2-4.5H60.5l5.85 11.5z" />
+      <path fill="#00832D" d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" />
+      <path fill="#2684FC" d="M60.5 53H27.5L13.75 76.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" />
+      <path fill="#FFBA00" d="M73.4 26.5L60.75 4.5c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25 60.5 53H88c0-1.55-.4-3.1-1.2-4.5z" />
+    </svg>
+  );
+}
+function SharedDriveIcon({ className }) {
+  // Drive triangle (greyed) with a "shared/people" badge to distinguish from My Drive.
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <path fill="#5F6368" d="M8.8 3.2h6.4l5.4 9.3h-6.4zM7.7 4.1L2.3 13.4l3.2 5.5 5.4-9.3zM7.1 14.4l-3 5.2h11.2l3-5.2z" opacity="0.5" />
+      <circle cx="18" cy="18" r="5" fill="#1A73E8" />
+      <path fill="#fff" d="M18 15.4a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm-2.6 5.1c0-1.1 1.2-1.7 2.6-1.7s2.6.6 2.6 1.7v.5h-5.2z" />
+    </svg>
+  );
+}
+function OneDriveIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="#0078D4">
+      <path d="M13.5 7a5.5 5.5 0 015.42 4.6A4 4 0 0118 19.5H7a4.5 4.5 0 01-1.06-8.87A5.5 5.5 0 0113.5 7z" />
+    </svg>
+  );
+}
+function SharePointIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <circle cx="12" cy="12" r="11" fill="#036C70" />
+      <text x="12" y="16.5" textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" fontFamily="Segoe UI, Arial, sans-serif">S</text>
+    </svg>
+  );
+}
+function DropboxIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="#0061FF">
+      <path d="M6 2L0 6l6 4 6-4-6-4zm12 0l-6 4 6 4 6-4-6-4zM0 14l6 4 6-4-6-4-6 4zm18-4l-6 4 6 4 6-4-6-4zM6 19.34l6 4 6-4-6-4-6 4z" />
+    </svg>
+  );
+}
+function EgnyteIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <rect width="24" height="24" rx="5" fill="#00AEC7" />
+      <text x="12" y="16.5" textAnchor="middle" fontSize="12" fontWeight="700" fill="#fff" fontFamily="Arial, sans-serif">e</text>
+    </svg>
+  );
+}
+function CitrixIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className}>
+      <rect width="24" height="24" rx="5" fill="#452D82" />
+      <text x="12" y="16" textAnchor="middle" fontSize="11" fontWeight="700" fill="#fff" fontFamily="Arial, sans-serif">C</text>
     </svg>
   );
 }

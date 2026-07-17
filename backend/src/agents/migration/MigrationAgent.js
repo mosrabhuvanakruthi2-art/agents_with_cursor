@@ -56,12 +56,15 @@ class MigrationAgent extends BaseAgent {
       const hasEmail = Boolean(context.migrationServerEmail);
       const hasPassword = Boolean(context.migrationServerPassword);
 
-      // For content migrations: if no password in form, fall back to env-stored credentials
-      const isContentModeLocal = context.mode === 'content';
+      // For content migrations (or any non-devemail content server like qarelease): if the
+      // form leaves email/password blank, fall back to env CONTENT_MIGRATION_SERVER_* so the
+      // runtime login has credentials (needed for isNewServer → browser-login path).
+      const isContentServer = context.mode === 'content'
+        || (context.migrationServerUrl && !/devemail/i.test(context.migrationServerUrl));
       const effectiveEmail = context.migrationServerEmail ||
-        (isContentModeLocal ? env.CONTENT_MIGRATION_SERVER_EMAIL : '');
+        (isContentServer ? env.CONTENT_MIGRATION_SERVER_EMAIL : '');
       const effectivePassword = context.migrationServerPassword ||
-        (isContentModeLocal ? env.CONTENT_MIGRATION_SERVER_PASSWORD : '');
+        (isContentServer ? env.CONTENT_MIGRATION_SERVER_PASSWORD : '');
 
       migrationClient.setRuntimeConfig({
         baseUrl: context.migrationServerUrl,
@@ -70,7 +73,7 @@ class MigrationAgent extends BaseAgent {
         // When no email is given but a password-like token is provided, treat it as a Basic auth override
         basicAuth: (!effectiveEmail && hasPassword) ? context.migrationServerPassword : null,
       });
-      log.info(`CloudFuze: using runtime server ${context.migrationServerUrl}${!effectiveEmail && hasPassword ? ' (Basic auth override from UI)' : ''}${isContentModeLocal && !context.migrationServerPassword && effectivePassword ? ' (content mode: password from env)' : ''}`);
+      log.info(`CloudFuze: using runtime server ${context.migrationServerUrl}${!effectiveEmail && hasPassword ? ' (Basic auth override from UI)' : ''}${isContentServer && !context.migrationServerPassword && effectivePassword ? ' (content server: password from env)' : ''}`);
       bump(`MigrationAgent: connecting to ${context.migrationServerUrl}…`);
     } else {
       migrationClient.clearRuntimeConfig();
@@ -89,7 +92,7 @@ class MigrationAgent extends BaseAgent {
     bump('MigrationAgent: authenticating with migration server…');
     if (useDevemail) {
       // devemail: POST /auth/user → App JWT, then POST /mail/register → Mail JWT
-      const devEmail = context.migrationServerEmail || env.CLOUDFUZE_OWNER_EMAIL || '';
+      const devEmail = context.migrationServerEmail || '';
       const devPassword = context.migrationServerPassword || env.MIGRATION_APP_LOGIN_PASSWORD || '';
       // Set runtime config so resolveEmail() / ownerEmailId use the UI credentials for all
       // subsequent devemailClient calls (triggerMigration, cacheUserMapping, uploadUserCSV, etc.)
@@ -266,6 +269,20 @@ class MigrationAgent extends BaseAgent {
       }
       log.info(`CloudFuze: ${clouds.length} cloud(s) returned`);
 
+      // Diagnostic: dump every cloud this CloudFuze login can see (id, name, owner email).
+      // Lets us confirm whether a pinned CONTENT_SOURCE/DEST_CLOUD_ID actually belongs to this
+      // account — a cloud not in this list can't have its paths/members resolved (→ 0 mappings).
+      if (context.mode === 'content' || (!context.includeMail && (context.includeCalendar || context.includeContacts))) {
+        try {
+          const dump = (clouds || []).map((c) => {
+            const id = c.id || c.vendorId || c.cloudId;
+            const email = c.adminEmailId || c.email || c.emailId || c.ownerEmailId || '?';
+            return `${id} [${c.cloudName || c.cloud || '?'}] ${email}`;
+          });
+          log.info(`CloudFuze content clouds visible to this login:\n  ${dump.join('\n  ')}`);
+        } catch (e) { log.warn(`CloudFuze cloud dump failed: ${e.message}`); }
+      }
+
       // For email migrations: prefer .env admin email override (set up for devemail/newtestemail5).
       // For content migrations (Box, SharePoint, etc.): skip env override — use context admin email
       // from the form (e.g. erik@filefuze.co for Box/SharePoint on qarelease).
@@ -298,6 +315,31 @@ class MigrationAgent extends BaseAgent {
             `CloudFuze: destination "${destLookup}" not found in /mail/clouds. ` +
             `Available: ${clouds.map((c) => c.adminEmailId || c.email).join(', ')}`
           );
+        }
+      }
+      // Cloud-id PREFERENCE (content). When multiple Box/SharePoint clouds exist for the same
+      // email, findCloudId() may pick the wrong registration. CONTENT_SOURCE_CLOUD_ID /
+      // CONTENT_DEST_CLOUD_ID bias toward a known-good registration — but ONLY when that cloud
+      // actually belongs to the logged-in account (present in /mail/clouds). For a different
+      // account the pin won't match, so we keep findCloudId's auto-pick. This makes switching
+      // accounts work purely from the UI Migration Server step (no .env edits needed).
+      if (isContentMode) {
+        const cloudById = (id) => clouds.find((x) => (x.id || x.vendorId || x.cloudId) === id);
+        const srcOverride = (context.sourceCloudIdOverride || env.CONTENT_SOURCE_CLOUD_ID || '').trim();
+        const dstOverride = (context.destCloudIdOverride || env.CONTENT_DEST_CLOUD_ID || '').trim();
+        const srcMatch = srcOverride && cloudById(srcOverride);
+        const dstMatch = dstOverride && cloudById(dstOverride);
+        if (srcMatch) {
+          sourceCloud = { id: srcOverride, cloudName: srcMatch.cloudName || sourceCloud.cloudName, memberId: srcMatch.memberId };
+          log.info(`CloudFuze: source cloud preferred (present in this account) → ${srcOverride} (${sourceCloud.cloudName})`);
+        } else if (srcOverride) {
+          log.info(`CloudFuze: source pin ${srcOverride} not in this account's clouds — using auto-picked ${sourceCloud.id} (${sourceCloud.cloudName})`);
+        }
+        if (dstMatch) {
+          destCloud = { id: dstOverride, cloudName: dstMatch.cloudName || destCloud.cloudName, memberId: dstMatch.memberId };
+          log.info(`CloudFuze: dest cloud preferred (present in this account) → ${dstOverride} (${destCloud.cloudName})`);
+        } else if (dstOverride) {
+          log.info(`CloudFuze: dest pin ${dstOverride} not in this account's clouds — using auto-picked ${destCloud.id} (${destCloud.cloudName})`);
         }
       }
       log.info(
@@ -518,6 +560,10 @@ class MigrationAgent extends BaseAgent {
       throw new Error(`[Step 5 POST initiate] ${err?.response?.status ? `HTTP ${err?.response.status}: ` : ''}${err?.message}`);
     }
     this.jobId = triggerResult.jobId;
+    // Permission mapping + per-user units used by the migration — persisted for the UI/report.
+    if (triggerResult.permissionMapping) context.permissionMapping = triggerResult.permissionMapping;
+    if (triggerResult.migratedUsers) context.migratedUsers = triggerResult.migratedUsers;
+    if (triggerResult.skippedUsers) context.skippedUsers = triggerResult.skippedUsers;
 
     const rawStr = typeof triggerResult.rawResponse === 'string'
       ? triggerResult.rawResponse
@@ -606,42 +652,58 @@ class MigrationAgent extends BaseAgent {
       cfStatus: finalStatus,
     };
 
-    // Enrich from GET /mail/reports/{jobId} — authoritative per-pair breakdown (Job ID + Workspace
-    // ID + counts), fetched with fresh auth after completion. Best-effort: never blocks the run.
-    if (useDevemail && context.migrationJobDetails.jobId) {
+    // Authoritative enrichment: resolve Job ID + per-pair Workspace ID + real counts + per-folder
+    // breakdown from the reports API. Runs on EVERY devemail run (best-effort, never blocks) so the
+    // folder breakdown is always fetched. Uses our own Basic-auth Mail JWT — the reports endpoints
+    // read fine now that their double-JSON-encoded bodies are unwrapped (no SSO token required; a
+    // captured SSO token is used automatically if present). Passing the known jobId makes the job
+    // match exact instead of guessing from the list.
+    if (useDevemail) {
       try {
-        const breakdown = await devemailClient.getJobReport(context.migrationJobDetails.jobId);
-        const norm = (s) => String(s || '').toLowerCase().trim();
-        const pair = (breakdown || []).find(
-          (p) => norm(p.fromMailId || p.fromEmail) === norm(context.sourceEmail)
-        );
-        if (pair) {
-          const jobDetailId = pair.id || pair.jobDetailId || null;          // per-pair sub-task id
-          context.migrationJobDetails.workspaceId = jobDetailId || context.migrationJobDetails.workspaceId;
-          if (pair.totalCount != null) context.migrationJobDetails.totalCount = Number(pair.totalCount);
-          if (pair.processedCount != null) context.migrationJobDetails.processedCount = Number(pair.processedCount);
-          const ps = String(pair.processStatus || pair.syncStatus || '').toUpperCase().trim();
-          if (ps && (finalStatus === 'TIMEOUT' || !finalStatus)) context.migrationJobDetails.cfStatus = ps;
-          log.info(`CloudFuze /mail/reports/${context.migrationJobDetails.jobId}: pair jobDetailId=${jobDetailId}, counts=${context.migrationJobDetails.processedCount}/${context.migrationJobDetails.totalCount}`);
-
-          // Drill into /mail/workSpaces/{jobDetailId} for the pair's workspace id (deepest record).
-          if (jobDetailId) {
-            try {
-              const ws = await devemailClient.getWorkspaceRecords(jobDetailId);
-              if (Array.isArray(ws) && ws.length > 0) {
-                const root = ws.find((w) => w.sourceId === '/' || w.destFolderPath === '/') || ws[0];
-                if (root?.id) context.migrationJobDetails.workspaceId = root.id;
-                log.info(`CloudFuze /mail/workSpaces/${jobDetailId}: ${ws.length} workspace record(s), workspaceId=${context.migrationJobDetails.workspaceId}`);
-              }
-            } catch (wErr) {
-              log.warn(`CloudFuze getWorkspaceRecords failed (non-fatal): ${wErr.message}`);
-            }
+        const resolved = await devemailClient.resolveJobViaSsoToken({
+          jobId: context.migrationJobDetails.jobId,
+          jobName: context.migrationJobDetails.jobName,
+          fromMailId: context.sourceEmail,
+        });
+        if (resolved) {
+          if (resolved.jobId)          context.migrationJobDetails.jobId = resolved.jobId;
+          if (resolved.workspaceId)    context.migrationJobDetails.workspaceId = resolved.workspaceId;
+          if (resolved.totalCount != null)     context.migrationJobDetails.totalCount = Number(resolved.totalCount);
+          if (resolved.processedCount != null) context.migrationJobDetails.processedCount = Number(resolved.processedCount);
+          if (resolved.status && (finalStatus === 'TIMEOUT' || !finalStatus)) context.migrationJobDetails.cfStatus = resolved.status;
+          if (Array.isArray(resolved.folderBreakdown) && resolved.folderBreakdown.length) {
+            context.migrationJobDetails.folderBreakdown = resolved.folderBreakdown;
           }
+          log.info(`CloudFuze job resolved: jobId=${resolved.jobId}, workspaceId=${resolved.workspaceId}, counts=${resolved.processedCount}/${resolved.totalCount}, folders=${resolved.folderBreakdown?.length || 0}`);
         }
       } catch (e) {
-        log.warn(`CloudFuze getJobReport enrichment failed (non-fatal): ${e.message}`);
+        log.warn(`CloudFuze job resolve failed (non-fatal): ${e.message}`);
       }
     }
+
+    // Fallback: when the API never yields a Workspace ID (initiate returns no jobId and the job-list
+    // endpoints return nothing / 401), scrape it from the CloudFuze reports-page DOM — each mailbox
+    // row exposes a `workspaceid` attribute. Purely ADDITIVE + best-effort: only runs when workspaceId
+    // is still empty, wrapped in try/catch, and Playwright is required lazily so it can't affect the
+    // normal path. Disable with WORKSPACE_ID_BROWSER_FALLBACK=false.
+    if (useDevemail && !context.migrationJobDetails.workspaceId
+        && process.env.WORKSPACE_ID_BROWSER_FALLBACK !== 'false') {
+      try {
+        const { getWorkspaceInfoViaBrowser } = require('../../clients/devemailBrowserClient');
+        const info = await getWorkspaceInfoViaBrowser(context.sourceEmail, {
+          loginEmail: context.migrationServerEmail,
+          loginPassword: context.migrationServerPassword,
+          jobName: context.migrationJobDetails.jobName,
+        });
+        if (info && info.workspaceId) {
+          context.migrationJobDetails.workspaceId = info.workspaceId;
+          log.info(`CloudFuze Workspace ID resolved via reports-page scrape: ${info.workspaceId}`);
+        }
+      } catch (e) {
+        log.warn(`Workspace ID browser-scrape fallback failed (non-fatal): ${e.message}`);
+      }
+    }
+
     log.info(`CloudFuze job details: jobId=${context.migrationJobDetails.jobId}, jobName=${context.migrationJobDetails.jobName}, workspaceId=${context.migrationJobDetails.workspaceId}, total=${context.migrationJobDetails.totalCount}, processed=${context.migrationJobDetails.processedCount}, status=${finalStatus}`);
 
     // ── Content migration: check if this is a stop status ─────────
@@ -672,6 +734,8 @@ class MigrationAgent extends BaseAgent {
         ownerValidation,
         migrationJobDetails: context.migrationJobDetails,
         contentMigrationReport: contentReport,
+        permissionMapping: context.permissionMapping,
+        migratedUsers: context.migratedUsers,
         skipValidation: true,
         cloudIds: {
           sourceCloudId: sourceCloud?.id,
@@ -694,6 +758,8 @@ class MigrationAgent extends BaseAgent {
       rawResponse: triggerResult.rawResponse,
       ownerValidation,
       migrationJobDetails: context.migrationJobDetails,
+      permissionMapping: context.permissionMapping,
+      migratedUsers: context.migratedUsers,
       contentMigrationReport: (isContentMode && polledJobReport) ? {
         workspaceId: context.migrationJobDetails.workspaceId,
         status: finalStatus,
@@ -711,7 +777,7 @@ class MigrationAgent extends BaseAgent {
     } finally {
       // Always clear the runtime config so subsequent runs use env defaults
       migrationClient.clearRuntimeConfig();
-      devemailClient.clearState();
+      devemailClient.clearRuntimeConfig();
     }
   }
 
