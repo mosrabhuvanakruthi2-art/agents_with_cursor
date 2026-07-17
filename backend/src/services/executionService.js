@@ -9,19 +9,6 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-function loadExecutions() {
-  try {
-    if (fs.existsSync(executionsFile)) {
-      const raw = fs.readFileSync(executionsFile, 'utf-8');
-      const arr = JSON.parse(raw);
-      return new Map(arr.map((e) => [e.executionId, e]));
-    }
-  } catch {
-    // Corrupted file — start fresh
-  }
-  return new Map();
-}
-
 function saveExecutions(executions) {
   const arr = Array.from(executions.values());
   try {
@@ -31,23 +18,11 @@ function saveExecutions(executions) {
   }
 }
 
-const executions = loadExecutions();
-
-// On startup: any execution still marked RUNNING or PENDING was orphaned by a server
-// restart/crash — mark as INTERRUPTED so the UI can offer a Resume option.
-let _orphansFixed = false;
-for (const exec of executions.values()) {
-  if (exec.status === 'RUNNING' || exec.status === 'PENDING') {
-    Object.assign(exec, {
-      status: 'INTERRUPTED',
-      error: 'Server restarted while execution was in progress',
-      progress: 'Interrupted — server was restarted. Click Resume to continue.',
-      completedAt: new Date().toISOString(),
-    });
-    _orphansFixed = true;
-  }
-}
-if (_orphansFixed) saveExecutions(executions);
+// On startup: clear all executions so the Reports & Logs page starts fresh.
+// Any run that was in progress is dead (the server restarted), and stale data
+// from previous sessions should not appear automatically in the UI.
+const executions = new Map();
+saveExecutions(executions);
 
 // In-memory only — not persisted (if server restarts, running jobs are already dead)
 const cancelledIds = new Set();

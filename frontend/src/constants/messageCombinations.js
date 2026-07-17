@@ -2,12 +2,15 @@
 export const MESSAGE_MIGRATION_COMBINATIONS = [
   'Slack → Microsoft Teams',
   'Slack → Google Chat',
+  'Slack → Slack',
   'Microsoft Teams → Slack',
   'Microsoft Teams → Google Chat',
   'Microsoft Teams → Microsoft Teams',
   'Google Chat → Microsoft Teams',
   'Google Chat → Google Chat',
   'Google Chat → Slack',
+  'Slack → Existing Teams',
+  'Slack → Teams (Direct Messages to Channels)',
 ];
 
 /** Split pasted IDs by comma, semicolon, or newline */

@@ -7,7 +7,7 @@ import useMessageAgentExecution from '../hooks/useMessageAgentExecution';
 import { MESSAGE_MIGRATION_COMBINATIONS } from '../constants/messageCombinations';
 import {
   getConnectedAccounts, getMessageTargets, getCustomTestCases,
-  getSourceUsers, getDestinationUsers,
+  getSourceUsers, getDestinationUsers, uploadMappingCsv,
 } from '../services/api';
 
 const STEPS = ['Source & Destination', 'Map Users', 'Channels & DMs', 'Migration Server', 'Summary'];
@@ -43,7 +43,7 @@ function cacheSet(key, val) {
   try { sessionStorage.setItem(`msgwiz:${key}`, JSON.stringify(val)); } catch { /* ignore */ }
 }
 
-export default function MessageWizard() {
+export default function MessageWizard({ resetToken = 0 }) {
   const msg = useMessageAgentExecution();
   const navigate = useNavigate();
   // Persisted so returning from the Logs page (or a refresh) restores the wizard's
@@ -74,6 +74,11 @@ export default function MessageWizard() {
   const [mapError, setMapError] = useState(null);
   const [mapKey, setMapKey] = useState(''); // src/dst pair already fetched for
 
+  // Step 2 — CSV upload
+  const [csvServerPath, setCsvServerPath] = usePersistedState('msgwiz:csvServerPath', '');
+  const [csvUploadBusy, setCsvUploadBusy] = useState(false);
+  const [csvUploadResult, setCsvUploadResult] = useState(null); // { rows, cfUploaded, error }
+
   // Step 3 — channels & DMs
   const [targets, setTargets] = useState(null);
   const [targetsBusy, setTargetsBusy] = useState(false);
@@ -90,16 +95,26 @@ export default function MessageWizard() {
   const [serverUrl, setServerUrl] = usePersistedState('msgwiz:serverUrl', '');
   const [serverEmail, setServerEmail] = usePersistedState('msgwiz:serverEmail', '');
   const [serverPassword, setServerPassword] = usePersistedState('msgwiz:serverPassword', '');
-  // For SSO (Google-login) CloudFuze accounts that have no API password — paste the
-  // "Authorization: Basic …" token from DevTools. Takes priority over email/password.
-  const [serverToken, setServerToken] = usePersistedState('msgwiz:serverToken', '');
-
   // Step 5 — seed scenario (optional)
   const [scenarios, setScenarios] = useState([]);
   const [scenarioId, setScenarioId] = useState(null);
 
   const srcPlatform = platformOf('src', combination);
   const dstPlatform = platformOf('dst', combination);
+
+  const prevResetToken = useRef(0);
+  useEffect(() => {
+    if (resetToken === prevResetToken.current) return;
+    prevResetToken.current = resetToken;
+    setStep(1);
+    setSrcEmail(''); setDstEmail('');
+    setCsvServerPath('');
+    setCsvUploadResult(null);
+    setPairs([]); setSrcUsers([]); setDstUsers([]); setUnmatched([]); setMapKey('');
+    setMapError(null);
+    setTargets(null); setSelChannels([]); setSelDms([]);
+    setTargetsError(null);
+  }, [resetToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     getConnectedAccounts('message').then((r) => setAccounts(r.data.accounts || [])).catch(() => {});
@@ -134,8 +149,8 @@ export default function MessageWizard() {
       const cached = cacheGet(cacheKey);
       if (cached?.targets) {
         setTargets(cached.targets);
-        setSelChannels(cached.selChannels || []);
-        setSelDms(cached.selDms || []);
+        setSelChannels([]);
+        setSelDms([]);
         return;
       }
     }
@@ -148,12 +163,10 @@ export default function MessageWizard() {
         dms: data.dms || [],
         groupDms: data.groupDms || [],
       };
-      const sc = [...t.publicChannels, ...t.privateChannels].map((c) => c.id);
-      const sd = [...t.dms, ...t.groupDms].map((d) => d.id);
       setTargets(t);
-      setSelChannels(sc);
-      setSelDms(sd);
-      cacheSet(cacheKey, { targets: t, selChannels: sc, selDms: sd });
+      setSelChannels([]);
+      setSelDms([]);
+      cacheSet(cacheKey, { targets: t, selChannels: [], selDms: [] });
     } catch (err) {
       setTargetsError(err?.response?.data?.error || err.message);
       setTargets(null);
@@ -164,10 +177,10 @@ export default function MessageWizard() {
 
   useEffect(() => { if (step === 3 && !targets && srcEmail) fetchTargets(); }, [step, targets, srcEmail, fetchTargets]);
 
-  // Write selection changes back into the cache so Back/Forward/refresh restores them.
+  // Cache only the target list — selections are always deselected on load.
   useEffect(() => {
-    if (targets && srcEmail) cacheSet(`targets:${srcPlatform}:${srcEmail}`, { targets, selChannels, selDms });
-  }, [targets, selChannels, selDms, srcPlatform, srcEmail]);
+    if (targets && srcEmail) cacheSet(`targets:${srcPlatform}:${srcEmail}`, { targets });
+  }, [targets, srcPlatform, srcEmail]);
 
   // Step 2 — auto-fetch source + destination users and auto-map them by first name.
   const fetchMapUsers = useCallback(async (force = false) => {
@@ -224,6 +237,32 @@ export default function MessageWizard() {
     if (mapKey === key && srcUsers.length) cacheSet(`map:${key}`, { srcUsers, dstUsers, pairs, unmatched });
   }, [mapKey, srcUsers, dstUsers, pairs, unmatched, srcPlatform, srcEmail, dstPlatform, dstEmail]);
 
+  async function handleCsvUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvUploadBusy(true);
+    setCsvUploadResult(null);
+    try {
+      const text = await file.text();
+      const { data } = await uploadMappingCsv(text, file.name, {});
+      // Parse CSV into pairs for display (skip header row)
+      const lines = text.trim().split(/\r?\n/).filter(Boolean);
+      const start = lines[0] && (lines[0].toLowerCase().includes('source') || lines[0].toLowerCase().includes('email') || lines[0].toLowerCase().includes('user')) ? 1 : 0;
+      const csvPairs = lines.slice(start).map((line) => {
+        const [src, dst] = line.split(',').map((s) => s.trim().replace(/^"|"$/g, ''));
+        return src && dst && src.includes('@') ? { sourceEmail: src, destinationEmail: dst } : null;
+      }).filter(Boolean);
+      if (csvPairs.length > 0) setPairs(csvPairs);
+      if (data.filePath) setCsvServerPath(data.filePath);
+      setCsvUploadResult({ rows: data.rows ?? csvPairs.length, error: null });
+    } catch (err) {
+      setCsvUploadResult({ rows: 0, cfUploaded: 0, error: err?.response?.data?.error || err.message });
+    } finally {
+      setCsvUploadBusy(false);
+      e.target.value = '';
+    }
+  }
+
   function mapUnmatched(srcEmailVal, destEmailVal) {
     if (!destEmailVal) return;
     setPairs((p) => [...p, { sourceEmail: srcEmailVal, destinationEmail: destEmailVal }]);
@@ -255,16 +294,16 @@ export default function MessageWizard() {
       channelObjects,
       dmObjects,
       ...(pairs.length ? { userMappings: pairs } : {}),
+      ...(csvServerPath ? { userMappingCsvPath: csvServerPath } : {}),
       ...(serverUrl ? { migrationServerUrl: serverUrl } : {}),
       ...(serverEmail ? { migrationServerEmail: serverEmail } : {}),
       ...(serverPassword ? { migrationServerPassword: serverPassword } : {}),
-      ...(serverToken ? { migrationServerBasicAuth: serverToken } : {}),
     };
   }
 
   const canAdvance = {
     1: !!(combination && srcEmail && dstEmail),
-    2: pairs.length > 0,
+    2: pairs.length > 0 || !!csvServerPath,
     3: selChannels.length > 0 || selDms.length > 0,
     4: true,
     5: true,
@@ -316,8 +355,25 @@ export default function MessageWizard() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">Users are fetched from both sides and auto-mapped by first name. Map any unmatched users below.</p>
-              <button type="button" onClick={() => fetchMapUsers(true)} disabled={mapBusy} className="text-xs text-indigo-600 hover:text-indigo-800">{mapBusy ? 'Fetching…' : 'Refresh'}</button>
+              <div className="flex items-center gap-2">
+                {/* CSV upload button — sits next to Refresh */}
+                <label className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer transition-colors ${csvUploadBusy ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'}`}>
+                  {csvUploadBusy ? 'Uploading…' : '↑ CSV'}
+                  <input type="file" accept=".csv,text/csv" disabled={csvUploadBusy} onChange={handleCsvUpload} className="hidden" />
+                </label>
+                <button type="button" onClick={() => fetchMapUsers(true)} disabled={mapBusy} className="text-xs text-indigo-600 hover:text-indigo-800">{mapBusy ? 'Fetching…' : 'Refresh'}</button>
+              </div>
             </div>
+
+            {/* CSV upload status */}
+            {csvUploadResult && (
+              <div className={`text-xs rounded-lg px-3 py-2 ${csvUploadResult.error ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+                {csvUploadResult.error
+                  ? `CSV upload error: ${csvUploadResult.error}`
+                  : `✓ ${csvUploadResult.rows} row(s) loaded`}
+              </div>
+            )}
+
             {mapBusy && <div className="text-sm text-gray-400">Fetching &amp; auto-mapping users…</div>}
             {mapError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600">{mapError}</div>}
             {!mapBusy && (
@@ -424,23 +480,23 @@ export default function MessageWizard() {
         {step === 4 && (
           <div className="space-y-4">
             <p className="text-sm text-gray-500">
-              Your CloudFuze account that has the Slack / Teams / Google&nbsp;Chat clouds connected. These credentials
-              are used for this migration only — any CloudFuze server works, nothing is hardcoded on the backend.
+              Enter your CloudFuze account credentials. These are used for this migration only.
             </p>
-            <Field label="Server URL"><input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} placeholder="https://s2cdev.cloudfuze.com/proxyservices/v1" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" /></Field>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Email"><input value={serverEmail} onChange={(e) => setServerEmail(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
-              <Field label="Password"><input type="password" value={serverPassword} onChange={(e) => setServerPassword(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" /></Field>
-            </div>
-            <Field label="API Token (Basic) — for Google/SSO accounts">
-              <input value={serverToken} onChange={(e) => setServerToken(e.target.value)} placeholder="paste the value after 'Authorization: Basic '"
+            <Field label="Server URL">
+              <input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)}
+                placeholder="https://s2cdev.cloudfuze.com"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
             </Field>
-            <p className="text-xs text-gray-400">
-              If your CloudFuze account signs in with Google (no API password), open DevTools → Network on any
-              CloudFuze request, copy the <span className="font-mono">Authorization: Basic …</span> value, and paste it
-              here. The token takes priority over email/password.
-            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Email">
+                <input value={serverEmail} onChange={(e) => setServerEmail(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              </Field>
+              <Field label="Password">
+                <input type="password" value={serverPassword} onChange={(e) => setServerPassword(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+              </Field>
+            </div>
           </div>
         )}
 

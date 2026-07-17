@@ -3409,8 +3409,11 @@ async function postTeamsReply(userEmail, targetId, parentMessageId, htmlContent,
 function hasTeamsToken(userEmail) {
   try {
     const stored = tokenStore.getMicrosoftToken(userEmail);
-    if (!stored?.accessToken && !stored?.refreshToken) return false;
-    if (stored.mode === 'app-only') return false;
+    if (!stored) return false;
+    // Admin-consent account — app-only auth is available for this tenant
+    if (stored.consented === true) return true;
+    // Delegated token: check agent tag or JWT scopes
+    if (!stored.accessToken && !stored.refreshToken) return false;
     const agent = (stored.agent || '').toLowerCase();
     if (agent === 'message' || agent === 'both') return true;
     if (stored.accessToken) {
@@ -3422,6 +3425,363 @@ function hasTeamsToken(userEmail) {
     }
     return false;
   } catch { return false; }
+}
+
+/**
+ * List all Teams the destination user is a member of.
+ * Returns [{ id, displayName }] or [] on error.
+ */
+async function listJoinedTeams(userEmail) {
+  try {
+    const token = await getAccessToken(userEmail);
+    // Use /users/{email}/joinedTeams so this works for both delegated and app-only auth.
+    // /me/joinedTeams only works for delegated tokens (requires a "me" context).
+    const url = `${GRAPH_BASE}/users/${encodeURIComponent(userEmail)}/joinedTeams`;
+    const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    return (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+  } catch (err) {
+    logger.warn(`[listJoinedTeams] ${userEmail}: ${err.response?.data?.error?.message || err.message}`);
+    return [];
+  }
+}
+
+/**
+ * List all channels in a Team.
+ * Tries delegated token first; falls back to app-only on 403 (user not a team member).
+ * CF-created Teams are owned by the CF service account — the dest admin may not be a member.
+ * Returns [{ id, displayName }] or [] on error.
+ */
+async function listTeamChannels(userEmail, teamId) {
+  const tenant = getMsTenant(userEmail);
+  const url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels`;
+  for (const getToken of [() => getAccessToken(userEmail), () => getAppAccessToken(tenant)]) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
+      return (res.data.value || []).map((c) => ({ id: c.id, displayName: c.displayName }));
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 403 || st === 401) continue; // not a member — try app-only
+      logger.warn(`[listTeamChannels] team=${teamId}: HTTP ${st || err.message}`);
+      return [];
+    }
+  }
+  logger.warn(`[listTeamChannels] team=${teamId}: all tokens exhausted`);
+  return [];
+}
+
+/**
+ * List ALL Teams in the tenant using app-only auth (not just joined teams).
+ * This finds teams the destination user hasn't joined yet — e.g. a team CF just
+ * created during migration where membership propagation hasn't completed.
+ *
+ * Requires Team.ReadBasic.All or Group.Read.All on the Azure app registration.
+ * Falls back to the Groups API (resourceProvisioningOptions filter) if /teams 404s.
+ *
+ * @param {string} userEmail  - used to resolve the correct tenant
+ * @returns {Array<{id, displayName}>}
+ */
+async function listAllTeams(userEmail) {
+  const tenant = getMsTenant(userEmail);
+  let appToken;
+  try {
+    appToken = await getAppAccessToken(tenant);
+  } catch (e) {
+    logger.warn(`[listAllTeams] cannot get app token for ${userEmail}: ${e.message}`);
+    return [];
+  }
+  const headers = { Authorization: `Bearer ${appToken}` };
+
+  // Try /teams endpoint first (requires Team.ReadBasic.All)
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/teams?$select=id,displayName&$top=999`,
+      { headers, timeout: 30000 }
+    );
+    const teams = (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+    logger.info(`[listAllTeams] ${userEmail}: ${teams.length} team(s) via /teams (app-only)`);
+    return teams;
+  } catch (err) {
+    logger.warn(`[listAllTeams] /teams failed (${err.response?.status || err.message}) — trying /groups filter`);
+  }
+
+  // Fallback: /groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team') (requires Group.Read.All)
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team')&$select=id,displayName&$top=999`,
+      { headers, timeout: 30000 }
+    );
+    const teams = (res.data.value || []).map((g) => ({ id: g.id, displayName: g.displayName }));
+    logger.info(`[listAllTeams] ${userEmail}: ${teams.length} team(s) via /groups (app-only)`);
+    return teams;
+  } catch (err2) {
+    logger.warn(`[listAllTeams] /groups fallback failed (${err2.response?.status || err2.message})`);
+    return [];
+  }
+}
+
+/**
+ * Search for a Teams team by displayName using an OData $filter on /groups.
+ * More targeted than listAllTeams — queries directly by name so it works even when
+ * the team is newly created (not yet in /teams index) or the dest user is not a member.
+ * Requires Group.Read.All application permission (or Team.ReadBasic.All).
+ *
+ * @param {string} userEmail   - used to resolve the correct tenant
+ * @param {string} teamName    - exact displayName to search for
+ * @returns {Array<{id, displayName}>}
+ */
+async function searchTeamByDisplayName(userEmail, teamName) {
+  if (!teamName || !teamName.trim()) return [];
+  const tenant = getMsTenant(userEmail);
+  const safe = teamName.replace(/'/g, "''");
+
+  // Try app-only token first (needs Group.Read.All / Team.ReadBasic.All application permission),
+  // then the user's delegated token as a fallback (user may have Teams admin role).
+  const tokens = [];
+  try { tokens.push(await getAppAccessToken(tenant)); } catch (_) {}
+  try {
+    const del = await getAccessToken(userEmail);
+    if (!tokens.includes(del)) tokens.push(del);
+  } catch (_) {}
+
+  if (tokens.length === 0) {
+    logger.warn(`[searchTeamByDisplayName] no token available for ${userEmail}`);
+    return [];
+  }
+
+  for (const token of tokens) {
+    const headers = { Authorization: `Bearer ${token}` };
+
+    // Primary: /groups OData filter — exact displayName match + resourceProvisioningOptions Team
+    try {
+      const filter = `displayName eq '${safe}' and resourceProvisioningOptions/Any(x:x eq 'Team')`;
+      const url = `${GRAPH_BASE}/groups?$filter=${encodeURIComponent(filter)}&$select=id,displayName&$top=10`;
+      const res = await axios.get(url, { headers: { ...headers, ConsistencyLevel: 'eventual' }, timeout: 30000 });
+      const teams = (res.data.value || []).map((g) => ({ id: g.id, displayName: g.displayName }));
+      logger.info(`[searchTeamByDisplayName] "${teamName}": ${teams.length} team(s) via /groups OData filter`);
+      if (teams.length > 0) return teams;
+    } catch (err) {
+      const st = err.response?.status;
+      logger.warn(`[searchTeamByDisplayName] /groups filter failed for "${teamName}": ${st || err.message}`);
+      if (st !== 403 && st !== 401) break; // non-auth error — stop retrying
+    }
+
+    // Fallback: $search on /teams displayName (Team.ReadBasic.All or equivalent)
+    try {
+      const url = `${GRAPH_BASE}/teams?$search="displayName:${safe}"&$select=id,displayName&$top=10`;
+      const res = await axios.get(url, { headers: { ...headers, ConsistencyLevel: 'eventual' }, timeout: 30000 });
+      const teams = (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+      logger.info(`[searchTeamByDisplayName] "${teamName}": ${teams.length} team(s) via /teams $search`);
+      if (teams.length > 0) return teams;
+    } catch (err2) {
+      const st2 = err2.response?.status;
+      logger.warn(`[searchTeamByDisplayName] /teams $search failed for "${teamName}": ${st2 || err2.message}`);
+      if (st2 !== 403 && st2 !== 401) break;
+    }
+  }
+  return [];
+}
+
+/**
+ * Complete the migration at TEAM level for a team created in migration mode by CF.
+ * POST /teams/{teamId}/completeMigration
+ *
+ * Teams migration API requires this call BEFORE channel-level completeMigration.
+ * Requires Teamwork.Migrate.All which is APPLICATION-only (no delegated option).
+ * Safe to call if already in standard mode (HTTP 400 → ignored).
+ * Returns true if the team was opened, false if already open or on non-fatal error.
+ */
+async function completeMigrationForTeam(userEmail, teamId) {
+  if (!teamId) return false;
+  const tenant = getMsTenant(userEmail);
+  // Teamwork.Migrate.All is APPLICATION-only — try app token first, delegated as fallback
+  const tokenFns = [() => getAppAccessToken(tenant), () => getAccessToken(userEmail)];
+  for (const getToken of tokenFns) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      await axios.post(
+        `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/completeMigration`,
+        null,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      logger.info(`[completeMigrationForTeam] Team ${teamId} opened for ${userEmail}`);
+      return true;
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 400) {
+        logger.info(`[completeMigrationForTeam] Team ${teamId} already in standard mode (HTTP 400)`);
+        return false;
+      }
+      if (st === 403 || st === 401) continue; // try next token
+      logger.warn(`[completeMigrationForTeam] team=${teamId}: HTTP ${st || err.message}`);
+      return false;
+    }
+  }
+  logger.warn(`[completeMigrationForTeam] All tokens exhausted for team ${teamId}`);
+  return false;
+}
+
+/**
+ * Complete the migration for a Teams channel that was created in migration mode by CF.
+ * POST /teams/{teamId}/channels/{channelId}/completeMigration
+ *
+ * Must be called AFTER completeMigrationForTeam (team-level) has succeeded.
+ * When CloudFuze uses the Microsoft Teams migration API, channels are created in
+ * "migration mode" and their messages cannot be read until this endpoint is called.
+ * Requires Teamwork.Migrate.All which is APPLICATION-only (no delegated option).
+ *
+ * Safe to call if the channel is already in standard mode (HTTP 400 → ignored).
+ * Returns true if the channel was opened, false if already open or on non-fatal error.
+ */
+async function completeMigrationForChannel(userEmail, teamId, channelId) {
+  if (!teamId || !channelId) return false;
+  const tenant = getMsTenant(userEmail);
+  // Teamwork.Migrate.All is APPLICATION-only — try app token first, delegated as fallback
+  const tokenFns = [() => getAppAccessToken(tenant), () => getAccessToken(userEmail)];
+  for (const getToken of tokenFns) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      await axios.post(
+        `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/completeMigration`,
+        null,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      logger.info(`[completeMigrationForChannel] Channel ${channelId} (team ${teamId}) opened for ${userEmail}`);
+      return true;
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 400) {
+        logger.info(`[completeMigrationForChannel] Channel ${channelId} already in standard mode (HTTP 400)`);
+        return false;
+      }
+      if (st === 403 || st === 401) continue; // Teamwork.Migrate.All is app-only; try next token
+      logger.warn(`[completeMigrationForChannel] team=${teamId} ch=${channelId}: HTTP ${st || err.message}`);
+      return false;
+    }
+  }
+  logger.warn(`[completeMigrationForChannel] All tokens exhausted for team=${teamId} ch=${channelId}`);
+  return false;
+}
+
+/**
+ * Count all feature stats in a Teams channel (all history, paginated).
+ * Returns:
+ *   messageCount       — user messages (messageType === 'message')
+ *   fileCount          — messages with real file attachments (contentType 'reference')
+ *   reactionMsgCount   — messages with at least one reaction
+ *   totalReactionCount — total reaction instances across all messages
+ *   mentionMsgCount    — messages with at least one @mention
+ *   threadReplyCount   — total replies fetched (best-effort, may be 0 if inaccessible)
+ */
+async function countTeamsChannelMessages(userEmail, teamId, channelId) {
+  const s = {
+    messageCount: 0,
+    fileCount: 0,
+    audioFileCount: 0,
+    videoFileCount: 0,
+    imageFileCount: 0,
+    gifCount: 0,
+    // Reactions (expected 0 — CF does not migrate reactions)
+    reactionMsgCount: 0,
+    totalReactionCount: 0,
+    // Mentions
+    mentionMsgCount: 0,
+    totalMentionCount: 0,
+    // Formatting (detected from HTML body)
+    boldMsgCount: 0,
+    italicMsgCount: 0,
+    strikethroughMsgCount: 0,
+    codeBlockMsgCount: 0,
+    orderedListMsgCount: 0,
+    bulletListMsgCount: 0,
+    linkMsgCount: 0,
+    // Threads
+    threadReplyCount: 0,
+    error: null,
+  };
+  const parentIds = [];
+  try {
+    const token = await getAccessToken(userEmail);
+    const headers = { Authorization: `Bearer ${token}` };
+    let url =
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}` +
+      `/messages?$top=50&$select=id,messageType,attachments,reactions,mentions,body`;
+    while (url) {
+      const res = await axios.get(url, { headers });
+      for (const m of (res.data.value || [])) {
+        if (m.messageType !== 'message') continue;
+        s.messageCount++;
+        parentIds.push(m.id);
+
+        // Files — contentType 'reference' = real SharePoint/OneDrive file
+        for (const a of (m.attachments || [])) {
+          if (a.contentType === 'reference') {
+            s.fileCount++;
+            const name = (a.name || '').toLowerCase();
+            if (/\.(mp3|wav|m4a|ogg|aac|flac)$/.test(name)) s.audioFileCount++;
+            else if (/\.(mp4|mov|avi|mkv|webm|wmv)$/.test(name)) s.videoFileCount++;
+            else if (/\.gif$/.test(name)) s.gifCount++;
+            else if (/\.(jpg|jpeg|png|bmp|webp|svg)$/.test(name)) s.imageFileCount++;
+          }
+        }
+
+        // Reactions (per-user instances in Teams)
+        if (Array.isArray(m.reactions) && m.reactions.length > 0) {
+          s.reactionMsgCount++;
+          s.totalReactionCount += m.reactions.length;
+        }
+
+        // Mentions
+        if (Array.isArray(m.mentions) && m.mentions.length > 0) {
+          s.mentionMsgCount++;
+          s.totalMentionCount += m.mentions.length;
+        }
+
+        // Text formatting — from HTML body
+        const body = m.body?.content || '';
+        if (/<strong>|<b>/i.test(body))              s.boldMsgCount++;
+        if (/<em>|<i>/i.test(body))                  s.italicMsgCount++;
+        if (/<s>|<strike>|<del>/i.test(body))        s.strikethroughMsgCount++;
+        if (/<pre>|<code>/i.test(body))              s.codeBlockMsgCount++;
+        if (/<ol>/i.test(body))                      s.orderedListMsgCount++;
+        if (/<ul>/i.test(body))                      s.bulletListMsgCount++;
+        if (/<a\s+href=/i.test(body))                s.linkMsgCount++;
+      }
+      url = res.data['@odata.nextLink'] || null;
+    }
+
+    // Thread replies — count actual replies for all parent messages (batched, up to 500)
+    // Use $count=true + ConsistencyLevel:eventual to get real reply counts (not just 0/1).
+    const replyBase =
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}/messages/`;
+    const replyHeaders = { ...headers, ConsistencyLevel: 'eventual' };
+    const REPLY_BATCH = 10;
+    const parentSample = parentIds.slice(0, 500);
+    for (let i = 0; i < parentSample.length; i += REPLY_BATCH) {
+      const batch = parentSample.slice(i, i + REPLY_BATCH);
+      await Promise.all(batch.map(async (pid) => {
+        try {
+          const rr = await axios.get(
+            `${replyBase}${encodeURIComponent(pid)}/replies?$top=1&$select=id&$count=true`,
+            { headers: replyHeaders },
+          );
+          const cnt = typeof rr.data['@odata.count'] === 'number'
+            ? rr.data['@odata.count']
+            : (rr.data.value || []).length;
+          if (cnt > 0) s.threadReplyCount += cnt;
+        } catch { /* best effort */ }
+      }));
+    }
+  } catch (err) {
+    logger.warn(`[countTeamsChannelMessages] ${userEmail} team=${teamId} ch=${channelId}: ${err.message}`);
+    s.error = err.message;
+  }
+  return s;
 }
 
 async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes = 120 } = {}) {
@@ -3456,11 +3816,103 @@ async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes =
   }
 }
 
+/**
+ * Fetch all messages from a Teams channel for deep validation comparison.
+ * Strips HTML from body content. Paginates until maxMessages reached.
+ */
+async function listTeamsChannelAllMessages(userEmail, teamId, channelId, maxMessages) {
+  if (maxMessages == null) maxMessages = 500;
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+  const results = [];
+  let url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages` +
+    `?$top=50&$select=id,createdDateTime,from,body,attachments,messageType,replyToId,deletedDateTime`;
+
+  while (url && results.length < maxMessages) {
+    try {
+      const res = await axios.get(url, { headers });
+      const msgs = res.data.value || [];
+      for (const m of msgs) {
+        if (m.messageType !== 'message') continue;
+        const rawHtml = m.body?.content || '';
+        // Preserve paragraph/line breaks BEFORE stripping tags so that the
+        // CF "Posted by: Name · timestamp" header ends up on its own line.
+        // Without this, <p>header</p><p>message</p> collapses into a single
+        // line "header message" and the header-stripping regex in
+        // normalizeMessageText() consumes the actual message content too.
+        const plainText = rawHtml
+          .replace(/<\/p>/gi, '\n')
+          .replace(/<\/div>/gi, '\n')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        results.push({
+          id: m.id,
+          createdDateTime: m.createdDateTime || '',
+          timestampMs: m.createdDateTime ? new Date(m.createdDateTime).getTime() : 0,
+          text: plainText,
+          rawHtml,
+          senderName: m.from?.user?.displayName || m.from?.application?.displayName || 'Unknown',
+          hasAttachments: !!(m.attachments && m.attachments.length > 0),
+          // Only count real file references (contentType === 'reference') — CF also injects
+          // card/thumbnail attachments which must not inflate the file count.
+          attachmentCount: (m.attachments || []).filter((a) => a.contentType === 'reference').length,
+          isDeleted: !!(m.deletedDateTime),
+          isReply: !!(m.replyToId),
+          hasReplies: false, // updated after targeted reply-count fetch in validateSlackToTeams
+        });
+      }
+      url = res.data['@odata.nextLink'] || null;
+    } catch (err) {
+      logger.warn(`[listTeamsChannelAllMessages] ${userEmail} team=${teamId} ch=${channelId}: ${err.message}`);
+      break;
+    }
+  }
+  return results;
+}
+
+/**
+ * Fetch the number of replies for a single Teams channel message.
+ * Used by deep validation to check thread reply counts without fetching all reply content.
+ * Returns 0 on API error (non-fatal — caller logs the warning).
+ */
+async function countTeamsMessageReplies(userEmail, teamId, channelId, messageId) {
+  const token = await getAccessToken(userEmail);
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}` +
+      `/messages/${encodeURIComponent(messageId)}/replies?$count=true&$top=1&$select=id`,
+      { headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }, timeout: 20000 }
+    );
+    return typeof res.data['@odata.count'] === 'number'
+      ? res.data['@odata.count']
+      : (res.data.value || []).length;
+  } catch {
+    return 0;
+  }
+}
+
 module.exports = {
   postTeamsMessage,
   postTeamsReply,
   hasTeamsToken,
   readTeamsMessages,
+  listJoinedTeams,
+  listAllTeams,
+  listTeamChannels,
+  searchTeamByDisplayName,
+  completeMigrationForTeam,
+  completeMigrationForChannel,
+  countTeamsChannelMessages,
+  countTeamsMessageReplies,
   getAccessToken,
   getMailFolders,
   getChildFolders,
@@ -3540,4 +3992,5 @@ module.exports = {
   deleteQAGroups,
   getAppAccessToken,
   getMsTenant,
+  listTeamsChannelAllMessages,
 };

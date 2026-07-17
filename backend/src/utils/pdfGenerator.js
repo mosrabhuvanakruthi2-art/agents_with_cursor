@@ -1121,6 +1121,324 @@ function drawFooter(doc, context) {
   doc.text(`Generated: ${formatTimestamp(new Date())}`, MARGIN + CONTENT_W - 200, y, { width: 200, align: 'right' });
 }
 
+// ── Message Migration PDF Sections ────────────────────────────────────────────
+
+function severityColors(severity) {
+  if (severity === 'CRITICAL') return { bg: '#fef2f2', fg: '#dc2626', border: '#fca5a5' };
+  if (severity === 'HIGH')     return { bg: '#fff7ed', fg: '#c2410c', border: '#fed7aa' };
+  if (severity === 'MEDIUM')   return { bg: '#fffbeb', fg: '#b45309', border: '#fde68a' };
+  return { bg: '#f8fafc', fg: '#475569', border: '#cbd5e1' };
+}
+
+function drawMsgMetricCards(doc, labels, values, colors) {
+  const n = labels.length;
+  const cardW = Math.floor((CONTENT_W - (n - 1) * 8) / n);
+  const cardH = 52;
+  ensureSpace(doc, cardH + 20);
+  const startY = doc.y;
+
+  for (let i = 0; i < n; i++) {
+    const x = MARGIN + i * (cardW + 8);
+    const y = startY;
+    const { bg, border } = colors[i] || { bg: '#f8fafc', border: '#e2e8f0' };
+    doc.save().fillColor(bg).roundedRect(x, y, cardW, cardH, 5).fill().restore();
+    doc.save().strokeColor(border).lineWidth(0.75).roundedRect(x, y, cardW, cardH, 5).stroke().restore();
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.subtle)
+      .text(labels[i], x + 8, y + 7, { width: cardW - 16, align: 'left' });
+    doc.fontSize(16).font(F_BOLD).fillColor(colors[i]?.fg || C.dark)
+      .text(String(values[i] ?? '—'), x + 8, y + 20, { width: cardW - 16, align: 'left' });
+  }
+  doc.y = startY + cardH + 10;
+}
+
+function drawMsgSummarySection(doc, validation) {
+  const sum = validation.summary || {};
+  const src = sum.source || {};
+  const cf  = sum.cfReport || {};
+  const dst = sum.destination || {};
+  const bs  = sum.bugSummary || {};
+  const bugs = (validation.bugs || []).filter((b) => b.status === 'BUG');
+
+  drawSectionHeader(doc, 'Migration Summary');
+
+  const labels = ['Source Messages', 'Source Files', 'CF Picked', 'CF Processed', 'Dest Messages', 'Bugs Found'];
+  const values = [
+    src.totalMessages ?? '—',
+    src.totalFiles ?? '—',
+    cf.totalPicked ?? '—',
+    cf.totalProcessed ?? '—',
+    dst.totalMessages ?? (dst.channelsNotFound > 0 ? 'N/A' : '—'),
+    bugs.length,
+  ];
+  const colors = [
+    { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
+    { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
+    { bg: '#f5f3ff', fg: '#6d28d9', border: '#ddd6fe' },
+    { bg: '#f5f3ff', fg: '#6d28d9', border: '#ddd6fe' },
+    dst.channelsNotFound > 0
+      ? { bg: '#fff7ed', fg: '#c2410c', border: '#fed7aa' }
+      : { bg: '#f0fdf4', fg: '#16a34a', border: '#86efac' },
+    bugs.length > 0
+      ? { bg: '#fef2f2', fg: '#dc2626', border: '#fca5a5' }
+      : { bg: '#f0fdf4', fg: '#16a34a', border: '#86efac' },
+  ];
+  drawMsgMetricCards(doc, labels, values, colors);
+
+  // Bug severity mini-row
+  doc.moveDown(0.3);
+  const sevItems = [
+    { label: 'CRITICAL', count: bs.byCritical ?? 0, ...severityColors('CRITICAL') },
+    { label: 'HIGH',     count: bs.byHigh     ?? 0, ...severityColors('HIGH') },
+    { label: 'MEDIUM',   count: bs.byMedium   ?? 0, ...severityColors('MEDIUM') },
+    { label: 'LOW',      count: bs.byLow      ?? 0, ...severityColors('LOW') },
+  ];
+  const sevW = Math.floor((CONTENT_W - 3 * 6) / 4);
+  const sy = doc.y;
+  ensureSpace(doc, 36);
+  for (let i = 0; i < 4; i++) {
+    const x = MARGIN + i * (sevW + 6);
+    const s = sevItems[i];
+    doc.save().fillColor(s.bg).roundedRect(x, sy, sevW, 28, 4).fill().restore();
+    doc.save().strokeColor(s.border).lineWidth(0.5).roundedRect(x, sy, sevW, 28, 4).stroke().restore();
+    doc.fontSize(6.5).font(F_REGULAR).fillColor(s.fg)
+      .text(s.label, x + 6, sy + 5, { width: sevW - 12 });
+    doc.fontSize(13).font(F_BOLD).fillColor(s.fg)
+      .text(String(s.count), x + 6, sy + 13, { width: sevW - 12 });
+  }
+  doc.y = sy + 36;
+
+  // Processing rate note
+  if (cf.processingRate) {
+    doc.moveDown(0.3);
+    doc.fontSize(8).font(F_REGULAR).fillColor(C.subtle)
+      .text(`CF Processing Rate: ${cf.processingRate}  ·  Known Limitations: ${bs.knownLimitations ?? 0}`, MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.3);
+  }
+}
+
+function drawMsgChannelTable(doc, validation) {
+  const channels = validation.channels || [];
+  if (channels.length === 0) return;
+
+  drawSectionHeader(doc, 'Channel / DM Validation Summary');
+
+  const COL = { name: 140, kind: 55, srcMsg: 60, srcFile: 55, cfPick: 60, dstMsg: 60, cfStatus: 80, result: 70 };
+  const rowH = 18;
+  const headerH = 22;
+
+  ensureSpace(doc, headerH + rowH * Math.min(channels.length, 3) + 10);
+
+  // Header
+  let y = doc.y;
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, headerH).fill().restore();
+  const heads = [
+    { label: 'Channel / DM', w: COL.name, align: 'left' },
+    { label: 'Type', w: COL.kind, align: 'center' },
+    { label: 'Src Msgs', w: COL.srcMsg, align: 'right' },
+    { label: 'Src Files', w: COL.srcFile, align: 'right' },
+    { label: 'CF Picked', w: COL.cfPick, align: 'right' },
+    { label: 'Dst Msgs', w: COL.dstMsg, align: 'right' },
+    { label: 'CF Status', w: COL.cfStatus, align: 'center' },
+    { label: 'Result', w: COL.result, align: 'center' },
+  ];
+  let hx = MARGIN + 6;
+  for (const h of heads) {
+    doc.fontSize(7).font(F_BOLD).fillColor(C.subtle)
+      .text(h.label, hx, y + 7, { width: h.w - 4, align: h.align });
+    hx += h.w;
+  }
+  y += headerH;
+
+  for (const ch of channels) {
+    ensureSpace(doc, rowH + 2);
+    const rowBg = ch.validationStatus === 'FAIL' ? '#fef2f2' :
+                  ch.validationStatus === 'PARTIAL' ? '#fffbeb' : '#ffffff';
+    doc.save().fillColor(rowBg).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.5)
+      .moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
+
+    const cells = [
+      { val: truncateRef(ch.channelName || ch.channelId, 22), w: COL.name, align: 'left', color: C.dark },
+      { val: (ch.kind || 'ch').toUpperCase(), w: COL.kind, align: 'center', color: C.subtle },
+      { val: ch.source?.messageCount ?? '—', w: COL.srcMsg, align: 'right', color: C.darkAlt },
+      { val: ch.source?.fileCount ?? '—', w: COL.srcFile, align: 'right', color: C.darkAlt },
+      { val: ch.cfReport?.totalMessages ?? '—', w: COL.cfPick, align: 'right', color: '#6d28d9' },
+      { val: ch.destination?.found ? (ch.destination.messageCount ?? '—') : 'N/A', w: COL.dstMsg, align: 'right',
+        color: ch.destination?.found ? C.darkAlt : C.muted },
+      { val: String(ch.cfReport?.jobStatus || ch.jobStatus || '—').replace(/_/g, ' '), w: COL.cfStatus, align: 'center', color: C.subtle },
+      { val: ch.validationStatus || '—', w: COL.result, align: 'center',
+        color: ch.validationStatus === 'PASS' ? C.pass : ch.validationStatus === 'FAIL' ? C.fail : C.warn },
+    ];
+    let cx = MARGIN + 6;
+    for (const cell of cells) {
+      doc.fontSize(7.5).font(cell.bold ? F_BOLD : F_REGULAR).fillColor(cell.color || C.darkAlt)
+        .text(String(cell.val), cx, y + 5, { width: cell.w - 6, align: cell.align });
+      cx += cell.w;
+    }
+    y += rowH;
+  }
+  doc.y = y + 6;
+}
+
+function drawMsgBugDetails(doc, validation) {
+  const bugs = (validation.bugs || []).filter((b) => b.status === 'BUG');
+  if (bugs.length === 0) return;
+
+  drawSectionHeader(doc, `Bug Details (${bugs.length})`);
+
+  for (const bug of bugs) {
+    ensureSpace(doc, 60);
+    const { bg, fg, border } = severityColors(bug.severity);
+    const cardY = doc.y;
+    const cardH = 52;
+
+    doc.save().fillColor(bg).roundedRect(MARGIN, cardY, CONTENT_W, cardH, 4).fill().restore();
+    doc.save().strokeColor(border).lineWidth(0.75).roundedRect(MARGIN, cardY, CONTENT_W, cardH, 4).stroke().restore();
+
+    // Severity + feature label
+    doc.save().fillColor(fg).roundedRect(MARGIN + 8, cardY + 8, 48, 13, 3).fill().restore();
+    doc.fontSize(6.5).font(F_BOLD).fillColor('#ffffff')
+      .text(bug.severity, MARGIN + 8, cardY + 11, { width: 48, align: 'center' });
+
+    doc.fontSize(8).font(F_BOLD).fillColor(C.dark)
+      .text(bug.feature || bug.bugType || '', MARGIN + 62, cardY + 8, { width: CONTENT_W - 70, lineBreak: false });
+
+    // Channel name
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.subtle)
+      .text(`Channel: ${bug.channelName || bug.channel || '—'}`, MARGIN + 62, cardY + 20, { width: CONTENT_W - 70 });
+
+    // Expected / Actual
+    if (bug.expected != null || bug.actual != null) {
+      const expStr = `Expected: ${bug.expected ?? '—'}   Actual: ${bug.actual ?? '—'}${bug.delta != null ? `   Delta: ${bug.delta > 0 ? '+' : ''}${bug.delta}` : ''}`;
+      doc.fontSize(7).font(F_REGULAR).fillColor(fg)
+        .text(expStr, MARGIN + 62, cardY + 31, { width: CONTENT_W - 70 });
+    }
+
+    // Description
+    const descY = bug.expected != null ? cardY + 41 : cardY + 31;
+    doc.fontSize(7).font(F_REGULAR).fillColor(C.darkAlt)
+      .text(truncatePdfCell(bug.description, 180), MARGIN + 8, descY, { width: CONTENT_W - 16, lineBreak: false });
+
+    doc.y = cardY + cardH + 6;
+  }
+}
+
+function drawMsgKnownLimitations(doc, validation) {
+  const allBugs = validation.bugs || [];
+  const kl = allBugs.filter((b) => b.status === 'KNOWN_LIMITATION');
+  if (kl.length === 0) return;
+
+  // Deduplicate by feature
+  const seen = new Map();
+  for (const b of kl) {
+    const key = b.feature || b.bugType;
+    if (!seen.has(key)) seen.set(key, { feature: key, count: 0, channels: new Set() });
+    const entry = seen.get(key);
+    entry.channels.add(b.channel);
+    if (typeof b.expected === 'number' && b.expected > 0) entry.count += b.expected;
+  }
+  const rows = [...seen.values()].map((e) => ({ ...e, channels: e.channels.size }));
+
+  drawSectionHeader(doc, `Known Limitations (${rows.length})`);
+
+  doc.fontSize(8).font(F_REGULAR).fillColor(C.subtle)
+    .text('These features are outside CloudFuze\'s migration scope for Slack → Teams. They are expected and do not count as bugs.', MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.5);
+
+  const rowH = 18;
+  const headerH = 20;
+  const COL = { feature: CONTENT_W - 120, count: 60, channels: 60 };
+
+  ensureSpace(doc, headerH + rowH * Math.min(rows.length, 5) + 10);
+  let y = doc.y;
+
+  // Header
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, headerH).fill().restore();
+  doc.fontSize(7).font(F_BOLD).fillColor(C.subtle)
+    .text('Feature / Limitation', MARGIN + 6, y + 6, { width: COL.feature - 6 });
+  doc.text('Src Count', MARGIN + COL.feature, y + 6, { width: COL.count, align: 'right' });
+  doc.text('Channels', MARGIN + COL.feature + COL.count, y + 6, { width: COL.channels - 6, align: 'right' });
+  y += headerH;
+
+  for (let i = 0; i < rows.length; i++) {
+    ensureSpace(doc, rowH + 2);
+    const rowBg = i % 2 === 0 ? '#ffffff' : '#f8fafc';
+    doc.save().fillColor(rowBg).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.5)
+      .moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
+
+    // Yellow dot indicator
+    doc.save().fillColor(C.warn).circle(MARGIN + 9, y + rowH / 2, 3).fill().restore();
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt)
+      .text(rows[i].feature, MARGIN + 18, y + 5, { width: COL.feature - 18 });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(rows[i].count > 0 ? String(rows[i].count) : '—', MARGIN + COL.feature, y + 5, { width: COL.count, align: 'right' });
+    doc.text(String(rows[i].channels), MARGIN + COL.feature + COL.count, y + 5, { width: COL.channels - 6, align: 'right' });
+    y += rowH;
+  }
+  doc.y = y + 6;
+}
+
+function drawMsgSourceFeatureTable(doc, validation) {
+  const channels = (validation.channels || []).filter((ch) => ch.source && ch.source.messageCount != null);
+  if (channels.length === 0) return;
+
+  drawSectionHeader(doc, 'Source Feature Inventory (Slack)');
+
+  const FEATURES = [
+    ['Messages', 'messageCount'], ['Files', 'fileCount'], ['Thread Replies', 'totalReplyCount'],
+    ['Reactions', 'totalReactionCount'], ['Pinned', 'pinnedCount'],
+    ['Bold Msgs', 'boldMsgCount'], ['Italic Msgs', 'italicMsgCount'],
+    ['Strikethrough', 'strikethroughMsgCount'], ['Code Blocks', 'codeBlockMsgCount'],
+    ['Ordered Lists', 'orderedListMsgCount'], ['Bullet Lists', 'bulletListMsgCount'],
+    ['User Mentions', 'userMentionMsgCount'], ['Group Mentions', 'groupMentionMsgCount'],
+    ['Links', 'linkMsgCount'], ['Emojis', 'emojiMsgCount'], ['Custom Emojis', 'customEmojiMsgCount'],
+    ['GIFs', 'gifMsgCount'], ['Edited Msgs', 'editedMsgCount'],
+    ['Forwarded', 'forwardedMsgCount'], ['Audio Files', 'audioFileCount'], ['Video Files', 'videoFileCount'],
+  ];
+
+  const rowH = 16;
+  const colW = Math.floor(CONTENT_W / (channels.length + 1));
+  const featColW = CONTENT_W - colW * channels.length;
+
+  ensureSpace(doc, 24 + rowH * 5);
+  let y = doc.y;
+
+  // Header row
+  doc.save().fillColor('#f1f5f9').rect(MARGIN, y, CONTENT_W, 20).fill().restore();
+  doc.fontSize(7).font(F_BOLD).fillColor(C.subtle)
+    .text('Feature', MARGIN + 4, y + 6, { width: featColW - 8 });
+  for (let i = 0; i < channels.length; i++) {
+    const ch = channels[i];
+    const name = truncateRef(ch.channelName || ch.channelId, 14);
+    doc.text(name, MARGIN + featColW + i * colW, y + 6, { width: colW, align: 'right' });
+  }
+  y += 20;
+
+  for (let fi = 0; fi < FEATURES.length; fi++) {
+    const [label, field] = FEATURES[fi];
+    const vals = channels.map((ch) => ch.source?.[field] ?? 0);
+    const anyNonZero = vals.some((v) => v > 0);
+    if (!anyNonZero) continue;
+
+    ensureSpace(doc, rowH + 2);
+    const rowBg = fi % 2 === 0 ? '#ffffff' : '#f8fafc';
+    doc.save().fillColor(rowBg).rect(MARGIN, y, CONTENT_W, rowH).fill().restore();
+    doc.save().strokeColor(C.border).lineWidth(0.5)
+      .moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
+
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt)
+      .text(label, MARGIN + 4, y + 4, { width: featColW - 8 });
+    for (let i = 0; i < channels.length; i++) {
+      const v = vals[i];
+      doc.fontSize(7.5).font(v > 0 ? F_BOLD : F_REGULAR).fillColor(v > 0 ? C.dark : C.muted)
+        .text(v > 0 ? String(v) : '—', MARGIN + featColW + i * colW, y + 4, { width: colW, align: 'right' });
+    }
+    y += rowH;
+  }
+  doc.y = y + 6;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 // Render ONE execution's full report into an existing doc (no doc.end()). Shared by the
 // single-execution and bulk (all-pairs-in-one) generators so each pair renders identically.
@@ -1133,8 +1451,12 @@ function renderExecutionReport(doc, execution, opts = {}) {
     const agent = result.agentResults.find((a) => a.name === 'OutlookValidationAgent');
     validation = agent?.result || null;
   }
-  if (validation) validation = buildPdfValidationView(validation);
   const context = execution.context;
+
+  // Detect message migration before transforming validation with the email-specific view builder
+  const isMessage = validation?.productType === 'Message' || !!(context?.messageCombination);
+
+  if (!isMessage && validation) validation = buildPdfValidationView(validation);
 
   drawPageHeader(doc, execution, validation, context, result);
 
@@ -1150,6 +1472,18 @@ function renderExecutionReport(doc, execution, opts = {}) {
     return;
   }
 
+  // ── Message migration PDF ──
+  if (isMessage) {
+    drawMsgSummarySection(doc, validation);
+    drawMsgChannelTable(doc, validation);
+    drawMsgBugDetails(doc, validation);
+    drawMsgKnownLimitations(doc, validation);
+    drawMsgSourceFeatureTable(doc, validation);
+    drawFooter(doc, context);
+    return;
+  }
+
+  // ── Email / Calendar migration PDF (unchanged) ──
   if (!opts.skipMigrationStatus) {
     drawMigrationJobSection(doc, context, result);
   }

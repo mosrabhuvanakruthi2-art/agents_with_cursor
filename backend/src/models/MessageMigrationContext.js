@@ -26,6 +26,8 @@ class MessageMigrationContext {
     migrationServerEmail = null,
     migrationServerPassword = null,
     migrationServerBasicAuth = null,
+    userMappings = [],
+    userMappingCsvPath = null,
     executionId,
   }) {
     this.kind = 'message';
@@ -47,6 +49,8 @@ class MessageMigrationContext {
     this.migrationServerEmail = migrationServerEmail || null;
     this.migrationServerPassword = migrationServerPassword || null;
     this.migrationServerBasicAuth = migrationServerBasicAuth || null;
+    this.userMappings = Array.isArray(userMappings) ? userMappings : [];
+    this.userMappingCsvPath = (typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim()) ? userMappingCsvPath.trim() : null;
     this.executionId = executionId || uuidv4();
 
     const { sourcePlatform, destinationPlatform } = parseCombination(this.messageCombination);

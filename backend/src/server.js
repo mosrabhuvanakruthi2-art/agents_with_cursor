@@ -80,20 +80,7 @@ async function autoLoadSlackToken() {
 }
 
 async function start() {
-  try {
-    await connectMongo(logger);
-    // Sync OAuth tokens from MongoDB → local JSON file
-    const { loadFromMongo } = require('./clients/oauthTokenStore');
-    await loadFromMongo();
-  } catch (e) {
-    if (env.MONGODB_URI) {
-      logger.error(`MongoDB connection failed: ${e?.message || e}`);
-      process.exit(1);
-    }
-  }
-
-  autoLoadSlackToken(); // fire-and-forget
-
+  // Start HTTP server immediately — do not block on MongoDB
   const server = app.listen(env.PORT, () => {
     logger.info(`Server running on port ${env.PORT}`);
     initScheduler();
@@ -102,6 +89,29 @@ async function start() {
   server.timeout = 1800000;
   server.keepAliveTimeout = 1820000;
   server.headersTimeout = 1830000;
+
+  autoLoadSlackToken(); // fire-and-forget
+
+  // Connect MongoDB in the background after the HTTP server is up
+  if (env.MONGODB_URI) {
+    connectMongo(logger)
+      .then(async () => {
+        try {
+          const { loadFromMongo } = require('./clients/oauthTokenStore');
+          await loadFromMongo();
+          logger.info('MongoDB: OAuth tokens synced');
+        } catch (e) {
+          logger.warn(`MongoDB: token sync failed — ${e?.message || e}`);
+        }
+      })
+      .catch((e) => {
+        logger.error(
+          `MongoDB connection failed: ${e?.message || e}\n` +
+          'Fix: go to MongoDB Atlas → Network Access → Add IP Address → Allow Access From Anywhere (or add your current IP). ' +
+          'Then restart the backend.'
+        );
+      });
+  }
 }
 
 start();

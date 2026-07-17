@@ -1,9 +1,21 @@
 const https = require('https');
 const axios = require('axios');
+const md5 = require('md5');
 const env = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const channelCache = require('../services/channelCache');
+// Lazy-loaded to avoid circular deps — resolved on first use inside pollAndCloseTeams
+let _executionService = null;
+function getExecService() {
+  if (!_executionService) _executionService = require('../services/executionService');
+  return _executionService;
+}
+let _outlookClient = null;
+function getOutlookClient() {
+  if (!_outlookClient) _outlookClient = require('./outlookClient');
+  return _outlookClient;
+}
 
 // Per-server session cache: key (serverUrl + credential) → { auth, userId, baseURL }.
 // CloudFuze credentials come from the FRONTEND (wizard "Migration Server" step) per
@@ -124,28 +136,70 @@ async function getSession(context = {}) {
     logger.info(`CloudFuze: using Bearer token for ${cfg.url} (${cfg.source})`);
   } else if (cfg.username && cfg.password) {
     logger.info(`CloudFuze: logging in as ${cfg.username} @ ${cfg.url} (${cfg.source})…`);
-    const loginBasic = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
-    let res;
+    const md5Pass = md5(cfg.password);
+
+    // Strategy 1: GET /users/validateUser → userId → Basic base64(userId:md5(password))
+    let userId = null;
     try {
-      res = await retryWithBackoff(
-        () => axios.post(`${cfg.url}/auth/user`, null, migrationAxiosConfig({
-          headers: { 'Content-Type': 'application/json', Authorization: `Basic ${loginBasic}` },
-          timeout: 30000,
-        })),
-        { label: 'CloudFuze /auth/user login', maxRetries: 3 }
-      );
-    } catch (err) {
-      if (err.response?.status === 401) {
+      const valRes = await axios.get(`${cfg.url}/users/validateUser`, migrationAxiosConfig({
+        params: { searchUser: cfg.username.trim(), _: Date.now() },
+        timeout: 20000,
+      }));
+      const d = valRes.data;
+      userId = (typeof d === 'string' && d.length > 5) ? d.trim() : (d?.id || d?.userId || null);
+      if (userId) logger.info(`CloudFuze: validateUser → userId=${userId}`);
+    } catch (e) {
+      logger.warn(`CloudFuze: validateUser failed (${e.response?.status || e.message}) — trying auth endpoints`);
+    }
+
+    // Strategy 2: POST to multiple CF auth path candidates
+    // Try both md5-hashed password (CF default) and plain password (some CF versions).
+    if (!userId) {
+      const md5B64       = Buffer.from(`${cfg.username}:${md5Pass}`).toString('base64');
+      const plainB64     = Buffer.from(`${cfg.username}:${cfg.password}`).toString('base64');
+      const authCandidates = [
+        { path: 'auth/user',          token: md5B64  },
+        { path: 'auth/login',         token: md5B64  },
+        { path: 'auth/user',          token: plainB64 },
+        { path: 'auth/login',         token: plainB64 },
+        { path: 'users/login',        token: md5B64  },
+        { path: 'users/authenticate', token: md5B64  },
+      ];
+      let lastErr = null;
+      for (const { path, token } of authCandidates) {
+        try {
+          const res = await axios.post(`${cfg.url}/${path}`, null, migrationAxiosConfig({
+            headers: { 'Content-Type': 'application/json', Authorization: `Basic ${token}` },
+            timeout: 20000,
+          }));
+          userId = res.data?.id || res.data?.userId || res.data?.user?.id || null;
+          if (userId) { logger.info(`CloudFuze: /${path} → userId=${userId}`); break; }
+        } catch (err) {
+          const st = err.response?.status;
+          if (st === 404 || st === 405 || st === 400) {
+            logger.warn(`CloudFuze: /${path} → HTTP ${st} — trying next`);
+            lastErr = err;
+            continue;
+          }
+          // Non-404 error (e.g. 401 wrong password, 500 server error) — fail immediately
+          throw new Error(
+            `CloudFuze login failed for ${cfg.username} (${st || err.message}). ` +
+            `Check the email and password entered in the Migration Server step.`
+          );
+        }
+      }
+      if (!userId && lastErr) {
         throw new Error(
-          `CloudFuze rejected ${cfg.username} (401). This usually means the account signs in with Google/SSO and has `
-          + `no API password. Paste the "Authorization: Basic …" token from DevTools into the API Token field instead.`
+          `CloudFuze login failed for ${cfg.username} — all auth endpoints returned 404/405. ` +
+          `Verify the Migration Server URL is correct (currently: ${cfg.url}). ` +
+          `The CF API base should be https://<your-cf-server>/proxyservices/v1.`
         );
       }
-      throw err;
     }
-    const userId = res.data?.id;
-    if (!userId) throw new Error('CloudFuze login failed: no user ID in response (check the migration server email/password).');
-    session = { auth: `Basic ${Buffer.from(`${userId}:${cfg.password}`).toString('base64')}`, userId, baseURL: cfg.url };
+
+    if (!userId) throw new Error(`CloudFuze login failed — no userId returned for ${cfg.username}. Check email and password.`);
+    const token = Buffer.from(`${userId}:${md5Pass}`).toString('base64');
+    session = { auth: `Basic ${token}`, userId, baseURL: cfg.url };
     logger.info(`CloudFuze login successful (userId=${userId}) @ ${cfg.url}`);
   } else {
     throw new Error('CloudFuze credentials missing — enter the migration server, email and password in the wizard (Migration Server step).');
@@ -408,62 +462,70 @@ async function setupUserMappingInCF(auth, baseURL, srcCloudId, dstCloudId, rawCs
   }
 
   // 3. Upload CSV — POST /messagemove/message/usermapping/csv?sourceCloudId=...&destCloudId=...
-  //    Fresh axios instance (no Content-Type:application/json default).
-  //    Part uses only Content-Disposition — no per-part Content-Type so CF's parser
-  //    treats it as plain text rather than trying to validate the MIME type.
+  //
+  //    Network capture of CF web UI manual upload shows:
+  //      Content-Type: application/json
+  //      Body: raw CSV text (no wrapping, no multipart)
+  //    Multipart form-data returns HTTP 200 + [] (server ignores it silently).
   try {
-    const boundary = `CFBoundary${Date.now()}`;
-    const CRLF = '\r\n';
-    // Strip BOM, normalise to \r\n, then force CF-expected headers
+    // Normalise CSV: strip BOM, ensure LF line endings, correct header
     let cleanCsv = rawCsvText.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const csvLines = cleanCsv.split('\n');
-    // Ensure CF's expected header "Source User,Destination User" is present
     if (csvLines.length > 0) {
       const firstLine = csvLines[0].trim();
-      const firstLineIsData = firstLine.includes('@');  // email addresses contain @
-      if (firstLineIsData) {
-        // No header at all — prepend it
+      if (firstLine.includes('@')) {
         csvLines.unshift('Source User,Destination User');
-        logger.info(`CF CSV: prepended missing header (first line looks like data: ${firstLine.slice(0, 60)})`);
       } else if (firstLine !== 'Source User,Destination User') {
-        // Has a header but wrong column names — replace it
         csvLines[0] = 'Source User,Destination User';
-        logger.info(`CF CSV: normalised header "${firstLine}" → "Source User,Destination User"`);
       }
     }
-    cleanCsv = csvLines.join('\n').replace(/\n/g, '\r\n');
-    const csvBuffer = Buffer.from(cleanCsv, 'utf8');
-    const multipartBody = Buffer.concat([
-      Buffer.from(`--${boundary}${CRLF}`),
-      Buffer.from(`Content-Disposition: form-data; name="file"; filename="user_mapping.csv"${CRLF}${CRLF}`),
-      csvBuffer,
-      Buffer.from(`${CRLF}--${boundary}--${CRLF}`),
-    ]);
+    cleanCsv = csvLines.filter((l, i) => i === 0 || l.trim()).join('\n');
+    const rowCount = csvLines.filter(Boolean).length - 1;
+    logger.info(`CF CSV (${srcCloudId}→${dstCloudId}): rows=${rowCount} | preview: ${cleanCsv.slice(0, 200)}`);
 
+    const uploadUrl = `messagemove/message/usermapping/csv?sourceCloudId=${srcCloudId}&destCloudId=${dstCloudId}`;
     const uploadClient = axios.create(migrationAxiosConfig({ baseURL, timeout: 60000 }));
-    const rowCount = cleanCsv.split('\r\n').filter(Boolean).length - 1;
-    logger.info(`CF CSV preview (${srcCloudId}→${dstCloudId}): rows=${rowCount} | first200: ${cleanCsv.slice(0, 200).replace(/\r\n/g, '\\n')}`);
-    const uploadRes = await uploadClient.post(
-      `messagemove/message/usermapping/csv?sourceCloudId=${srcCloudId}&destCloudId=${dstCloudId}`,
-      multipartBody,
-      { headers: { Authorization: auth, 'Content-Type': `multipart/form-data; boundary=${boundary}` } }
-    );
-    logger.info(`CF user mapping upload ${srcCloudId}→${dstCloudId}: ${rowCount} row(s) | HTTP ${uploadRes.status} | server response: ${JSON.stringify(uploadRes.data)}`);
 
-    // Verify rows were actually saved — use pageSize=200 to get real total
+    // Primary: raw CSV body with application/json Content-Type (matches CF web UI network capture)
+    let uploadRes = null;
+    let lastErr = null;
+    const contentTypes = ['application/json', 'text/plain', 'text/csv'];
+
+    for (const ct of contentTypes) {
+      try {
+        uploadRes = await uploadClient.post(uploadUrl, cleanCsv, {
+          headers: { Authorization: auth, 'Content-Type': ct },
+        });
+        logger.info(`CF CSV upload [raw:${ct}] ${srcCloudId}→${dstCloudId}: HTTP ${uploadRes.status} | ${JSON.stringify(uploadRes.data).slice(0, 120)}`);
+        lastErr = null;
+        break;
+      } catch (err) {
+        logger.warn(`CF CSV upload [raw:${ct}] ${srcCloudId}→${dstCloudId}: ${err.response?.status ?? err.message} — trying next`);
+        lastErr = err;
+      }
+    }
+
+    if (lastErr) {
+      logger.error(`CF CSV upload FAILED all content-type strategies ${srcCloudId}→${dstCloudId}: ${lastErr.message}`);
+    }
+
+    // Verify — GET /mapping/user/clouds/get/permissions (correct endpoint from CF API spec)
     try {
-      const vr = await jsonClient.get(
+      const verifyRes = await jsonClient.get(
         `mapping/user/clouds/get/permissions?sourceCloudId=${srcCloudId}&destCloudId=${dstCloudId}&pageNo=1&pageSize=200`
       );
-      const d = vr.data;
-      const items = Array.isArray(d) ? d : (Array.isArray(d?.data) ? d.data : []);
-      const total = d?.totalCount ?? d?.total ?? items.length;
-      logger.info(`CF mapping verified ${srcCloudId}→${dstCloudId}: total=${total} | response: ${JSON.stringify(d).slice(0, 400)}`);
-    } catch (err) {
-      logger.warn(`CF mapping verify error: ${err.message}`);
+      const vd = verifyRes.data;
+      const verifiedRows = Array.isArray(vd) ? vd.length : (vd?.totalCount ?? vd?.total ?? (Array.isArray(vd?.data) ? vd.data.length : 0));
+      if (verifiedRows > 0) {
+        logger.info(`CF CSV upload confirmed — ${verifiedRows} mapping(s) on CF server for ${srcCloudId}→${dstCloudId}`);
+      } else {
+        logger.warn(`CF CSV verify ${srcCloudId}→${dstCloudId}: 0 rows after upload (sent ${rowCount} rows)`);
+      }
+    } catch (verifyErr) {
+      logger.warn(`CF CSV verify failed ${srcCloudId}→${dstCloudId}: ${verifyErr.message}`);
     }
   } catch (err) {
-    logger.warn(`CF user mapping upload failed ${srcCloudId}→${dstCloudId}: HTTP ${err.response?.status} — ${err.message}`);
+    logger.error(`CF CSV upload FAILED ${srcCloudId}→${dstCloudId}: ${err.message}`);
   }
 }
 
@@ -543,12 +605,12 @@ async function uploadUserMappingForAllCombinations(context, accounts, auth, base
 
 /**
  * Upload a raw CSV string to the CF server for every connected cloud-account pair.
- * Called immediately when the user uploads their mapping CSV in the wizard (step 2).
- * The raw CSV is uploaded as-is — no parsing or reformatting.
+ * context carries the server credentials (migrationServerUrl/Email/Password) from the
+ * wizard step-2 upload request. Falls back to env vars when context is empty.
  *
  * Returns the count of cloud pairs the CSV was uploaded to (0 if no accounts found).
  */
-async function uploadUserMappingCsvToAllPairs(csvText) {
+async function uploadUserMappingCsvToAllPairs(csvText, context = {}) {
   if (!csvText || !csvText.trim()) {
     logger.warn('CF uploadUserMappingCsvToAllPairs: empty CSV — skipping');
     return 0;
@@ -559,9 +621,8 @@ async function uploadUserMappingCsvToAllPairs(csvText) {
     return 0;
   }
 
-  // Use env-based credentials (no per-request context needed)
-  const { auth, baseURL } = await getSession({});
-  const accounts = await getCloudAccounts({});
+  const { auth, baseURL } = await getSession(context);
+  const accounts = await getCloudAccounts(context);
 
   if (accounts.length === 0) {
     logger.warn('CF uploadUserMappingCsvToAllPairs: no cloud accounts found — cannot upload mapping');
@@ -638,6 +699,13 @@ async function triggerChatMigration(context) {
     logger.warn(`CloudFuze: getCloudAccounts failed: ${err.message} — continuing without cloud IDs`);
   }
 
+  // Upload user mapping CSV to CF server before migration
+  const rawCsvText = resolveCsvFromContext(context);
+  if (srcCloudId && dstCloudId && rawCsvText) {
+    logger.info(`CF: uploading user mapping CSV to server for ${srcCloudId}→${dstCloudId}`);
+    await setupUserMappingInCF(auth, baseURL, srcCloudId, dstCloudId, rawCsvText);
+  }
+
   // Map our internal kind → CloudFuze channelType string
   function toChannelType(kind) {
     if (kind === 'dm' || kind === 'im') return 'im';
@@ -654,7 +722,7 @@ async function triggerChatMigration(context) {
   // and pull the REAL channelDate + dest names + privacy. Cached per combination.
   let cfChannelMap = {};
   if (srcCloudId && dstCloudId && targets.some((t) => !t.isDm)) {
-    try {
+    async function fetchCFChannelMap() {
       let cached = channelCache.get(combination, srcCloudId, dstCloudId);
       if (!cached || (!(cached.publicChannels || []).length && !(cached.privateChannels || []).length)) {
         const [pub, priv] = await Promise.all([
@@ -664,11 +732,37 @@ async function triggerChatMigration(context) {
         cached = { publicChannels: pub, privateChannels: priv };
         channelCache.set(combination, srcCloudId, dstCloudId, cached);
       }
-      for (const c of (cached.publicChannels || []))  { const k = c.fromRootId || c.channelId || c.id; if (k) cfChannelMap[k] = { ...c, _cfType: 'public' }; }
-      for (const c of (cached.privateChannels || [])) { const k = c.fromRootId || c.channelId || c.id; if (k) cfChannelMap[k] = { ...c, _cfType: 'private' }; }
+      const map = {};
+      for (const c of (cached.publicChannels || []))  { const k = c.fromRootId || c.channelId || c.id; if (k) map[k] = { ...c, _cfType: 'public' }; }
+      for (const c of (cached.privateChannels || [])) { const k = c.fromRootId || c.channelId || c.id; if (k) map[k] = { ...c, _cfType: 'private' }; }
+      return map;
+    }
+    try {
+      cfChannelMap = await fetchCFChannelMap();
       logger.info(`CloudFuze: enriched channel metadata from CF list (${Object.keys(cfChannelMap).length} channels available)`);
     } catch (err) {
-      logger.warn(`CloudFuze: channel metadata enrich failed: ${err.message} — falling back to Slack metadata (may migrate 0 messages)`);
+      // 401 = CF session expired between wizard step and migration initiation — clear cache and retry once
+      if (err.response?.status === 401 || String(err.message).includes('401')) {
+        logger.warn(`CloudFuze: channel metadata enrich got 401 — clearing session cache and retrying…`);
+        const cfg = cfConfigFromContext(context);
+        const staleKey = `${cfg.url}::${cfg.basicAuth || cfg.bearer || cfg.username || 'anon'}`;
+        sessionCache.delete(staleKey);
+        channelCache.set(combination, srcCloudId, dstCloudId, { publicChannels: [], privateChannels: [] });
+        try {
+          cfChannelMap = await fetchCFChannelMap();
+          logger.info(`CloudFuze: channel metadata enrich succeeded after session refresh (${Object.keys(cfChannelMap).length} channels)`);
+        } catch (retryErr) {
+          logger.warn(
+            `CloudFuze: channel metadata enrich failed after retry (${retryErr.message}) — ` +
+            `using channelDate=0 (all history). Migration will still proceed with all messages.`
+          );
+        }
+      } else {
+        logger.warn(
+          `CloudFuze: channel metadata enrich failed (${err.message}) — ` +
+          `using channelDate=0 (all history). Migration will still proceed with all messages.`
+        );
+      }
     }
   }
 
@@ -689,12 +783,12 @@ async function triggerChatMigration(context) {
         ...t,
         ...enriched,
         channelName:     enriched.name || enriched.channelName || cf.channelName || t.name,
-        channelDate:     cf.channelDate || enriched.channelDate || t.channelDate,
+        channelDate:     cf.channelDate ?? enriched.channelDate ?? t.channelDate,
         cfChannelType:   cf._cfType || cf.channelType,
         destChannelName: enriched.destChannelName || cf.destChannelName,
         destTeamName:    enriched.destTeamName || cf.destTeamName,
         workSpaceName:   enriched.workSpaceName || cf.workSpaceName,
-        cfMatched:       !!cf.channelDate,
+        cfMatched:       cf.channelDate != null,
       };
     });
   const dms = targets
@@ -714,13 +808,17 @@ async function triggerChatMigration(context) {
       if (!isDm && !t.cfMatched) {
         logger.warn(
           `CloudFuze: channel "${channelName}" (${t.id}) not found in CF channel list — ` +
-          `using channelDate=now, which usually yields "No Messages". Ensure the channel is indexed in CloudFuze.`
+          `using channelDate=0 (all history). Ensure the channel is indexed in CloudFuze.`
         );
       }
+      // Use ?? (not ||) so that channelDate=0 (epoch start = all history) is preserved.
+      // Fallback to 0 so CF scans all historical messages when no date is available.
+      const channelDateValue = t.channelDate ?? 0;
+      logger.info(`CF channel ${t.id}: channelDate=${channelDateValue}`);
       const obj = {
         fromRootId: t.id,
         toRootId: '/',
-        channelDate: String(t.channelDate || Math.floor(Date.now() / 1000)),
+        channelDate: String(channelDateValue),
         dateChanged: false,
         channelType: t.cfChannelType || toChannelType(t.kind),
         channelName,
@@ -734,7 +832,6 @@ async function triggerChatMigration(context) {
         reactionToPick: false,
         skipFileContent: false,
         externalShared: t.externalShared || false,
-        emailPairs: t.emailPairs || [],
         combination,
       };
       if (srcCloudId) obj.fromCloudId = { id: srcCloudId };
@@ -763,8 +860,13 @@ async function triggerChatMigration(context) {
         { label: `CF chat POST ${url}`, maxRetries: 2 }
       );
       const rawData = Array.isArray(res.data) ? res.data : [res.data];
+      // Log the first item so we can see all fields (helps verify messageJobId field name)
+      if (rawData[0]) logger.info(`CF initiation raw[0]: ${JSON.stringify(rawData[0]).slice(0, 400)}`);
       batch.forEach((t, i) => {
-        const jobId = rawData[i]?.id || rawData[i]?.jobId || res.data?.id || 'initiated';
+        const r = rawData[i] || {};
+        // messageJobId is the Teams-job ID used by closeCreatedTeams.
+        // .id is the channel-record ID (one ObjectID earlier) — prefer messageJobId.
+        const jobId = r.messageJobId || r.teamJobId || r.wsid || r.id || r.jobId || res.data?.messageJobId || res.data?.id || 'initiated';
         results.push({ target: t.id, kind: t.kind, jobId, status: 'INITIATED' });
         logger.info(`CF chat migration initiated: ${t.id} (${t.kind}) → job ${jobId} via ${url}`, { executionId: context.executionId });
       });
@@ -780,6 +882,19 @@ async function triggerChatMigration(context) {
 
   const allOk = results.every((r) => r.status === 'INITIATED');
   const anyOk = results.some((r) => r.status === 'INITIATED');
+
+  // Poll for completion then close each Teams job so migrated content becomes visible.
+  const initiatedTargets = results
+    .filter((r) => r.status === 'INITIATED')
+    .map((r) => ({ channelId: r.target, jobId: r.jobId, kind: r.kind }));
+  if (initiatedTargets.length > 0) {
+    // Fire-and-forget: poll runs in the background so the agent returns immediately
+    // instead of blocking for up to 30 minutes waiting for CF to finish.
+    pollAndCloseTeams(initiatedTargets, auth, baseURL, context, 30 * 60 * 1000).catch((err) => {
+      logger.error(`CF: pollAndCloseTeams background error: ${err.message}`);
+    });
+  }
+
   return {
     status:       allOk ? 'INITIATED' : anyOk ? 'PARTIAL' : 'FAILED',
     totalTargets: targets.length,
@@ -905,6 +1020,314 @@ async function getMigrationReports({ combination = '', migrationStatus = 'All', 
   return Array.isArray(res.data) ? res.data : [];
 }
 
+// ── Close-completion tracker ──────────────────────────────────────────────────
+// Maps channelId → { promise, resolve, reject }.
+// pollAndCloseTeams resolves each entry when its job is closed.
+// waitForChannelsClosed() lets MessageValidationAgent await close before reading Teams.
+const _closePending = new Map(); // channelId → { resolve, reject }
+
+// ── Teams destination registry ─────────────────────────────────────────────────
+// After CF closes a migration job, stores the actual Teams team+channel IDs so
+// MessageValidationAgent can directly access the Teams channel without name-guessing.
+// key: Slack channelId  →  value: { teamId, channelId, channelName, teamName }
+const _teamsDestinations = new Map();
+
+/**
+ * Extract and cache Teams team+channel IDs from a CF job report or close response.
+ * CF returns the destination IDs under various field names depending on version.
+ * This is called both when a CF report reaches terminal status AND when closeCreatedTeams
+ * returns its response body — each may carry different fields.
+ *
+ * @param {string} slackChannelId  - Slack source channel ID (the cache key)
+ * @param {object} data            - CF report job or close response object
+ */
+function _captureTeamsDestination(slackChannelId, data) {
+  if (!slackChannelId || !data || typeof data !== 'object') return;
+
+  // Azure AD / Teams object IDs are always GUIDs: 8-4-4-4-12 hex segments.
+  // Teams channel thread IDs look like "19:xxx@thread.tacv2" — NOT GUIDs.
+  // When CF populates toRootId after migration, for S2T it typically stores the
+  // Teams TEAM ID (a GUID), not the channel thread ID.
+  const rawToRootId = String(data.toRootId || '').trim();
+  const toRootIsGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawToRootId);
+
+  // Try all known CF field name variants for destination Teams team ID.
+  // If toRootId is a GUID, treat it as teamId (team IDs are GUIDs; channel IDs are thread strings).
+  const teamId =
+    data.teamId           || data.toTeamId      || data.msTeamId       ||
+    data.teamsTeamId      || data.destTeamId    || data.targetTeamId   ||
+    data.destinationTeamId || (toRootIsGuid ? rawToRootId : null) || null;
+
+  // channelId: use toRootId only when it is NOT a GUID (i.e. it's a thread ID like "19:...")
+  const channelId =
+    data.toChannelId      || data.msChannelId   || data.teamsChannelId ||
+    data.destChannelId    || data.targetChannelId || data.destinationChannelId ||
+    (!toRootIsGuid && rawToRootId && rawToRootId !== '/' ? rawToRootId : null) || null;
+
+  const channelName =
+    data.destChannelName || data.toChannelName || data.msChannelName || null;
+  const teamName =
+    data.destTeamName  || data.toTeamName  || data.workSpaceName   || null;
+
+  if (teamId || channelId) {
+    const existing = _teamsDestinations.get(slackChannelId) || {};
+    _teamsDestinations.set(slackChannelId, {
+      teamId:      teamId      || existing.teamId      || null,
+      channelId:   channelId   || existing.channelId   || null,
+      channelName: channelName || existing.channelName || null,
+      teamName:    teamName    || existing.teamName    || null,
+    });
+    logger.info(
+      `CF: stored Teams destination for Slack ch ${slackChannelId}: ` +
+      `teamId=${teamId} channelId=${channelId} channel="${channelName}" team="${teamName}"`
+    );
+  }
+}
+
+/**
+ * Return the cached Teams team+channel IDs for a given Slack channel ID.
+ * Used by MessageValidationAgent to directly access the Teams destination channel
+ * without relying on name-based search (which can fail when the team is newly created
+ * or has a different name than the Slack channel/workspace).
+ *
+ * @param {string} slackChannelId
+ * @returns {{ teamId: string|null, channelId: string|null, channelName: string|null, teamName: string|null } | null}
+ */
+function getTeamsDestination(slackChannelId) {
+  return _teamsDestinations.get(slackChannelId) || null;
+}
+
+function _notifyChannelClosed(channelId) {
+  const entry = _closePending.get(channelId);
+  if (entry) { entry.resolve(); _closePending.delete(channelId); }
+}
+
+/**
+ * Returns a Promise that resolves once all supplied channelIds have been closed
+ * (or after timeoutMs, whichever comes first).
+ * Call this in MessageValidationAgent before reading the Teams destination.
+ */
+function waitForChannelsClosed(channelIds, timeoutMs) {
+  if (timeoutMs == null) timeoutMs = 90_000;
+  const ids = (channelIds || []).filter(Boolean);
+  if (ids.length === 0) return Promise.resolve();
+
+  const promises = ids.map((id) => {
+    if (!_closePending.has(id)) return Promise.resolve(); // already closed or not tracked
+    const { promise } = _closePending.get(id);
+    return promise;
+  });
+
+  return Promise.race([
+    Promise.all(promises),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('close-timeout')), timeoutMs)),
+  ]).catch(() => { /* timeout — continue anyway */ });
+}
+
+/**
+ * Register channelIds as pending-close so waitForChannelsClosed can track them.
+ * Called by pollAndCloseTeams before it starts polling.
+ */
+function _registerPendingClose(channelIds) {
+  for (const id of channelIds) {
+    if (_closePending.has(id)) continue;
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    _closePending.set(id, { promise, resolve, reject });
+  }
+}
+
+/**
+ * MongoDB ObjectIDs encode: 4-byte timestamp | 5-byte machine+pid | 3-byte counter.
+ * When CF initiates a migration, it writes the channel-record first (counter N) then
+ * the Teams-job record (counter N+1). The initiation response returns the channel-record
+ * ID; closeCreatedTeams needs the Teams-job ID (counter N+1).
+ * Returns null for any non-ObjectID input.
+ */
+function teamsJobIdFromChannelId(hexId) {
+  if (!hexId || hexId.length !== 24 || !/^[0-9a-f]+$/i.test(hexId)) return null;
+  const counter = parseInt(hexId.slice(18), 16); // last 3 bytes = counter
+  return hexId.slice(0, 18) + ((counter + 1) & 0xFFFFFF).toString(16).padStart(6, '0');
+}
+
+/**
+ * Close a single CF Teams migration job.
+ * POST /messagemove/close/createdteams?messageJobId=<id>
+ * This makes the migrated Slack content visible in the destination Teams channel.
+ * Returns the full response body (may contain Teams team/channel IDs).
+ */
+async function closeCreatedTeams(jobId, client) {
+  const res = await client.post(`messagemove/close/createdteams`, null, {
+    params: { messageJobId: jobId },
+  });
+  // Log the full close response — CF may return Teams team/channel IDs here
+  logger.info(`CF: closeCreatedTeams job=${jobId} HTTP=${res.status} response=${JSON.stringify(res.data).slice(0, 600)}`);
+  return res.data;
+}
+
+/**
+ * Poll CF migration reports until every job in `jobIds` reaches a terminal
+ * status (Processed / Partially Processed / Completed), then close each one.
+ *
+ * Runs as an awaited step inside triggerChatMigration with a max-wait cap so
+ * the agent never blocks indefinitely.
+ */
+async function pollAndCloseTeams(initiatedTargets, auth, baseURL, context, maxWaitMs = 10 * 60 * 1000) {
+  // initiatedTargets: [{ channelId, jobId, kind }]
+  const valid = initiatedTargets.filter((t) => t.channelId || (t.jobId && t.jobId !== 'initiated'));
+  if (valid.length === 0) return;
+
+  const executionId = context && context.executionId;
+  const bump = (msg) => {
+    logger.info(msg);
+    if (executionId) {
+      try { getExecService().update(executionId, { progress: msg }); } catch (_) {}
+    }
+  };
+
+  // Register all channels as pending-close so waitForChannelsClosed() can track them
+  _registerPendingClose(valid.map((t) => t.channelId).filter(Boolean));
+
+  const client = getAuthClient(auth, baseURL);
+  const combination = getCombination(
+    CF_PLATFORM[(context.sourcePlatform || '').toLowerCase()] || 'SLACK',
+    CF_PLATFORM[(context.destinationPlatform || '').toLowerCase()] || 'MICROSOFT_TEAMS'
+  );
+
+  // Primary key: Slack channel ID (fromRootId in CF reports)
+  const pendingChannels = new Set(valid.map((t) => t.channelId).filter(Boolean));
+  // Fallback key: job ID from initiation response.
+  const jobIdToChannel = new Map();
+  for (const t of valid) {
+    if (!t.jobId || t.jobId === 'initiated') continue;
+    jobIdToChannel.set(t.jobId, t.channelId);
+    const teamsId = teamsJobIdFromChannelId(t.jobId);
+    if (teamsId) {
+      jobIdToChannel.set(teamsId, t.channelId);
+      logger.info(`CF: channel ${t.channelId} → initiation ID ${t.jobId}, expected Teams job ID ${teamsId}`);
+    }
+  }
+
+  const POLL_INTERVAL_MS = 20_000;
+  const deadline = Date.now() + maxWaitMs;
+
+  bump(`CF: Waiting for ${pendingChannels.size} channel job(s) to complete before closing Teams…`);
+
+  let pollRound = 0;
+  let firstPoll = true;
+  while (pendingChannels.size > 0 && Date.now() < deadline) {
+    pollRound++;
+    try {
+      const reports = await getMigrationReports({ combination, migrationStatus: 'All', context });
+      if (firstPoll) {
+        firstPoll = false;
+        if (reports.length > 0) {
+          logger.info(`CF poll: ${reports.length} report(s) — first entry keys: ${JSON.stringify(reports[0]).slice(0, 400)}`);
+        } else {
+          logger.info(`CF poll: 0 reports returned for combination=${combination}`);
+        }
+      }
+
+      const elapsed = Math.round((maxWaitMs - (deadline - Date.now())) / 1000);
+      bump(`CF: Polling CF reports (round ${pollRound}) — ${pendingChannels.size} job(s) still pending… (${elapsed}s elapsed)`);
+
+      for (const job of reports) {
+        const reportJobId   = String(job.id || job._id || job.jobId || '');
+        const reportChannel = String(job.fromRootId || job.channelId || job.fromChannelId || '');
+
+        let matchedChannel = null;
+        if (reportChannel && pendingChannels.has(reportChannel)) {
+          matchedChannel = reportChannel;
+        } else if (reportJobId && jobIdToChannel.has(reportJobId)) {
+          const ch = jobIdToChannel.get(reportJobId);
+          if (pendingChannels.has(ch)) matchedChannel = ch;
+        }
+
+        if (!matchedChannel) continue;
+
+        const rawStatus = job.jobStatus || job.migrationStatus || job.status || '';
+        const st = rawStatus.toLowerCase().replace(/\s+/g, '');
+        const isDone = st.includes('processed') || st.includes('completed') || st.includes('partial');
+        if (!isDone) {
+          bump(`CF: channel ${matchedChannel} job ${reportJobId} — status "${rawStatus}", still processing…`);
+          continue;
+        }
+
+        // Log the FULL CF report so we can see all available fields (teamId, toRootId, etc.)
+        logger.info(`CF: completed report for Slack ch ${matchedChannel}: ${JSON.stringify(job)}`);
+
+        // Capture Teams destination IDs from the CF migration report.
+        // The CF report may contain the Teams team ID and channel ID under various field names.
+        _captureTeamsDestination(matchedChannel, job);
+
+        pendingChannels.delete(matchedChannel);
+        bump(`CF: Channel ${matchedChannel} migration "${rawStatus}" — closing Teams channel now…`);
+        try {
+          const closeData = await closeCreatedTeams(reportJobId, client);
+          // Also capture Teams IDs from the close response (may have different/more fields)
+          _captureTeamsDestination(matchedChannel, closeData);
+          bump(`CF: Teams channel ${matchedChannel} closed — calling Teams completeMigration…`);
+
+          // Call Microsoft Teams completeMigration API to take the channel out of migration
+          // mode. CF's closeCreatedTeams only tells CF's backend the job is done — it does NOT
+          // call the Graph API. Without this, the channel stays in migration mode: visible via
+          // API but messages are unreadable until completeMigration succeeds.
+          const dstEmail = context && context.destinationEmail;
+          if (dstEmail) {
+            const dest = _teamsDestinations.get(matchedChannel);
+            if (dest && dest.teamId) {
+              try {
+                const oc = getOutlookClient();
+                await oc.completeMigrationForTeam(dstEmail, dest.teamId);
+                if (dest.channelId) {
+                  await oc.completeMigrationForChannel(dstEmail, dest.teamId, dest.channelId);
+                  bump(`CF: Teams channel ${matchedChannel} completeMigration done — messages are now readable`);
+                } else {
+                  // No channelId stored — enumerate and complete all channels in the team.
+                  // Stores the first non-General channel (or General) back so validation
+                  // can find it directly via TIER-0 without a name-based search.
+                  const chs = await oc.listTeamChannels(dstEmail, dest.teamId).catch(() => []);
+                  for (const ch of chs) {
+                    await oc.completeMigrationForChannel(dstEmail, dest.teamId, ch.id).catch(() => {});
+                  }
+                  const primary = chs.find((c) => c.displayName.toLowerCase() !== 'general') || chs[0];
+                  if (primary) {
+                    _teamsDestinations.set(matchedChannel, {
+                      ...dest,
+                      channelId:   primary.id,
+                      channelName: primary.displayName,
+                    });
+                  }
+                  bump(`CF: Teams channel ${matchedChannel} completeMigration done for ${chs.length} channel(s) — messages are now readable`);
+                }
+              } catch (completeErr) {
+                bump(`CF: completeMigration for ${matchedChannel}: ${completeErr.message} — validation will retry`);
+              }
+            }
+          }
+
+          _notifyChannelClosed(matchedChannel);
+        } catch (closeErr) {
+          bump(`CF: closeCreatedTeams failed for ${matchedChannel} (job ${reportJobId}): ${closeErr.message}`);
+          _notifyChannelClosed(matchedChannel);
+        }
+      }
+    } catch (pollErr) {
+      bump(`CF: poll error (round ${pollRound}): ${pollErr.message}`);
+    }
+
+    if (pendingChannels.size === 0) break;
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  if (pendingChannels.size > 0) {
+    bump(`CF: ${pendingChannels.size} channel(s) did not complete within ${Math.round(maxWaitMs / 60000)} min — proceeding to validation anyway`);
+    for (const ch of pendingChannels) _notifyChannelClosed(ch);
+  } else {
+    bump(`CF: All channels closed successfully — Teams channels are ready for validation`);
+  }
+}
+
 /**
  * Close completed migration jobs (teams) in CloudFuze.
  * POST /messagemove/close  (configurable via CHAT_MIGRATION_CLOSE_PATH env)
@@ -990,6 +1413,9 @@ module.exports = {
   getCloudDMs,
   getMigrationReports,
   closeChatMigrationJobs,
+  uploadUserMappingCsvToAllPairs,
   clearToken,
   migrationAxiosConfig,
+  waitForChannelsClosed,
+  getTeamsDestination,
 };

@@ -235,8 +235,7 @@ class MessageMigrationAgent extends BaseAgent {
 
     const initiatedCount = results.chatMigrationResults.filter((r) => r.status === 'INITIATED').length;
 
-    // When MAX_POLL_MINUTES === 0, skip destination polling and return immediately.
-    // The user can monitor progress via CloudFuze Reports.
+    // When MAX_POLL_MINUTES === 0, skip all polling and return immediately.
     if (MAX_POLL_MINUTES === 0) {
       results.messagesRead     = seededCount;
       results.messagesMigrated = seededCount;
@@ -248,7 +247,45 @@ class MessageMigrationAgent extends BaseAgent {
       return { ...results, finalStatus: 'COMPLETED' };
     }
 
-    // Step 4: Poll destination until message counts stabilize
+    // Step 4: Wait for CF completion and close Teams channels
+    // For Teams destinations: CF creates channels in "migration mode" (messages hidden until closed).
+    // Polling the destination directly always shows 0 messages — useless. Instead we wait for
+    // the background pollAndCloseTeams (started inside triggerChatMigration) to finish closing.
+    const destPlatform = (context.destinationPlatform || '').toLowerCase();
+    const isTeamsDest = destPlatform === 'teams' || destPlatform === 'microsoft' ||
+                        destPlatform.includes('teams') || destPlatform.includes('microsoft');
+
+    if (isTeamsDest) {
+      const channelIdsToClose = results.chatMigrationResults
+        .filter((r) => r.status === 'INITIATED' && r.kind !== 'dm')
+        .map((r) => r.target);
+
+      if (channelIdsToClose.length > 0) {
+        bump(
+          `MessageMigrationAgent: CF migration running — waiting for ${channelIdsToClose.length} ` +
+          `Teams channel(s) to complete and close (max ${MAX_POLL_MINUTES} min)…`
+        );
+        log.info(
+          `Teams destination: waiting for pollAndCloseTeams to close ${channelIdsToClose.length} ` +
+          `channel(s) (max ${MAX_POLL_MINUTES} min)…`
+        );
+        await migrationClient.waitForChannelsClosed(channelIdsToClose, MAX_POLL_MINUTES * 60 * 1000);
+        bump(`MessageMigrationAgent: Teams channels closed — migrated messages are now visible`);
+        log.info('Teams channels confirmed closed — proceeding to validation');
+      } else {
+        bump(`MessageMigrationAgent: CF migration initiated (DMs only or no channels) — proceeding`);
+      }
+
+      results.messagesRead     = seededCount;
+      results.messagesMigrated = seededCount;
+      results.mode             = 'live';
+      results.note =
+        `CloudFuze chat migration completed for ${initiatedCount} target(s). Teams channels closed.`;
+      bump(`MessageMigrationAgent: finished (COMPLETED)`);
+      return { ...results, finalStatus: 'COMPLETED' };
+    }
+
+    // Non-Teams destination: poll until message counts stabilize
     bump(
       `MessageMigrationAgent: polling destination every ${POLL_INTERVAL_MS / 1000}s ` +
       `(max ${MAX_POLL_MINUTES} min)…`

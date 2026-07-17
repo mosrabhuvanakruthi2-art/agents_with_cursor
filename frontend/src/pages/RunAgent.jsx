@@ -15,6 +15,7 @@ export default function RunAgent() {
   const { run, loading } = useAgentExecution();
   const navigate = useNavigate();
   const [runError, setRunError] = useState(null);
+  const [msgResetToken, setMsgResetToken] = useState(0);
 
   const domainCfg = DOMAINS[wiz.domain] || DOMAINS.mail;
 
@@ -44,7 +45,12 @@ export default function RunAgent() {
           <h1 className="text-2xl font-bold text-gray-900">Run Agent</h1>
           <p className="text-sm text-gray-500 mt-1">Configure and trigger a migration QA flow</p>
         </div>
-        <button type="button" onClick={() => { if (confirm('Reset the wizard?')) wiz.reset(); }}
+        <button type="button" onClick={() => {
+            if (confirm('Reset the wizard?')) {
+              if (wiz.domain === 'message') setMsgResetToken((t) => t + 1);
+              else wiz.reset();
+            }
+          }}
           className="text-xs text-gray-500 hover:text-red-500">Reset</button>
       </div>
 
@@ -65,7 +71,7 @@ export default function RunAgent() {
       </div>
 
       {domainCfg.ownPanel && wiz.domain === 'message' ? (
-        <MessageWizard />
+        <MessageWizard resetToken={msgResetToken} />
       ) : domainCfg.comingSoon ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 flex flex-col items-center justify-center text-center gap-3 h-[calc(100vh-16rem)]">
           <span className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-500 flex items-center justify-center">

@@ -151,6 +151,8 @@ function parseMessagePayload(req) {
     migrationServerEmail,
     migrationServerPassword,
     migrationServerBasicAuth,
+    userMappings,
+    userMappingCsvPath,
   } = req.body;
 
   const normalizeIds = (v) => {
@@ -179,12 +181,13 @@ function parseMessagePayload(req) {
         : [],
       sourceAdminEmail: sourceAdminEmail || null,
       repeatCount: Math.max(1, parseInt(repeatCount, 10) || 1),
-      // CloudFuze migration-server credentials supplied by the user in the wizard
-      // (Migration Server step). The chat client uses these per-request — no hardcoded account.
       migrationServerUrl: (migrationServerUrl || '').trim() || null,
       migrationServerEmail: (migrationServerEmail || '').trim() || null,
       migrationServerPassword: migrationServerPassword || null,
       migrationServerBasicAuth: (migrationServerBasicAuth || '').trim() || null,
+      userMappings: Array.isArray(userMappings) ? userMappings : [],
+      userMappingCsvPath: (typeof userMappingCsvPath === 'string' && userMappingCsvPath.trim())
+        ? userMappingCsvPath.trim() : null,
     },
   };
 }
@@ -659,10 +662,8 @@ async function migrateMessageAgent(req, res) {
 
 /**
  * POST /api/agents/upload-mapping-csv
- * Body: { filename?: string, content: string }   (content = raw CSV text)
- * Saves the CSV to a server temp file and returns the absolute path.
- * The path is then passed back in the CF-browser-migrate payload as userMappingCsvPath
- * so Playwright can upload the exact file to the CloudFuze UI.
+ * Body: { filename?, content, migrationServerUrl?, migrationServerEmail?, migrationServerPassword? }
+ * Saves the CSV to a temp file and uploads it to the CF server if credentials are supplied.
  */
 async function uploadMappingCsv(req, res) {
   try {
@@ -671,13 +672,15 @@ async function uploadMappingCsv(req, res) {
       return res.status(400).json({ error: 'content (CSV text) is required' });
     }
 
+    // Save to temp file so migration-time can re-read it
     const os = require('os');
     const safe = (filename || 'mapping').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
     const filePath = path.join(os.tmpdir(), `cf_user_mapping_${Date.now()}_${safe}`);
     fs.writeFileSync(filePath, content, 'utf8');
+    const rows = content.split('\n').filter(Boolean).length - 1;
+    logger.info(`[uploadMappingCsv] Saved ${rows} row(s) to ${filePath}`);
 
-    logger.info(`[uploadMappingCsv] Saved ${content.split('\n').length - 1} row(s) to ${filePath}`);
-    res.json({ filePath, rows: content.split('\n').filter(Boolean).length - 1 });
+    res.json({ filePath, rows });
   } catch (err) {
     logger.error(`uploadMappingCsv error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -686,25 +689,32 @@ async function uploadMappingCsv(req, res) {
 
 
 async function getMessageTargets(req, res) {
+  // Hard deadline: if the provider API is slow, return an error rather than
+  // leaving the browser stuck on "Fetching channels..." indefinitely.
+  const DEADLINE_MS = 55_000;
+  const deadline = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Channel fetch timed out after 55 s — Slack API may be slow. Retry.')), DEADLINE_MS)
+  );
   try {
     const provider = String(req.query.provider || '').toLowerCase();
     const adminEmail = String(req.query.adminEmail || '').trim();
     if (!provider) return res.status(400).json({ error: 'provider query param is required (slack|microsoft|google)' });
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
+    let out;
     if (provider === 'slack') {
       const slackClient = require('../clients/slackClient');
-      const out = await slackClient.listConversations(adminEmail);
+      out = await Promise.race([slackClient.listConversations(adminEmail), deadline]);
       return res.json({ provider, adminEmail, ...out });
     }
     if (provider === 'microsoft' || provider === 'teams') {
       const outlookClient = require('../clients/outlookClient');
-      const out = await outlookClient.listTeamsTargets(adminEmail);
+      out = await Promise.race([outlookClient.listTeamsTargets(adminEmail), deadline]);
       return res.json({ provider: 'microsoft', adminEmail, ...out });
     }
     if (provider === 'google' || provider === 'chat') {
       const googleChatClient = require('../clients/googleChatClient');
-      const out = await googleChatClient.listSpaces(adminEmail);
+      out = await Promise.race([googleChatClient.listSpaces(adminEmail), deadline]);
       return res.json({ provider: 'google', adminEmail, ...out });
     }
     return res.status(400).json({ error: `Unsupported provider "${provider}". Use slack | microsoft | google.` });

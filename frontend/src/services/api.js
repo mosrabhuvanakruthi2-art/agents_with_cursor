@@ -293,10 +293,12 @@ export const markFeatureImplemented = (featureId) =>
 export function runMessageAgent(payload) { return api.post('/agents/message-run', payload); }
 export function seedMessageAgent(payload) { return api.post('/agents/message-seed', payload); }
 export function migrateMessageAgent(payload) { return api.post('/agents/message-migrate', payload); }
-export function uploadMappingCsv(content, filename) { return api.post('/agents/upload-mapping-csv', { content, filename }); }
+export function uploadMappingCsv(content, filename, serverCreds) {
+  return api.post('/agents/upload-mapping-csv', { content, filename, ...serverCreds });
+}
 export function getMessageTargets(provider, adminEmail) {
   const params = new URLSearchParams({ provider, adminEmail });
-  return api.get(`/agents/message-targets?${params}`);
+  return api.get(`/agents/message-targets?${params}`, { timeout: 60000 });
 }
 export function getMessageUserStatus(emails, platform) {
   const params = new URLSearchParams({ emails: emails.join(','), platform });
