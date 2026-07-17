@@ -321,20 +321,139 @@ function generatePptxBuffer(targetBytes) {
   return buildZip(allFiles);
 }
 
+// ─── OOXML (DOCX / XLSX) generators — valid containers padded to size ────────
+// Build a ZIP of the given OOXML parts, then add one octet-stream padding part so the
+// whole package hits targetBytes while staying a valid, openable document.
+function padZip(baseFiles, targetBytes, padName) {
+  const base = buildZip(baseFiles);
+  const overhead = (30 + padName.length) + (46 + padName.length); // local + central-dir headers
+  const padSize  = Math.max(0, targetBytes - base.length - overhead);
+  return buildZip([...baseFiles, { name: padName, data: Buffer.alloc(padSize, 0x20) }]);
+}
+
+function generateDocxBuffer(targetBytes) {
+  const f = (name, xml) => ({ name, data: Buffer.from(xml.trim(), 'utf8') });
+  const baseFiles = [
+    f('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml"  ContentType="application/xml"/>
+  <Default Extension="bin"  ContentType="application/octet-stream"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`),
+    f('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`),
+    f('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>CloudFuze QA Migration Test</w:t></w:r></w:p>
+    <w:p><w:r><w:t>This Word document was seeded by the QA Agent to validate attachment migration. It contains real, visible text so the migrated copy opens with content instead of a blank page.</w:t></w:r></w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>`),
+  ];
+  return padZip(baseFiles, targetBytes, 'word/media/pad.bin');
+}
+
+function generateXlsxBuffer(targetBytes) {
+  const f = (name, xml) => ({ name, data: Buffer.from(xml.trim(), 'utf8') });
+  const baseFiles = [
+    f('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml"  ContentType="application/xml"/>
+  <Default Extension="bin"  ContentType="application/octet-stream"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`),
+    f('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`),
+    f('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="QA" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`),
+    f('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`),
+    f('xl/worksheets/sheet1.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>CloudFuze QA Migration Test</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>Seeded by the QA agent for attachment migration testing.</t></is></c></row>
+  </sheetData>
+</worksheet>`),
+  ];
+  return padZip(baseFiles, targetBytes, 'xl/media/pad.bin');
+}
+
+// ─── Image generators — valid images padded to size via metadata chunks ──────
+// A real 1×1 PNG / JPEG kept structurally valid, grown to targetBytes with a padding
+// chunk the format tolerates (PNG tEXt / JPEG COM), so the image opens instead of erroring.
+const BASE_PNG_B64  = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const BASE_JPEG_B64 = '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=';
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const typeBuf = Buffer.from(type, 'latin1');
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([len, typeBuf, data, crc]);
+}
+
+function generatePngBuffer(targetBytes) {
+  const base = Buffer.from(BASE_PNG_B64, 'base64');
+  const body = base.slice(0, base.length - 12); // everything before the IEND chunk
+  const iend = base.slice(base.length - 12);    // IEND (len 0 + "IEND" + crc)
+  const keyword = Buffer.from('Comment\0', 'latin1');
+  const chunkOverhead = 12 + keyword.length;    // len+type+crc + keyword
+  const padSize = Math.max(0, targetBytes - base.length - chunkOverhead);
+  const text = Buffer.alloc(padSize, 0x41);
+  return Buffer.concat([body, pngChunk('tEXt', Buffer.concat([keyword, text])), iend]);
+}
+
+function generateJpegBuffer(targetBytes) {
+  const base = Buffer.from(BASE_JPEG_B64, 'base64');
+  const soi  = base.slice(0, 2);   // FFD8
+  const rest = base.slice(2);
+  const segs = [];
+  let need = Math.max(0, targetBytes - base.length);
+  const MAX = 65533; // max data bytes per COM segment (length field is 16-bit, incl. its 2 bytes)
+  while (need > 0) {
+    const dataLen = Math.min(MAX, Math.max(0, need - 4));
+    if (dataLen <= 0) break;
+    const seg = Buffer.alloc(4 + dataLen);
+    seg[0] = 0xFF; seg[1] = 0xFE;           // COM marker
+    seg.writeUInt16BE(dataLen + 2, 2);      // segment length includes the 2 length bytes
+    seg.fill(0x41, 4);
+    segs.push(seg);
+    need -= (4 + dataLen);
+  }
+  return Buffer.concat([soi, ...segs, rest]);
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 /**
- * Returns a Buffer with valid file content matching the target size.
- * @param {string} fileName  e.g. "qa-attachment-26mb.pptx"
- * @param {number} sizeMB    target size in megabytes
+ * Returns a Buffer with VALID, content-bearing file data matching the target size.
+ * Every supported type opens with real content (never a blank/corrupt padded blob).
+ * @param {string} fileName  e.g. "qa-medium-report.pdf"
+ * @param {number} sizeMB    target size in megabytes (may be fractional, e.g. 0.5)
  */
 function generateTestFileBuffer(fileName, sizeMB) {
-  const targetBytes = sizeMB * 1024 * 1024;
+  const targetBytes = Math.round(sizeMB * 1024 * 1024);
   const ext = (fileName.split('.').pop() || '').toLowerCase();
   if (ext === 'pdf')  return generatePdfBuffer(targetBytes);
   if (ext === 'pptx') return generatePptxBuffer(targetBytes);
-  // Generic binary fallback (txt, docx, xlsx, csv, png, etc.)
-  const buf = Buffer.alloc(targetBytes, 0x41);
-  Buffer.from(`CloudFuze QA Migration Test - ${fileName}\n`).copy(buf, 0);
+  if (ext === 'docx') return generateDocxBuffer(targetBytes);
+  if (ext === 'xlsx') return generateXlsxBuffer(targetBytes);
+  if (ext === 'png')  return generatePngBuffer(targetBytes);
+  if (ext === 'jpg' || ext === 'jpeg') return generateJpegBuffer(targetBytes);
+  // Text-ish and generic fallback: real header line + padding (opens as readable text).
+  const buf = Buffer.alloc(targetBytes, 0x20);
+  Buffer.from(`CloudFuze QA Migration Test - ${fileName}\nSeeded by the QA Agent for attachment migration testing.\n`).copy(buf, 0);
   return buf;
 }
 

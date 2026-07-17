@@ -77,7 +77,7 @@ export default function ResultsView({ exec }) {
         <div className="flex items-center gap-4 mb-2">
           <h2 className="text-lg font-semibold text-gray-900">Overall Status</h2>
           <StatusBadge status={validation.overallStatus} />
-          <span className="text-sm text-gray-500">({validation.mismatches?.length || 0} mismatches)</span>
+          <span className="text-sm text-gray-500">({validation.mismatches?.length || 0} failed)</span>
         </div>
         {validation.overallStatus === 'SKIPPED' ? (
           <p className="text-sm text-gray-600">
@@ -87,13 +87,18 @@ export default function ResultsView({ exec }) {
           <p className="text-sm text-green-600">All validations passed — source and destination data match.</p>
         ) : null}
         {validation.overallStatus !== 'SKIPPED' && validation.mismatches?.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {validation.mismatches.map((m, idx) => (
-              <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
-                <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>
-                <span className="text-gray-700">{m.field}: expected <code className="bg-red-100 px-1 rounded">{String(m.expected)}</code>, got <code className="bg-red-100 px-1 rounded">{String(m.actual)}</code></span>
-              </div>
-            ))}
+          <div className="mt-4">
+            <h3 className="text-sm font-semibold text-red-800 mb-2">
+              Key Issues ({validation.mismatches.length} failed)
+            </h3>
+            <div className="space-y-2">
+              {validation.mismatches.map((m, idx) => (
+                <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
+                  <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>
+                  <span className="text-gray-700">{m.field}: expected <code className="bg-red-100 px-1 rounded">{String(m.expected)}</code>, got <code className="bg-red-100 px-1 rounded">{String(m.actual)}</code></span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         {exec.knownLimitationsNote && (

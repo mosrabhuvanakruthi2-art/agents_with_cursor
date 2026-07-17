@@ -310,8 +310,26 @@ function compareTierA(source, dest, opts = {}) {
   return diffs;
 }
 
-function normalizeMailBodyPlain(s) {
+/**
+ * Decode the common HTML entities so a body stored as HTML (Outlook destination) compares equal to
+ * the plain-text source. Outlook stores quotes as &quot;, ampersands as &amp;, etc. — without this,
+ * `"QA-TestLabel"` (source) vs `&quot;QA-TestLabel&quot;` (destination) was flagged as a body
+ * mismatch even though they render identically. Decode &amp; LAST so "&amp;quot;" isn't over-decoded.
+ */
+function decodeHtmlEntities(s) {
   return String(s || '')
+    .replace(/&quot;/gi, '"').replace(/&#0*34;/g, '"')
+    .replace(/&apos;/gi, "'").replace(/&#0*39;/g, "'")
+    .replace(/&nbsp;/gi, ' ').replace(/&#0*160;/g, ' ')
+    .replace(/&lt;/gi, '<').replace(/&#0*60;/g, '<')
+    .replace(/&gt;/gi, '>').replace(/&#0*62;/g, '>')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; } })
+    .replace(/&#(\d+);/g, (_, d) => { try { return String.fromCodePoint(parseInt(d, 10)); } catch { return _; } })
+    .replace(/&amp;/gi, '&').replace(/&#0*38;/g, '&');
+}
+
+function normalizeMailBodyPlain(s) {
+  return decodeHtmlEntities(String(s || ''))
     .replace(/\r\n/g, '\n')
     .replace(/[\t\f\v]+/g, ' ')
     .replace(/ +/g, ' ')
@@ -437,17 +455,30 @@ function parseGmailLabels(labels) {
  *     if `migrateOrphaned` is true → "Archive" else the caller should treat as "not migrated".
  *
  * @param {string[] | string} labels Gmail label names (IDs expanded by caller already).
- * @param {{ migrateOrphaned?: boolean }} [opts]
- * @returns {{ expectedFolder: string | null, reason: string, source: 'system'|'custom'|'starred-only'|'orphan'|'never-migrated' }}
+ * @param {{ migrateOrphaned?: boolean, archiveMailbox?: boolean }} [opts]
+ * @returns {{ expectedFolder: string | null, reason: string, source: 'system'|'custom'|'starred-only'|'orphan'|'never-migrated'|'all-mail' }}
  */
+// Outlook destination folder CloudFuze creates for archived (All-Mail-only) Gmail mail when the
+// "Archive Mailbox" migration option is enabled.
+const GMAIL_ALL_MAIL_FOLDER = '[Gmail]All Mail';
 function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   const list = parseGmailLabels(labels);
   if (list.length === 0) {
+    // Archived, label-less mail (only in Gmail "All Mail"). When the CloudFuze "Archive Mailbox"
+    // option is ON, these migrate to an Outlook custom folder named "[Gmail]All Mail". Otherwise they
+    // fall back to the Migrate-Orphaned-Labels behaviour (Archive, or not migrated).
+    if (opts.archiveMailbox) {
+      return {
+        expectedFolder: GMAIL_ALL_MAIL_FOLDER,
+        reason: `No labels (archived) → Outlook "${GMAIL_ALL_MAIL_FOLDER}" (Archive Mailbox enabled)`,
+        source: 'all-mail',
+      };
+    }
     return {
       expectedFolder: opts.migrateOrphaned ? 'Archive' : null,
       reason: opts.migrateOrphaned
         ? 'No labels → Archive (Migrate Orphaned Labels enabled)'
-        : 'No labels → All Mail only; not migrated unless Migrate Orphaned Labels is enabled',
+        : 'No labels → All Mail only; not migrated unless Archive Mailbox / Migrate Orphaned Labels is enabled',
       source: 'orphan',
     };
   }
@@ -476,10 +507,25 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
     return !GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.has(U) && !isMarker(l) && !isNeverMigrated(l);
   });
 
+  // A Gmail mail with MULTIPLE folder-mapping labels legitimately lands in EACH mapped Outlook folder
+  // (e.g. SENT + ProjectX → the mail exists in BOTH "Sent Items" AND "ProjectX"). Collect every
+  // acceptable folder so the placement check passes when the message is found in ANY of them — not
+  // only the single priority pick. (STARRED/IMPORTANT/UNREAD are flags, not folders → excluded.)
+  const acceptableFolders = [...new Set(
+    list
+      .filter((l) => !isMarker(l) && !isNeverMigrated(l))
+      .map((l) => {
+        const U = String(l || '').toUpperCase();
+        return GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.has(U) ? GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(U) : l;
+      })
+      .filter(Boolean)
+  )];
+
   if (priorityMatch) {
     return {
       expectedFolder: GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch),
-      reason: `Gmail system label ${priorityMatch} ≡ Outlook "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch)}"${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Gmail system label ${priorityMatch} ≡ Outlook "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch)}"${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'system',
     };
   }
@@ -487,7 +533,8 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   if (firstCustom) {
     return {
       expectedFolder: firstCustom,
-      reason: `Custom Gmail label "${firstCustom}" → same-name Outlook folder${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Custom Gmail label "${firstCustom}" → same-name Outlook folder${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'custom',
     };
   }
@@ -495,7 +542,8 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   if (categoryMatch) {
     return {
       expectedFolder: GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase()),
-      reason: `Gmail category ${categoryMatch} → Outlook folder "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase())}"${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Gmail category ${categoryMatch} → Outlook folder "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase())}"${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'system',
     };
   }
@@ -508,11 +556,20 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
     };
   }
 
+  // No primary folder label (archived, only in All Mail). Same rule as the no-labels case above:
+  // "[Gmail]All Mail" when Archive Mailbox is on, else the orphaned-label fallback.
+  if (opts.archiveMailbox) {
+    return {
+      expectedFolder: GMAIL_ALL_MAIL_FOLDER,
+      reason: `No primary folder label (archived) → Outlook "${GMAIL_ALL_MAIL_FOLDER}" (Archive Mailbox enabled)`,
+      source: 'all-mail',
+    };
+  }
   return {
     expectedFolder: opts.migrateOrphaned ? 'Archive' : null,
     reason: opts.migrateOrphaned
       ? 'No primary folder label → Archive (Migrate Orphaned Labels enabled)'
-      : 'No primary folder label and Migrate Orphaned Labels is not enabled — not migrated',
+      : 'No primary folder label and Archive Mailbox / Migrate Orphaned Labels is not enabled — not migrated',
     source: 'orphan',
   };
 }
@@ -565,6 +622,7 @@ function validateGmailToOutlookPlacement(input) {
 
   const rule = expectedOutlookFolderForGmailLabels(gmailLabels, {
     migrateOrphaned: options.migrateOrphaned === true,
+    archiveMailbox: options.archiveMailbox === true,
   });
 
   if (rule.expectedFolder === null && rule.source === 'never-migrated') {
@@ -593,6 +651,11 @@ function validateGmailToOutlookPlacement(input) {
     }
   } else if (rule.expectedFolder) {
     const expected = rule.expectedFolder;
+    // A mail with several folder-mapping labels lands in EACH mapped folder — accept ANY of them.
+    const accept = (rule.acceptableFolders && rule.acceptableFolders.length)
+      ? rule.acceptableFolders
+      : [expected];
+    const matchesAny = destFolderPath && accept.some((f) => normalizedNameEquals(f, destFolderPath));
     if (!destFolderPath) {
       diffs.push({
         field: 'folder',
@@ -603,14 +666,14 @@ function validateGmailToOutlookPlacement(input) {
         displayDestination: `(no folder) — expected "${expected}" per mapping: ${rule.reason}`,
         severity,
       });
-    } else if (!normalizedNameEquals(expected, destFolderPath)) {
+    } else if (!matchesAny) {
       diffs.push({
         field: 'folder',
         ok: false,
-        expected,
+        expected: accept.join(' or '),
         actual: destFolderPath,
         displaySource: parseGmailLabels(gmailLabels).join(' | ') || '(no labels)',
-        displayDestination: `${destFolderPath} — expected "${expected}" per mapping: ${rule.reason}`,
+        displayDestination: `${destFolderPath} — expected one of [${accept.join(', ')}] per mapping: ${rule.reason}`,
         severity,
       });
     }
@@ -933,11 +996,14 @@ function compareReadState(srcIsRead, destIsRead) {
 
 /**
  * Compare Outlook flag state vs Gmail STARRED label (Outlook→Gmail).
- * flagged → expect STARRED; notFlagged/complete → STARRED should not be caused by source flag.
+ * Outlook flags are three-state: notFlagged / flagged / complete. Gmail has only STARRED, so a
+ * mail that was EVER flagged — whether the follow-up is still active ('flagged') or has been marked
+ * done ('complete') — correctly migrates to STARRED. Only 'notFlagged' should be un-starred.
  */
 function compareOutlookFlagToGmailStarred(srcFlagStatus, gmailLabelIds) {
   const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
-  const srcFlagged = String(srcFlagStatus || '').toLowerCase() === 'flagged';
+  const status = String(srcFlagStatus || '').toLowerCase();
+  const srcFlagged = status === 'flagged' || status === 'complete';
   const destStarred = labels.includes('STARRED');
   if (srcFlagged === destStarred) return [];
   if (srcFlagged && !destStarred) {
@@ -1012,6 +1078,25 @@ function compareImportanceOutlookToOutlook(srcImportance, destImportance, severi
   if (s === d) return [];
   return [{
     field: 'importance',
+    ok: false,
+    expected: s,
+    actual: d,
+    displaySource: s,
+    displayDestination: d,
+    severity,
+  }];
+}
+
+/**
+ * Compare sensitivity values (Outlook→Outlook): normal | personal | private | confidential.
+ * Sensitivity is a compliance-relevant property, so a mismatch is an 'error' (real bug) by default.
+ */
+function compareSensitivityOutlookToOutlook(srcSensitivity, destSensitivity, severity = 'error') {
+  const s = String(srcSensitivity || 'normal').toLowerCase();
+  const d = String(destSensitivity || 'normal').toLowerCase();
+  if (s === d) return [];
+  return [{
+    field: 'sensitivity',
     ok: false,
     expected: s,
     actual: d,
@@ -1144,6 +1229,7 @@ module.exports = {
   compareFlagState,
   compareOutlookImportanceToGmailImportant,
   compareImportanceOutlookToOutlook,
+  compareSensitivityOutlookToOutlook,
   compareSentDateTime,
   compareAttachmentSizesWithTolerance,
   buildMailboxSizeValidation,

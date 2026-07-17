@@ -334,8 +334,19 @@ function buildRawMessage({
     message += `${htmlBody}\r\n`;
     message += `--${altBoundary}--\r\n`;
   } else {
+    // Plain-text only: emit an HTML alternative too (as Gmail does for human-composed mail) so the
+    // migration importer preserves paragraph/line breaks. A BARE text/plain part gets converted to
+    // HTML by the importer, which collapses newlines into spaces — multi-paragraph bodies then arrive
+    // in Outlook as a single run. textToSimpleHtml turns each newline into <br> to keep the structure.
+    const autoHtml = textToSimpleHtml(plainBody);
+    message += `Content-Type: multipart/alternative; boundary="${altBoundary}"\r\n\r\n`;
+    message += `--${altBoundary}\r\n`;
     message += `Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
     message += `${plainBody}\r\n`;
+    message += `--${altBoundary}\r\n`;
+    message += `Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`;
+    message += `${autoHtml}\r\n`;
+    message += `--${altBoundary}--\r\n`;
   }
 
   return Buffer.from(message).toString('base64url');
@@ -373,6 +384,44 @@ async function modifyMessageLabels(sourceEmail, userId, messageId, addLabelIds =
     { label: `Gmail modifyMessageLabels (${sourceEmail})` }
   );
   return res.data;
+}
+
+/**
+ * Cap the number of UNREAD messages in the Inbox — Gmail mirror of outlookClient.capInboxUnread.
+ * Keeps the `maxUnread` most-recent unread messages and marks the rest read (removes the UNREAD
+ * label). Only removes UNREAD from excess messages — never adds labels or deletes. Never throws.
+ * Returns { total, unreadBefore, unreadAfter, markedRead }.
+ */
+async function capInboxUnread(email, maxUnread = 12) {
+  const cap = Math.max(0, Number(maxUnread) || 0);
+  const result = { total: 0, unreadBefore: 0, unreadAfter: 0, markedRead: 0 };
+  try {
+    const gmail = getGmailForEmail(email);
+    // Gmail lists newest-first, so the first `cap` are the ones we keep unread.
+    const res = await retryWithBackoff(
+      () => gmail.users.messages.list({ userId: 'me', q: 'in:inbox is:unread', maxResults: 500 }),
+      { label: `Gmail capInboxUnread list (${email})` }
+    );
+    const unread = res.data.messages || [];
+    result.unreadBefore = unread.length;
+    if (unread.length <= cap) {
+      result.unreadAfter = unread.length;
+      return result;
+    }
+    const toMarkRead = unread.slice(cap); // older unread beyond the cap
+    for (const m of toMarkRead) {
+      try {
+        await modifyMessageLabels(email, 'me', m.id, [], ['UNREAD']);
+        result.markedRead++;
+      } catch (e) {
+        logger.warn(`capInboxUnread: mark read ${m.id}: ${e.message}`);
+      }
+    }
+    result.unreadAfter = result.unreadBefore - result.markedRead;
+  } catch (e) {
+    logger.warn(`capInboxUnread(${email}): ${e.message}`);
+  }
+  return result;
 }
 
 async function createLabel(sourceEmail, userId, labelName) {
@@ -637,7 +686,55 @@ async function findMessagesByInternetMessageId(email, internetMessageId) {
     () => gmail.users.messages.list({ userId: 'me', q: `rfc822msgid:${rawId} in:anywhere`, maxResults: 5 }),
     { label: `Gmail findByMID (${email})` }
   );
-  return res.data.messages || [];
+  const candidates = res.data.messages || [];
+  if (candidates.length === 0) return [];
+
+  // Gmail's rfc822msgid: search matches LOOSELY when the Message-ID contains dots/@ — it tokenizes
+  // the value and can return an unrelated message (e.g. another mail in the same thread that shares
+  // the domain token). Verify the actual Message-ID header matches EXACTLY so we never pair the
+  // wrong message. (This is what caused an Inbox thread-opener to pair with the Archive copy.)
+  const target = rawId.toLowerCase();
+  const verified = [];
+  for (const c of candidates) {
+    try {
+      const meta = await retryWithBackoff(
+        () => gmail.users.messages.get({ userId: 'me', id: c.id, format: 'metadata', metadataHeaders: ['Message-ID', 'Message-Id'] }),
+        { label: `Gmail MID verify (${email})` }
+      );
+      const headers = meta.data.payload?.headers || [];
+      const hdr = headers.find((h) => String(h.name).toLowerCase() === 'message-id');
+      const mid = String(hdr?.value || '').replace(/^<+|>+$/g, '').trim().toLowerCase();
+      if (mid && mid === target) verified.push({ id: c.id, threadId: c.threadId });
+    } catch (_) { /* skip candidate we couldn't verify */ }
+  }
+  return verified;
+}
+
+/**
+ * Build a Gmail `subject:"…"` phrase that is safe to search with.
+ *
+ * Two problems this solves, both of which previously made emails report "not found in destination":
+ *  1. Punctuation/operators inside the phrase: Gmail treats ":" (and quotes, etc.) as search
+ *     operators, so a subject like "Long Subject: Migration QA…" broke the phrase and matched
+ *     nothing. We replace every non-alphanumeric char (incl. emoji) with a space — Gmail ignores
+ *     punctuation when tokenizing both the query and the stored subject, so the plain-token phrase
+ *     still matches the real subject.
+ *  2. Very long subjects: truncate on a WORD boundary (slicing mid-word leaves a fragment token
+ *     that matches nothing).
+ */
+function gmailSubjectSearchPhrase(subject) {
+  // Strip punctuation/operators (":", quotes, "-", …) to spaces so they don't break the phrase.
+  const cleaned = String(subject || '').replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  // Prefer the ASCII portion for the query — Gmail phrase-matches ASCII reliably, whereas CJK/emoji
+  // tokenize unpredictably and can break an exact phrase (so a "Unicode Subject: こんにちは 🎉" email
+  // previously matched nothing). Keep the full cleaned phrase only when there isn't enough ASCII to
+  // locate the message. The caller confirms the actual subject on the paired message.
+  const ascii = cleaned.replace(/[^\x20-\x7E]+/g, ' ').replace(/\s+/g, ' ').trim();
+  let s = ascii.replace(/\s/g, '').length >= 6 ? ascii : cleaned;
+  if (s.length <= 100) return s;
+  s = s.slice(0, 100);
+  const lastSpace = s.lastIndexOf(' ');
+  return lastSpace > 40 ? s.slice(0, lastSpace) : s; // end on a whole word when possible
 }
 
 /**
@@ -649,7 +746,7 @@ async function findMessagesBySubjectAndTime(email, subject, anchorMs, windowMinu
   const windowSec = windowMinutes * 60;
   const afterSec = Math.floor(anchorMs / 1000) - windowSec;
   const beforeSec = Math.floor(anchorMs / 1000) + windowSec;
-  const safeSubject = String(subject || '').replace(/"/g, '').slice(0, 100);
+  const safeSubject = gmailSubjectSearchPhrase(subject);
   // in:anywhere includes Trash and Spam — without it, Gmail search skips those folders
   const q = `subject:"${safeSubject}" after:${afterSec} before:${beforeSec} in:anywhere`;
   const res = await retryWithBackoff(
@@ -667,13 +764,77 @@ async function findMessagesBySubjectAndTime(email, subject, anchorMs, windowMinu
  */
 async function findMessagesBySubject(email, subject) {
   const gmail = getGmailForEmail(email);
-  const safeSubject = String(subject || '').replace(/"/g, '').slice(0, 100);
+  const safeSubject = gmailSubjectSearchPhrase(subject);
   const q = `subject:"${safeSubject}" in:anywhere`;
   const res = await retryWithBackoff(
     () => gmail.users.messages.list({ userId: 'me', q, maxResults: 10 }),
     { label: `Gmail findBySubject (${email})` }
   );
   return res.data.messages || [];
+}
+
+/**
+ * ROBUST subject finder — the last line of defence so that ANY source email that exists in the
+ * destination is found, regardless of special characters in its subject.
+ *
+ * Why this exists: Gmail's quoted-phrase search  subject:"…"  mis-parses subjects that contain
+ * operators/punctuation (e.g.  <>&"' : / —  ), returning NOTHING even when the message is present.
+ * That produced false "not found in destination" results (e.g. "QA E2E 15 - Special Chars: <>&"'…").
+ *
+ * Approach that does NOT depend on the fragile phrase parser:
+ *   1. Net candidates using SINGLE-WORD  subject:word  terms (these ARE reliable — only the quoted
+ *      multi-word phrase form breaks on punctuation). Every word is drawn from the target subject,
+ *      so the real message necessarily contains all of them → it is always in the candidate set.
+ *   2. Confirm each candidate by comparing the FULL NORMALIZED subject in-memory (punctuation
+ *      stripped, lowercased) — this is exact and immune to Gmail's tokenisation quirks.
+ *
+ * @returns {Promise<Array<{id, threadId, subject}>>} candidates whose normalized subject matches.
+ */
+function normalizeSubjectForCompare(s) {
+  return String(s || '').replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+async function findMessagesBySubjectScan(email, subject, anchorMs = null, windowMinutes = 0) {
+  const gmail = getGmailForEmail(email);
+  const target = normalizeSubjectForCompare(subject);
+  if (!target) return [];
+
+  const allTokens = target.split(' ').filter(Boolean);
+  // Prefer ASCII words ≥3 chars for the filter (Gmail tokenises CJK/emoji unpredictably); fall back
+  // to shorter/any tokens if there isn't enough ASCII to narrow. Cap at 8 — the true message's
+  // subject contains all its own words, so using more only narrows, never excludes the real match.
+  const asciiTokens = allTokens.filter((t) => t.length >= 3 && /^[\x00-\x7F]+$/.test(t));
+  const useTokens = (asciiTokens.length >= 2 ? asciiTokens : allTokens.filter((t) => t.length >= 2)).slice(0, 8);
+
+  const parts = [];
+  for (const t of useTokens) parts.push(`subject:${t}`);
+  parts.push('in:anywhere'); // include Trash/Spam
+  if (Number.isFinite(anchorMs) && anchorMs > 0 && windowMinutes > 0) {
+    const w = windowMinutes * 60;
+    parts.push(`after:${Math.floor(anchorMs / 1000) - w}`);
+    parts.push(`before:${Math.floor(anchorMs / 1000) + w}`);
+  }
+  if (useTokens.length === 0) return []; // nothing usable to search on
+
+  let candidates = [];
+  try {
+    const res = await retryWithBackoff(
+      () => gmail.users.messages.list({ userId: 'me', q: parts.join(' '), maxResults: 100 }),
+      { label: `Gmail subjectScan (${email})` }
+    );
+    candidates = res.data.messages || [];
+  } catch (_) { return []; }
+
+  const matches = [];
+  for (const c of candidates) {
+    try {
+      const meta = await getMessageMetadata(email, c.id);
+      if (normalizeSubjectForCompare(meta.subject) === target) {
+        matches.push({ id: c.id, threadId: c.threadId, subject: meta.subject });
+      }
+    } catch (_) { /* skip candidate we couldn't read */ }
+  }
+  return matches;
 }
 
 async function listMessageIdsForLabelUpTo(sourceEmail, labelId, maxIds, options = {}) {
@@ -1439,17 +1600,24 @@ async function getGmailFilters(userEmail) {
  * Create a Gmail filter rule using the Settings Filters API.
  *
  * @param {string} userEmail
- * @param {{ from?: string, to?: string, subject?: string, query?: string }} criteria
+ * @param {{ from?: string, to?: string, subject?: string, query?: string, hasAttachment?: boolean, size?: number, sizeComparison?: 'larger'|'smaller' }} criteria
  * @param {{ addLabelIds?: string[], removeLabelIds?: string[], markAsRead?: boolean, neverSpam?: boolean }} action
  * @returns {Promise<object>} The created filter resource.
  */
 async function createGmailFilter(userEmail, criteria, action) {
   const gmail = getGmailForEmail(userEmail);
   const requestBody = { criteria: {}, action: {} };
-  if (criteria.from)    requestBody.criteria.from    = criteria.from;
-  if (criteria.to)      requestBody.criteria.to      = criteria.to;
-  if (criteria.subject) requestBody.criteria.subject = criteria.subject;
-  if (criteria.query)   requestBody.criteria.query   = criteria.query;
+  if (criteria.from)          requestBody.criteria.from          = criteria.from;
+  if (criteria.to)            requestBody.criteria.to            = criteria.to;
+  if (criteria.subject)       requestBody.criteria.subject       = criteria.subject;
+  if (criteria.query)         requestBody.criteria.query         = criteria.query;
+  if (criteria.hasAttachment) requestBody.criteria.hasAttachment = true;
+  // Size-based criteria (e.g. "larger than 10 MB"). size is in bytes; sizeComparison is
+  // 'larger' | 'smaller'. Both must be set together for Gmail to accept the size rule.
+  if (criteria.size != null && criteria.sizeComparison) {
+    requestBody.criteria.size = Number(criteria.size);
+    requestBody.criteria.sizeComparison = criteria.sizeComparison;
+  }
   if (action.addLabelIds?.length)    requestBody.action.addLabelIds    = action.addLabelIds;
   if (action.removeLabelIds?.length) requestBody.action.removeLabelIds = action.removeLabelIds;
   if (action.markAsRead)  requestBody.action.removeLabelIds = [...(requestBody.action.removeLabelIds || []), 'UNREAD'];
@@ -1664,6 +1832,7 @@ module.exports = {
   buildRawMessage,
   insertEmail,
   modifyMessageLabels,
+  capInboxUnread,
   createLabel,
   createDraft,
   listLabels,
@@ -1673,6 +1842,7 @@ module.exports = {
   findMessagesByInternetMessageId,
   findMessagesBySubjectAndTime,
   findMessagesBySubject,
+  findMessagesBySubjectScan,
   getMessageMetadata,
   getMessageFullForValidation,
   getAttachmentData,

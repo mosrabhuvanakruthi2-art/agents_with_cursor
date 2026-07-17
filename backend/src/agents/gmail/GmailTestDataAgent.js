@@ -6,6 +6,7 @@ const calendarClient = require('../../clients/calendarClient');
 const env = require('../../config/env');
 const logger = require('../../utils/logger');
 const executionService = require('../../services/executionService');
+const { generateTestFileBuffer } = require('../../utils/testFileGenerator');
 const XLSX = require('xlsx');
 const {
   tryLoadMailCasesFromExcel,
@@ -18,40 +19,46 @@ const {
  * internal: same-domain users (used for To/CC/BCC and inbound mail)
  * external: cross-domain senders (added to inbound senders for variety)
  */
+// External cross-domain users for Gmail-source test cases (G→O and G→G). These are the ONLY external
+// correspondents/senders used — real accounts so migrated From/To/Cc resolve to genuine addresses.
+const EXTERNAL_TEST_USERS = ['mia@cloudfuze.com', 'sophia@cloudfuze.com'];
+
 const DOMAIN_KNOWN_USERS = {
   'migrationn.com': {
     internal: ['alex@migrationn.com', 'ben@migrationn.com', 'dan@migrationn.com', 'ron@migrationn.com', 'blue1@migrationn.com', 'blue2@migrationn.com', 'blue3@migrationn.com'],
-    external: ['mia@cloudfuze.com', 'sophia@cloudfuze.com', 'oliver@cloudfuze.com'],
+    external: [...EXTERNAL_TEST_USERS],
   },
   'storefuze.com': {
     internal: ['collins-gd@storefuze.com', 'davidgd@storefuze.com', 'rebel-gd@storefuze.com', 'hyma-gd@storefuze.com', 'guru-gd@storefuze.com', 'dev1-gd@storefuze.com', 'dev2-gd@storefuze.com', 'presales1-gd@storefuze.com', 'presales2-gd@storefuze.com'],
-    external: ['mia@cloudfuze.com', 'sophia@cloudfuze.com', 'oliver@cloudfuze.com'],
+    external: [...EXTERNAL_TEST_USERS],
   },
 };
 
 /**
  * Generic fallback when no domain map and no Admin SDK / GOOGLE_ACCOUNTS users are available.
+ * Only the two external test users (mia, sophia) are used — cycled to cover callers that index up
+ * to [4] (the Archive-section inbound seeds) so no slot is ever undefined.
  */
-const FALLBACK_EXTERNAL_CORRESPONDENTS = [
-  'mia@cloudfuze.com',
-  'sophia@cloudfuze.com',
-  'oliver@cloudfuze.com',
-];
+const FALLBACK_EXTERNAL_CORRESPONDENTS = Array.from(
+  { length: 5 },
+  (_, i) => EXTERNAL_TEST_USERS[i % EXTERNAL_TEST_USERS.length]
+);
 
 const SAMPLE_ATTACHMENT_DATA = Buffer.from('Sample attachment content for QA testing').toString('base64');
 const SAMPLE_ATTACHMENT_SECOND = Buffer.from('Second file for multi-attachment E2E').toString('base64');
-/** Minimal valid PDF (one empty page) for attachment-type migration checks */
-const SAMPLE_MINIMAL_PDF_B64 = Buffer.from(
-  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 200 200]/Parent 2 0 R>>endobj\nxref\n0 4\ntrailer<</Root 1 0 R/Size 4>>\nstartxref\n178\n%%EOF'
-).toString('base64');
+/** Minimal valid PDF (556 bytes) — correct xref offsets, renders one page with visible text
+ *  ("QA Migration Test PDF"). A real document so opened attachments are not blank. */
+const SAMPLE_MINIMAL_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+ID4+ID4+ID4+CmVuZG9iago0IDAgb2JqCjw8IC9MZW5ndGggNTMgPj4Kc3RyZWFtCkJUIC9GMSAxMiBUZiAxMDAgNzAwIFRkIChRQSBNaWdyYXRpb24gVGVzdCBQREYpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDUKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjkwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNSAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKMzkzCiUlRU9GCg==';
 /** ~1KB — small binary attachment tier */
 const SAMPLE_1K_B64 = Buffer.alloc(1024, 77).toString('base64');
 /** ~64KB — mid-size attachment (PDF “large” smoke) */
 const SAMPLE_LARGE_B64 = Buffer.alloc(64 * 1024, 120).toString('base64');
 /** ~100KB */
 const SAMPLE_100K_B64 = Buffer.alloc(100 * 1024, 55).toString('base64');
-/** ~512KB — large attachment stress without approaching provider limits */
+/** ~512KB — large attachment stress without approaching provider limits (raw binary; use only for .bin) */
 const SAMPLE_512K_B64 = Buffer.alloc(512 * 1024, 99).toString('base64');
+/** ~512KB VALID PDF with real page text — for .pdf medium tiers (opens with content, not a blank blob). */
+const SAMPLE_512K_PDF_B64 = generateTestFileBuffer('qa-attachment-512kb.pdf', 0.5).toString('base64');
 /** Minimal valid JPEG (1×1 px) — image/jpeg attachment migration */
 const SAMPLE_JPEG_B64 =
   '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=';
@@ -71,10 +78,44 @@ const SAMPLE_CSV_B64 = Buffer.from(
 const SAMPLE_ICS_B64 = Buffer.from(
   'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//CloudFuze QA//EN\r\nBEGIN:VEVENT\r\nUID:qa-ics-event-001@cloudfuze.qa\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:20260601T090000Z\r\nDTEND:20260601T100000Z\r\nSUMMARY:QA Test Meeting\r\nDESCRIPTION:ICS attachment seeded by QA agent for migration testing.\r\nORGANIZER:mailto:qa-agent@cloudfuze.qa\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n'
 ).toString('base64');
-/** Minimal DOCX stub — application/vnd.openxmlformats-officedocument.wordprocessingml.document */
-const SAMPLE_DOCX_B64 = Buffer.alloc(4 * 1024, 100).toString('base64');
-/** Minimal XLSX stub — application/vnd.openxmlformats-officedocument.spreadsheetml.sheet */
-const SAMPLE_XLSX_B64 = Buffer.alloc(4 * 1024, 101).toString('base64');
+/** Minimal valid DOCX (~1 KB) — proper ZIP/OpenXML container, opens in Word with real content
+ *  (not a filler-byte stub, so migrated .docx attachments are openable). */
+const SAMPLE_DOCX_B64 = 'UEsDBBQAAAAIAIkMtFx5bjPX6AAAAK0BAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH1QyU7DMBD9FWuuKHHggBCK0wPLETiUDxjZk8SqN3nc0v49Tlt6QIXjzFv1+tXeO7GjzDYGBbdtB4KCjsaGScHn+rV5AMEFg0EXAyk4EMNq6NeHRCyqNrCCuZT0KCXrmTxyGxOFiowxeyz1zJNMqDc4kbzrunupYygUSlMWDxj6Zxpx64p42df3qUcmxyCeTsQlSwGm5KzGUnG5C+ZXSnNOaKvyyOHZJr6pBJBXExbk74Cz7r0Ok60h8YG5vKGvLPkVs5Em6q2vyvZ/mys94zhaTRf94pZy1MRcF/euvSAebfjpL49zD99QSwMEFAAAAAgAiQy0XJv9N+qtAAAAKQEAAAsAAABfcmVscy8ucmVsc43POw7CMAwG4KtE3mlaBoRQ0y4IqSsqB7ASN61oHkrCo7cnAwNFDIy2f3+W6/ZpZnanECdnBVRFCYysdGqyWsClP232wGJCq3B2lgQsFKFt6jPNmPJKHCcfWTZsFDCm5A+cRzmSwVg4TzZPBhcMplwGzT3KK2ri27Lc8fBpwNpknRIQOlUB6xdP/9huGCZJRydvhmz6ceIrkWUMmpKAhwuKq3e7yCzwpuarF5sXUEsDBBQAAAAIAIkMtFzp+cGTewAAAJsAAAAcAAAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1XMQQ4CIQyF4auQ7h3QhTEGmJ0HMHqAZqYCkSmEEqO3l6UuX/68z87vLasXNUmFHewnA4p4KWvi4OB+u+xOoKQjr5gLk4MPCczeXiljHxeJqYoaBouD2Hs9ay1LpA1lKpV4lEdpG/YxW9AVlycG0gdjjrr9GuCt/kP9F1BLAwQUAAAACACJDLRc0tYU0fMAAACWAQAAEQAAAHdvcmQvZG9jdW1lbnQueG1sbZDdSsQwEIVfJeTepuuFSGl3kRXvRIUK3o5p2gaaTMiMrfv2JvEPViGcTDLMN2emPby7RawmkkXfyV1VS2G8xsH6qZPP/d3FtRTE4AdY0JtOngzJw77dmgH1mzOeRQJ4aragOzkzh0Yp0rNxQJWzOiLhyJVGp3AcrTZqwzioy3pXlyhE1IYodTuCX4HkN+4PDIPxKTdidMDpGaczgFsStr5SDqyX2eErDqd8hywxC++fbsS9nSJwGlf0hljcfs3RqpzPGouG89J+tiTSAcGl7uH4IoAZ9FzWkIwJ94NeYbFDCat/wWQ0P0ZVPj59qt+V7j8AUEsBAhQAFAAAAAgAiQy0XHluM9foAAAArQEAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAAUAAAACACJDLRcm/036q0AAAApAQAACwAAAAAAAAAAAAAAgAEZAQAAX3JlbHMvLnJlbHNQSwECFAAUAAAACACJDLRc6fnBk3sAAACbAAAAHAAAAAAAAAAAAAAAgAHvAQAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1BLAQIUABQAAAAIAIkMtFzS1hTR8wAAAJYBAAARAAAAAAAAAAAAAACAAaQCAAB3b3JkL2RvY3VtZW50LnhtbFBLBQYAAAAABAAEAAMBAADGAwAAAAA=';
+// ── Minimal store-only ZIP builder (for building a real, openable XLSX) ──────────
+const _CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function _crc32(buf) { let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = _CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function _zipStore(files) {
+  const local = [], central = []; let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name, 'utf8'); const data = Buffer.from(f.data, 'utf8'); const crc = _crc32(data);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26);
+    local.push(lh, name, data);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt32LE(crc, 16);
+    ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(name.length, 28); ch.writeUInt32LE(offset, 42);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, cd, eocd]);
+}
+/** Minimal valid XLSX — real OpenXML spreadsheet with visible cell text (opens in Excel). */
+const SAMPLE_XLSX_B64 = _zipStore([
+  { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>' },
+  { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+  { name: 'xl/workbook.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="QA" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+  { name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+  { name: 'xl/worksheets/sheet1.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>CloudFuze QA Migration Test</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>This spreadsheet was seeded by the QA agent for attachment migration testing.</t></is></c></row></sheetData></worksheet>' },
+]).toString('base64');
 
 function requestedTrashOrSpam(labelIds) {
   return (labelIds || []).some((id) => ['TRASH', 'SPAM'].includes(String(id).toUpperCase()));
@@ -161,12 +202,19 @@ async function reconcileInsertedMessageLabels(sourceEmail, emailDef, messageId, 
   }
 
   if (emailDef.mailDirection === 'incoming') {
+    // Gmail's messages.insert auto-adds INBOX. Only keep it when the test EXPLICITLY asked for INBOX
+    // (a true Inbox mail). A mail filed under a custom label (or otherwise not requesting INBOX) must
+    // NOT also sit in Inbox — in Gmail a "filed"/archived mail has INBOX removed and lives under its
+    // label + All Mail only. Keeping the auto-added INBOX made labeled mails appear in Inbox too and,
+    // on migration, land in the wrong folder / get duplicated.
+    const wantsInbox = (emailDef.labelIds || []).some((l) => String(l).toUpperCase() === 'INBOX');
+    const toRemove = wantsInbox ? ['SENT'] : ['SENT', 'INBOX'];
     try {
-      await gmailClient.modifyMessageLabels(sourceEmail, 'me', messageId, [], ['SENT']);
+      await gmailClient.modifyMessageLabels(sourceEmail, 'me', messageId, [], toRemove);
     } catch (e) {
-      // "Invalid label: SENT" means the message never had SENT attached — safe to ignore
+      // "Invalid label: SENT/INBOX" means it was never attached — safe to ignore
       if (!e.message?.includes('Invalid label')) {
-        log.warn(`Gmail seed: could not remove SENT from inbound message ${messageId}: ${e.message}`);
+        log.warn(`Gmail seed: could not reconcile labels (${toRemove.join(',')}) on inbound message ${messageId}: ${e.message}`);
       }
     }
     return;
@@ -432,6 +480,7 @@ const E2E_LABEL_NAMES = [
   'QA-Filter-Subject-Keyword',
   'QA-Filter-Has-Attachment',
   'QA-Filter-Combined',
+  'QA-Filter-Size',
   /** Custom folder equivalents — mirrors OutlookTestDataAgent §11, §20, §25, §31 */
   'QA-Migration-Folder',
   'QA-Work-Projects',
@@ -640,7 +689,7 @@ class GmailTestDataAgent extends BaseAgent {
       }
       // 5. Filters/rules (G→O and G→G inscope) — seed Gmail filter rules for E2E only.
       if (!executionService.isCancelled(context.executionId) && testType === 'E2E') {
-        await this._seedGmailFilters(sourceEmail, log);
+        await this._seedGmailFilters(sourceEmail, log, { inboundSenders: effectiveInboundSenders });
       }
       // 1. All Mail (Gmail Only) — no explicit seeding needed. Every message in any label
       //    automatically appears in All Mail. Validation agent will confirm this during post-migration checks.
@@ -681,11 +730,19 @@ class GmailTestDataAgent extends BaseAgent {
   async _createLabels(sourceEmail, testType, summary, log) {
     const labels = testType === 'SANITY' ? SANITY_LABEL_NAMES : E2E_LABEL_NAMES;
 
+    const intervalMs = env.FOLDER_CREATE_INTERVAL_MS;
     for (const labelName of labels) {
       try {
         await gmailClient.createLabel(sourceEmail, 'me', labelName);
         summary.labelsCreated++;
         log.info(`Created label: ${labelName}`);
+        // Space out nested/sub-label creation so sibling folders get distinct, increasing
+        // creation timestamps — the destination then preserves their order (matches manual
+        // creation with natural gaps). Only nested labels (with '/') need the interval.
+        if (intervalMs > 0 && labelName.includes('/')) {
+          log.info(`Waiting ${Math.round(intervalMs / 1000)}s before next nested label (preserve folder order)…`);
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
       } catch (err) {
         if (err.message?.includes('already exists') || err.message?.includes('conflicts')) {
           log.info(`Label already exists: ${labelName}`);
@@ -1832,7 +1889,7 @@ class GmailTestDataAgent extends BaseAgent {
     // ── §110 — Per-folder medium attachments (512KB, varied types) ────────────
     log.info('Gmail E2E §110: per-folder medium attachments…');
     const folderAttachScenarios = [
-      { label: 'INBOX',  subject: 'QA E2E 110 - Inbox Medium Attachment (512KB PDF)',   filename: 'qa-attachment-512kb.pdf',  mime: 'application/pdf',                                                              data: SAMPLE_512K_B64, dir: 'incoming' },
+      { label: 'INBOX',  subject: 'QA E2E 110 - Inbox Medium Attachment (512KB PDF)',   filename: 'qa-attachment-512kb.pdf',  mime: 'application/pdf',                                                              data: SAMPLE_512K_PDF_B64, dir: 'incoming' },
       { label: 'SENT',   subject: 'QA E2E 110 - Sent Items Medium Attachment (512KB DOCX)', filename: 'qa-attachment-512kb.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: SAMPLE_DOCX_B64,  dir: 'outgoing' },
       { label: 'DRAFT',  subject: 'QA E2E 110 - Drafts Medium Attachment (512KB)',      filename: 'qa-attachment-512kb.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',         data: SAMPLE_XLSX_B64, dir: 'draft'    },
       { label: 'SPAM',   subject: 'QA E2E 110 - Spam Attachment (512KB JPG)',            filename: 'qa-attachment-512kb.jpg',  mime: 'image/jpeg',                                                                 data: SAMPLE_JPEG_B64, dir: 'incoming' },
@@ -1889,7 +1946,7 @@ class GmailTestDataAgent extends BaseAgent {
     const richAttachments = [
       { filename: 'qa-attach-1kb.txt',  mimeType: 'text/plain',       data: SAMPLE_1K_B64  },
       { filename: 'qa-attach-100kb.bin',mimeType: 'application/octet-stream', data: SAMPLE_100K_B64 },
-      { filename: 'qa-attach-512kb.pdf',mimeType: 'application/pdf',  data: SAMPLE_512K_B64 },
+      { filename: 'qa-attach-512kb.pdf',mimeType: 'application/pdf',  data: SAMPLE_512K_PDF_B64 },
       { filename: 'qa-attach.docx',     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: SAMPLE_DOCX_B64 },
       { filename: 'qa-attach.xlsx',     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',       data: SAMPLE_XLSX_B64 },
     ];
@@ -1925,11 +1982,15 @@ class GmailTestDataAgent extends BaseAgent {
       const threadMessages = [
         { from: sourceEmail, to: toEmail,     label: 'SENT',  body: 'Thread root — message 1 of 10.' },
         { from: toEmail,     to: sourceEmail, label: 'INBOX', body: 'Reply — message 2 of 10.', dir: 'incoming' },
-        { from: sourceEmail, to: ccEmail,     label: 'SENT',  body: 'Reply with CC — message 3 of 10.' },
+        { from: sourceEmail, to: ccEmail,     label: 'SENT',  body: 'Reply with CC — message 3 of 10. See attached notes.', attachments: [{ filename: 'qa-thread-notes.txt', mimeType: 'text/plain', data: SAMPLE_1K_B64 }] },
         { from: ccEmail,     to: sourceEmail, label: 'INBOX', body: 'CC reply — message 4 of 10.', dir: 'incoming' },
         { from: sourceEmail, to: toEmail,     label: 'SENT',  body: 'Forward — message 5 of 10.', subject: `Fwd: ${threadSubject}` },
         { from: toEmail,     to: sourceEmail, label: 'INBOX', body: 'Reply to forward — message 6 of 10.', dir: 'incoming' },
-        { from: sourceEmail, to: toEmail,     label: 'SENT',  body: 'Message 7 with attachment.', attachments: [{ filename: 'thread-att.txt', mimeType: 'text/plain', data: SAMPLE_1K_B64 }] },
+        { from: sourceEmail, to: toEmail,     label: 'SENT',  body: 'Message 7 — kick-off agenda + review docs attached (3 files).', attachments: [
+          { filename: 'qa-kickoff-agenda.txt', mimeType: 'text/plain', data: SAMPLE_1K_B64 },
+          { filename: 'qa-kickoff-review.pdf', mimeType: 'application/pdf', data: SAMPLE_MINIMAL_PDF_B64 },
+          { filename: 'qa-kickoff-checklist.csv', mimeType: 'text/csv', data: SAMPLE_CSV_B64 },
+        ] },
         { from: toEmail,     to: sourceEmail, label: 'INBOX', body: 'Reply to attachment — message 8.', dir: 'incoming' },
         { from: sourceEmail, to: toEmail,     label: 'SENT',  body: 'Near-final message 9 of 10.' },
         { from: toEmail,     to: sourceEmail, label: 'INBOX', body: 'Final reply — message 10 of 10.', dir: 'incoming' },
@@ -2026,6 +2087,24 @@ class GmailTestDataAgent extends BaseAgent {
       labelIds: ['SENT'],
     });
     log.info('✓ §116 complete — 1 HTML signature email');
+
+    if (cancelled()) return;
+
+    // ── §117 — Duplicate-subject test case (Sent) ────────────────────────────
+    // Every seeded mail has a UNIQUE subject so subject-based pairing stays unambiguous.
+    // This is the ONE deliberate exception: two Sent mails sharing an identical subject,
+    // so validation can confirm the allowed same-subject pair (and flag any others).
+    log.info('Gmail E2E §117: duplicate-subject Sent pair…');
+    for (let i = 1; i <= 2; i++) {
+      await insert({
+        subject: 'QA E2E - Duplicate Subject (Sent Pair)',
+        textBody: `Sent copy ${i} of a deliberately duplicated subject — validates the allowed `
+          + 'same-subject pair in Sent (all other mails must have unique subjects).',
+        labelIds: ['SENT'],
+        to: toEmail,
+      });
+    }
+    log.info('✓ §117 complete — duplicate-subject Sent pair');
 
     if (cancelled()) return;
 
@@ -2179,6 +2258,21 @@ class GmailTestDataAgent extends BaseAgent {
     } catch (err) { log.warn(`Short thread chain failed: ${err.message}`); }
 
     log.info('Gmail E2E extended scenarios complete');
+
+    // Cap Inbox unread count — seeding marks many incoming mails unread; keep only a realistic few.
+    // Mirrors the Outlook agent; reuses the same OUTLOOK_INBOX_MAX_UNREAD setting (mail-wide cap).
+    try {
+      const cap = env.OUTLOOK_INBOX_MAX_UNREAD;
+      const capResult = await gmailClient.capInboxUnread(sourceEmail, cap);
+      if (capResult.markedRead > 0) {
+        log.info(
+          `Inbox unread capped to ${cap}: ${capResult.unreadBefore} → ${capResult.unreadAfter} unread ` +
+          `(${capResult.markedRead} marked read)`
+        );
+      }
+    } catch (capErr) {
+      log.warn(`Inbox unread cap failed (non-fatal): ${capErr.message}`);
+    }
   }
 
   async _createDrafts(sourceEmail, toEmail, ccEmail, testType, summary, log, executionId) {
@@ -2272,7 +2366,7 @@ class GmailTestDataAgent extends BaseAgent {
    * when a real email arrives. This mirrors OutlookTestDataAgent §24/§41/§43
    * inbox-rule test data.
    */
-  async _seedGmailFilters(sourceEmail, log) {
+  async _seedGmailFilters(sourceEmail, log, opts = {}) {
     // Resolve label names → IDs
     let labelMap = {};
     try {
@@ -2284,19 +2378,34 @@ class GmailTestDataAgent extends BaseAgent {
 
     const getId = (name) => labelMap[name] || null;
 
+    // Rules key on REAL users from this run's resolved correspondents (internal like ben@…, or the
+    // external test users mia/sophia), NOT fake placeholder addresses. A "from:<user>" rule routes
+    // mail from that real user into its label (skip Inbox); normal mail from non-ruled users still
+    // lands in Inbox (seeded separately). Exclude the source itself so mail is never self-addressed.
+    const realSenders = (opts.inboundSenders || [])
+      .filter((e) => e && String(e).toLowerCase() !== String(sourceEmail).toLowerCase());
+    const pickSender = (i) => (realSenders.length
+      ? realSenders[i % realSenders.length]
+      : FALLBACK_EXTERNAL_CORRESPONDENTS[i % FALLBACK_EXTERNAL_CORRESPONDENTS.length]);
+    const senderFrom     = pickSender(0);   // e.g. ben@migrationn.com
+    const senderAttach   = pickSender(1);   // another real user
+    const senderCombined = pickSender(2);   // another real user
+    const senderSize     = pickSender(3);   // another real user (size rule)
+    log.info(`Gmail filter seed: rule senders — from:${senderFrom}, attach:${senderAttach}, combined:${senderCombined}, size:${senderSize}`);
+
     // ── Filter definitions ────────────────────────────────────────────────────
-    // Each filter: criteria → action (add label + skip inbox) + matching test emails
+    // Each filter: criteria (real user / subject) → action (add label + skip inbox) + matching mail.
     const filters = [
       {
-        description: 'Filter 1: From qa-filter-sender@external-qa.com → QA-Filter-From-Sender (skip Inbox)',
-        criteria: { from: 'qa-filter-sender@external-qa.com' },
+        description: `Filter 1: From ${senderFrom} → QA-Filter-From-Sender (skip Inbox)`,
+        criteria: { from: senderFrom },
         targetLabel: 'QA-Filter-From-Sender',
         skipInbox: true,
         markAsRead: false,
         testEmails: [
-          { subject: 'QA Gmail Filter - From Sender Rule #1',         body: 'Filter test: email from qa-filter-sender@external-qa.com — should land in QA-Filter-From-Sender, not Inbox.' },
-          { subject: 'QA Gmail Filter - From Sender Rule #2 (HTML)',  body: 'Filter test 2 from qa-filter-sender@external-qa.com — HTML email routed by filter rule.', html: true },
-          { subject: 'QA Gmail Filter - From Sender Rule #3 + Attach',body: 'Filter test 3 from qa-filter-sender@external-qa.com — with attachment.', attach: true },
+          { subject: 'QA Gmail Filter - From Sender Rule #1',         body: `Filter test: email from ${senderFrom} — routed by rule to QA-Filter-From-Sender, not Inbox.` },
+          { subject: 'QA Gmail Filter - From Sender Rule #2 (HTML)',  body: `Filter test 2 from ${senderFrom} — HTML email routed by from-sender rule.`, html: true },
+          { subject: 'QA Gmail Filter - From Sender Rule #3 + Attach',body: `Filter test 3 from ${senderFrom} — with attachment, routed by from-sender rule.`, attach: true },
         ],
       },
       {
@@ -2306,30 +2415,40 @@ class GmailTestDataAgent extends BaseAgent {
         skipInbox: true,
         markAsRead: true,
         testEmails: [
-          { subject: '[QA-Filter-Test] Subject Keyword Rule #1',      body: 'Filter test: subject keyword [QA-Filter-Test] — should land in QA-Filter-Subject-Keyword, marked as read.' },
+          { subject: '[QA-Filter-Test] Subject Keyword Rule #1',      body: 'Filter test: subject keyword [QA-Filter-Test] — routed to QA-Filter-Subject-Keyword, marked as read.' },
           { subject: '[QA-Filter-Test] Subject Keyword Rule #2',      body: 'Filter test 2: another email matching subject keyword filter.' },
         ],
       },
       {
-        description: 'Filter 3: Has attachment → QA-Filter-Has-Attachment (skip Inbox)',
-        criteria: { hasAttachment: true, from: 'qa-filter-attach@external-qa.com' },
+        description: `Filter 3: From ${senderAttach} + has attachment → QA-Filter-Has-Attachment (skip Inbox)`,
+        criteria: { hasAttachment: true, from: senderAttach },
         targetLabel: 'QA-Filter-Has-Attachment',
         skipInbox: true,
         markAsRead: false,
         testEmails: [
-          { subject: 'QA Gmail Filter - Has Attachment Rule #1',      body: 'Filter test: email with attachment — should go to QA-Filter-Has-Attachment.', attach: true },
-          { subject: 'QA Gmail Filter - Has Attachment Rule #2 DOCX', body: 'Filter test 2: DOCX attachment filtered to custom label.', attachDocx: true },
+          { subject: 'QA Gmail Filter - Has Attachment Rule #1',      body: `Filter test: email from ${senderAttach} with attachment — routed to QA-Filter-Has-Attachment.`, attach: true },
+          { subject: 'QA Gmail Filter - Has Attachment Rule #2 DOCX', body: `Filter test 2 from ${senderAttach}: DOCX attachment routed to custom label.`, attachDocx: true },
         ],
       },
       {
-        description: 'Filter 4: Combined (from + subject) → QA-Filter-Combined (skip Inbox)',
-        criteria: { from: 'qa-filter-combined@external-qa.com', subject: '[QA-Combined]' },
+        description: `Filter 4: Combined (from ${senderCombined} + subject [QA-Combined]) → QA-Filter-Combined (skip Inbox)`,
+        criteria: { from: senderCombined, subject: '[QA-Combined]' },
         targetLabel: 'QA-Filter-Combined',
         skipInbox: true,
         markAsRead: false,
         testEmails: [
-          { subject: '[QA-Combined] Combined Filter Rule #1',         body: 'Combined filter: from qa-filter-combined@external-qa.com + subject [QA-Combined] — routed to QA-Filter-Combined.' },
-          { subject: '[QA-Combined] Combined Filter Rule #2 + Attach',body: 'Combined filter test 2 with attachment.', attach: true },
+          { subject: '[QA-Combined] Combined Filter Rule #1',         body: `Combined filter: from ${senderCombined} + subject [QA-Combined] — routed to QA-Filter-Combined.` },
+          { subject: '[QA-Combined] Combined Filter Rule #2 + Attach',body: `Combined filter test 2 from ${senderCombined} with attachment.`, attach: true },
+        ],
+      },
+      {
+        description: `Filter 5: From ${senderSize} + has attachment larger than 10 MB → QA-Filter-Size (skip Inbox)`,
+        criteria: { from: senderSize, hasAttachment: true, size: 10 * 1024 * 1024, sizeComparison: 'larger' },
+        targetLabel: 'QA-Filter-Size',
+        skipInbox: true,
+        markAsRead: false,
+        testEmails: [
+          { subject: 'QA Gmail Filter - Size Rule #1 (>10MB attachment)', body: `Filter test: email from ${senderSize} with a large attachment — matches the size rule (larger than 10 MB), routed to QA-Filter-Size.`, attachLarge: true },
         ],
       },
     ];
@@ -2371,6 +2490,11 @@ class GmailTestDataAgent extends BaseAgent {
             ? [{ filename: 'filter-test.pdf', mimeType: 'application/pdf', data: SAMPLE_MINIMAL_PDF_B64 }]
             : em.attachDocx
             ? [{ filename: 'filter-test.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: SAMPLE_DOCX_B64 }]
+            : em.attachLarge
+            // Sizable real attachment for the size-rule test. Kept at 2 MB so messages.insert (simple
+            // upload) succeeds; the mail is inserted straight into the label, so placement validates
+            // regardless — the size RULE itself carries the real "larger than 10 MB" criteria.
+            ? [{ filename: 'filter-large-attachment.bin', mimeType: 'application/octet-stream', data: SAMPLE_2M_B64 }]
             : undefined;
 
           const senderEmail = f.criteria.from || FALLBACK_EXTERNAL_CORRESPONDENTS[0];
@@ -2657,6 +2781,48 @@ class GmailTestDataAgent extends BaseAgent {
           }
         } catch (err) {
           log.warn(`Recurring exception patch failed (non-fatal): ${err.message}`);
+        }
+      }
+
+      // ── Calendar invitation email (DELTA inscope) ─────────────────────────────
+      // Create an event WITH guest(s) + a Google Meet link and sendUpdates:'all' so Google actually
+      // EMAILS the invitation (carrying invite.ics) to the guests — mirroring a real Calendar invite.
+      // Runs only in DELTA (this whole method is gated on context.includeCalendar === DELTA-only).
+      // Falls back to a no-Meet invite if conference (Meet) creation is not permitted on the account.
+      if (attendeeEmail && attendeeEmail.toLowerCase() !== String(sourceEmail).toLowerCase()) {
+        const invStart = new Date(now + 259200000); // +3 days
+        const invEnd   = new Date(now + 262800000); // +1h
+        const invEvent = {
+          summary: 'QA Delta - Calendar Invitation (Meet + Guests)',
+          description: 'E2E DELTA test: calendar invitation with a Google Meet link and guest(s). '
+            + 'Created with sendUpdates=all so Google sends the invitation email (with invite.ics) to the guest(s).',
+          location: 'Google Meet',
+          start: { dateTime: invStart.toISOString(), timeZone: 'UTC' },
+          end:   { dateTime: invEnd.toISOString(),   timeZone: 'UTC' },
+          attendees: [{ email: attendeeEmail }],
+          reminders: { useDefault: true },
+          conferenceData: {
+            createRequest: {
+              requestId: `qa-meet-${now}`,
+              conferenceSolutionKey: { type: 'hangoutsMeet' },
+            },
+          },
+        };
+        try {
+          await calendarClient.createEvent(sourceEmail, 'primary', invEvent, { sendUpdates: 'all', conferenceDataVersion: 1 });
+          summary.eventsCreated++;
+          log.info(`Created calendar invitation (Meet + guest ${attendeeEmail}) — invitation email triggered`);
+        } catch (meetErr) {
+          log.warn(`Calendar invitation with Meet failed (${meetErr.message}) — retrying without Meet`);
+          const noMeet = { ...invEvent };
+          delete noMeet.conferenceData;
+          try {
+            await calendarClient.createEvent(sourceEmail, 'primary', noMeet, { sendUpdates: 'all' });
+            summary.eventsCreated++;
+            log.info(`Created calendar invitation (guest ${attendeeEmail}, no Meet) — invitation email triggered`);
+          } catch (invErr) {
+            log.error(`Failed to create calendar invitation event: ${invErr.message}`);
+          }
         }
       }
     } catch (err) {

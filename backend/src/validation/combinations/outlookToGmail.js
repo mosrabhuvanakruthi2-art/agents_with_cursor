@@ -46,7 +46,66 @@ const {
   validateOutlookToGmailThreadChains,
   validateOutlookToOutlookThreadChains,
   tierBHashesGmailToGmail,
+  validateMailOrderByTimestamp,
 } = require('../shared/deepMailCore');
+
+// When several destination messages share the same normalized subject — the classic thread-chain
+// case where CloudFuze did not preserve internetMessageId — matching by subject (+RE: prefix) alone
+// can pair the WRONG copy (e.g. an Inbox thread-opener with its Archive copy). Disambiguate by
+// scoring each candidate against the SOURCE message's From / To / Cc AND body preview, and pick the
+// copy that actually corresponds to this source email.
+const _normAddr = (a) => String(a || '').trim().toLowerCase();
+const _normBody = (t) => String(t || '').replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+const _overlap = (a, b) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n; };
+
+async function pickBestGmailCandidate(candidates, srcFull, destUser, log, usedDestIds) {
+  let list = (candidates || []).filter(Boolean);
+  if (list.length === 0) return null;
+  // Prefer destination messages not already paired to an earlier source message. This is essential
+  // for duplicate-subject pairs (e.g. two Sent copies) so the two source mails don't both collapse
+  // onto the SAME destination message, leaving the other orphaned/"not found".
+  if (usedDestIds && usedDestIds.size) {
+    const unused = list.filter((c) => !usedDestIds.has(c.id));
+    if (unused.length) list = unused;
+  }
+  if (list.length === 1) return list[0];
+
+  const srcFrom = _normAddr(srcFull.from?.emailAddress?.address);
+  const srcTo   = new Set(graphRecipientsToEmails(srcFull.toRecipients).map(_normAddr));
+  const srcCc   = new Set(graphRecipientsToEmails(srcFull.ccRecipients).map(_normAddr));
+  const srcBody = _normBody(srcFull.bodyPreview || srcFull.body?.content || '').slice(0, 300);
+  const srcIsReply = /^re:/i.test((srcFull.subject || '').trim());
+
+  let best = null, bestScore = -Infinity;
+  for (const cand of list) {
+    let meta;
+    try { meta = await gmailClient.getMessageMetadata(destUser, cand.id, 'metadata'); }
+    catch { continue; }
+    const cFrom = _normAddr(parseRecipientEmails(meta.from)[0]);
+    const cTo   = new Set(parseRecipientEmails(meta.to).map(_normAddr));
+    const cCc   = new Set(parseRecipientEmails(meta.cc).map(_normAddr));
+    const cBody = _normBody(meta.snippet || '').slice(0, 300);
+    const cIsReply = /^re:/i.test((meta.subject || '').trim());
+
+    let score = 0;
+    if (srcFrom && cFrom && srcFrom === cFrom) score += 4;   // same sender
+    score += _overlap(srcTo, cTo) * 2;                       // shared To recipients
+    score += _overlap(srcCc, cCc) * 2;                       // shared Cc recipients
+    if (srcBody && cBody) {                                  // body preview (strongest signal here)
+      if (srcBody === cBody) score += 10;
+      else {
+        const st = new Set(srcBody.split(' ')), ct = new Set(cBody.split(' '));
+        score += Math.round((_overlap(st, ct) / Math.max(1, st.size)) * 8);
+      }
+    }
+    if (cIsReply === srcIsReply) score += 1;                 // reply-prefix tiebreaker
+    if (score > bestScore) { bestScore = score; best = cand; }
+  }
+  if (log && best && list.length > 1) {
+    log.info(`Deep validation (O→G): ${list.length} same-subject candidates — disambiguated by From/To/Cc/body → picked ${best.id} (score ${bestScore})`);
+  }
+  return best || list[0];
+}
 
 async function validateOutlookToGmailDestination({
   context, result, destUser, srcUser, maxMessages, subjectPrefix, tierB, tierC, log,
@@ -83,6 +142,9 @@ async function validateOutlookToGmailDestination({
   // Date header may reflect the sender's local timezone, causing apparent drift of several hours.
   const windowMin = intEnv('DEEP_VALIDATION_SUBJECT_TIME_WINDOW_MINUTES', 240);
   const folderSeverity = boolEnv('MAIL_DEEP_FOLDER_WARNING_ONLY', false) ? 'warning' : 'error';
+
+  // Destination messages already paired this run — so duplicate-subject pairs don't collapse onto one.
+  const usedDestIds = new Set();
 
   for (const summary of candidates) {
     const mid = summary.internetMessageId || '';
@@ -129,21 +191,10 @@ async function validateOutlookToGmailDestination({
             destUser, normalizeSubject(srcFull.subject), anchorMs, windowMin
           );
           if (fb.length > 0) {
-            let best = fb[0];
-            // Multiple candidates can share the same normalized subject (e.g. a thread original and
-            // its RE: replies). Pick the candidate whose reply-prefix status matches the source so
-            // that "QA E2E 4 - Thread Chain Test" (original) isn't paired with "RE: QA E2E 4"
-            // (reply) just because the reply is more recent and appears first in Gmail results.
-            if (fb.length > 1) {
-              const srcIsReply = /^re:/i.test((srcFull.subject || '').trim());
-              for (const cand of fb) {
-                try {
-                  const meta = await gmailClient.getMessageMetadata(destUser, cand.id);
-                  const candIsReply = /^re:/i.test((meta.subject || '').trim());
-                  if (candIsReply === srcIsReply) { best = cand; break; }
-                } catch { /* skip, fall back to first */ }
-              }
-            }
+            // Multiple candidates can share the same normalized subject (thread chains, or an
+            // Inbox message + its Archive copy). Disambiguate by From/To/Cc/body so we pair the
+            // correct copy — not just the first/most-recent or a RE:-prefix guess.
+            const best = await pickBestGmailCandidate(fb, srcFull, destUser, log, usedDestIds);
             gmailMatches = [best];
             pairingStrategy = 'subject-time';
           }
@@ -159,20 +210,9 @@ async function validateOutlookToGmailDestination({
     if (gmailMatches.length === 0 && boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true)) {
       try {
         const subjectOnly = await gmailClient.findMessagesBySubject(destUser, normalizeSubject(srcFull.subject));
-        if (subjectOnly.length === 1) {
-          gmailMatches = subjectOnly;
-          pairingStrategy = 'subject-only';
-        } else if (subjectOnly.length > 1) {
-          // Multiple matches — try to pick the one whose RE: prefix matches the source
-          const srcIsReply = /^re:/i.test((srcFull.subject || '').trim());
-          let best = null;
-          for (const cand of subjectOnly) {
-            try {
-              const meta = await gmailClient.getMessageMetadata(destUser, cand.id);
-              const candIsReply = /^re:/i.test((meta.subject || '').trim());
-              if (candIsReply === srcIsReply) { best = cand; break; }
-            } catch { /* skip */ }
-          }
+        if (subjectOnly.length >= 1) {
+          // Disambiguate multiple same-subject copies by From/To/Cc/body (thread chains, Archive copy).
+          const best = await pickBestGmailCandidate(subjectOnly, srcFull, destUser, log, usedDestIds);
           if (best) {
             gmailMatches = [best];
             pairingStrategy = 'subject-only';
@@ -183,9 +223,34 @@ async function validateOutlookToGmailDestination({
       }
     }
 
+    // Final, most robust tier: scan by single-word subject terms + in-memory normalized-subject
+    // compare. This finds the message whenever it exists in Gmail, even when its subject contains
+    // special characters ( <>&"' : / — etc.) that break Gmail's quoted-phrase search used above.
+    if (gmailMatches.length === 0) {
+      try {
+        const anchorScan = new Date(srcFull.receivedDateTime || srcFull.sentDateTime || 0).getTime();
+        let scan = await gmailClient.findMessagesBySubjectScan(
+          destUser, srcFull.subject, Number.isFinite(anchorScan) ? anchorScan : null,
+          Number.isFinite(anchorScan) ? windowMin : 0
+        );
+        // If the time-boxed scan found nothing (e.g. Archive folder — internalDate far from source),
+        // retry without any time constraint.
+        if (scan.length === 0) {
+          scan = await gmailClient.findMessagesBySubjectScan(destUser, srcFull.subject);
+        }
+        if (scan.length > 0) {
+          const best = await pickBestGmailCandidate(scan, srcFull, destUser, log, usedDestIds);
+          gmailMatches = [{ id: best.id, threadId: best.threadId }];
+          pairingStrategy = 'subject-scan';
+        }
+      } catch (e) {
+        log.warn(`Deep validation (O→G): Gmail subject-scan fallback failed: ${e.message}`);
+      }
+    }
+
     if (gmailMatches.length === 0) {
       result.deepMailValidation.unmatchedSourceIds.push(summary.id);
-      const noteOG = `No Gmail message with matching Message-ID${boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true) ? `; subject+time fallback (±${windowMin}m) also found no candidate; subject-only fallback also found no match.` : ''}`;
+      const noteOG = `No Gmail message with matching Message-ID${boolEnv('DEEP_VALIDATION_SUBJECT_TIME_FALLBACK', true) ? `; subject+time fallback (±${windowMin}m) also found no candidate; subject-only + subject-scan fallbacks also found no match.` : ''}`;
       let srcFolderPathOG = '';
       if (srcFull.parentFolderId) {
         try { srcFolderPathOG = await outlookClient.getMailFolderPathString(srcUser, srcFull.parentFolderId); } catch (_) { /* skip */ }
@@ -210,6 +275,7 @@ async function validateOutlookToGmailDestination({
     }
 
     const gmailRef = gmailMatches[0];
+    if (gmailRef?.id) usedDestIds.add(gmailRef.id); // reserve so no other source pairs to it
     let gmailFull;
     try {
       gmailFull = await gmailClient.getMessageFullForValidation(destUser, gmailRef.id);
@@ -247,6 +313,8 @@ async function validateOutlookToGmailDestination({
       diffs.push({ field: 'pairing', ok: true, expected: 'internetMessageId', actual: `subject+time fallback (±${windowMin}m)`, severity: 'warning' });
     } else if (pairingStrategy === 'subject-only') {
       diffs.push({ field: 'pairing', ok: true, expected: 'internetMessageId', actual: 'subject-only fallback (no time constraint — internetMessageId not preserved, e.g. Archive folder)', severity: 'warning' });
+    } else if (pairingStrategy === 'subject-scan') {
+      diffs.push({ field: 'pairing', ok: true, expected: 'internetMessageId', actual: 'subject-scan fallback (matched by normalized subject — subject contains special characters that break Gmail phrase search)', severity: 'warning' });
     }
     diffs = diffs.concat(compareTierA(sourceForTierA, destForTierA, tierAOpts));
 
@@ -378,12 +446,20 @@ async function validateOutlookToGmailDestination({
     }
 
     const hasError = diffs.some((d) => d.severity === 'error');
+    const _srcTsRawOG = Date.parse(srcFull.receivedDateTime || srcFull.sentDateTime || '');
+    const _dstTsOG = gmailFull.internalDateMs != null ? Number(gmailFull.internalDateMs) : null;
     result.addDeepMailMessageResult({
       sourceMessageId: summary.id, internetMessageId: mid,
       destMessageId: gmailRef.id, subject: srcFull.subject || summary.subject || '',
       pass: !hasError, diffs,
       _conversationId: srcFull.conversationId || null,
       _gmailThreadId: gmailFull.threadId || null,
+      _srcTimestampMs: Number.isFinite(_srcTsRawOG) ? _srcTsRawOG : null,
+      _dstTimestampMs: _dstTsOG,
+      _srcFolder: srcFolderStr || null,
+      _srcFolderKind: 'folder',
+      _dstFolder: gmailLabelsStr || null,
+      _dstFolderKind: 'label',
     });
   }
 
@@ -395,6 +471,11 @@ async function validateOutlookToGmailDestination({
     folderSeverity,
     tierAOpts,
   });
+  try {
+    validateMailOrderByTimestamp(result, log);
+  } catch (orderErr) {
+    log.warn(`Order validation (O→G) failed (non-fatal): ${orderErr.message}`);
+  }
 }
 
 module.exports = { validateOutlookToGmailDestination };

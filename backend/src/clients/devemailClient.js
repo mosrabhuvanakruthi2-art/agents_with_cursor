@@ -129,6 +129,35 @@ function stripBearer(raw) {
   return String(raw ?? '').replace(/^Bearer\s*/i, '').trim();
 }
 
+// ─── Response-body unwrap ───────────────────────────────────────────────────
+// The devemail proxyservices reports endpoints DOUBLE-JSON-encode their bodies: the HTTP
+// response is a JSON *string* whose content is itself a stringified JSON array, e.g.
+//   "\"[{\\\"id\\\":\\\"…\\\"}]\""
+// axios parses only the OUTER layer, leaving a string. A plain `Array.isArray(res.data)`
+// check therefore fails and the payload looks "empty" — which is exactly why the reports
+// list appeared report-blind. Unwrap by JSON.parsing until we stop getting a string.
+
+/** Recursively JSON.parse a (possibly multiply-)stringified body. Returns the decoded value. */
+function _unwrapJson(data) {
+  let d = data;
+  for (let i = 0; i < 4 && typeof d === 'string'; i++) {
+    const s = d.trim();
+    if (!s) return null;
+    try { d = JSON.parse(s); } catch { return d; } // not JSON → return the string as-is
+  }
+  return d;
+}
+
+/** Unwrap a body and coerce it to an array (handles arrays, {content|jobs|data|details|…}). */
+function _asArray(data) {
+  const d = _unwrapJson(data);
+  if (Array.isArray(d)) return d;
+  if (d && typeof d === 'object') {
+    return d.content || d.jobs || d.data || d.details || d.mailMigrationDetails || [];
+  }
+  return [];
+}
+
 // ─── Credential resolution ────────────────────────────────────────────────────
 
 function resolveEmail() {
@@ -1004,7 +1033,7 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       );
 
       consecutiveAuthErrors = 0;
-      const jobs = Array.isArray(res.data) ? res.data : (res.data?.content || []);
+      const jobs = _asArray(res.data);
 
       let matchedJob    = null;
       let matchedDetail = null;
@@ -1173,7 +1202,7 @@ async function fetchCurrentJobStatus(fromMailId) {
         })
       );
 
-      const jobs = Array.isArray(res.data) ? res.data : (res.data?.content || []);
+      const jobs = _asArray(res.data);
       if (jobs.length === 0 && pageSize === 50) continue;
 
       let matchedJob    = null;
@@ -1261,8 +1290,7 @@ async function getJobReport(jobId) {
       `${BASE_URL}/mail/reports/${encodeURIComponent(jobId)}`,
       axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { _: Date.now() }, timeout: 30000 })
     );
-    const data = res.data;
-    return Array.isArray(data) ? data : (data?.content || data?.details || data?.mailMigrationDetails || []);
+    return _asArray(res.data);
   } catch (err) {
     logger.warn(`devemailClient getJobReport(${jobId}) failed: ${err.response?.status || err.message}`);
     return [];
@@ -1285,11 +1313,134 @@ async function getWorkspaceRecords(jobDetailId) {
       `${BASE_URL}/mail/workSpaces/${encodeURIComponent(jobDetailId)}`,
       axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { pageNo: 0, pageSize: 50, _: Date.now() }, timeout: 30000 })
     );
-    const data = res.data;
-    return Array.isArray(data) ? data : (data?.content || []);
+    return _asArray(res.data);
   } catch (err) {
     logger.warn(`devemailClient getWorkspaceRecords(${jobDetailId}) failed: ${err.response?.status || err.message}`);
     return [];
+  }
+}
+
+// ─── Reports job resolver ─────────────────────────────────────────────────────
+// Resolves Job ID + Workspace ID + counts + per-folder breakdown from /mail/reports so the
+// validation report can show them. The reports endpoints DOUBLE-JSON-encode their responses; once
+// _asArray() unwraps that, our own Basic-auth Mail JWT reads them fine — the earlier "report-blind"
+// symptom was that parsing bug, not a token-scope limitation. A captured SSO token (data/
+// devemail-sso-token.json, optional) is used automatically if present, but is no longer required.
+
+const _fs = require('fs');
+const _path = require('path');
+const SSO_TOKEN_FILE = (process.env.DEVEMAIL_SSO_TOKEN_FILE || '').trim()
+  || _path.resolve(__dirname, '..', '..', 'data', 'devemail-sso-token.json');
+
+function loadSsoToken() {
+  try {
+    const j = JSON.parse(_fs.readFileSync(SSO_TOKEN_FILE, 'utf8'));
+    const tok = (j.token || '').trim();
+    if (!tok) return null;
+    const exp = (() => { try { return JSON.parse(Buffer.from(tok.split('.')[1], 'base64').toString()).exp * 1000; } catch { return 0; } })();
+    if (exp && exp < Date.now()) {
+      logger.warn(`devemailClient: saved SSO token expired (${new Date(exp).toISOString()}) — re-run capture-migration-details.js`);
+      return null;
+    }
+    return tok;
+  } catch { return null; }
+}
+
+/**
+ * Resolve a migration job's Job ID + per-pair Workspace ID + counts + per-folder breakdown.
+ *
+ * Token source: prefers a captured SSO token if present, else falls back to our own Basic-auth
+ * Mail JWT — both read /mail/reports correctly now that double-encoded bodies are unwrapped.
+ *
+ * Job selection: when a concrete `jobId` is known (from the initiate/poll response) it is used
+ * directly (most reliable); otherwise the job is matched from /mail/reports by `jobName`, falling
+ * back to the newest job.
+ *
+ * @param {{ jobId?: string, jobName?: string, fromMailId?: string }} opts
+ * @returns {Promise<{ jobId, workspaceId, totalCount, processedCount, status, folderBreakdown }|null>}
+ */
+async function resolveJobViaSsoToken({ jobId: knownJobId, jobName, fromMailId } = {}) {
+  // Token source: prefer a captured SSO token if one is present, but our own Basic-auth Mail JWT
+  // reads /mail/reports fine now that responses are unwrapped — so no manual token is required.
+  let token = loadSsoToken();
+  let tokenSource = 'SSO token';
+  if (!token) {
+    try {
+      const auth = await authenticate();
+      token = auth.mailJwt;
+      tokenSource = 'Basic-auth Mail JWT';
+    } catch (e) {
+      logger.warn(`devemailClient resolveJobViaSsoToken: no SSO token and Basic auth failed — ${e.message}`);
+      return null;
+    }
+  }
+  if (!token) return null;
+  logger.info(`devemailClient resolveJobViaSsoToken: resolving via ${tokenSource}`);
+  const H = axiosCfg({ headers: { Authorization: `Bearer ${token}` }, timeout: 30000, params: { _: Date.now() } });
+  const norm = (s) => String(s || '').toLowerCase().trim();
+  try {
+    // Resolve the parent Job ID: use a known id directly, else match it from the reports list.
+    let jobId = (knownJobId && knownJobId !== 'initiated') ? knownJobId : null;
+    let job = null;
+    if (!jobId) {
+      const listRes = await axios.get(`${BASE_URL}/mail/reports`, H);
+      const jobs = _asArray(listRes.data);
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        logger.warn('devemailClient resolveJobViaSsoToken: reports list returned no jobs');
+        return null;
+      }
+      job = (jobName && jobs.find((j) => norm(j.jobName || j.name) === norm(jobName))) || jobs[0];
+      jobId = job.id || job.jobId;
+    }
+    if (!jobId) return null;
+    const r = await axios.get(`${BASE_URL}/mail/reports/${encodeURIComponent(jobId)}`, H);
+    const arr = _asArray(r.data);
+    const pair = (arr || []).find((p) => norm(p.fromMailId || p.fromEmail) === norm(fromMailId)) || (arr || [])[0] || {};
+    const result = {
+      jobId,
+      // Workspace ID = the per-pair sub-task id. Different API shapes name it differently
+      // (id / jobDetailId / emailWorkSpaceId / uniqueEmailWorkSpaceId / workSpaceId) — accept any.
+      workspaceId: pair.id || pair.jobDetailId || pair.emailWorkSpaceId || pair.uniqueEmailWorkSpaceId || pair.workSpaceId || pair.workspaceId || null,
+      totalCount: pair.totalCount ?? pair.total ?? null,
+      processedCount: pair.processedCount ?? pair.processed ?? null,
+      status: pair.processStatus || pair.syncStatus || (job && job.status) || null,
+      folderBreakdown: [],
+    };
+
+    // Per-folder breakdown via GET /mail/workSpaces/{workspaceId} — CloudFuze's own source→dest
+    // folder records + per-folder counts, for a cross-check against our folder validation.
+    if (result.workspaceId) {
+      try {
+        const wr = await axios.get(
+          `${BASE_URL}/mail/workSpaces/${encodeURIComponent(result.workspaceId)}`,
+          axiosCfg({ headers: { Authorization: `Bearer ${token}` }, timeout: 30000, params: { pageNo: 0, pageSize: 500, type: 'all', folder: true, _: Date.now() } })
+        );
+        const recs = _asArray(wr.data);
+        result.folderBreakdown = (recs || [])
+          .filter((f) => f && (f.mailFolder || f.destFolderName || f.movedFolder)) // skip the root "/" placeholder
+          .map((f) => {
+            const destPath = String(f.destFolderPath || '/').replace(/\/+$/, '');
+            const destName = f.destFolderName || f.movedFolder || f.mailFolder || '';
+            return {
+              folder: f.mailFolder || f.movedFolder || destName || '(unknown)',
+              destPath: `${destPath}/${destName}`.replace(/^\/+/, '/'),
+              total: f.totalCount ?? null,
+              messages: f.messagesCount ?? null,
+              unread: f.unreadCount ?? null,
+              status: f.processStatus || null,
+              subFolder: !!f.subFolder,
+            };
+          });
+        logger.info(`devemailClient resolveJobViaSsoToken: folderBreakdown = ${result.folderBreakdown.length} folder record(s)`);
+      } catch (we) {
+        logger.warn(`devemailClient resolveJobViaSsoToken: workSpaces fetch failed (non-fatal): ${we.response?.status || we.message}`);
+      }
+    }
+    logger.info(`devemailClient resolveJobViaSsoToken: jobId=${result.jobId}, workspaceId=${result.workspaceId}, counts=${result.processedCount}/${result.totalCount}`);
+    return result;
+  } catch (e) {
+    logger.warn(`devemailClient resolveJobViaSsoToken failed: ${e.response?.status || e.message}`);
+    return null;
   }
 }
 
@@ -1339,6 +1490,8 @@ module.exports = {
   getLastJobDetails,
   getJobReport,
   getWorkspaceRecords,
+  loadSsoToken,
+  resolveJobViaSsoToken,
 
   // Constants
   BASE_URL,

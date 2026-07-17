@@ -26,6 +26,7 @@ const {
   compareFlagState,
   compareOutlookImportanceToGmailImportant,
   compareImportanceOutlookToOutlook,
+  compareSensitivityOutlookToOutlook,
   compareSentDateTime,
   compareAttachmentSizesWithTolerance,
 } = require('../../utils/mailMigrationComparator');
@@ -160,6 +161,7 @@ async function tierBHashesGmail(sourceEmail, gmailFull, destUser, destMessageId,
 
   for (const att of gmailFull.attachments || []) {
     if (!att.filename || !att.attachmentId) continue;
+    if (attExceedsHashCap(att, null, hashMax, 'G→O src', log)) continue;
     let buf;
     try {
       buf = await gmailClient.getAttachmentData(sourceEmail, gmailFull.id, att.attachmentId);
@@ -174,6 +176,7 @@ async function tierBHashesGmail(sourceEmail, gmailFull, destUser, destMessageId,
   const list = graphAttachmentList || [];
   for (const g of graphAttachmentsToCompareList(list)) {
     if (!g.filename) continue;
+    if (attExceedsHashCap(g, null, hashMax, 'G→O dst', log)) continue;
     let buf;
     try {
       const meta = list.find((x) => (x.name || x.filename) === g.filename);
@@ -202,6 +205,23 @@ async function tierBHashesGmail(sourceEmail, gmailFull, destUser, destMessageId,
   return { srcHashes, dstHashes };
 }
 
+/**
+ * True if an attachment is larger than the byte-hash cap — in which case we SKIP the download
+ * (it would just be aborted by maxContentLength after wasting time) and log it as an expected
+ * skip rather than a scary "read failed" warning. Size mismatch is still caught by Tier A/size.
+ */
+function attExceedsHashCap(att, meta, hashMax, tag, log) {
+  const size = Number(att?.size || meta?.size || 0);
+  if (size > hashMax) {
+    log.info(
+      `Tier B (${tag}): skipping byte-hash for "${att.filename}" ` +
+      `(${(size / 1048576).toFixed(1)} MB > ${(hashMax / 1048576).toFixed(0)} MB cap) — size compared separately`
+    );
+    return true;
+  }
+  return false;
+}
+
 async function tierBHashesOutlookToOutlook(srcUser, srcMessageId, graphAttSrc, destUser, destMessageId, graphAttDst, log) {
   const hashMax = intEnv('MAIL_DEEP_HASH_MAX_BYTES', 10485760);
   const srcHashes = [];
@@ -212,6 +232,7 @@ async function tierBHashesOutlookToOutlook(srcUser, srcMessageId, graphAttSrc, d
   for (const att of graphAttachmentsToCompareList(graphAttSrc)) {
     const meta = graphAttSrc.find((x) => (x.name || x.filename) === att.filename);
     if (!meta?.id) continue;
+    if (attExceedsHashCap(att, meta, hashMax, 'O→O src', log)) continue;
     let buf;
     try {
       const uid = encodeURIComponent(String(srcUser).trim());
@@ -237,6 +258,7 @@ async function tierBHashesOutlookToOutlook(srcUser, srcMessageId, graphAttSrc, d
   for (const att of graphAttachmentsToCompareList(graphAttDst)) {
     const meta = graphAttDst.find((x) => (x.name || x.filename) === att.filename);
     if (!meta?.id) continue;
+    if (attExceedsHashCap(att, meta, hashMax, 'O→O dst', log)) continue;
     let buf;
     try {
       const uid = encodeURIComponent(String(destUser).trim());
@@ -271,6 +293,7 @@ async function tierBHashesOutlookToGmail(srcUser, srcMessageId, graphAttachmentL
   for (const att of graphAttachmentsToCompareList(graphAttachmentList)) {
     const meta = graphAttachmentList.find((x) => (x.name || x.filename) === att.filename);
     if (!meta?.id) continue;
+    if (attExceedsHashCap(att, meta, hashMax, 'O→G', log)) continue;
     let buf;
     try {
       const uid = encodeURIComponent(String(srcUser).trim());
@@ -418,9 +441,22 @@ const OUTLOOK_PLACEMENT_SKIP = new Set([
   'quick step settings', 'calendar', 'contacts', 'tasks',
 ]);
 
+// Gmail client-state labels — NOT folders. They must be excluded from FOLDER-placement checks so
+// that e.g. "INBOX | UNREAD" doesn't show UNREAD in a folder diff (read state is validated separately).
+const GMAIL_CLIENT_STATE_LABELS = new Set([
+  'UNREAD', 'STARRED', 'IMPORTANT', 'CHAT',
+  'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+]);
+
 function validateOutlookToGmailPlacement(outlookFolderPath, gmailLabelsStr, severity = 'error') {
   const folder = String(outlookFolderPath || '').toLowerCase().trim();
-  const labels = parseGmailLabels(gmailLabelsStr).map((l) => l.toUpperCase());
+  // Keep only folder-like labels — drop UNREAD/STARRED/IMPORTANT/CATEGORY_* so placement compares
+  // folders vs folders, and the displayed destination isn't cluttered with client-state labels.
+  const folderLabels = parseGmailLabels(gmailLabelsStr).filter(
+    (l) => !GMAIL_CLIENT_STATE_LABELS.has(String(l).toUpperCase().trim())
+  );
+  const folderLabelsStr = folderLabels.join(' | ') || '(no folder labels)';
+  const labels = folderLabels.map((l) => l.toUpperCase());
   const expectedLabel = OUTLOOK_FOLDER_TO_GMAIL_LABEL.get(folder);
 
   // System folder check (case-insensitive for Archive[Gmail] which CloudFuze may create as Archive[GMAIL])
@@ -431,9 +467,9 @@ function validateOutlookToGmailPlacement(outlookFolderPath, gmailLabelsStr, seve
       field: 'folder',
       ok: false,
       expected: `Gmail label ${expectedLabel} (from Outlook: ${outlookFolderPath})`,
-      actual: gmailLabelsStr || '(no labels)',
+      actual: folderLabelsStr,
       displaySource: outlookFolderPath,
-      displayDestination: gmailLabelsStr || '(no labels)',
+      displayDestination: folderLabelsStr,
       severity,
     }];
   }
@@ -445,7 +481,7 @@ function validateOutlookToGmailPlacement(outlookFolderPath, gmailLabelsStr, seve
   const rawPath = String(outlookFolderPath).trim();
   const leafName = rawPath.split('/').pop().trim().toLowerCase();
   if (!leafName) return [];
-  const gmailLabelsLower = parseGmailLabels(gmailLabelsStr).map((l) => l.toLowerCase().trim());
+  const gmailLabelsLower = folderLabels.map((l) => l.toLowerCase().trim());
   const matched = gmailLabelsLower.some(
     (l) => l === leafName || l === rawPath.toLowerCase() || l.endsWith('/' + leafName)
   );
@@ -454,9 +490,9 @@ function validateOutlookToGmailPlacement(outlookFolderPath, gmailLabelsStr, seve
     field: 'folder',
     ok: false,
     expected: `Gmail label containing "${rawPath}"`,
-    actual: gmailLabelsStr || '(no labels)',
+    actual: folderLabelsStr,
     displaySource: rawPath,
-    displayDestination: gmailLabelsStr || '(no labels)',
+    displayDestination: folderLabelsStr,
     severity: 'warning',
   }];
 }
@@ -1038,6 +1074,7 @@ async function validateOutlookToOutlookThreadChains(result, srcUser, destUser, l
         diffs = diffs.concat(compareReadState(smFull.isRead, dmFull.isRead));
         diffs = diffs.concat(compareFlagState(smFull.flag, dmFull.flag));
         diffs = diffs.concat(compareImportanceOutlookToOutlook(smFull.importance, dmFull.importance));
+        diffs = diffs.concat(compareSensitivityOutlookToOutlook(smFull.sensitivity, dmFull.sensitivity));
 
         // sentDateTime
         {
@@ -1244,6 +1281,7 @@ async function validateGmailToOutlookThreadChains(result, srcUser, destUser, log
     tierC = false,
     tierB = false,
     tierAOpts = {},
+    archiveMailbox = true,
   } = opts;
 
   // Build gmailThreadId → { conversationIds: Set, pairedEntries: [], knownDestIds: Map }
@@ -1456,7 +1494,7 @@ async function validateGmailToOutlookThreadChains(result, srcUser, destUser, log
               destFolderPath: dstFolderStr,
               destFlag: omFull.flag || null,
               destImportance: omFull.importance || null,
-              options: { migrateOrphaned: false, severity: folderSeverity },
+              options: { migrateOrphaned: false, archiveMailbox, severity: folderSeverity },
             })
           );
 
@@ -1597,6 +1635,7 @@ async function tierBHashesGmailToGmail(srcUser, srcFull, destUser, destFull, log
 
   for (const att of srcFull.attachments || []) {
     if (!att.filename || !att.attachmentId) continue;
+    if (attExceedsHashCap(att, null, hashMax, 'G→G src', log)) continue;
     let buf;
     try {
       buf = await gmailClient.getAttachmentData(srcUser, srcFull.id, att.attachmentId);
@@ -1610,6 +1649,7 @@ async function tierBHashesGmailToGmail(srcUser, srcFull, destUser, destFull, log
 
   for (const att of destFull.attachments || []) {
     if (!att.filename || !att.attachmentId) continue;
+    if (attExceedsHashCap(att, null, hashMax, 'G→G dst', log)) continue;
     let buf;
     try {
       buf = await gmailClient.getAttachmentData(destUser, destFull.id, att.attachmentId);
@@ -1622,6 +1662,142 @@ async function tierBHashesGmailToGmail(srcUser, srcFull, destUser, destFull, log
   }
 
   return { srcHashes, dstHashes };
+}
+
+/**
+ * Extract a trailing integer sequence number from an email subject.
+ * "QA Custom - ProjectX Email 3"  → 3
+ * "QA Custom - Email with Attachment" → null (no trailing number)
+ */
+function extractSubjectSequence(subject) {
+  if (!subject) return null;
+  const m = String(subject).trim().match(/(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Compare the chronological order of paired messages at source vs destination — scoped PER FOLDER.
+ *
+ * Order is only meaningful within a folder/label (how mail is actually viewed); comparing across
+ * folders — or across subject families that each restart numbering at "Email 1" — yields false
+ * mismatches. So mails are grouped by source folder and, within each folder:
+ *   - Expected order = sort by source timestamp, tiebroken by subject sequence number, then id.
+ *   - Actual order   = sort by destination timestamp, with the SAME tiebreakers (so mails that are
+ *     genuinely indistinguishable at the destination, e.g. identical dst time, are treated as
+ *     in-order rather than flagged).
+ *   - A mail is flagged only if its position within its folder differs between the two.
+ *
+ * Stores results in result.deepMailValidation.orderValidation — never throws.
+ */
+function validateMailOrderByTimestamp(result, log) {
+  const all = result.deepMailValidation?.messageResults;
+  if (!all || all.length < 2) {
+    result.deepMailValidation.orderValidation = { skipped: true, reason: 'Fewer than 2 message results' };
+    return;
+  }
+
+  const paired = all.filter(
+    (r) =>
+      r.destMessageId &&
+      r._srcTimestampMs != null && Number.isFinite(Number(r._srcTimestampMs)) &&
+      r._dstTimestampMs != null && Number.isFinite(Number(r._dstTimestampMs))
+  );
+
+  if (paired.length < 2) {
+    result.deepMailValidation.orderValidation = {
+      skipped: true,
+      reason: `Fewer than 2 paired messages with timestamps (found ${paired.length})`,
+    };
+    return;
+  }
+
+  // Trailing sequence number ("… Email 3" → 3); messages without one sort last within a tie.
+  const seqOf = (r) => {
+    const s = extractSubjectSequence(r.subject);
+    return s == null ? Number.POSITIVE_INFINITY : s;
+  };
+  const folderKeyOf = (r) => String(r._srcFolder || '').trim().toLowerCase();
+
+  // Order is only meaningful WITHIN a folder/label — that's how mail is actually viewed, and
+  // each folder has its own sequence. Comparing positions ACROSS folders (or across subject
+  // families that each restart at "Email 1") produces false mismatches. So we verify each
+  // mail's position only against the other mails in its own source folder.
+  const groups = new Map();
+  for (const r of paired) {
+    const k = folderKeyOf(r);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+
+  const outOfOrder = [];
+  let checked = 0;
+  let foldersChecked = 0;
+
+  for (const msgs of groups.values()) {
+    if (msgs.length < 2) continue; // a lone mail in a folder has no relative order to verify
+    foldersChecked++;
+    checked += msgs.length;
+
+    // Expected order: source time, then subject sequence (disambiguates same-timestamp mails), then id.
+    const expected = [...msgs].sort((a, b) =>
+      (Number(a._srcTimestampMs) - Number(b._srcTimestampMs)) ||
+      (seqOf(a) - seqOf(b)) ||
+      String(a.sourceMessageId).localeCompare(String(b.sourceMessageId))
+    );
+    // Actual order: destination time, with the SAME tiebreakers — so mails that are genuinely
+    // indistinguishable at the destination (identical dst time) are treated as in-order, not flagged.
+    const actual = [...msgs].sort((a, b) =>
+      (Number(a._dstTimestampMs) - Number(b._dstTimestampMs)) ||
+      (seqOf(a) - seqOf(b)) ||
+      String(a.sourceMessageId).localeCompare(String(b.sourceMessageId))
+    );
+
+    const expRank = new Map(expected.map((r, i) => [r.sourceMessageId, i]));
+    const actRank = new Map(actual.map((r, i) => [r.sourceMessageId, i]));
+
+    for (const r of msgs) {
+      const sp = expRank.get(r.sourceMessageId);
+      const dp = actRank.get(r.sourceMessageId);
+      if (sp === dp) continue;
+      // Whether this mail shared a source timestamp with a folder-mate (→ seq# disambiguated it).
+      const sharedTs = msgs.some(
+        (o) => o !== r && Number(o._srcTimestampMs) === Number(r._srcTimestampMs)
+      );
+      const seqNum = extractSubjectSequence(r.subject);
+      outOfOrder.push({
+        sourceMessageId: r.sourceMessageId,
+        subject: r.subject || '',
+        folder: r._srcFolder || '',
+        folderKind: r._srcFolderKind || 'folder',
+        destFolder: r._dstFolder || '',
+        destFolderKind: r._dstFolderKind || 'folder',
+        ...(seqNum != null ? { sequenceNumber: seqNum } : {}),
+        srcPosition: sp + 1,
+        dstPosition: dp + 1,
+        srcTimestampMs: Number(r._srcTimestampMs),
+        dstTimestampMs: Number(r._dstTimestampMs),
+        validatedBy: sharedTs ? 'subject-sequence' : 'timestamp',
+      });
+    }
+  }
+
+  const pass = outOfOrder.length === 0;
+  result.deepMailValidation.orderValidation = {
+    totalChecked: checked,
+    foldersChecked,
+    outOfOrderCount: outOfOrder.length,
+    // 'label' (Gmail) or 'folder' (Outlook) — for the report column headers.
+    folderKind: paired[0]?._srcFolderKind || 'folder',
+    destFolderKind: paired[0]?._dstFolderKind || 'folder',
+    pass,
+    outOfOrder,
+  };
+
+  if (pass) {
+    log.info(`Order validation: ${checked} mail(s) across ${foldersChecked} folder(s) — order preserved within every folder`);
+  } else {
+    log.warn(`Order validation: ${outOfOrder.length}/${checked} mail(s) arrived in a different position within their folder`);
+  }
 }
 
 // ── Shared exports (auto-generated by scripts/_split-deep-validator.js) ──
@@ -1646,6 +1822,7 @@ module.exports = {
   compareFlagState,
   compareOutlookImportanceToGmailImportant,
   compareImportanceOutlookToOutlook,
+  compareSensitivityOutlookToOutlook,
   compareSentDateTime,
   compareAttachmentSizesWithTolerance,
   gmailClient,
@@ -1672,4 +1849,5 @@ module.exports = {
   validateOutlookToOutlookThreadChains,
   validateGmailToOutlookThreadChains,
   tierBHashesGmailToGmail,
+  validateMailOrderByTimestamp,
 };

@@ -21,6 +21,7 @@ const {
   compareFlagState,
   compareOutlookImportanceToGmailImportant,
   compareImportanceOutlookToOutlook,
+  compareSensitivityOutlookToOutlook,
   compareSentDateTime,
   compareAttachmentSizesWithTolerance,
   gmailClient,
@@ -46,6 +47,7 @@ const {
   validateOutlookToGmailThreadChains,
   validateOutlookToOutlookThreadChains,
   tierBHashesGmailToGmail,
+  validateMailOrderByTimestamp,
 } = require('../shared/deepMailCore');
 
 async function validateOutlookSource({
@@ -278,6 +280,9 @@ async function validateOutlookSource({
     // Importance (warning)
     diffs = diffs.concat(compareImportanceOutlookToOutlook(srcFull.importance, destFull.importance));
 
+    // Sensitivity — Normal/Personal/Private/Confidential must be preserved (error)
+    diffs = diffs.concat(compareSensitivityOutlookToOutlook(srcFull.sensitivity, destFull.sensitivity));
+
     // sentDateTime: source vs destination Outlook (warning)
     {
       const toleranceMs = intEnv('DEEP_VALIDATION_SENT_TIME_TOLERANCE_MINUTES', 5) * 60000;
@@ -351,6 +356,8 @@ async function validateOutlookSource({
     }
 
     const hasError = diffs.some((d) => d.severity === 'error');
+    const _srcTsRawOO = Date.parse(srcFull.receivedDateTime || srcFull.sentDateTime || '');
+    const _dstTsRawOO = Date.parse(destFull.receivedDateTime || destFull.sentDateTime || '');
     result.addDeepMailMessageResult({
       sourceMessageId: summary.id,
       internetMessageId: mid,
@@ -359,6 +366,12 @@ async function validateOutlookSource({
       pass: !hasError,
       diffs,
       _conversationId: srcFull.conversationId || null,
+      _srcTimestampMs: Number.isFinite(_srcTsRawOO) ? _srcTsRawOO : null,
+      _dstTimestampMs: Number.isFinite(_dstTsRawOO) ? _dstTsRawOO : null,
+      _srcFolder: srcFolderStrOO || null,
+      _srcFolderKind: 'folder',
+      _dstFolder: destFolderStrOO || null,
+      _dstFolderKind: 'folder',
     });
   }
 
@@ -368,6 +381,11 @@ async function validateOutlookSource({
     tierB,
     tierAOpts,
   });
+  try {
+    validateMailOrderByTimestamp(result, log);
+  } catch (orderErr) {
+    log.warn(`Order validation (O→O) failed (non-fatal): ${orderErr.message}`);
+  }
 }
 
 module.exports = { validateOutlookSource };

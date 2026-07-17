@@ -47,6 +47,7 @@ const {
   validateOutlookToOutlookThreadChains,
   validateGmailToOutlookThreadChains,
   tierBHashesGmailToGmail,
+  validateMailOrderByTimestamp,
 } = require('../shared/deepMailCore');
 
 async function validateGmailSource({
@@ -229,6 +230,44 @@ async function validateGmailSource({
 
     if (matches.length > 1) {
       result.deepMailValidation.ambiguousInternetMessageIds.push(mid);
+      // A Gmail message with N labels legitimately becomes ONE copy per Outlook folder
+      // (e.g. Sent + a custom label → Sent Items + that folder). That is expected and NOT a
+      // duplicate. A real duplication bug is 2+ copies of the SAME Message-ID inside the SAME
+      // destination folder (the message reflected twice / as a 2-message thread in one folder).
+      const byFolder = new Map();
+      for (const m of matches) {
+        const fid = m.parentFolderId || 'unknown';
+        byFolder.set(fid, (byFolder.get(fid) || 0) + 1);
+      }
+      const dupFolderIds = [...byFolder.entries()].filter(([, n]) => n > 1).map(([fid]) => fid);
+      if (dupFolderIds.length > 0) {
+        const extraCopies = [...byFolder.values()].reduce((s, n) => s + Math.max(0, n - 1), 0);
+        const folderNames = [];
+        for (const fid of dupFolderIds) {
+          let fname = fid;
+          try { fname = (await outlookClient.getMailFolderPathString(destUser, fid)) || fid; } catch { /* keep id */ }
+          folderNames.push(fname);
+        }
+        result.deepMailValidation.duplicateMessages = result.deepMailValidation.duplicateMessages || [];
+        result.deepMailValidation.duplicateMessages.push({
+          internetMessageId: mid, subject: full.subject || '', folders: folderNames, extraCopies,
+        });
+        result.addDeepMailMessageResult({
+          sourceMessageId: id,
+          internetMessageId: mid,
+          destMessageId: null,
+          subject: full.subject || '',
+          pass: false,
+          note: `Duplicated at destination: ${extraCopies} extra copy(ies) of this message in the same folder(s) [${folderNames.join(', ')}]. Source has a single message; each destination folder must contain at most one copy.`,
+          diffs: [{
+            field: 'duplicate', ok: false,
+            displaySource: '1 copy per folder',
+            displayDestination: `${extraCopies + 1} copies in ${folderNames.join(', ')}`,
+            severity: 'error',
+          }],
+        });
+        log.warn(`Deep validation (G→O): duplicate at destination — "${full.subject || mid}" x${extraCopies + 1} in ${folderNames.join(', ')}`);
+      }
     }
 
     const destSummary = matches[0];
@@ -329,6 +368,10 @@ async function validateGmailSource({
         destImportance: destFull.importance || null,
         options: {
           migrateOrphaned: Boolean(context.migrateOrphanedLabels),
+          // Archive Mailbox: when ON, archived (All-Mail-only) Gmail mail lands in the Outlook
+          // "[Gmail]All Mail" folder. Our initiate payload sets backup:true, so default ON unless
+          // context explicitly disables it.
+          archiveMailbox: context.archiveMailbox !== false,
           severity,
         },
       })
@@ -392,6 +435,8 @@ async function validateGmailSource({
     }
 
     const hasError = diffs.some((d) => d.severity === 'error');
+    const _srcTsG2O = full.internalDateMs != null ? Number(full.internalDateMs) : null;
+    const _dstTsRawG2O = Date.parse(destFull.receivedDateTime || '');
     result.addDeepMailMessageResult({
       sourceMessageId: id,
       internetMessageId: mid,
@@ -401,6 +446,12 @@ async function validateGmailSource({
       diffs,
       _gmailThreadId: full.threadId || null,
       _conversationId: destFull.conversationId || null,
+      _srcTimestampMs: _srcTsG2O,
+      _dstTimestampMs: Number.isFinite(_dstTsRawG2O) ? _dstTsRawG2O : null,
+      _srcFolder: srcFolderStr || null,
+      _srcFolderKind: 'label',
+      _dstFolder: destFolderStr || null,
+      _dstFolderKind: 'folder',
     });
   }
 
@@ -408,9 +459,14 @@ async function validateGmailSource({
   // Non-fatal: a thread-chain failure must NEVER break the core per-message G→O validation
   // (which worked correctly before this was added). Wrapped so any error is logged, not thrown.
   try {
-    await validateGmailToOutlookThreadChains(result, srcUser, destUser, log, { tierC, tierB, tierAOpts });
+    await validateGmailToOutlookThreadChains(result, srcUser, destUser, log, { tierC, tierB, tierAOpts, archiveMailbox: context.archiveMailbox !== false });
   } catch (threadErr) {
     log.warn(`Thread chain validation (G→O) failed (non-fatal): ${threadErr.message}`);
+  }
+  try {
+    validateMailOrderByTimestamp(result, log);
+  } catch (orderErr) {
+    log.warn(`Order validation (G→O) failed (non-fatal): ${orderErr.message}`);
   }
 }
 

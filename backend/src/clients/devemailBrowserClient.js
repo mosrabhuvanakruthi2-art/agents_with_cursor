@@ -8,6 +8,7 @@
  */
 
 const { chromium } = require('playwright');
+const fs     = require('fs');
 const env    = require('../config/env');
 const logger = require('../utils/logger');
 
@@ -396,4 +397,155 @@ async function getJwtViaBrowser(email, password) {
   }
 }
 
-module.exports = { uploadCSVViaBrowser, getJwtViaBrowser };
+/**
+ * Scrape the CloudFuze reports page for a mailbox's Workspace ID (and job counts) by reading the
+ * DOM directly — used when the API job-listing endpoints return no job / 401, so the Workspace ID
+ * can't be fetched programmatically. The reports page renders each mailbox as:
+ *   <div class="emailWrapperDiv" title="Alex@qatestagent.com" workspaceid="6a576be43f34…"> … </div>
+ *
+ * @param {string} sourceEmail  the mailbox to look up (matched against the row's title/text)
+ * @param {{ loginEmail?: string, loginPassword?: string }} [opts]
+ * @returns {Promise<{ workspaceId: string|null, counts: number[], candidates?: string[] }>}
+ */
+async function getWorkspaceInfoViaBrowser(sourceEmail, { loginEmail, loginPassword, jobName, storageState } = {}) {
+  if (!sourceEmail) throw new Error('getWorkspaceInfoViaBrowser: sourceEmail is required');
+
+  // Prefer a pre-captured, already-authenticated browser session (Playwright storageState). The
+  // devemail portal uses SSO (Google / Office 365), so headless email/password login does not work
+  // and the tokens our code can mint lack report access. A saved session inherits the user's SSO
+  // login and can read the reports page. Capture it once with scripts/capture-devemail-session.js.
+  const statePath = storageState || env.DEVEMAIL_STORAGE_STATE;
+  const useSession = !!(statePath && fs.existsSync(statePath));
+
+  const email    = loginEmail    || env.CLOUDFUZE_OWNER_EMAIL;
+  const password = loginPassword || env.MIGRATION_APP_LOGIN_PASSWORD;
+  if (!useSession && (!email || !password)) {
+    throw new Error('getWorkspaceInfoViaBrowser: set DEVEMAIL_STORAGE_STATE (recommended) or CLOUDFUZE_OWNER_EMAIL + MIGRATION_APP_LOGIN_PASSWORD');
+  }
+
+  const REPORTS_PAGE = `${DEVEMAIL_BASE}/pages/reports.html`;
+  logger.info(`devemailBrowserClient: getWorkspaceInfoViaBrowser — looking up workspace ID for ${sourceEmail}` +
+    (useSession ? ` (using saved session ${statePath})` : ' (password login)'));
+
+  const browser = await chromium.launch({ headless: true });
+  const ctx = await browser.newContext(
+    useSession ? { ignoreHTTPSErrors: true, storageState: statePath } : { ignoreHTTPSErrors: true }
+  );
+  const page = await ctx.newPage();
+
+  try {
+    if (!useSession) {
+      // ── Password login (fallback — only works if the portal accepts email/password) ──
+      await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch {}
+
+      const emailSel = [
+        'input[name="email"]', 'input[name="username"]', 'input[type="email"]',
+        'input[placeholder*="Email" i]', 'input[placeholder*="mail" i]',
+        'input[id*="email" i]', 'input[id*="user" i]',
+      ].join(', ');
+      const emailInput = page.locator(emailSel).first();
+      await emailInput.waitFor({ state: 'visible', timeout: 15_000 });
+      await emailInput.fill(email);
+      await page.locator('input[type="password"]').first().fill(password);
+      const submitSel = [
+        'button[type="submit"]', 'input[type="submit"]',
+        'button:has-text("Sign In")', 'button:has-text("Login")',
+        'button:has-text("Log In")', 'button:has-text("SIGN IN")',
+        '#loginBtn', '#signInBtn', '.btn-login', '.login-btn',
+      ].join(', ');
+      await page.locator(submitSel).first().click();
+      try {
+        await page.waitForURL(
+          (url) => !url.toString().includes('index.html') && !url.toString().includes('login'),
+          { timeout: 20_000 }
+        );
+      } catch {}
+      try { await page.waitForLoadState('networkidle', { timeout: 10_000 }); } catch {}
+    }
+
+    // ── Open EMAIL MIGRATION → One-Time reports ──
+    await page.goto(`${REPORTS_PAGE}#email`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    try { await page.waitForLoadState('networkidle', { timeout: 8_000 }); } catch {}
+
+    // Select the EMAIL MIGRATION tab (the #email hash usually selects it; click as a safety net).
+    for (const sel of ['a:has-text("EMAIL MIGRATION")', 'text=/EMAIL MIGRATION/i', '[href*="email"]']) {
+      const tab = page.locator(sel).first();
+      if (await tab.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await tab.click().catch(() => {});
+        await page.waitForTimeout(1_500);
+        break;
+      }
+    }
+    // Ensure the One-Time sub-tab is active (Delta is the other).
+    const oneTime = page.locator('text=/^\\s*One-?Time\\s*$/i').first();
+    if (await oneTime.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      await oneTime.click().catch(() => {});
+      await page.waitForTimeout(1_000);
+    }
+
+    // Wait for the job list to render, then EXPAND the matching job row (by job name if known, else
+    // the newest OUTLOOK-GMAIL job) so its From-Email workspace rows appear.
+    const jobKey = jobName || 'OUTLOOK-GMAIL';
+    try { await page.waitForFunction((k) => document.body.innerText.includes(k), jobKey, { timeout: 20_000 }); } catch {}
+
+    await page.evaluate((k) => {
+      const rows = Array.from(document.querySelectorAll('.emailShowDiv, [class*="job" i], tr, li, div'))
+        .filter((el) => (el.textContent || '').includes(k));
+      // Smallest matching element = the tightest row wrapper (avoids clicking the whole container).
+      rows.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+      const row = rows[0];
+      if (row) {
+        const toggle = row.querySelector(
+          'img, svg, i, button, [class*="arrow" i], [class*="down" i], [class*="chevron" i], [class*="dropdown" i]'
+        ) || row;
+        toggle.click();
+      }
+    }, jobKey);
+
+    // Wait for the expanded workspace rows (each From-Email cell carries the workspaceid attribute).
+    try {
+      await page.locator('.emailWrapperDiv[workspaceid]').first().waitFor({ state: 'attached', timeout: 20_000 });
+    } catch {
+      logger.warn('getWorkspaceInfoViaBrowser: no .emailWrapperDiv[workspaceid] rows appeared after expanding the job row');
+    }
+
+    // ── Read the workspaceid attribute for the matching mailbox ──
+    const info = await page.evaluate((target) => {
+      const norm = (s) => String(s || '').trim().toLowerCase();
+      const t = norm(target);
+      const wraps = Array.from(document.querySelectorAll('.emailWrapperDiv[workspaceid]'));
+      const match =
+        wraps.find((w) => norm(w.getAttribute('title')) === t) ||
+        wraps.find((w) => norm(w.textContent) === t) ||
+        wraps.find((w) => norm(w.getAttribute('title')).includes(t) || norm(w.textContent).includes(t));
+      if (!match) {
+        return { workspaceId: null, counts: [], candidates: wraps.map((w) => w.getAttribute('title') || w.textContent.trim()).slice(0, 15) };
+      }
+      const workspaceId = match.getAttribute('workspaceid') || null;
+      // Best-effort: numeric count cells that sit in the same job row (e.g. total / processed).
+      let counts = [];
+      const row = match.closest('.folderTheadEmailJob') || match.parentElement;
+      const scope = row && row.parentElement ? row.parentElement : row;
+      if (scope) {
+        counts = Array.from(scope.querySelectorAll('div'))
+          .map((d) => (d.textContent || '').trim())
+          .filter((x) => /^\d+$/.test(x))
+          .map(Number);
+      }
+      return { workspaceId, counts };
+    }, sourceEmail);
+
+    if (info.workspaceId) {
+      logger.info(`getWorkspaceInfoViaBrowser: ${sourceEmail} → workspaceId=${info.workspaceId} counts=[${info.counts.join(',')}]`);
+    } else {
+      logger.warn(`getWorkspaceInfoViaBrowser: no row matched "${sourceEmail}". Rows seen: ${(info.candidates || []).join(' | ')}`);
+    }
+    return info;
+  } finally {
+    try { await browser.close(); } catch {}
+    logger.info('devemailBrowserClient: getWorkspaceInfoViaBrowser — headless browser closed');
+  }
+}
+
+module.exports = { uploadCSVViaBrowser, getJwtViaBrowser, getWorkspaceInfoViaBrowser };

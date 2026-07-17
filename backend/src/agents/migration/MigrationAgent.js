@@ -606,42 +606,58 @@ class MigrationAgent extends BaseAgent {
       cfStatus: finalStatus,
     };
 
-    // Enrich from GET /mail/reports/{jobId} — authoritative per-pair breakdown (Job ID + Workspace
-    // ID + counts), fetched with fresh auth after completion. Best-effort: never blocks the run.
-    if (useDevemail && context.migrationJobDetails.jobId) {
+    // Authoritative enrichment: resolve Job ID + per-pair Workspace ID + real counts + per-folder
+    // breakdown from the reports API. Runs on EVERY devemail run (best-effort, never blocks) so the
+    // folder breakdown is always fetched. Uses our own Basic-auth Mail JWT — the reports endpoints
+    // read fine now that their double-JSON-encoded bodies are unwrapped (no SSO token required; a
+    // captured SSO token is used automatically if present). Passing the known jobId makes the job
+    // match exact instead of guessing from the list.
+    if (useDevemail) {
       try {
-        const breakdown = await devemailClient.getJobReport(context.migrationJobDetails.jobId);
-        const norm = (s) => String(s || '').toLowerCase().trim();
-        const pair = (breakdown || []).find(
-          (p) => norm(p.fromMailId || p.fromEmail) === norm(context.sourceEmail)
-        );
-        if (pair) {
-          const jobDetailId = pair.id || pair.jobDetailId || null;          // per-pair sub-task id
-          context.migrationJobDetails.workspaceId = jobDetailId || context.migrationJobDetails.workspaceId;
-          if (pair.totalCount != null) context.migrationJobDetails.totalCount = Number(pair.totalCount);
-          if (pair.processedCount != null) context.migrationJobDetails.processedCount = Number(pair.processedCount);
-          const ps = String(pair.processStatus || pair.syncStatus || '').toUpperCase().trim();
-          if (ps && (finalStatus === 'TIMEOUT' || !finalStatus)) context.migrationJobDetails.cfStatus = ps;
-          log.info(`CloudFuze /mail/reports/${context.migrationJobDetails.jobId}: pair jobDetailId=${jobDetailId}, counts=${context.migrationJobDetails.processedCount}/${context.migrationJobDetails.totalCount}`);
-
-          // Drill into /mail/workSpaces/{jobDetailId} for the pair's workspace id (deepest record).
-          if (jobDetailId) {
-            try {
-              const ws = await devemailClient.getWorkspaceRecords(jobDetailId);
-              if (Array.isArray(ws) && ws.length > 0) {
-                const root = ws.find((w) => w.sourceId === '/' || w.destFolderPath === '/') || ws[0];
-                if (root?.id) context.migrationJobDetails.workspaceId = root.id;
-                log.info(`CloudFuze /mail/workSpaces/${jobDetailId}: ${ws.length} workspace record(s), workspaceId=${context.migrationJobDetails.workspaceId}`);
-              }
-            } catch (wErr) {
-              log.warn(`CloudFuze getWorkspaceRecords failed (non-fatal): ${wErr.message}`);
-            }
+        const resolved = await devemailClient.resolveJobViaSsoToken({
+          jobId: context.migrationJobDetails.jobId,
+          jobName: context.migrationJobDetails.jobName,
+          fromMailId: context.sourceEmail,
+        });
+        if (resolved) {
+          if (resolved.jobId)          context.migrationJobDetails.jobId = resolved.jobId;
+          if (resolved.workspaceId)    context.migrationJobDetails.workspaceId = resolved.workspaceId;
+          if (resolved.totalCount != null)     context.migrationJobDetails.totalCount = Number(resolved.totalCount);
+          if (resolved.processedCount != null) context.migrationJobDetails.processedCount = Number(resolved.processedCount);
+          if (resolved.status && (finalStatus === 'TIMEOUT' || !finalStatus)) context.migrationJobDetails.cfStatus = resolved.status;
+          if (Array.isArray(resolved.folderBreakdown) && resolved.folderBreakdown.length) {
+            context.migrationJobDetails.folderBreakdown = resolved.folderBreakdown;
           }
+          log.info(`CloudFuze job resolved: jobId=${resolved.jobId}, workspaceId=${resolved.workspaceId}, counts=${resolved.processedCount}/${resolved.totalCount}, folders=${resolved.folderBreakdown?.length || 0}`);
         }
       } catch (e) {
-        log.warn(`CloudFuze getJobReport enrichment failed (non-fatal): ${e.message}`);
+        log.warn(`CloudFuze job resolve failed (non-fatal): ${e.message}`);
       }
     }
+
+    // Fallback: when the API never yields a Workspace ID (initiate returns no jobId and the job-list
+    // endpoints return nothing / 401), scrape it from the CloudFuze reports-page DOM — each mailbox
+    // row exposes a `workspaceid` attribute. Purely ADDITIVE + best-effort: only runs when workspaceId
+    // is still empty, wrapped in try/catch, and Playwright is required lazily so it can't affect the
+    // normal path. Disable with WORKSPACE_ID_BROWSER_FALLBACK=false.
+    if (useDevemail && !context.migrationJobDetails.workspaceId
+        && process.env.WORKSPACE_ID_BROWSER_FALLBACK !== 'false') {
+      try {
+        const { getWorkspaceInfoViaBrowser } = require('../../clients/devemailBrowserClient');
+        const info = await getWorkspaceInfoViaBrowser(context.sourceEmail, {
+          loginEmail: context.migrationServerEmail,
+          loginPassword: context.migrationServerPassword,
+          jobName: context.migrationJobDetails.jobName,
+        });
+        if (info && info.workspaceId) {
+          context.migrationJobDetails.workspaceId = info.workspaceId;
+          log.info(`CloudFuze Workspace ID resolved via reports-page scrape: ${info.workspaceId}`);
+        }
+      } catch (e) {
+        log.warn(`Workspace ID browser-scrape fallback failed (non-fatal): ${e.message}`);
+      }
+    }
+
     log.info(`CloudFuze job details: jobId=${context.migrationJobDetails.jobId}, jobName=${context.migrationJobDetails.jobName}, workspaceId=${context.migrationJobDetails.workspaceId}, total=${context.migrationJobDetails.totalCount}, processed=${context.migrationJobDetails.processedCount}, status=${finalStatus}`);
 
     // ── Content migration: check if this is a stop status ─────────

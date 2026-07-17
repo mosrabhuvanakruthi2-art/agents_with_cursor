@@ -6,6 +6,7 @@ const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
 const neutaraClient = require('../clients/neutaraClient');
 const { resolve: resolveAgents } = require('./agentRegistry');
+const devemailClient = require('../clients/devemailClient');
 
 /**
  * Resolve the test-data + validation agent classes for a context's combination.
@@ -176,16 +177,44 @@ class AgentOrchestrator {
         pair.migrationResult = await migrationAgent.run(context);
         log.info(`Pair ${context.sourceEmail}: Phase 2 complete`);
 
-        // After lead finishes, propagate its actual jobId to all non-lead pairs.
+        // After lead finishes, propagate its jobId + per-pair workspace IDs to all non-lead pairs.
         if (isDevemailBulk) {
-          const leadJobId = pair.migrationResult?.jobId || 'shared';
+          const leadMigJob = pair.migrationResult?.migrationJobDetails || {};
+          const leadJobId  = leadMigJob.jobId || pair.migrationResult?.jobId || 'shared';
+          const leadServerUrl = leadMigJob.serverUrl || '';
+          const leadJobName   = leadMigJob.jobName   || '';
+
+          // Fetch job report once to get per-pair workspace IDs for all non-lead pairs.
+          let breakdown = [];
+          try {
+            breakdown = await devemailClient.getJobReport(leadJobId);
+          } catch (_) { /* best-effort */ }
+          const norm = (s) => String(s || '').toLowerCase().trim();
+
           for (const other of pairs) {
             if (other === pair || other.error) continue;
-            other.migrationResult = { jobId: leadJobId, status: 'INITIATED', sharedJob: true };
+            const pairEntry = breakdown.find(
+              (p) => norm(p.fromMailId || p.fromEmail) === norm(other.context.sourceEmail)
+            );
+            const wsId = pairEntry?.id || pairEntry?.jobDetailId || pairEntry?.workSpaceId || pairEntry?.workspaceId || null;
+            other.migrationResult = {
+              jobId: leadJobId,
+              status: 'INITIATED',
+              sharedJob: true,
+              migrationJobDetails: {
+                serverUrl:      leadServerUrl,
+                jobId:          leadJobId,
+                jobName:        leadJobName,
+                workspaceId:    wsId,
+                totalCount:     pairEntry?.totalCount     != null ? Number(pairEntry.totalCount)     : null,
+                processedCount: pairEntry?.processedCount != null ? Number(pairEntry.processedCount) : null,
+                cfStatus:       String(pairEntry?.processStatus || pairEntry?.syncStatus || '').toUpperCase() || null,
+              },
+            };
             executionService.update(other.context.executionId, {
               progress: `[2/3] MigrationAgent: shared job ${leadJobId} complete`,
             });
-            log.info(`Pair ${other.context.sourceEmail}: shared job ${leadJobId} propagated`);
+            log.info(`Pair ${other.context.sourceEmail}: shared job ${leadJobId} propagated, workspaceId=${wsId}`);
           }
         }
       } catch (err) {
