@@ -141,6 +141,10 @@ async function validateGmailToGmailSource({
     bccAsError: true,
     recipientMapping: recipientMap.size > 0 ? recipientMap : null,
     combination: 'gmail_to_gmail',
+    // Distribution-list / internal recipient addresses are migrated and converted to their
+    // destination-domain equivalent (local part preserved) — expected, not a mismatch.
+    sourceDomain: (context.sourceEmail || '').split('@')[1]?.toLowerCase() || null,
+    destinationDomain: (context.destinationEmail || '').split('@')[1]?.toLowerCase() || null,
   };
 
   // Build source label id→name map for folder placement reporting

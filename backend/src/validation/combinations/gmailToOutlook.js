@@ -70,6 +70,10 @@ async function validateGmailSource({
     compareBcc: true,
     bccAsError: true,
     recipientMapping: recipientMap.size > 0 ? recipientMap : null,
+    // Distribution-list / internal recipient addresses are migrated and converted to their
+    // destination-domain equivalent (local part preserved) — expected, not a mismatch.
+    sourceDomain: (context.sourceEmail || '').split('@')[1]?.toLowerCase() || null,
+    destinationDomain: (context.destinationEmail || '').split('@')[1]?.toLowerCase() || null,
   };
 
   let labelIdToName = new Map();

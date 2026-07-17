@@ -73,6 +73,10 @@ async function validateOutlookSource({
     // O→O remaps the mailbox-owner identity (source-tenant user → dest-tenant user), so the sender
     // (From) must satisfy the same permission mapping as To/Cc/Bcc — not just recipients.
     mapFrom: true,
+    // Distribution-list / internal recipient addresses are migrated and converted to their
+    // destination-domain equivalent (local part preserved) — expected, not a mismatch.
+    sourceDomain: (context.sourceEmail || '').split('@')[1]?.toLowerCase() || null,
+    destinationDomain: (context.destinationEmail || '').split('@')[1]?.toLowerCase() || null,
   };
 
   const candidates = await collectOutlookQaCandidates(

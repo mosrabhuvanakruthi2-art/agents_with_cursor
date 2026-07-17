@@ -149,6 +149,45 @@ function expectedDestRecipientsFromSource(sourceSortedLower, mappingMap) {
 }
 
 /**
+ * Canonicalize addresses for cross-tenant comparison by rewriting any address on the
+ * destination domain back to the source domain (same local part). This models expected
+ * migration behavior: an internal / distribution-list address is migrated and converted
+ * to its destination-domain equivalent (e.g. qaagentdl@source.com → qaagentdl@dest.com),
+ * with the local part preserved. External addresses (on neither tenant domain) are left
+ * untouched, so a genuinely wrong recipient still fails the compare.
+ * @param {string[]} list sorted unique lowercase emails
+ */
+function canonicalizeDomainRewrite(list, sourceDomain, destinationDomain) {
+  if (!sourceDomain || !destinationDomain || sourceDomain === destinationDomain) return list;
+  const out = list.map((e) => {
+    const at = String(e).lastIndexOf('@');
+    if (at < 0) return e;
+    const local = e.slice(0, at);
+    const dom = e.slice(at + 1).toLowerCase();
+    return dom === destinationDomain ? `${local}@${sourceDomain}` : e;
+  });
+  return [...new Set(out)].sort();
+}
+
+/**
+ * Compare two recipient sets, treating a source→destination domain rewrite as a match.
+ * Exact equality passes first; otherwise both sides are canonicalized (dest domain → source
+ * domain) so a migrated address that only changed tenant domain is not flagged.
+ */
+function recipientSetsEqual(expected, actual, opts = {}) {
+  if (JSON.stringify(expected) === JSON.stringify(actual)) return true;
+  const sd = (opts.sourceDomain || '').toLowerCase();
+  const dd = (opts.destinationDomain || '').toLowerCase();
+  if (sd && dd && sd !== dd) {
+    return (
+      JSON.stringify(canonicalizeDomainRewrite(expected, sd, dd)) ===
+      JSON.stringify(canonicalizeDomainRewrite(actual, sd, dd))
+    );
+  }
+  return false;
+}
+
+/**
  * Strip HTML tags for loose body comparison (Tier C warning).
  */
 function htmlToPlainLoose(html) {
@@ -184,7 +223,7 @@ function compareTierA(source, dest, opts = {}) {
     const dFrom = destTierAFromEmails(dest);
     const expectedFrom =
       opts.mapFrom && mappingMap ? expectedDestRecipientsFromSource(sFromRaw, mappingMap) : sFromRaw;
-    if (sFromRaw.length > 0 && JSON.stringify(expectedFrom) !== JSON.stringify(dFrom)) {
+    if (sFromRaw.length > 0 && !recipientSetsEqual(expectedFrom, dFrom, opts)) {
       diffs.push({
         field: 'from',
         ok: false,
@@ -214,7 +253,7 @@ function compareTierA(source, dest, opts = {}) {
   const sToRaw = source.toEmails || parseRecipientEmails(source.to || '');
   const dTo = dest.toEmails || graphRecipientsToEmails(dest.toRecipients);
   const expectedTo = mappingMap ? expectedDestRecipientsFromSource(sToRaw, mappingMap) : sToRaw;
-  if (JSON.stringify(expectedTo) !== JSON.stringify(dTo)) {
+  if (!recipientSetsEqual(expectedTo, dTo, opts)) {
     diffs.push({
       field: 'to',
       ok: false,
@@ -229,7 +268,7 @@ function compareTierA(source, dest, opts = {}) {
   const sCcRaw = source.ccEmails || parseRecipientEmails(source.cc || '');
   const dCc = dest.ccEmails || graphRecipientsToEmails(dest.ccRecipients);
   const expectedCc = mappingMap ? expectedDestRecipientsFromSource(sCcRaw, mappingMap) : sCcRaw;
-  if (JSON.stringify(expectedCc) !== JSON.stringify(dCc)) {
+  if (!recipientSetsEqual(expectedCc, dCc, opts)) {
     diffs.push({
       field: 'cc',
       ok: false,
@@ -246,7 +285,7 @@ function compareTierA(source, dest, opts = {}) {
     const dBcc = dest.bccEmails || graphRecipientsToEmails(dest.bccRecipients);
     const expectedBcc = mappingMap ? expectedDestRecipientsFromSource(sBccRaw, mappingMap) : sBccRaw;
     const bccSev = opts.bccAsError !== false ? 'error' : 'warning';
-    if (JSON.stringify(expectedBcc) !== JSON.stringify(dBcc)) {
+    if (!recipientSetsEqual(expectedBcc, dBcc, opts)) {
       diffs.push({
         field: 'bcc',
         ok: false,
@@ -269,7 +308,7 @@ function compareTierA(source, dest, opts = {}) {
       : dest.replyTo && typeof dest.replyTo === 'string'
         ? parseRecipientEmails(dest.replyTo)
         : graphRecipientsToEmails(dest.replyTo);
-    if (sReplyTo.length > 0 && JSON.stringify(sReplyTo) !== JSON.stringify(dReplyTo)) {
+    if (sReplyTo.length > 0 && !recipientSetsEqual(sReplyTo, dReplyTo, opts)) {
       diffs.push({
         field: 'replyTo',
         ok: false,
