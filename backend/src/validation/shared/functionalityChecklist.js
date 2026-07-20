@@ -78,7 +78,9 @@ function buildEvalContext(validation) {
 
   const duplicateMessages = Array.isArray(dmv.duplicateMessages) ? dmv.duplicateMessages : [];
 
-  return { all: messageResults, paired, hasResults, mismatchFieldsByMsg, threadChain, orderVal, comparison, issues, srcDefault, srcCustom, dstCustom, settingsValidation, duplicateMessages };
+  const archiveAllMail = validation?.archiveAllMailValidation || null;
+
+  return { all: messageResults, paired, hasResults, mismatchFieldsByMsg, threadChain, orderVal, comparison, issues, srcDefault, srcCustom, dstCustom, settingsValidation, duplicateMessages, archiveAllMail };
 }
 
 /** True if a diff field belongs to the target set (supports the attachment* prefix). */
@@ -138,6 +140,28 @@ function evalDefaultFolder(ctx, group) {
     };
   }
   return { status: 'pass', evidence: `${srcCount} message(s) migrated` };
+}
+
+/**
+ * Archive evaluator. For Gmail→Gmail the agent runs a dedicated "archived-in-All-Mail" count
+ * (ctx.archiveAllMail) since Gmail has no distinct Archive folder — archived mail lives in All Mail.
+ * For folder-based combinations (Outlook dest / O→O) fall back to the default-folder Archive check.
+ */
+function evalArchive(ctx) {
+  const aa = ctx.archiveAllMail;
+  if (aa && typeof aa.sourceArchivedCount === 'number') {
+    if (aa.available === false) {
+      return { status: 'na', evidence: aa.error ? `archive check unavailable: ${aa.error}` : 'archive check unavailable' };
+    }
+    if (aa.sourceArchivedCount === 0) {
+      return { status: 'na', evidence: 'No archived (All Mail) messages at source' };
+    }
+    if (aa.destArchivedCount < aa.sourceArchivedCount) {
+      return { status: 'fail', evidence: `source ${aa.sourceArchivedCount} archived (All Mail) vs destination ${aa.destArchivedCount}` };
+    }
+    return { status: 'pass', evidence: `${aa.sourceArchivedCount} archived (All Mail) message(s) migrated to destination All Mail` };
+  }
+  return evalDefaultFolder(ctx, 'archive');
 }
 
 /** Maps a diff field to a human reason label for the "why a thread broke" summary. */
@@ -427,7 +451,7 @@ function buildFeatureList(isDelta) {
     { name: 'Deleted Emails', family: 'Folders', ev: (c) => evalDefaultFolder(c, 'trash') },
   ];
   // One-time also migrates the Archive folder; Delta does not.
-  if (!isDelta) mailFolders.push({ name: 'Archive', family: 'Folders', ev: (c) => evalDefaultFolder(c, 'archive') });
+  if (!isDelta) mailFolders.push({ name: 'Archive', family: 'Folders', ev: (c) => evalArchive(c) });
   mailFolders.push({ name: 'Custom folders/labels', family: 'Folders', ev: (c) => evalCustomFolders(c) });
   mailFolders.push({ name: 'Nested folder / sub-folder order', family: 'Folders', ev: (c) => evalFolderNesting(c) });
 
@@ -442,6 +466,7 @@ function buildFeatureList(isDelta) {
     { name: 'To',                           family: 'Mail Fields',    ev: (c) => evalFields(c, ['to'], 'to') },
     { name: 'Cc',                           family: 'Mail Fields',    ev: (c) => evalFields(c, ['cc'], 'cc') },
     { name: 'Signature in mail body',       family: 'Content',        ev: (c) => evalFields(c, ['body'], 'body/signature') },
+    { name: 'Emoji preserved in body',      family: 'Content',        ev: (c) => evalFields(c, ['emoji'], 'emoji') },
     { name: 'Links redirection in mail body', family: 'Content',      ev: (c) => evalFields(c, ['zoomLink', 'oneDriveLink', 'clickableLink'], 'link/clickability') },
     { name: 'No duplicate mails at destination', family: 'Integrity', ev: (c) => evalDuplicateMails(c) },
   ];

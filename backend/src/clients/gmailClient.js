@@ -858,6 +858,29 @@ async function listMessageIdsForLabelUpTo(sourceEmail, labelId, maxIds, options 
 }
 
 /**
+ * Count messages matching a Gmail search query (e.g. archived-in-All-Mail).
+ * Paginates real message ids (resultSizeEstimate is unreliable) up to a safety cap.
+ * @param {string} email
+ * @param {string} q Gmail search query
+ * @param {number} [cap=5000]
+ * @returns {Promise<number>}
+ */
+async function countMessagesByQuery(email, q, cap = 5000) {
+  const gmail = getGmailForEmail(email);
+  let total = 0;
+  let pageToken;
+  do {
+    const res = await retryWithBackoff(
+      () => gmail.users.messages.list({ userId: 'me', q, maxResults: 500, pageToken, includeSpamTrash: false }),
+      { label: `Gmail countByQuery (${email})` }
+    );
+    total += (res.data.messages || []).length;
+    pageToken = res.data.nextPageToken;
+  } while (pageToken && total < cap);
+  return total;
+}
+
+/**
  * Returns all configured Google account emails.
  */
 function getConfiguredAccounts() {
@@ -1854,6 +1877,7 @@ module.exports = {
   getCalendarAuthForEmail,
   getRefreshTokenForEmail,
   getConfiguredAccounts,
+  countMessagesByQuery,
   listDomainUsers,
   getGmailMailboxStats,
   getGmailMailboxSizeBytes,

@@ -848,6 +848,7 @@ async function getPermissionMapping(srcCloudId, dstCloudId, { pageSize = 500 } =
  * @param {string}  [context.sourceCloudName]  Default "GMAIL"
  * @param {string}  [context.destCloudName]    Default "OUTLOOK"
  * @param {string}  [context.sourceProvider]   "microsoft" → archivedMailBox=true
+ * @param {boolean} [context.migrateRules]     Migrate Rules toggle (mailRules); default true
  * @param {string}  [context.migrationType]    "DELTA" for delta migration
  * @param {boolean} [context.includeCalendar]
  * @param {boolean} [context.includeContacts]
@@ -877,28 +878,37 @@ async function triggerMigration(context) {
     ? context.userEmailMappings
     : [{ sourceEmail: context.sourceEmail, destinationEmail: context.destinationEmail }];
 
-  const payload = pairsToMigrate.map((pair) => ({
-    fromCloudName:   fromCloud,
-    toCloudName:     toCloud,
-    fromMailId:      pair.sourceEmail || context.sourceEmail,
-    toMailId:        pair.destinationEmail || context.destinationEmail,
-    ownerEmailId,
-    fromRootId:      '/',
-    toRootId:        '/',
-    deltaMigration:  context.migrationType === 'DELTA',
-    jobName,
-    onlineMove:      false,
-    contacts:        Boolean(context.includeContacts),
-    drawings:        false,
-    backup:          true,
-    orphanWorkSpace: Boolean(context.migrateOrphanedLabels),
-    archivedMailBox: false,
-    teamFolder:      false,
-    cronExpression:  '1H0M',
-    disableGroups:   false,
-    processedCount:  null,
-    inProgressCount: null,
-  }));
+  const payload = pairsToMigrate.map((pair) => {
+    const item = {
+      fromCloudName:   fromCloud,
+      toCloudName:     toCloud,
+      fromMailId:      pair.sourceEmail || context.sourceEmail,
+      toMailId:        pair.destinationEmail || context.destinationEmail,
+      ownerEmailId,
+      fromRootId:      '/',
+      toRootId:        '/',
+      deltaMigration:  context.migrationType === 'DELTA',
+      jobName,
+      onlineMove:      false,
+      contacts:        Boolean(context.includeContacts),
+      drawings:        false,
+      backup:          true,
+      orphanWorkSpace: Boolean(context.migrateOrphanedLabels),
+      archivedMailBox: false,
+      teamFolder:      false,
+      cronExpression:  '1H0M',
+      disableGroups:   false,
+      processedCount:  null,
+      inProgressCount: null,
+    };
+    // Migrate Rules (mailRules) is OPT-IN for the devemail server. It is NOT part of the
+    // devemail initiate model, and sending the unknown field made the server's inbound
+    // JAX-RS request deserialization fail with HTTP 500 (NoSuchMethodError while building the
+    // error response). Only include it when explicitly requested (context.migrateRules === true),
+    // after confirming devemail actually accepts + honors the field.
+    if (context.migrateRules === true) item.mailRules = true;
+    return item;
+  });
 
   logger.info(`devemailClient triggerMigration payload: ${JSON.stringify(payload)}`);
 

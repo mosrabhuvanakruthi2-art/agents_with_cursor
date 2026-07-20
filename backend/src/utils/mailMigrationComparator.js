@@ -83,6 +83,11 @@ function destTierAFromEmails(dest) {
   if (Array.isArray(dest.fromEmails)) {
     return [...new Set(dest.fromEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean))].sort();
   }
+  // Gmail supplies `from` as a header STRING (e.g. "Ben <ben@x.com>"); Graph supplies an object.
+  // Parse the string form so Gmail-destination combinations (e.g. Gmail→Gmail) populate the
+  // destination sender instead of coming back empty (which flagged a false From mismatch on
+  // every message with a blank Destination column).
+  if (typeof dest.from === 'string') return parseRecipientEmails(dest.from);
   return graphFromToEmails(dest.from || null);
 }
 
@@ -251,7 +256,8 @@ function compareTierA(source, dest, opts = {}) {
   }
 
   const sToRaw = source.toEmails || parseRecipientEmails(source.to || '');
-  const dTo = dest.toEmails || graphRecipientsToEmails(dest.toRecipients);
+  const dTo = dest.toEmails
+    || (dest.toRecipients ? graphRecipientsToEmails(dest.toRecipients) : parseRecipientEmails(dest.to || ''));
   const expectedTo = mappingMap ? expectedDestRecipientsFromSource(sToRaw, mappingMap) : sToRaw;
   if (!recipientSetsEqual(expectedTo, dTo, opts)) {
     diffs.push({
@@ -266,7 +272,8 @@ function compareTierA(source, dest, opts = {}) {
   }
 
   const sCcRaw = source.ccEmails || parseRecipientEmails(source.cc || '');
-  const dCc = dest.ccEmails || graphRecipientsToEmails(dest.ccRecipients);
+  const dCc = dest.ccEmails
+    || (dest.ccRecipients ? graphRecipientsToEmails(dest.ccRecipients) : parseRecipientEmails(dest.cc || ''));
   const expectedCc = mappingMap ? expectedDestRecipientsFromSource(sCcRaw, mappingMap) : sCcRaw;
   if (!recipientSetsEqual(expectedCc, dCc, opts)) {
     diffs.push({
@@ -282,7 +289,8 @@ function compareTierA(source, dest, opts = {}) {
 
   if (compareBcc) {
     const sBccRaw = source.bccEmails || parseRecipientEmails(source.bcc || '');
-    const dBcc = dest.bccEmails || graphRecipientsToEmails(dest.bccRecipients);
+    const dBcc = dest.bccEmails
+      || (dest.bccRecipients ? graphRecipientsToEmails(dest.bccRecipients) : parseRecipientEmails(dest.bcc || ''));
     const expectedBcc = mappingMap ? expectedDestRecipientsFromSource(sBccRaw, mappingMap) : sBccRaw;
     const bccSev = opts.bccAsError !== false ? 'error' : 'warning';
     if (!recipientSetsEqual(expectedBcc, dBcc, opts)) {
@@ -380,6 +388,16 @@ function normalizeMailBodyPlain(s) {
     .replace(/ +/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Extract emoji (Extended_Pictographic code points) from a string, as an array.
+ * Numeric HTML character references (e.g. &#x1F600;) should be decoded first via
+ * normalizeMailBodyPlain so emoji stored as entities are counted too.
+ */
+function extractEmojis(str) {
+  const m = String(str || '').match(/\p{Extended_Pictographic}/gu);
+  return m || [];
 }
 
 /** Gmail system labels ↔ Outlook system folders (lowercased, space-stripped forms). */
@@ -777,6 +795,29 @@ function compareTierC(sourcePlain, destHtmlOrPlain, options = {}) {
   if (s.length > maxChars) s = s.substring(0, maxChars);
   if (d.length > maxChars) d = d.substring(0, maxChars);
   if (s === d) return diffs;
+
+  // Dedicated emoji-integrity check: when source body carries emoji, assert every distinct
+  // emoji survives in the destination body. Flags emoji loss/corruption explicitly (labeled
+  // 'emoji') instead of letting it hide inside the generic body diff. Applies to every
+  // combination that runs Tier C (Gmail→Gmail, Outlook→Outlook, and the cross-provider pairs).
+  const srcEmojis = [...new Set(extractEmojis(s))];
+  if (srcEmojis.length > 0) {
+    const dstEmojiSet = new Set(extractEmojis(d));
+    const missing = srcEmojis.filter((e) => !dstEmojiSet.has(e));
+    if (missing.length > 0) {
+      diffs.push({
+        field: 'emoji',
+        ok: false,
+        expected: srcEmojis.join(' '),
+        actual: [...dstEmojiSet].join(' ') || '(none)',
+        displaySource: srcEmojis.join(' '),
+        displayDestination: [...dstEmojiSet].join(' ') || '(none)',
+        note: `Emoji not preserved in body — missing: ${missing.join(' ')}`,
+        severity: options.bodyMismatchSeverity || 'warning',
+      });
+    }
+  }
+
   const previewLen = Math.min(8000, Math.max(500, Math.min(s.length || 1, d.length || 1, 4000)));
   const expPrev = s.length > previewLen ? `${s.substring(0, previewLen)}… [${s.length} chars]` : s;
   const actPrev = d.length > previewLen ? `${d.substring(0, previewLen)}… [${d.length} chars]` : d;
@@ -1265,6 +1306,7 @@ module.exports = {
   GMAIL_LABELS_NEVER_MIGRATED,
   parseGmailLabels,
   normalizeMailBodyPlain,
+  extractEmojis,
   htmlToPlainLoose,
   sha256Hex,
   compareOutlookReadToGmailUnread,

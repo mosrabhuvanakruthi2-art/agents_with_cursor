@@ -486,6 +486,9 @@ const E2E_LABEL_NAMES = [
   'QA-Work-Projects',
   'QA-Client-Emails',
   'QA-Sent-To-Custom',
+  /** Multi-recipient thread chain spanning Inbox + 2 custom labels (§117) */
+  'QA-Thread-Label-1',
+  'QA-Thread-Label-2',
   /** Sub-level folder structure — mirrors OutlookTestDataAgent §23 (Q1–Q10) */
   'QA-SubLevel-Root',
   'QA-SubLevel-Root/QA-Sub-Q1',
@@ -2022,6 +2025,78 @@ class GmailTestDataAgent extends BaseAgent {
       log.info(`✓ §112 complete — 10-message deep thread chain (threadId=${threadId})`);
     } catch (err) {
       log.warn(`§112 deep thread chain failed: ${err.message}`);
+    }
+
+    if (cancelled()) return;
+
+    // ── §117 — Multi-recipient thread chain spanning Inbox + 2 custom labels ────
+    // A single conversation (shared threadId) where every message carries MULTIPLE
+    // recipients (To has 2+ addresses, plus Cc), and the messages are distributed
+    // across the Inbox and two custom labels (QA-Thread-Label-1 / -2). Validates that
+    // a threaded conversation migrates intact while each message keeps its folder/label
+    // placement and its full To/Cc recipient set.
+    log.info('Gmail E2E §117: multi-recipient thread chain (Inbox + 2 custom labels)…');
+    try {
+      const allLabels = await gmailClient.listLabels(sourceEmail, 'me');
+      const labelIdByName = (name) => (allLabels.find((l) => l.name === name) || {}).id || null;
+      const labelA = labelIdByName('QA-Thread-Label-1');
+      const labelB = labelIdByName('QA-Thread-Label-2');
+      if (!labelA || !labelB) {
+        log.warn(`§117 skipped — custom thread labels missing (QA-Thread-Label-1=${labelA}, QA-Thread-Label-2=${labelB})`);
+      } else {
+        const subject = 'QA E2E 117 - Multi-Recipient Thread Chain (Inbox + 2 Custom Labels)';
+        const me = sourceEmail;
+        const p1 = toEmail;
+        const p2 = ccEmail;
+        const p3 = inboundSenders[0] || toEmail;
+        // Conversation distributed so it lives in the Inbox AND both custom labels.
+        const chain = [
+          { dir: 'incoming', from: p3, labels: ['INBOX'], body: 'Thread root — addressed to multiple recipients (To + Cc). Message 1 of 6.' },
+          { dir: 'outgoing', from: me, labels: [labelA],  body: 'Reply filed under custom label 1 (QA-Thread-Label-1) — message 2 of 6.' },
+          { dir: 'incoming', from: p1, labels: [labelB],  body: 'Reply filed under custom label 2 (QA-Thread-Label-2) — message 3 of 6.' },
+          { dir: 'incoming', from: p3, labels: ['INBOX'], body: 'Group reply back in the Inbox — message 4 of 6.' },
+          { dir: 'outgoing', from: me, labels: [labelA],  body: 'Second message under custom label 1 — message 5 of 6.' },
+          { dir: 'incoming', from: p1, labels: [labelB],  body: 'Final reply under custom label 2 — message 6 of 6.' },
+        ];
+        let threadId = null;
+        let prevMsgId = null;
+        for (let i = 0; i < chain.length; i++) {
+          if (cancelled()) break;
+          const m = chain[i];
+          const subj = i === 0 ? subject : `Re: ${subject}`;
+          // Multiple recipients on every message: To gets all participants except the sender,
+          // Cc gets p2 (when it isn't the sender) — so each header carries 2+ recipients.
+          const toHdr = [me, p1, p3].filter((a) => a && a !== m.from).join(', ');
+          const ccHdr = [p2].filter((a) => a && a !== m.from).join(', ');
+          const myMsgId = `<qa-thread117-${i}@cloudfuze.qa>`;
+          const raw = gmailClient.buildRawMessage({
+            from: m.from,
+            to: toHdr,
+            cc: ccHdr,
+            subject: subj,
+            textBody: m.body,
+            messageId: myMsgId,
+            inReplyTo: prevMsgId,
+            references: prevMsgId,
+          });
+          const opts = threadId ? { threadId } : {};
+          const data = await gmailClient.insertEmail(sourceEmail, 'me', raw, m.labels, opts);
+          if (data?.id) {
+            await reconcileInsertedMessageLabels(
+              sourceEmail,
+              { labelIds: m.labels, mailDirection: m.dir === 'incoming' ? 'incoming' : undefined },
+              data.id,
+              log
+            );
+            prevMsgId = myMsgId;
+            if (!threadId && data.threadId) threadId = data.threadId;
+            summary.emailsCreated++;
+          }
+        }
+        log.info(`✓ §117 complete — 6-message multi-recipient thread across Inbox + QA-Thread-Label-1/2 (threadId=${threadId})`);
+      }
+    } catch (err) {
+      log.warn(`§117 multi-recipient thread chain failed: ${err.message}`);
     }
 
     if (cancelled()) return;

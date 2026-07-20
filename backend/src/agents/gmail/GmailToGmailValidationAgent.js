@@ -171,6 +171,11 @@ class GmailToGmailValidationAgent extends BaseAgent {
       await this._validateDrafts(sourceUser, destUser, result, log);
     }
 
+    // ── 5d. Archive / All Mail — archived source mail must land in destination All Mail ──
+    if (context.includeMail !== false) {
+      await this._validateArchivedAllMail(sourceUser, destUser, result, log);
+    }
+
     // ── 6. Groups (E2E or FULL) ──────────────────────────────────────────────────
     if (context.includeContacts && (testType === 'E2E' || testType === 'FULL')) {
       await this._validateGroups(sourceUser, destUser, result, log);
@@ -662,6 +667,49 @@ class GmailToGmailValidationAgent extends BaseAgent {
     } catch (err) {
       log.warn(`Gmail filters advisory failed: ${err.message}`);
       result.rulesAdvisory = { available: false, count: 0, note: `Filters check failed: ${err.message}` };
+    }
+  }
+
+  // ── Archive / All Mail: archived source mail must land in destination All Mail ──
+  //
+  // In Gmail an archived message is one removed from the Inbox that carries no user
+  // label — it lives only in "All Mail". The per-message deep validator scans
+  // INBOX/SENT/TRASH/SPAM + custom labels, so a purely-archived message (no label,
+  // not in Inbox) was never checked at the destination. This asserts the count of
+  // archived (All Mail, no user label) messages is preserved after migration — i.e.
+  // archived source mail actually lands in the destination's All Mail.
+
+  async _validateArchivedAllMail(sourceUser, destUser, result, log) {
+    // Archived-in-All-Mail: not in Inbox/Sent/Trash/Spam/Drafts/Chats and no user label.
+    const ARCHIVED_QUERY = 'has:nouserlabels -in:inbox -in:sent -in:trash -in:spam -in:draft -in:chats';
+    try {
+      const [srcCount, dstCount] = await Promise.all([
+        gmailClient.countMessagesByQuery(sourceUser, ARCHIVED_QUERY),
+        gmailClient.countMessagesByQuery(destUser, ARCHIVED_QUERY),
+      ]);
+
+      result.archiveAllMailValidation = {
+        sourceArchivedCount: srcCount,
+        destArchivedCount: dstCount,
+        match: dstCount >= srcCount,
+      };
+      log.info(`Archive/All Mail: source archived=${srcCount}, dest archived=${dstCount}`);
+
+      if (srcCount > 0 && dstCount < srcCount) {
+        result.addMismatch(
+          'folder', 'archiveAllMail',
+          srcCount, dstCount,
+          {
+            severity: 'error',
+            message:
+              `Source has ${srcCount} archived (All Mail) message(s) but destination has ${dstCount} — ` +
+              `archived mail not fully migrated to the destination's All Mail.`,
+          }
+        );
+      }
+    } catch (err) {
+      log.warn(`Archive/All Mail validation failed: ${err.message}`);
+      result.archiveAllMailValidation = { available: false, error: err.message };
     }
   }
 

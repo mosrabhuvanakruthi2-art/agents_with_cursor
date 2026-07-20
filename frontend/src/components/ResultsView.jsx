@@ -1,5 +1,6 @@
 import StatusBadge from './StatusBadge';
 import ValidationTable from './ValidationTable';
+import { combinationLabel } from '../utils/combination';
 
 /**
  * Renders the validation results for a single execution.
@@ -34,9 +35,10 @@ export default function ResultsView({ exec }) {
                 ? ctx.userEmailMappings : null;
               return (
                 <>
-                  <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
+                  <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2 sm:grid-cols-5'}`}>
                     <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
                     <Mini label="Status" value={<StatusBadge status={exec.status} />} />
+                    {combinationLabel(ctx) && <Mini label="Combination" value={<span className="text-xs">{combinationLabel(ctx)}</span>} />}
                     {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
                     <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
                   </div>
@@ -1191,11 +1193,13 @@ function FeatureStat({ label, src, dst, cf, graphBlocked }) {
 function RunInfoCard({ exec, ctx }) {
   const mappings = Array.isArray(ctx.userEmailMappings) && ctx.userEmailMappings.length > 1
     ? ctx.userEmailMappings : null;
+  const combo = combinationLabel(ctx);
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4">
-      <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
+      <div className={`grid gap-3 text-sm ${mappings ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2 sm:grid-cols-5'}`}>
         <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
         <Mini label="Status" value={<StatusBadge status={exec.status} />} />
+        {combo && <Mini label="Combination" value={<span className="text-xs">{combo}</span>} />}
         {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
         <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
       </div>
@@ -1218,6 +1222,7 @@ function RunInfoCard({ exec, ctx }) {
 function Mini({ label, value }) {
   return <div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">{label}</p><div className="text-gray-800">{value}</div></div>;
 }
+
 function MatchCard({ label, ok }) {
   return (
     <div className={`rounded-xl border p-4 ${ok ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>

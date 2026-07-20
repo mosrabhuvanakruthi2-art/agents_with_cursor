@@ -6,6 +6,7 @@ import LogViewer from '../components/LogViewer';
 import ResultsView from '../components/ResultsView';
 import ProductTabs from '../components/ProductTabs';
 import { productOf, productCounts, PRODUCT_LABEL } from '../utils/product';
+import { combinationLabel } from '../utils/combination';
 
 // The fixed agent pipeline; each run's agentResults / currentAgent map onto these.
 const PIPELINE = [
@@ -165,12 +166,15 @@ export default function ExecutionLogs() {
           {selectedExec ? (() => {
             const pairCount = Array.isArray(ctx.userEmailMappings) ? ctx.userEmailMappings.length : 0;
             const isBulk = pairCount > 1;
+            const combo = combinationLabel(ctx);
             return (
               <p className="text-sm text-gray-500 truncate">
                 {isBulk ? (
                   <span className="inline-flex items-center gap-1 mr-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                     Bulk · {pairCount} pairs
                   </span>
+                ) : combo ? (
+                  <>{combo} · </>
                 ) : ctx.sourceEmail && ctx.destinationEmail ? (
                   <>{ctx.sourceEmail} <span className="text-gray-400">→</span> {ctx.destinationEmail} · </>
                 ) : null}
@@ -223,6 +227,7 @@ export default function ExecutionLogs() {
                       const src = e.context?.sourceEmail, dst = e.context?.destinationEmail;
                       const mappings = e.context?.userEmailMappings;
                       const bulkCount = Array.isArray(mappings) && mappings.length > 1 ? mappings.length : 0;
+                      const combo = combinationLabel(e.context);
                       return (
                         <button key={e.executionId} type="button" onClick={() => pickExecution(e.executionId)}
                           className={`w-full px-4 py-2.5 text-left transition-colors ${active ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
@@ -230,6 +235,7 @@ export default function ExecutionLogs() {
                             <span className="font-mono text-sm font-medium text-gray-800">{e.executionId.slice(0, 8)}</span>
                             {bulkCount > 0 && <span className="text-[10px] font-semibold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">Bulk · {bulkCount}</span>}
                             {active && <span className="text-[10px] font-semibold bg-indigo-600 text-white px-1.5 py-0.5 rounded-full">active</span>}
+                            {combo && <span className="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full truncate max-w-[40%]">{combo}</span>}
                             <span className="ml-auto"><StatusBadge status={e.status} /></span>
                           </div>
                           <p className="text-xs text-gray-500 truncate mt-0.5">
