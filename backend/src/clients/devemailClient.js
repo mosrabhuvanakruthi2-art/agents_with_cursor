@@ -29,7 +29,7 @@ const logger = require('../utils/logger');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const BASE_URL = 'https://devemail.cloudfuze.com/proxyservices/v1';
+const DEFAULT_BASE_URL = 'https://devemail.cloudfuze.com/proxyservices/v1';
 
 /** Terminal statuses returned by /mail/reports */
 const TERMINAL_STATUSES = new Set([
@@ -106,6 +106,17 @@ function clearRuntimeConfig() {
   mailJwt        = null;
   cachedUserId   = null;
   lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
+}
+
+/**
+ * Active API base URL. Prefers the runtime server URL injected from the Run Agent form
+ * (setRuntimeConfig baseUrl) so ANY server that speaks the devemail /proxyservices contract can be
+ * targeted with its own URL + credentials — new customer servers included. Falls back to the
+ * default devemail server when no runtime URL is given.
+ */
+function apiBase() {
+  const raw = runtimeConfig && runtimeConfig.baseUrl ? String(runtimeConfig.baseUrl).trim() : '';
+  return (raw || DEFAULT_BASE_URL).replace(/\/+$/, '');
 }
 
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
@@ -219,7 +230,7 @@ async function getAppJwt(email, password) {
       res = await retryWithBackoff(
         () =>
           axios.post(
-            `${BASE_URL}/mail/login`,
+            `${apiBase()}/mail/login`,
             null,
             axiosCfg({
               headers: { Authorization: `Basic ${basicCred}` },
@@ -275,7 +286,7 @@ async function validateUser(email) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/users/validateUser`,
+        `${apiBase()}/users/validateUser`,
         axiosCfg({
           params:  { searchUser: email.trim(), _: Date.now() },
           timeout: 30000,
@@ -329,7 +340,7 @@ async function getMailJwt(currentAppJwt, cloudName, email, userId) {
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${BASE_URL}/mail/register`,
+        `${apiBase()}/mail/register`,
         { cloudName, email, userId },
         axiosCfg({
           headers: {
@@ -418,7 +429,7 @@ async function authenticate(emailOverride, passwordOverride) {
           const regRes = await retryWithBackoff(
             () =>
               axios.post(
-                `${BASE_URL}/mail/register`,
+                `${apiBase()}/mail/register`,
                 null,
                 axiosCfg({
                   headers: { Authorization: `Basic ${basicCred}` },
@@ -503,7 +514,7 @@ async function getClouds() {
       const res = await retryWithBackoff(
         () =>
           axios.get(
-            `${BASE_URL}/mail/clouds`,
+            `${apiBase()}/mail/clouds`,
             axiosCfg({
               headers: { Authorization: header },
               params:  { _: Date.now() },
@@ -537,7 +548,7 @@ async function getClouds() {
     const res = await retryWithBackoff(
       () =>
         axios.get(
-          `${BASE_URL}/users/${userId}/get/all/cloud`,
+          `${apiBase()}/users/${userId}/get/all/cloud`,
           axiosCfg({
             headers: { Authorization: basicHeader },
             params:  { _: Date.now() },
@@ -621,7 +632,7 @@ async function getDomains(destCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/email/move/domains/${destCloudId}`,
+        `${apiBase()}/email/move/domains/${destCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${mailJwt}` },
           params:  { _: Date.now() },
@@ -655,7 +666,7 @@ async function getUserMapping(srcCloudId, dstCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/users/mapping/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/users/mapping/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { _: Date.now() },
@@ -697,7 +708,7 @@ async function getCachedMailboxMetadata(
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/cache/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/cache/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo, pageSize, _: Date.now() },
@@ -744,7 +755,7 @@ async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${BASE_URL}/email/user/csv/${sourceCloudId}/${destCloudId}`,
+        `${apiBase()}/email/user/csv/${sourceCloudId}/${destCloudId}`,
         csvContent,
         axiosCfg({
           headers: {
@@ -781,7 +792,7 @@ async function cacheUserMapping(srcCloudId, dstCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/cache/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/cache/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo: 0, pageSize: 20, _: Date.now() },
@@ -816,7 +827,7 @@ async function getPermissionMapping(srcCloudId, dstCloudId, { pageSize = 500 } =
 
   try {
     const res = await axios.get(
-      `${BASE_URL}/email/user/cache/${srcCloudId}/${dstCloudId}`,
+      `${apiBase()}/email/user/cache/${srcCloudId}/${dstCloudId}`,
       axiosCfg({
         headers: { Authorization: `Bearer ${jwt}` },
         params:  { pageNo: 0, pageSize, _: Date.now() },
@@ -847,8 +858,11 @@ async function getPermissionMapping(srcCloudId, dstCloudId, { pageSize = 500 } =
  * @param {string}  context.destinationEmail   Destination mailbox address
  * @param {string}  [context.sourceCloudName]  Default "GMAIL"
  * @param {string}  [context.destCloudName]    Default "OUTLOOK"
- * @param {string}  [context.sourceProvider]   "microsoft" → archivedMailBox=true
- * @param {boolean} [context.migrateRules]     Migrate Rules toggle (mailRules); default true
+ * @param {string}  [context.sourceProvider]   Source provider (informational).
+ * @param {boolean} [context.migrateRules]     Migrate Rules toggle (mailRules); opt-in, default off
+ *
+ * Archive handling is the SAME for every mail combination: backup=true ("Archive Mailbox" ON) and
+ * archivedMailBox=false ("Migrate As In-Place Archive" OFF). It is not source-aware.
  * @param {string}  [context.migrationType]    "DELTA" for delta migration
  * @param {boolean} [context.includeCalendar]
  * @param {boolean} [context.includeContacts]
@@ -865,12 +879,15 @@ async function triggerMigration(context) {
   const fromCloud = (context.sourceCloudName || 'GMAIL').toUpperCase();
   const toCloud   = (context.destCloudName   || 'OUTLOOK').toUpperCase();
 
-  // Build jobName in the format the server expects: OneTime-FROM-TO-YYYYMMDD-HHMMSS
+  // Build jobName in the format the server expects: {OneTime|Delta}-FROM-TO-YYYYMMDD-HHMMSS.
+  // A UI-supplied name (context.mailJobName) overrides the auto-generated one.
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
   const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const jobName  = `OneTime-${fromCloud}-${toCloud}-${datePart}-${timePart}`;
+  const jobPrefix = context.migrationType === 'DELTA' ? 'Delta' : 'OneTime';
+  const jobName  = (context.mailJobName && String(context.mailJobName).trim())
+    || `${jobPrefix}-${fromCloud}-${toCloud}-${datePart}-${timePart}`;
 
   // Build one workspace entry per mapped pair so all users land in one job.
   // Falls back to the single context.sourceEmail/destinationEmail for single-user runs.
@@ -892,21 +909,34 @@ async function triggerMigration(context) {
       onlineMove:      false,
       contacts:        Boolean(context.includeContacts),
       drawings:        false,
-      backup:          true,
+      // devemail "Options" toggles — driven by the Run-Agent UI (mailOptions). Defaults match
+      // the previously hardcoded values so an unset field behaves exactly as before:
+      //   Archive Mailbox (backup) ON, In-Place Archive (archivedMailBox) OFF, Exclude Groups OFF.
+      backup:          context.archiveMailbox !== false,
       orphanWorkSpace: Boolean(context.migrateOrphanedLabels),
-      archivedMailBox: false,
+      archivedMailBox: context.migrateAsInPlaceArchive === true,
       teamFolder:      false,
       cronExpression:  '1H0M',
-      disableGroups:   false,
+      disableGroups:   context.excludeGroups === true,
       processedCount:  null,
       inProgressCount: null,
     };
-    // Migrate Rules (mailRules) is OPT-IN for the devemail server. It is NOT part of the
-    // devemail initiate model, and sending the unknown field made the server's inbound
-    // JAX-RS request deserialization fail with HTTP 500 (NoSuchMethodError while building the
-    // error response). Only include it when explicitly requested (context.migrateRules === true),
-    // after confirming devemail actually accepts + honors the field.
-    if (context.migrateRules === true) item.mailRules = true;
+    // Migrate Rules (mailRules): the devemail `/mail/move/initiate` model does NOT accept this
+    // field — sending it makes the server's inbound JAX-RS deserialization fail with HTTP 500
+    // (NoSuchMethodError while building the error response). devemail's OWN web UI has a
+    // "Migrate Rules" toggle, so the server supports the feature, but under a field name we have
+    // not yet captured. Until that real field name is confirmed (from devemail's Start Migration
+    // network request), we do NOT send anything for it — sending our guess breaks the migration.
+    // NOTE: intentionally NOT sending context.migrateRules to avoid the HTTP 500.
+    // Migrate date range (opt-in). Sent as the CloudFuze mail fields pickEmailsFromDate /
+    // pickEmailsBeforeDate (see migrationClient newtestemail5 payload), formatted
+    // "YYYY-MM-DD 00:00:00". Only included when the UI actually picked a date, so default
+    // runs are unaffected (and can't hit unknown-field deserialization errors).
+    const fmtDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '').trim()) ? `${String(d).trim()} 00:00:00` : null;
+    const pickFrom = fmtDate(context.mailFromDate);
+    const pickBefore = fmtDate(context.mailToDate);
+    if (pickFrom) item.pickEmailsFromDate = pickFrom;
+    if (pickBefore) item.pickEmailsBeforeDate = pickBefore;
     return item;
   });
 
@@ -929,7 +959,7 @@ async function triggerMigration(context) {
       const res = await retryWithBackoff(
         () =>
           axios.post(
-            `${BASE_URL}/${path}`,
+            `${apiBase()}/${path}`,
             payload,
             axiosCfg({
               headers: {
@@ -960,7 +990,7 @@ async function triggerMigration(context) {
       const st    = err.response?.status;
       const allow = err.response?.headers?.allow || err.response?.headers?.Allow;
       const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
-      logger.error(`devemailClient POST ${BASE_URL}/${path} HTTP ${st} — ${errBody}`);
+      logger.error(`devemailClient POST ${apiBase()}/${path} HTTP ${st} — ${errBody}`);
       if ((st === 405 || st === 404) && i < pathCandidates.length - 1) {
         logger.warn(
           `devemailClient POST ${path} → HTTP ${st}${allow ? `; Allow: ${allow}` : ''} — trying next path`
@@ -1002,7 +1032,7 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
   let noMatchStreak  = 0;
   let consecutiveAuthErrors = 0;
 
-  const reportsUrlCandidates = [`${BASE_URL}/mail/reports`, `${BASE_URL}/email/user/jobs`];
+  const reportsUrlCandidates = [`${apiBase()}/mail/reports`, `${apiBase()}/email/user/jobs`];
   let reportsUrl = reportsUrlCandidates[0];
   let reportsUrlFallbackIdx = 1;
 
@@ -1204,7 +1234,7 @@ async function fetchCurrentJobStatus(fromMailId) {
     // Try page sizes in ascending order — larger page increases chance of finding the job
     for (const pageSize of [50, 200]) {
       const res = await axios.get(
-        `${BASE_URL}/mail/reports`,
+        `${apiBase()}/mail/reports`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo: 0, pageSize, _: Date.now() },
@@ -1297,7 +1327,7 @@ async function getJobReport(jobId) {
   try {
     const { mailJwt: jwt } = await authenticate();
     const res = await axios.get(
-      `${BASE_URL}/mail/reports/${encodeURIComponent(jobId)}`,
+      `${apiBase()}/mail/reports/${encodeURIComponent(jobId)}`,
       axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { _: Date.now() }, timeout: 30000 })
     );
     return _asArray(res.data);
@@ -1320,7 +1350,7 @@ async function getWorkspaceRecords(jobDetailId) {
   try {
     const { mailJwt: jwt } = await authenticate();
     const res = await axios.get(
-      `${BASE_URL}/mail/workSpaces/${encodeURIComponent(jobDetailId)}`,
+      `${apiBase()}/mail/workSpaces/${encodeURIComponent(jobDetailId)}`,
       axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { pageNo: 0, pageSize: 50, _: Date.now() }, timeout: 30000 })
     );
     return _asArray(res.data);
@@ -1393,7 +1423,7 @@ async function resolveJobViaSsoToken({ jobId: knownJobId, jobName, fromMailId } 
     let jobId = (knownJobId && knownJobId !== 'initiated') ? knownJobId : null;
     let job = null;
     if (!jobId) {
-      const listRes = await axios.get(`${BASE_URL}/mail/reports`, H);
+      const listRes = await axios.get(`${apiBase()}/mail/reports`, H);
       const jobs = _asArray(listRes.data);
       if (!Array.isArray(jobs) || jobs.length === 0) {
         logger.warn('devemailClient resolveJobViaSsoToken: reports list returned no jobs');
@@ -1403,7 +1433,7 @@ async function resolveJobViaSsoToken({ jobId: knownJobId, jobName, fromMailId } 
       jobId = job.id || job.jobId;
     }
     if (!jobId) return null;
-    const r = await axios.get(`${BASE_URL}/mail/reports/${encodeURIComponent(jobId)}`, H);
+    const r = await axios.get(`${apiBase()}/mail/reports/${encodeURIComponent(jobId)}`, H);
     const arr = _asArray(r.data);
     const pair = (arr || []).find((p) => norm(p.fromMailId || p.fromEmail) === norm(fromMailId)) || (arr || [])[0] || {};
     const result = {
@@ -1422,7 +1452,7 @@ async function resolveJobViaSsoToken({ jobId: knownJobId, jobName, fromMailId } 
     if (result.workspaceId) {
       try {
         const wr = await axios.get(
-          `${BASE_URL}/mail/workSpaces/${encodeURIComponent(result.workspaceId)}`,
+          `${apiBase()}/mail/workSpaces/${encodeURIComponent(result.workspaceId)}`,
           axiosCfg({ headers: { Authorization: `Bearer ${token}` }, timeout: 30000, params: { pageNo: 0, pageSize: 500, type: 'all', folder: true, _: Date.now() } })
         );
         const recs = _asArray(wr.data);
@@ -1503,7 +1533,8 @@ module.exports = {
   loadSsoToken,
   resolveJobViaSsoToken,
 
-  // Constants
-  BASE_URL,
+  // Base URL — default + the active (runtime-aware) resolver
+  BASE_URL: DEFAULT_BASE_URL,
+  apiBase,
   TERMINAL_STATUSES,
 };

@@ -1,5 +1,6 @@
 const orchestrator = require('../orchestrator/AgentOrchestrator');
 const executionService = require('../services/executionService');
+const { ownsExecution } = require('../middleware/authUser');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
 const fs = require('fs');
@@ -57,7 +58,16 @@ async function runAgents(req, res) {
           migrationServerPassword: migrationServerPassword || '',
           mode: mode || 'email',
           bulkId,
+          // Mail migration options (devemail toggles) — same for every pair in the bulk run.
+          migrateRules: req.body.migrateRules,
+          archiveMailbox: req.body.archiveMailbox,
+          migrateAsInPlaceArchive: req.body.migrateAsInPlaceArchive,
+          excludeGroups: req.body.excludeGroups,
+          mailJobName: req.body.mailJobName || '',
+          mailFromDate: req.body.mailFromDate || '',
+          mailToDate: req.body.mailToDate || '',
         });
+        ctx.userEmail = req.userEmail || null; // owner — scopes this run to the signed-in user
         executionService.create(ctx);
         executionService.update(ctx.executionId, {
           status: 'RUNNING',
@@ -117,8 +127,17 @@ async function runAgents(req, res) {
       sourceFolderName: req.body.sourceFolderName || '',
       contentUserFolders: Array.isArray(req.body.contentUserFolders) ? req.body.contentUserFolders : [],
       useExistingSource: Boolean(req.body.useExistingSource),
+      // Mail migration options (devemail toggles). Omitted → MigrationContext defaults apply.
+      migrateRules: req.body.migrateRules,
+      archiveMailbox: req.body.archiveMailbox,
+      migrateAsInPlaceArchive: req.body.migrateAsInPlaceArchive,
+      excludeGroups: req.body.excludeGroups,
+      mailJobName: req.body.mailJobName || '',
+      mailFromDate: req.body.mailFromDate || '',
+      mailToDate: req.body.mailToDate || '',
     });
     context.validate();
+    context.userEmail = req.userEmail || null; // owner — scopes this run to the signed-in user
 
     executionService.create(context);
     executionService.update(context.executionId, {
@@ -146,14 +165,14 @@ async function runAgents(req, res) {
   }
 }
 
-function getExecutions(_req, res) {
-  const executions = executionService.getAll();
+function getExecutions(req, res) {
+  const executions = executionService.getAll(req.userEmail);
   res.json(executions);
 }
 
 function getExecution(req, res) {
   const execution = executionService.get(req.params.id);
-  if (!execution) {
+  if (!execution || !ownsExecution(execution, req.userEmail)) {
     return res.status(404).json({ error: 'Execution not found' });
   }
   try {
@@ -176,6 +195,11 @@ function getExecution(req, res) {
 
 function getExecutionLogs(req, res) {
   const executionId = req.params.id;
+  // Only the owner (or a legacy run) may read the logs.
+  const execution = executionService.get(executionId);
+  if (execution && !ownsExecution(execution, req.userEmail)) {
+    return res.status(404).json({ error: 'Execution not found' });
+  }
   const logFile = path.join(logsDir, `${executionId}.log`);
 
   try {
@@ -197,8 +221,8 @@ function getExecutionLogs(req, res) {
   }
 }
 
-function getStats(_req, res) {
-  res.json(executionService.getStats());
+function getStats(req, res) {
+  res.json(executionService.getStats(req.userEmail));
 }
 
 async function testConnections(req, res) {
@@ -614,7 +638,7 @@ async function ensureContentValidation(execution) {
 async function generatePdf(req, res) {
   try {
     const execution = executionService.get(req.params.id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
 
     const { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf } = require('../utils/pdfGenerator');
     const bulkId = execution.context?.bulkId;
@@ -933,7 +957,7 @@ async function cancelExecution(req, res) {
   try {
     const { id } = req.params;
     const execution = executionService.get(id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
     if (execution.status !== 'RUNNING') {
       return res.status(400).json({ error: `Execution is not running (status: ${execution.status})` });
     }
@@ -1122,7 +1146,7 @@ async function resumeExecution(req, res) {
   try {
     const { id } = req.params;
     const execution = executionService.get(id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
     if (execution.status !== 'INTERRUPTED') {
       return res.status(400).json({ error: `Execution cannot be resumed (status: ${execution.status})` });
     }

@@ -6,7 +6,7 @@ import LogViewer from '../components/LogViewer';
 import ResultsView from '../components/ResultsView';
 import ProductTabs from '../components/ProductTabs';
 import { productOf, productCounts, PRODUCT_LABEL } from '../utils/product';
-import { combinationLabel } from '../utils/combination';
+import { combinationLabel, combinationSlug } from '../utils/combination';
 
 // The fixed agent pipeline; each run's agentResults / currentAgent map onto these.
 const PIPELINE = [
@@ -129,10 +129,14 @@ export default function ExecutionLogs() {
       // Bulk runs return one combined report (all pairs) — name the file accordingly so repeated
       // downloads (from any pair) resolve to the same file rather than N per-pair names.
       const bulkId = selectedExec?.context?.bulkId;
+      // Include the combination (e.g. "outlook-to-gmail") in the filename so downloaded reports
+      // are self-identifying without opening them.
+      const combo = combinationSlug(selectedExec?.context);
+      const comboPart = combo ? `${combo}-` : '';
       a.href = url;
       a.download = bulkId
-        ? `bulk-validation-report-${String(bulkId).slice(0, 8)}.pdf`
-        : `validation-report-${selectedId.slice(0, 8)}.pdf`;
+        ? `bulk-validation-report-${comboPart}${String(bulkId).slice(0, 8)}.pdf`
+        : `validation-report-${comboPart}${selectedId.slice(0, 8)}.pdf`;
       document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
     } catch (err) { alert('Failed to download PDF: ' + (err.response?.data?.error || err.message)); }
     finally { setDownloading(false); }

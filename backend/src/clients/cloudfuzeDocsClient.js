@@ -753,6 +753,17 @@ function classifyOne(mismatch, combination, features) {
   const summary = String(mismatch.summaryLine    || '').toLowerCase();
   const blob    = `${field} ${kind} ${subject} ${actual} ${summary}`;
 
+  // ── Hard rule 0: caller marked this as an EXPECTED outcome of the chosen ────
+  // migration options (e.g. Archive folder not migrated because "Archive Mailbox" was OFF).
+  // Preserve it as a known limitation instead of re-classifying as a bug.
+  if (mismatch.isExpectedOutcome === true) {
+    return {
+      status:  'known_limitation',
+      feature: mismatch.bugFeature || 'Expected (migration option)',
+      reason:  mismatch.bugReason || mismatch.summaryLine || 'Expected outcome for the selected migration options.',
+    };
+  }
+
   // ── Hard rule 1: folder count mismatches are always migration bugs ─────────
   if (mismatch.category === 'comparison') {
     return {

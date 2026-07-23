@@ -75,12 +75,11 @@ class OutlookValidationAgent extends BaseAgent {
     await this._fetchDestinationData(destUser, result, log);
 
     if (context.includeMail) {
-      if (testType === 'SMOKE') {
-        await this._smokeValidateMail(destUser, result, log);
-      } else if (testType === 'SANITY') {
-        await this._sanityValidateMail(destUser, result, log);
-      } else {
+      // Smoke (merged Smoke+Sanity) runs the comprehensive validation; E2E runs the full suite.
+      if (testType === 'E2E') {
         await this._e2eValidateMail(destUser, result, log);
+      } else {
+        await this._sanityValidateMail(destUser, result, log);
       }
     }
 

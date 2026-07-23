@@ -5,6 +5,27 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// Attach the Microsoft-login JWT so the backend can scope executions to the signed-in user.
+api.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem('app_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// If the session token is missing/expired, the backend replies 401 — clear it and send the
+// user back to the sign-in screen (only when we actually had a token, to avoid redirect loops).
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 401 && sessionStorage.getItem('app_token')) {
+      sessionStorage.removeItem('app_token');
+      sessionStorage.removeItem('app_user');
+      window.location.assign('/');
+    }
+    return Promise.reject(err);
+  }
+);
+
 export function runAgents(payload) {
   return api.post('/agents/run', payload);
 }

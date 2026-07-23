@@ -62,9 +62,34 @@ const SAMPLE_512K_PDF_B64 = generateTestFileBuffer('qa-attachment-512kb.pdf', 0.
 /** Minimal valid JPEG (1×1 px) — image/jpeg attachment migration */
 const SAMPLE_JPEG_B64 =
   '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA8A/9k=';
-/** Minimal PNG (1×1 transparent) — image/png attachment migration */
-const SAMPLE_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// PNG generator (zlib, no binary asset). Produces a small VISIBLE solid-colour PNG so image
+// attachments and inline images render as a real coloured image instead of a blank/1×1 pixel.
+const _zlib = require('zlib');
+const _PNG_CRC_TABLE = (() => {
+  const t = new Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function _pngCrc32(buf) { let c = 0xffffffff; for (let i = 0; i < buf.length; i++) c = _PNG_CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function _pngChunk(type, data) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(_pngCrc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+function makeSolidPng(w, h, [r, g, b]) {
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 2; // 8-bit depth, colour type 2 (truecolour RGB)
+  const pixel = Buffer.from([r, g, b]);
+  const row = Buffer.concat([Buffer.from([0]), Buffer.concat(Array.from({ length: w }, () => pixel))]);
+  const raw = Buffer.concat(Array.from({ length: h }, () => row));
+  const idat = _zlib.deflateSync(raw);
+  return Buffer.concat([sig, _pngChunk('IHDR', ihdr), _pngChunk('IDAT', idat), _pngChunk('IEND', Buffer.alloc(0))]);
+}
+/** Visible solid-colour PNG (320×180 teal) — image/png attachment migration; opens as a real image, not blank. */
+const SAMPLE_PNG_B64 = makeSolidPng(320, 180, [45, 156, 118]).toString('base64');
 /** Minimal STORE zip (qa-archive.txt) — application/zip attachment migration */
 const SAMPLE_ZIP_B64 =
   'UEsDBBQAAAAAAIFSl1iua2JjFwAAABcAAAAOAAAAcWEtYXJjaGl2ZS50eHRtaWdyYXRpb24tcWEgemlwIHNhbXBsZVBLAQIUABQAAAAAAIFSl1iua2JjFwAAABcAAAAOAAAAAAAAAAAAAAAAAAAAAABxYS1hcmNoaXZlLnR4dFBLBQYAAAAAAQA8AAAAQwAAAAAAAAA=';
@@ -445,8 +470,8 @@ function buildInboundInboxSeeds(prefix, sendersOrCorrespondent, ccEmail, { mode 
         mailDirection: 'incoming',
         inboundFrom: pickSender(14),
         subject: `${prefix} - Inbound HTML with link and table`,
-        htmlBody: '<html><body><p>Please review the migration report:</p><p><a href="https://example.com/report">View Report</a></p><table border="1" cellpadding="4"><tr><th>User</th><th>Status</th></tr><tr><td>alice@example.com</td><td>Migrated</td></tr><tr><td>bob@example.com</td><td>Pending</td></tr></table></body></html>',
-        textBody: 'Please review the migration report. View: https://example.com/report',
+        htmlBody: '<html><body><p>Please review the migration report:</p><p><a href="https://www.cloudfuze.com">View Report</a></p><table border="1" cellpadding="4"><tr><th>User</th><th>Status</th></tr><tr><td>alice@example.com</td><td>Migrated</td></tr><tr><td>bob@example.com</td><td>Pending</td></tr></table></body></html>',
+        textBody: 'Please review the migration report. View: https://www.cloudfuze.com',
         labelIds: ['INBOX'],
       }
     );
@@ -527,7 +552,11 @@ function loadCustomTestCases(testType, log) {
     const filePath = path.resolve(__dirname, '../../../data/custom-test-cases.json');
     if (!fs.existsSync(filePath)) return [];
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    const cases = (data[testType.toLowerCase()] || []);
+    const key = String(testType || '').toLowerCase();
+    // Smoke and Sanity are merged — a SANITY run pulls custom cases from BOTH buckets.
+    const cases = key === 'sanity'
+      ? [...(data.smoke || []), ...(data.sanity || [])]
+      : (data[key] || []);
     if (cases.length > 0) log.info(`Loading ${cases.length} custom test case(s) for ${testType}`);
     return cases.map((tc) => ({
       subject: tc.subject,
@@ -544,10 +573,8 @@ function loadCustomTestCases(testType, log) {
     return [];
   }
 }
-const SAMPLE_INLINE_IMAGE = Buffer.from(
-  'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
-  'base64'
-).toString('base64');
+/** Visible solid-colour PNG for the inline-image test (uses makeSolidPng defined near the top) — 200×60 blue block. */
+const SAMPLE_INLINE_IMAGE = makeSolidPng(200, 60, [16, 82, 204]).toString('base64');
 
 /*
  * Test type determines how much test data gets created:
@@ -681,18 +708,22 @@ class GmailTestDataAgent extends BaseAgent {
     );
 
     if (context.includeMail) {
-      if (testType !== 'SMOKE') {
-        await this._createLabels(sourceEmail, testType, summary, log);
-      }
+      // Merged Smoke (formerly Smoke + Sanity) and E2E both seed labels, emails and drafts.
+      await this._createLabels(sourceEmail, testType, summary, log);
       if (!executionService.isCancelled(context.executionId)) {
         await this._createEmails(sourceEmail, correspondentEmail, ccEmail, bccEmail, effectiveInboundSenders, testType, summary, log, context.executionId);
       }
-      if (!executionService.isCancelled(context.executionId) && testType !== 'SMOKE') {
+      if (!executionService.isCancelled(context.executionId)) {
         await this._createDrafts(sourceEmail, correspondentEmail, ccEmail, testType, summary, log, context.executionId);
       }
       // 5. Filters/rules (G→O and G→G inscope) — seed Gmail filter rules for E2E only.
       if (!executionService.isCancelled(context.executionId) && testType === 'E2E') {
         await this._seedGmailFilters(sourceEmail, log, { inboundSenders: effectiveInboundSenders });
+      }
+      // Signature (inscope) — set a real Gmail signature in settings so signature migration is
+      // actually testable (previously the mailbox had "No signatures", so nothing migrated).
+      if (!executionService.isCancelled(context.executionId) && testType === 'E2E') {
+        await this._seedGmailSignature(sourceEmail, log);
       }
       // 1. All Mail (Gmail Only) — no explicit seeding needed. Every message in any label
       //    automatically appears in All Mail. Validation agent will confirm this during post-migration checks.
@@ -731,7 +762,8 @@ class GmailTestDataAgent extends BaseAgent {
   }
 
   async _createLabels(sourceEmail, testType, summary, log) {
-    const labels = testType === 'SANITY' ? SANITY_LABEL_NAMES : E2E_LABEL_NAMES;
+    // Merged Smoke uses the compact label set; E2E uses the full set.
+    const labels = testType === 'E2E' ? E2E_LABEL_NAMES : SANITY_LABEL_NAMES;
 
     const intervalMs = env.FOLDER_CREATE_INTERVAL_MS;
     for (const labelName of labels) {
@@ -770,10 +802,9 @@ class GmailTestDataAgent extends BaseAgent {
       if (hit) qaIds[n] = hit.id;
       else log.warn(`E2E: label "${n}" not found — run label creation or check name`);
     }
-    const snoozeHit = labels.find((l) => /snooz/i.test(l.name || ''));
-    if (snoozeHit) log.info(`E2E: Snooze label "${snoozeHit.name}" (${snoozeHit.id})`);
-    const snoozeId = snoozeHit?.id || null;
-    if (!snoozeId) log.info('E2E: No "Snoozed" label in mailbox — skipping snooze sample (label only exists after manual snooze in Gmail UI)');
+    // Snoozed-label test case removed from all combinations — a Gmail snooze has no destination
+    // equivalent and is never migrated, so the label is never detected or applied.
+    const snoozeId = null;
     return { qaIds, snoozeId };
   }
 
@@ -812,7 +843,7 @@ class GmailTestDataAgent extends BaseAgent {
           <img src="cid:inline-image-001" alt="test image" />
         </body></html>`,
         textBody: 'Inline + emoji fallback',
-        inlineImages: [{ contentId: 'inline-image-001', mimeType: 'image/gif', data: SAMPLE_INLINE_IMAGE }],
+        inlineImages: [{ contentId: 'inline-image-001', mimeType: 'image/png', data: SAMPLE_INLINE_IMAGE }],
         labelIds: ['SENT'],
         cc: ccEmail,
       },
@@ -1143,7 +1174,7 @@ class GmailTestDataAgent extends BaseAgent {
       {
         subject: 'QA E2E - Text format blockquote and indent',
         textBody: 'Blockquote and indent format test.',
-        htmlBody: '<html><body><p>Normal paragraph before blockquote.</p><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px">Single level blockquote text.</blockquote><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px"><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px">Double nested blockquote.</blockquote></blockquote><p style="padding-left:40px">Single indent paragraph.</p><p style="padding-left:80px">Double indent paragraph.</p><p style="padding-left:120px">Triple indent paragraph.</p><p>Normal paragraph after.</p></body></html>',
+        htmlBody: '<html><body><p>Normal paragraph before blockquote. This second sentence is added so the paragraph spans more than a single line.</p><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px">Single level blockquote text. This second sentence keeps the blockquote a real multi-line paragraph.</blockquote><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px"><blockquote style="margin:0 0 0 40px;border-left:4px solid #ccc;padding-left:8px">Double nested blockquote. This second sentence keeps the nested quote multi-line.</blockquote></blockquote><p style="padding-left:40px">Single indent paragraph. This second sentence makes the indented block a real paragraph.</p><p style="padding-left:80px">Double indent paragraph. This second sentence extends the double-indented block.</p><p style="padding-left:120px">Triple indent paragraph. This second sentence extends the triple-indented block.</p><p>Normal paragraph after. This second sentence confirms normal flow resumes after the formatted blocks.</p></body></html>',
         labelIds: ['SENT'],
       },
       {
@@ -1486,22 +1517,12 @@ class GmailTestDataAgent extends BaseAgent {
       }
     }
 
-    const snooze = [];
-    if (snoozeId) {
-      snooze.push({
-        subject: 'QA E2E - Snoozed label',
-        textBody: 'E2E: Sent + Snoozed label applied via API (snooze time not set).',
-        labelIds: ['SENT'],
-        postInsert: async (src, msgId, lg) => {
-          await gmailClient.modifyMessageLabels(src, 'me', msgId, [snoozeId], []);
-          lg.info(`Applied Snoozed label to message ${msgId}`);
-        },
-      });
-    }
+    // Snoozed-label test case removed from all combinations: a Gmail snooze has no destination
+    // equivalent and is never migrated, so the scenario is not seeded.
 
     const inbound = buildInboundInboxSeeds('QA E2E', correspondentEmail, ccEmail, { mode: 'full' });
 
-    return [...base, ...custom, ...multiLabelOne, ...labelOnly, ...snooze, ...inbound, ...noLabelOrphans];
+    return [...base, ...custom, ...multiLabelOne, ...labelOnly, ...inbound, ...noLabelOrphans];
   }
 
   /**
@@ -1660,12 +1681,18 @@ class GmailTestDataAgent extends BaseAgent {
         log,
       });
       if (xlsxEmails) {
-        const mode = testType === 'SMOKE' ? 'minimal' : 'standard';
-        const prefix = testType === 'SMOKE' ? 'QA Smoke' : 'QA Sanity';
-        const inbound = buildInboundInboxSeeds(prefix, inboundSenders, ccEmail, { mode });
+        // Merged Smoke uses the standard (comprehensive) inbound seed set.
+        const inbound = buildInboundInboxSeeds('QA Sanity', inboundSenders, ccEmail, { mode: 'standard' });
         emails = [...xlsxEmails, ...inbound];
       } else {
-        emails = testType === 'SMOKE' ? smokeEmails : sanityEmails;
+        // No xlsx — union the code-defined smoke + sanity fallback sets, deduped by subject.
+        const seen = new Set();
+        emails = [...sanityEmails, ...smokeEmails].filter((e) => {
+          const k = String(e.subject || '').toLowerCase().trim();
+          if (!k || seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
       }
     }
 
@@ -1850,9 +1877,12 @@ class GmailTestDataAgent extends BaseAgent {
 
     // ── §107 — Many TO recipients ──────────────────────────────────────────────
     log.info('Gmail E2E §107: many-TO-recipients email…');
-    const manyTo = [toEmail, ccEmail, ...inboundSenders].filter(Boolean).slice(0, 8).join(', ');
+    // Use the tenant's real correspondents and label the subject with the ACTUAL recipient count,
+    // so the subject always matches what's in the To header (no synthetic padding).
+    const manyToList = [...new Set([toEmail, ccEmail, ...inboundSenders].filter(Boolean))].slice(0, 10);
+    const manyTo = manyToList.join(', ');
     await insert({
-      subject: 'QA E2E 107 - Many TO Recipients (8+)',
+      subject: `QA E2E 107 - Many TO Recipients (${manyToList.length})`,
       textBody: 'Email with many TO recipients — validates recipient list migration.',
       labelIds: ['SENT'],
       to: manyTo,
@@ -2157,8 +2187,8 @@ class GmailTestDataAgent extends BaseAgent {
     log.info('Gmail E2E §116: HTML signature in body…');
     await insert({
       subject: 'QA E2E 116 - Email With HTML Signature Block',
-      htmlBody: '<html><body><p>Email body content.</p><br><div class="gmail_signature"><p><b>QA Agent</b><br>CloudFuze Inc.<br>Email: qa@cloudfuze.com<br>Phone: +1-555-0100</p><img src="cid:sig-logo" alt="logo" /></div></body></html>',
-      textBody: 'Email body content.\n\n--\nQA Agent\nCloudfuze Inc.',
+      htmlBody: `<html><body><p>Email body content.</p><br>${this._gmailSignatureHtml(sourceEmail)}</body></html>`,
+      textBody: 'Email body content.\n\n--\nQA Agent\nCloudFuze Inc.',
       labelIds: ['SENT'],
     });
     log.info('✓ §116 complete — 1 HTML signature email');
@@ -2352,7 +2382,7 @@ class GmailTestDataAgent extends BaseAgent {
 
   async _createDrafts(sourceEmail, toEmail, ccEmail, testType, summary, log, executionId) {
     const xlsxPath = env.GMAIL_TEST_CASES_XLSX || defaultGmailTestCasesXlsxPath();
-    const fallbackDrafts = testType === 'SANITY'
+    const fallbackDrafts = testType !== 'E2E'
       ? [{ subject: 'QA Sanity - Draft', textBody: 'Sanity test: draft for migration.' }]
       : [
           {
@@ -2401,6 +2431,40 @@ class GmailTestDataAgent extends BaseAgent {
       } catch (err) {
         log.error(`Failed to create draft "${draft.subject}": ${err.message}`);
       }
+    }
+  }
+
+  /**
+   * Build the HTML signature used both for the Gmail settings signature and the in-body
+   * signature-block email, so the two stay identical. Name is derived from the mailbox local part;
+   * the logo is the visible sample PNG embedded as a data URI.
+   */
+  _gmailSignatureHtml(sourceEmail) {
+    const local = String(sourceEmail || '').split('@')[0] || 'qa';
+    const name = local.replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    return (
+      '<div class="gmail_signature" data-smartmail="gmail_signature">'
+      + `<div><b>${name}</b></div>`
+      + `<div>${sourceEmail}</div>`
+      + '<div>+91 1234567890</div>'
+      + '<div>CloudFuze Inc.</div>'
+      + `<img src="data:image/png;base64,${SAMPLE_INLINE_IMAGE}" alt="CloudFuze" width="120" height="36" />`
+      + '</div>'
+    );
+  }
+
+  /**
+   * Create a real Gmail signature (Settings → Signature) on the source mailbox so signature
+   * migration is actually exercised. Previously the mailbox had "No signatures", so there was
+   * nothing to migrate. Non-blocking — logs a warning if the settings scope isn't authorized.
+   */
+  async _seedGmailSignature(sourceEmail, log) {
+    try {
+      const res = await gmailClient.setGmailSignature(sourceEmail, this._gmailSignatureHtml(sourceEmail));
+      if (res && res.ok) log.info(`✓ Gmail signature created for ${sourceEmail}`);
+      else log.warn(`Gmail signature not set (non-blocking): ${res && res.note}`);
+    } catch (err) {
+      log.warn(`Gmail signature seeding failed (non-blocking): ${err.message}`);
     }
   }
 

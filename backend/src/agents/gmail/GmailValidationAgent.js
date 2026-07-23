@@ -69,6 +69,13 @@ class GmailValidationAgent extends BaseAgent {
     log.info(`Validating Outlook→Gmail [${testType}]: ${sourceUser} → ${destUser}`);
     const _startTime = new Date();
 
+    // Invalidate the cached Outlook folder list (5-min TTL) so validation re-enumerates fresh.
+    // The same run wiped folders (cleanup) then re-created them (seed) — including custom/rule-routed
+    // folders like "QA-Sanity-Rule-From-Sophia" created LAST — so a cache populated earlier in the
+    // flow would omit them, making validation falsely report "no custom folders at source" (and miss
+    // their messages in the deep scan). A fresh read reflects what actually migrated.
+    try { outlookClient.clearFolderCache(sourceUser); } catch { /* non-fatal */ }
+
     // Fetch CloudFuze migration job status so the PDF report shows Workspace ID, total/processed
     // counts, and status. Only fetch if not already populated by MigrationAgent in this execution.
     if (!context.migrationJobDetails) {
@@ -90,6 +97,10 @@ class GmailValidationAgent extends BaseAgent {
     await this._fetchDestinationGmailData(destUser, result, log);
 
     // ── 3. Mail validation ─────────────────────────────────────────────────
+    // Whether the run requested Archive Mailbox migration (devemail backup toggle). When OFF,
+    // the Outlook Archive folder is intentionally not migrated, so an empty destination archive
+    // is EXPECTED (not a bug) — _compareMailCounts uses this to classify the archive result.
+    result.archiveMailboxRequested = context.archiveMailbox !== false;
     if (context.includeMail !== false) {
       this._compareMailCounts(result, log);
     }
@@ -463,7 +474,23 @@ class GmailValidationAgent extends BaseAgent {
     for (const folder of folders) {
       const segment  = (folder.displayName || '').trim();
       const fullPath = parentPath ? `${parentPath}/${segment}` : segment;
-      const count    = folder.totalItemCount || 0;
+      let count      = folder.totalItemCount || 0;
+
+      // Graph's cached folder `totalItemCount` lags right after seeding/migration — especially for
+      // folders populated by a MOVE (e.g. Archive), where it can still read 0 while messages exist.
+      // A stale 0 makes the report claim "no messages at source" AND falsely flags the destination's
+      // copies as duplicates. When it reads 0, confirm with a live message $count before trusting it.
+      if (count === 0 && userId && folder.id) {
+        try {
+          const live = Number(await outlookClient.getMessageCount(userId, folder.id));
+          if (Number.isFinite(live) && live > 0) {
+            if (log) log.info(`Source folder "${fullPath}": totalItemCount=0 but live $count=${live} — using live count (Graph metadata lag)`);
+            count = live;
+          }
+        } catch (e) {
+          if (log) log.warn(`Source folder "${fullPath}": live $count fallback failed: ${e.message}`);
+        }
+      }
 
       if (OUTLOOK_TO_GMAIL_LABEL[segment]) {
         // Map to Gmail label ID for comparison
@@ -583,6 +610,18 @@ class GmailValidationAgent extends BaseAgent {
         `Dest Gmail: ${result.destinationData.defaultFolders.length} default, ` +
         `${result.destinationData.customFolders.length} custom, total ${result.mailValidation.destinationCount} messages`
       );
+
+      // Populate the Mail Validation panel with real execution counts:
+      // custom folder/label list (name + message count) and destination emails-with-attachments count.
+      // Custom labels only (excludes system folders like INBOX/SENT) so "Folders Found" reflects the QA labels.
+      result.mailValidation.folderMapping = result.destinationData.customFolders
+        .map((f) => ({ folderName: f.name, messageCount: f.messageCount || 0, unreadCount: f.unreadCount ?? '' }));
+      try {
+        result.mailValidation.emailsWithAttachments =
+          await gmailClient.countMessagesByQuery(destUser, 'has:attachment');
+      } catch (e) {
+        log.warn(`Dest attachment count failed (non-fatal): ${e.message}`);
+      }
     } catch (err) {
       log.error(`Failed to fetch destination Gmail data: ${err.message}`);
       result.destinationData.fetchError = err.message;
@@ -610,6 +649,13 @@ class GmailValidationAgent extends BaseAgent {
       );
       const srcCount  = srcLabel.messageCount || 0;
       const destCount = destFolder?.messageCount || 0;
+
+      // Archive Mailbox OFF → the Archive folder is intentionally not migrated; don't flag its
+      // count as a mismatch (the Functionality Check shows it as an explained, non-failing item).
+      if (srcLabel.id === OUTLOOK_ARCHIVE_GMAIL_LABEL && result.archiveMailboxRequested === false) {
+        log.info(`Archive folder count comparison skipped — "Archive Mailbox" option was OFF (archive intentionally not migrated)`);
+        continue;
+      }
 
       if (!destFolder) {
         result.addComparisonIssue('default', `${srcLabel.name} → ${srcLabel.id}`, srcCount, 'NOT_FOUND');
@@ -660,17 +706,25 @@ class GmailValidationAgent extends BaseAgent {
     const srcArchiveCount = srcArchive?.messageCount || 0;
     const dstArchiveCount = dstArchive?.messageCount || 0;
     if (srcArchiveCount > 0 && dstArchiveCount === 0) {
-      result.mismatches.push({
-        category: 'folder',
-        kind: 'folder',
-        kindLabel: 'Folder migration',
-        field: 'Archive folder',
-        expected: `${srcArchiveCount} message(s) in Archive[Gmail]`,
-        actual: 'Archive folder NOT migrated to Gmail destination',
-        summaryLine: `Archive folder: ${srcArchiveCount} email(s) not migrated — INSCOPE feature (bug)`,
-        bugStatus: 'bug',
-      });
-      log.warn(`Archive folder NOT migrated: source has ${srcArchiveCount} email(s), destination has 0`);
+      if (result.archiveMailboxRequested === false) {
+        // Archive Mailbox toggle was OFF — the Archive folder is intentionally NOT migrated.
+        // Do NOT report it as a mismatch/finding at all; the Functionality Check shows a single
+        // explained, non-failing "Archive" row instead.
+        log.info(`Archive folder not validated: source has ${srcArchiveCount} email(s), destination has 0 — EXPECTED and skipped because "Archive Mailbox" option was OFF`);
+      } else {
+        // Archive Mailbox was ON but archive still did not migrate — this IS a bug.
+        result.mismatches.push({
+          category: 'folder',
+          kind: 'folder',
+          kindLabel: 'Folder migration',
+          field: 'Archive folder',
+          expected: `${srcArchiveCount} message(s) in Archive[Gmail]`,
+          actual: 'Archive folder NOT migrated to Gmail destination (Archive Mailbox was ON)',
+          summaryLine: `Archive folder: ${srcArchiveCount} email(s) not migrated despite "Archive Mailbox" ON — INSCOPE feature (bug)`,
+          bugStatus: 'bug',
+        });
+        log.warn(`Archive folder NOT migrated: source has ${srcArchiveCount} email(s), destination has 0 — Archive Mailbox was ON (bug)`);
+      }
     }
 
     // ── Search Folders migration status ───────────────────────────────────────

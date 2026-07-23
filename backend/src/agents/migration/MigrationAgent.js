@@ -84,7 +84,11 @@ class MigrationAgent extends BaseAgent {
     // devemailClient (correct /auth/user → /mail/register flow).
     // When useDevemail=false (newtestemail5), migrationClient handles everything as before.
     const activeUrl = (context.migrationServerUrl || env.MIGRATION_API_URL || '').toLowerCase();
-    const useDevemail = !migrationClient.isNewServer() && activeUrl.includes('devemail');
+    // devemail CONTRACT (not just the devemail.cloudfuze.com host): any server exposing the
+    // /proxyservices/* API — including new per-customer servers — is driven by devemailClient with
+    // its own URL + credentials. isNewServer() already classifies /proxyservices URLs as legacy.
+    const useDevemail = !migrationClient.isNewServer()
+      && (activeUrl.includes('devemail') || activeUrl.includes('/proxyservices/'));
 
     try {
     // ── Step 0 — Register / Login ─────────────────────────────────
@@ -96,7 +100,11 @@ class MigrationAgent extends BaseAgent {
       const devPassword = context.migrationServerPassword || env.MIGRATION_APP_LOGIN_PASSWORD || '';
       // Set runtime config so resolveEmail() / ownerEmailId use the UI credentials for all
       // subsequent devemailClient calls (triggerMigration, cacheUserMapping, uploadUserCSV, etc.)
-      devemailClient.setRuntimeConfig({ email: devEmail, password: devPassword });
+      devemailClient.setRuntimeConfig({
+        email: devEmail,
+        password: devPassword,
+        baseUrl: context.migrationServerUrl || env.MIGRATION_API_URL, // target the server the user entered
+      });
       await devemailClient.authenticate(devEmail, devPassword, {
         baseUrl: context.migrationServerUrl || env.MIGRATION_API_URL,
       });
@@ -643,7 +651,7 @@ class MigrationAgent extends BaseAgent {
     // Treat the placeholder 'initiated' (from a "Sucess" initiate response) as no real id.
     const realTriggerJobId = this.jobId && this.jobId !== 'initiated' ? this.jobId : null;
     context.migrationJobDetails = {
-      serverUrl: useDevemail ? devemailClient.BASE_URL : migrationClient.getActiveBaseUrl(),
+      serverUrl: useDevemail ? devemailClient.apiBase() : migrationClient.getActiveBaseUrl(),
       jobId: polledJobDetails.jobId || realTriggerJobId || null,
       jobName: polledJobDetails.jobName || triggerResult.jobName || null,
       workspaceId: polledJobDetails.workspaceId || null,

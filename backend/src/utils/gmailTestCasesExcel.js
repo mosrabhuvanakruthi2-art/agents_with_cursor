@@ -67,6 +67,10 @@ function rowToMailDef(row, { qaIds, snoozeId, ccEmail, bccEmail, sourceEmail, sa
   const subject = String(row.subject ?? '').trim();
   if (!subject) return null;
 
+  // Snoozed-label test case removed from all combinations: a Gmail snooze has no destination
+  // equivalent and is never migrated, so the scenario is not seeded.
+  if (truthyCell(row.postsnooze) || /snooz/i.test(subject)) return null;
+
   const incoming = truthyCell(row.incoming);
 
   let labelIds = parseLabelIds(row.labelids);
@@ -228,7 +232,7 @@ function rowToMailDef(row, { qaIds, snoozeId, ccEmail, bccEmail, sourceEmail, sa
     def.inlineImages = [
       {
         contentId: 'inline-image-001',
-        mimeType: 'image/gif',
+        mimeType: 'image/png',
         data: samples.inlineImageData,
       },
     ];
@@ -250,15 +254,6 @@ function rowToMailDef(row, { qaIds, snoozeId, ccEmail, bccEmail, sourceEmail, sa
     if (!def.labelIds.length) def.labelIds = ['INBOX'];
   } else {
     def.labelIds = normalizeOutgoingSeedLabelIds(def.labelIds);
-  }
-
-  if (truthyCell(row.postsnooze) && snoozeId) {
-    def.postInsert = async (src, msgId, lg) => {
-      await gmailClient.modifyMessageLabels(src, 'me', msgId, [snoozeId], []);
-      lg.info(`Applied Snoozed label to message ${msgId}`);
-    };
-  } else if (truthyCell(row.postsnooze) && !snoozeId) {
-    log.info(`Excel mail row "${subject}": PostSnooze=Y but no Snooze label — skipping (Snoozed label only exists after manual snooze in Gmail UI)`);
   }
 
   return def;
@@ -304,10 +299,12 @@ function tryLoadMailCasesFromExcel(filePath, testType, ctx) {
   const raw = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
   const rows = normalizeRows(raw);
   const want = String(testType || '').toUpperCase();
+  // Smoke and Sanity are merged — a SANITY run includes rows tagged either SMOKE or SANITY.
+  const wanted = want === 'SANITY' ? new Set(['SMOKE', 'SANITY']) : new Set([want]);
   const defs = [];
   for (const row of rows) {
     const tt = String(row.testtype ?? '').toUpperCase().trim();
-    if (tt !== want) continue;
+    if (!wanted.has(tt)) continue;
     const en = row.enabled;
     if (en !== undefined && en !== null && String(en).trim() !== '') {
       if (!truthyCell(en)) continue;
@@ -347,10 +344,12 @@ function tryLoadDraftCasesFromExcel(filePath, testType, ccEmail, log) {
   const raw = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
   const rows = normalizeRows(raw);
   const want = String(testType || '').toUpperCase();
+  // Smoke and Sanity are merged — a SANITY run includes rows tagged either SMOKE or SANITY.
+  const wanted = want === 'SANITY' ? new Set(['SMOKE', 'SANITY']) : new Set([want]);
   const defs = [];
   for (const row of rows) {
     const tt = String(row.testtype ?? '').toUpperCase().trim();
-    if (tt !== want) continue;
+    if (!wanted.has(tt)) continue;
     const en = row.enabled;
     if (en !== undefined && en !== null && String(en).trim() !== '') {
       if (!truthyCell(en)) continue;

@@ -147,6 +147,8 @@ const executionService = {
   create(context) {
     const execution = {
       executionId: context.executionId,
+      // Owner (signed-in user) — used to scope Reports & Logs / Dashboard per user.
+      userEmail: context.userEmail ? String(context.userEmail).toLowerCase() : null,
       context: typeof context.toJSON === 'function' ? context.toJSON() : { ...context },
       status: 'PENDING',
       currentAgent: null,
@@ -172,10 +174,18 @@ const executionService = {
     return executions.get(executionId) || null;
   },
 
-  getAll() {
-    return Array.from(executions.values()).sort(
+  /**
+   * All executions, newest first. When filterEmail is given, scope to that user's runs
+   * (plus legacy runs that predate per-user scoping, which have no owner). Passing no
+   * filter returns everything — used by internal callers.
+   */
+  getAll(filterEmail) {
+    const all = Array.from(executions.values()).sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
+    if (!filterEmail) return all;
+    const f = String(filterEmail).toLowerCase();
+    return all.filter((e) => !e.userEmail || String(e.userEmail).toLowerCase() === f);
   },
 
   cancel(executionId) {
@@ -195,8 +205,8 @@ const executionService = {
     return cancelledIds.has(executionId);
   },
 
-  getStats() {
-    const all = this.getAll();
+  getStats(filterEmail) {
+    const all = this.getAll(filterEmail);
     const completed = all.filter((e) => e.status === 'COMPLETED').length;
     const failed = all.filter((e) => e.status === 'FAILED').length;
     const running = all.filter((e) => e.status === 'RUNNING').length;

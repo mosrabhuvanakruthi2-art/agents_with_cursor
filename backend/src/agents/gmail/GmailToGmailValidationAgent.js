@@ -353,6 +353,18 @@ class GmailToGmailValidationAgent extends BaseAgent {
         `Dest Gmail: ${result.destinationData.defaultFolders.length} default, ` +
         `${result.destinationData.customFolders.length} custom, total ${result.mailValidation.destinationCount} messages`
       );
+
+      // Populate the Mail Validation panel with real execution counts:
+      // custom folder/label list (name + message count) and destination emails-with-attachments count.
+      // Custom labels only (excludes system folders like INBOX/SENT) so "Folders Found" reflects the QA labels.
+      result.mailValidation.folderMapping = result.destinationData.customFolders
+        .map((f) => ({ folderName: f.name, messageCount: f.messageCount || 0, unreadCount: f.unreadCount ?? '' }));
+      try {
+        result.mailValidation.emailsWithAttachments =
+          await gmailClient.countMessagesByQuery(destUser, 'has:attachment');
+      } catch (e) {
+        log.warn(`Dest attachment count failed (non-fatal): ${e.message}`);
+      }
     } catch (err) {
       log.error(`Failed to fetch destination Gmail data: ${err.message}`);
     }

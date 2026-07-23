@@ -79,8 +79,11 @@ function buildEvalContext(validation) {
   const duplicateMessages = Array.isArray(dmv.duplicateMessages) ? dmv.duplicateMessages : [];
 
   const archiveAllMail = validation?.archiveAllMailValidation || null;
+  // Whether the run requested Archive Mailbox migration (devemail backup toggle). Undefined for
+  // older results (treated as requested). When explicitly false, Archive is intentionally skipped.
+  const archiveMailboxRequested = validation?.archiveMailboxRequested;
 
-  return { all: messageResults, paired, hasResults, mismatchFieldsByMsg, threadChain, orderVal, comparison, issues, srcDefault, srcCustom, dstCustom, settingsValidation, duplicateMessages, archiveAllMail };
+  return { all: messageResults, paired, hasResults, mismatchFieldsByMsg, threadChain, orderVal, comparison, issues, srcDefault, srcCustom, dstCustom, settingsValidation, duplicateMessages, archiveAllMail, archiveMailboxRequested };
 }
 
 /** True if a diff field belongs to the target set (supports the attachment* prefix). */
@@ -148,6 +151,11 @@ function evalDefaultFolder(ctx, group) {
  * For folder-based combinations (Outlook dest / O→O) fall back to the default-folder Archive check.
  */
 function evalArchive(ctx) {
+  // Archive Mailbox option was OFF → the Archive folder is intentionally not migrated, so this
+  // is expected (not a failure). Show it as a neutral, explained item.
+  if (ctx.archiveMailboxRequested === false) {
+    return { status: 'na', evidence: '"Archive Mailbox" option was OFF — Archive folder intentionally not migrated (enable it to migrate archive)' };
+  }
   const aa = ctx.archiveAllMail;
   if (aa && typeof aa.sourceArchivedCount === 'number') {
     if (aa.available === false) {

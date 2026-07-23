@@ -73,6 +73,20 @@ class MigrationContext {
     useExistingSource = false,
     /** Shared id linking all pairs of one bulk run — used to build a single combined report */
     bulkId = null,
+    // ── Mail migration options (devemail "Options" toggles, from the Run-Agent UI) ──────────
+    /** Migrate Rules → devemail mailRules (opt-in; only sent when true). */
+    migrateRules = false,
+    /** Archive Mailbox → devemail backup. Default ON (matches prior hardcoded behavior). */
+    archiveMailbox = true,
+    /** Migrate As In-Place Archive → devemail archivedMailBox. One-Time only; default OFF. */
+    migrateAsInPlaceArchive = false,
+    /** Exclude Groups → devemail disableGroups. Default OFF. */
+    excludeGroups = false,
+    /** Optional UI-supplied job name; overrides the auto-generated devemail job name. */
+    mailJobName = '',
+    /** Migrate date range (YYYY-MM-DD) → devemail pickEmailsFromDate / pickEmailsBeforeDate. */
+    mailFromDate = '',
+    mailToDate = '',
   }) {
     this.sourceEmail = sourceEmail;
     this.destinationEmail = destinationEmail;
@@ -101,16 +115,28 @@ class MigrationContext {
     const tt = String(testType || '').toUpperCase();
     this.deepValidation = true;
 
+    // Smoke and Sanity are merged into a single "Sanity" tier — normalize any legacy SMOKE value
+    // to SANITY so old runs/links keep working and everything downstream sees one non-E2E tier.
     this.testType =
       tt === 'DEEP_E2E'
         ? TEST_TYPES.E2E
-        : TEST_TYPES[tt] || TEST_TYPES.E2E;
+        : tt === 'SMOKE'
+          ? TEST_TYPES.SANITY
+          : TEST_TYPES[tt] || TEST_TYPES.E2E;
     this.executionId = executionId || uuidv4();
     this.bulkId = bulkId || null;
     this.sourceProvider = sourceProvider || 'google';
     this.destinationProvider = destinationProvider || 'microsoft';
     this.userEmailMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
     this.migrateOrphanedLabels = Boolean(migrateOrphanedLabels);
+    // Mail migration options (devemail toggles). Defaults preserve prior hardcoded behavior.
+    this.migrateRules = migrateRules === true;
+    this.archiveMailbox = archiveMailbox !== false;
+    this.migrateAsInPlaceArchive = migrateAsInPlaceArchive === true;
+    this.excludeGroups = excludeGroups === true;
+    this.mailJobName = String(mailJobName || '').trim();
+    this.mailFromDate = String(mailFromDate || '').trim();
+    this.mailToDate = String(mailToDate || '').trim();
     this.sourceAdminEmail = String(sourceAdminEmail || '').trim().toLowerCase();
     this.destAdminEmail = String(destAdminEmail || '').trim().toLowerCase();
     this.migrationServerUrl = String(migrationServerUrl || '').trim().replace(/\/$/, '');
@@ -165,6 +191,13 @@ class MigrationContext {
       deepValidation: this.deepValidation,
       userEmailMappings: this.userEmailMappings,
       migrateOrphanedLabels: this.migrateOrphanedLabels,
+      migrateRules: this.migrateRules,
+      archiveMailbox: this.archiveMailbox,
+      migrateAsInPlaceArchive: this.migrateAsInPlaceArchive,
+      excludeGroups: this.excludeGroups,
+      mailJobName: this.mailJobName || undefined,
+      mailFromDate: this.mailFromDate || undefined,
+      mailToDate: this.mailToDate || undefined,
       sourceAdminEmail: this.sourceAdminEmail,
       destAdminEmail: this.destAdminEmail,
       migrationServerUrl: this.migrationServerUrl || undefined,

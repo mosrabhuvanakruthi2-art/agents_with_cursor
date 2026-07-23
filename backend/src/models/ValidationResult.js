@@ -372,6 +372,8 @@ class ValidationResult {
       ...(this.starredValidation         !== undefined && { starredValidation: this.starredValidation }),
       ...(this.groupCalendarValidation   !== undefined && { groupCalendarValidation: this.groupCalendarValidation }),
       ...(this.archiveMigration          !== undefined && { archiveMigration: this.archiveMigration }),
+      ...(this.archiveAllMailValidation  !== undefined && { archiveAllMailValidation: this.archiveAllMailValidation }),
+      ...(this.archiveMailboxRequested   !== undefined && { archiveMailboxRequested: this.archiveMailboxRequested }),
     };
   }
 }

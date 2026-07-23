@@ -26,3 +26,18 @@ export function combinationLabel(ctx) {
   }
   return ctx.messageCombination || null;
 }
+
+/**
+ * Filename-safe combination slug derived from combinationLabel, e.g. "outlook-to-gmail",
+ * "box-to-sharepoint". Returns null when the combination is unknown.
+ */
+export function combinationSlug(ctx) {
+  const label = combinationLabel(ctx);
+  if (!label) return null;
+  const slug = label
+    .toLowerCase()
+    .replace(/→/g, 'to')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || null;
+}

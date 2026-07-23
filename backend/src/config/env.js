@@ -544,4 +544,12 @@ module.exports = {
     }
     return accounts;
   })(),
+
+  // ── Microsoft login for the QA tool itself (Azure AD "Cloudfuze domain" app) ──
+  // Separate from the Graph cloud-connection app above — used ONLY to authenticate
+  // users into the QA Agent UI (PKCE browser flow → backend code exchange → app JWT).
+  AZURE_CLIENT_ID: cleanEnvValue(process.env.AZURE_CLIENT_ID || ''),
+  AZURE_TENANT_ID: cleanEnvValue(process.env.AZURE_TENANT_ID || 'common'),
+  AZURE_CLIENT_SECRET: cleanEnvValue(process.env.AZURE_CLIENT_SECRET || ''),
+  JWT_SECRET: cleanEnvValue(process.env.JWT_SECRET || ''),
 };

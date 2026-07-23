@@ -5,6 +5,7 @@ const env = require('../config/env');
 const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
+const { realizePlaceholderLinks } = require('../utils/realizeLinks');
 
 /** Return '2' or '3' if the email belongs to the second/third Google tenant, else '1'. */
 function getGoogleTenant(email) {
@@ -221,6 +222,9 @@ function buildRawMessage({
   references,
   messageId,
 }) {
+  // Rewrite example.com placeholder hyperlink hosts to a real, reachable host (keeps scheme/path/query).
+  htmlBody = realizePlaceholderLinks(htmlBody);
+  textBody = realizePlaceholderLinks(textBody);
   const ts = Date.now();
   const altBoundary = `alt_${ts}`;
   const mixedBoundary = `mixed_${ts}`;
@@ -1243,7 +1247,7 @@ async function getGoogleGroupsCount(adminEmail) {
 async function cleanGmailMailbox(sourceEmail) {
   const log = require('../utils/logger');
   const gmail = getGmailForWrite(sourceEmail);
-  const summary = { messagesDeleted: 0, foldersDeleted: 0, eventsDeleted: 0, calendarsDeleted: 0, errors: [] };
+  const summary = { messagesDeleted: 0, foldersDeleted: 0, eventsDeleted: 0, calendarsDeleted: 0, signaturesCleared: 0, errors: [] };
 
   log.info('[clean-gmail ' + sourceEmail + '] Step 1: Deleting custom labels...');
   try {
@@ -1363,7 +1367,28 @@ async function cleanGmailMailbox(sourceEmail) {
     if (filters.length > 0) log.info('[clean-gmail ' + sourceEmail + ']   Deleted ' + filters.length + ' filter(s)');
   } catch (err) { summary.errors.push('Filters: ' + err.message); }
 
-  log.info('[clean-gmail ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs, ' + summary.foldersDeleted + ' labels, ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' calendars (FULL WIPE — all settings cleared)');
+  log.info('[clean-gmail ' + sourceEmail + '] Step 6: Clearing send-as signatures...');
+  try {
+    const saRes = await gmail.users.settings.sendAs.list({ userId: 'me' });
+    const sendAsEntries = (saRes.data.sendAs || []);
+    for (const sa of sendAsEntries) {
+      // Only entries with a non-empty signature need clearing (patch to empty string removes it)
+      if (!sa.signature) continue;
+      try {
+        await gmail.users.settings.sendAs.patch({
+          userId: 'me',
+          sendAsEmail: sa.sendAsEmail,
+          requestBody: { signature: '' },
+        });
+        summary.signaturesCleared = (summary.signaturesCleared || 0) + 1;
+        log.info('[clean-gmail ' + sourceEmail + ']   Cleared signature for ' + sa.sendAsEmail);
+      } catch (err) {
+        summary.errors.push('Signature ' + sa.sendAsEmail + ': ' + err.message);
+      }
+    }
+  } catch (err) { summary.errors.push('Signatures: ' + err.message); }
+
+  log.info('[clean-gmail ' + sourceEmail + '] DONE: ' + summary.messagesDeleted + ' msgs, ' + summary.foldersDeleted + ' labels, ' + summary.eventsDeleted + ' events, ' + summary.calendarsDeleted + ' calendars, ' + (summary.signaturesCleared || 0) + ' signatures (FULL WIPE — all settings cleared)');
   return summary;
 }
 
@@ -1457,11 +1482,19 @@ async function cleanGmailEmailsOnly(sourceEmail) {
   try {
     let hasMore = true;
     while (hasMore) {
-      const res = await gmail.users.messages.list({ userId: 'me', maxResults: 100, includeSpamTrash: true });
+      // Retry transient gateway timeouts (504) / 5xx with backoff, and page 500 at a time
+      // (fewer round-trips on huge mailboxes = fewer chances to hit a gateway timeout).
+      const res = await retryWithBackoff(
+        () => gmail.users.messages.list({ userId: 'me', maxResults: 500, includeSpamTrash: true }),
+        { label: `Gmail list ${sourceEmail}`, maxRetries: 4, baseDelay: 2000, maxDelay: 30000 }
+      );
       const messages = res.data.messages || [];
       if (messages.length === 0) { hasMore = false; break; }
       const ids = messages.map((m) => m.id);
-      await gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids } });
+      await retryWithBackoff(
+        () => gmail.users.messages.batchDelete({ userId: 'me', requestBody: { ids } }),
+        { label: `Gmail batchDelete ${ids.length} msg(s) (${sourceEmail})`, maxRetries: 4, baseDelay: 2000, maxDelay: 30000 }
+      );
       summary.messagesDeleted += ids.length;
     }
   } catch (err) { summary.errors.push('Messages: ' + err.message); }
@@ -1842,12 +1875,44 @@ async function getVacationSettings(userEmail) {
  * @returns {Promise<{ sendAs: Array|null, available: false, note: string }>}
  */
 async function getSendAsSettings(userEmail) {
-  logger.warn(`getSendAsSettings: not yet implemented for ${userEmail} — gmail.settings.basic scope not in DWD`);
-  return {
-    sendAs: null,
-    available: false,
-    note: 'SendAs/signature settings not available — gmail.settings.basic scope not configured in DWD.',
-  };
+  try {
+    const gmail = getGmailForEmail(userEmail);
+    const res = await retryWithBackoff(
+      () => gmail.users.settings.sendAs.list({ userId: 'me' }),
+      { label: `Gmail sendAs.list (${userEmail})` }
+    );
+    return { sendAs: res.data.sendAs || [], available: true };
+  } catch (e) {
+    return {
+      sendAs: null,
+      available: false,
+      note: `SendAs/signature fetch failed: ${String(e.message).substring(0, 160)}`,
+    };
+  }
+}
+
+/**
+ * Set the HTML signature on a user's primary send-as address (the mailbox address itself).
+ * Uses the same gmail.settings.basic DWD scope that filter creation already relies on.
+ * @param {string} userEmail
+ * @param {string} signatureHtml
+ * @returns {Promise<{ ok: boolean, note?: string }>}
+ */
+async function setGmailSignature(userEmail, signatureHtml) {
+  try {
+    const gmail = getGmailForWrite(userEmail);
+    await retryWithBackoff(
+      () => gmail.users.settings.sendAs.patch({
+        userId: 'me',
+        sendAsEmail: userEmail,
+        requestBody: { signature: signatureHtml },
+      }),
+      { label: `Gmail setSignature (${userEmail})` }
+    );
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, note: `Set signature failed: ${String(e.message).substring(0, 160)}` };
+  }
 }
 
 module.exports = {
@@ -1899,5 +1964,6 @@ module.exports = {
   getGmailContactGroups,
   getVacationSettings,
   getSendAsSettings,
+  setGmailSignature,
   GMAIL_SYSTEM_LABEL_IDS,
 };

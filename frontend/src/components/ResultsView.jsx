@@ -94,21 +94,36 @@ export default function ResultsView({ exec }) {
         ) : validation.mismatches?.length === 0 ? (
           <p className="text-sm text-green-600">All validations passed — source and destination data match.</p>
         ) : null}
-        {validation.overallStatus !== 'SKIPPED' && validation.mismatches?.length > 0 && (
-          <div className="mt-4">
-            <h3 className="text-sm font-semibold text-red-800 mb-2">
-              Key Issues ({validation.mismatches.length} failed)
-            </h3>
-            <div className="space-y-2">
-              {validation.mismatches.map((m, idx) => (
-                <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
-                  <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>
-                  <span className="text-gray-700">{m.field}: expected <code className="bg-red-100 px-1 rounded">{String(m.expected)}</code>, got <code className="bg-red-100 px-1 rounded">{String(m.actual)}</code></span>
-                </div>
-              ))}
+        {validation.overallStatus !== 'SKIPPED' && validation.mismatches?.length > 0 && (() => {
+          // Collapse per-message recipient/permission-mapping issues (deepMail + headers) into a
+          // single count row instead of one line per mail. Applies to all combinations.
+          const isRecipientIssue = (m) => m.category === 'deepMail' && m.kind === 'headers';
+          const recipientIssues = validation.mismatches.filter(isRecipientIssue);
+          const otherIssues = validation.mismatches.filter((m) => !isRecipientIssue(m));
+          return (
+            <div className="mt-4">
+              <h3 className="text-sm font-semibold text-red-800 mb-2">
+                Key Issues ({validation.mismatches.length} failed)
+              </h3>
+              <div className="space-y-2">
+                {otherIssues.map((m, idx) => (
+                  <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
+                    <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>
+                    <span className="text-gray-700">{m.field}: expected <code className="bg-red-100 px-1 rounded">{String(m.expected)}</code>, got <code className="bg-red-100 px-1 rounded">{String(m.actual)}</code></span>
+                  </div>
+                ))}
+                {recipientIssues.length > 0 && (
+                  <div className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
+                    <span className="text-red-500 font-medium flex-shrink-0">deepMail</span>
+                    <span className="text-gray-700">
+                      <code className="bg-red-100 px-1 rounded">{recipientIssues.length}</code> mail{recipientIssues.length === 1 ? '' : 's'} with a recipient (From/To/Cc/Bcc permission-mapping) mismatch
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         {exec.knownLimitationsNote && (
           <div className="mt-3 flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
             <span className="text-gray-500">ℹ️</span>
@@ -186,12 +201,10 @@ export default function ResultsView({ exec }) {
         <div className="space-y-4">
           <h2 className="text-lg font-semibold text-gray-900">Mail Validation</h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <ResultCard label="Total Messages" value={validation.mailValidation.destinationCount} />
+            <ResultCard label="Destination Mailbox Total" value={validation.mailValidation.destinationCount} />
             <ResultCard label="Folders Found" value={validation.mailValidation.folderMapping?.length || 0} />
-            <ResultCard label="Emails with Attachments" value={validation.mailValidation.attachmentChecks?.length || 0} />
+            <ResultCard label="Emails with Attachments" value={validation.mailValidation.emailsWithAttachments ?? (validation.mailValidation.attachmentChecks?.length || 0)} />
           </div>
-          <ValidationTable title="Destination Folders" rows={validation.mailValidation.folderMapping || []}
-            columns={[{ key: 'folderName', label: 'Folder Name' }, { key: 'messageCount', label: 'Messages' }, { key: 'unreadCount', label: 'Unread' }]} />
           {validation.mailValidation.subjectChecks?.length > 0 && (
             <ValidationTable title="Inbox Emails" rows={validation.mailValidation.subjectChecks}
               columns={[

@@ -307,12 +307,31 @@ export function StepMap({ wiz }) {
       {wiz.error && <Err msg={wiz.error} />}
       {wiz.fetched && (
         <>
-          <div className="flex flex-wrap gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             <Pill c="indigo" t={`${wiz.sourceUsers.length} source`} />
             <Pill c="purple" t={`${wiz.destUsers.length} destination`} />
             <Pill c="green" t={`${wiz.selectedIndices.size} selected`} />
             {wiz.unmappedSource.length > 0 && <Pill c="yellow" t={`${wiz.unmappedSource.length} unmatched`} />}
+            <label className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 font-medium cursor-pointer hover:bg-indigo-100">
+              Import CSV
+              <input type="file" accept=".csv,text/csv" className="hidden" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const text = await file.text();
+                e.target.value = '';
+                const { added, skipped } = wiz.importUserMappingsCsv(text);
+                alert(`Mapped ${added} user pair(s) from CSV (not selected — check the pair(s) you want to migrate)${skipped ? ` · ${skipped} row(s) skipped (source already mapped or email not found)` : ''}.`);
+              }} />
+            </label>
+            {wiz.mappings.some((m) => m.imported) && (
+              <button type="button"
+                onClick={() => { const n = wiz.clearImportedMappings(); if (n) alert(`Removed ${n} CSV-imported mapping(s).`); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 font-medium hover:bg-red-100">
+                Remove CSV
+              </button>
+            )}
           </div>
+          <p className="text-[11px] text-gray-400">CSV columns: <span className="font-mono">Source User, Destination User</span> (emails; a header row is auto-detected). Matched against the fetched source/destination mailboxes.</p>
 
           {/* Search + bulk select */}
           <div className="flex flex-wrap items-center gap-2">
@@ -349,7 +368,7 @@ export function StepMap({ wiz }) {
                   <label key={idx} className={`px-4 py-2.5 flex items-center gap-3 text-sm cursor-pointer ${wiz.selectedIndices.has(idx) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'}`}>
                     <input type="checkbox" checked={wiz.selectedIndices.has(idx)} onChange={() => wiz.togglePair(idx)} className="w-4 h-4 text-indigo-600 rounded" />
                     <span className="flex-1 min-w-0 truncate">{m.source.email} <span className="text-gray-400">→</span> {m.destination.email}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${m.autoMatched ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{m.autoMatched ? 'auto' : 'manual'}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${m.autoMatched ? 'bg-green-100 text-green-700' : m.imported ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{m.autoMatched ? 'auto' : m.imported ? 'csv' : 'manual'}</span>
                     <button type="button" onClick={(e) => { e.preventDefault(); wiz.removeMapping(idx); }} className="text-gray-400 hover:text-red-500">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
                     </button>
@@ -415,9 +434,8 @@ export function StepServer({ wiz }) {
 // ── Step 5: Test type & migration type ─────────────────────────────────────────
 export function StepOptions({ wiz }) {
   const types = [
-    { value: 'SMOKE', label: 'Smoke', desc: 'Quick connectivity check' },
-    { value: 'SANITY', label: 'Sanity', desc: 'Core feature validation' },
-    { value: 'E2E', label: 'E2E', desc: 'Full seed + calendar (slow)' },
+    { value: 'SANITY', label: 'Smoke', desc: 'Core feature validation' },
+    { value: 'E2E', label: 'Sanity', desc: 'Full seed + calendar (slow)' },
   ];
   return (
     <div className="space-y-6">
@@ -433,21 +451,158 @@ export function StepOptions({ wiz }) {
           ))}
         </div>
       </div>
-      <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700">Migration Type</label>
-        <select value={wiz.migrationType} onChange={(e) => wiz.setMigrationType(e.target.value)}
-          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none">
-          <option value="FULL">One Time Migration</option>
-          <option value="DELTA">Delta Migration</option>
-        </select>
-        <p className="text-xs text-gray-500">
-          {wiz.migrationType === 'FULL'
-            ? 'One Time — initial transfer of email, folders/labels, threads (mail scope).'
-            : 'Delta — incremental email/folder changes plus contacts and calendars.'}
-        </p>
+      {/* Mail sets Job Type inside its Job Options box (devemail layout); other domains use
+          this shared Migration Type selector. */}
+      {wiz.domain !== 'mail' && (
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">Migration Type</label>
+          <select value={wiz.migrationType} onChange={(e) => wiz.setMigrationType(e.target.value)}
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none">
+            <option value="FULL">One Time Migration</option>
+            <option value="DELTA">Delta Migration</option>
+          </select>
+          <p className="text-xs text-gray-500">
+            {wiz.migrationType === 'FULL'
+              ? 'One Time — initial transfer of email, folders/labels, threads (mail scope).'
+              : 'Delta — incremental email/folder changes plus contacts and calendars.'}
+          </p>
+        </div>
+      )}
+
+      {wiz.domain === 'mail' && <MailOptions wiz={wiz} />}
+      {wiz.domain === 'content' && <ContentOptions wiz={wiz} />}
+    </div>
+  );
+}
+
+// devemail server "Options & Preview" toggles (mail only). The set of Migration Options
+// mirrors the devemail UI: One-Time shows Archive Mailbox + Migrate Rules + Exclude Groups
+// (with In-Place Archive under Job Options); Delta shows Archive Mailbox + Calendars + Contacts.
+function MailToggle({ checked, onChange, disabled = false }) {
+  return (
+    <button type="button" role="switch" aria-checked={checked} disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-gray-300'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform mt-0.5 ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+    </button>
+  );
+}
+// devemail-style row (white row, subtle border, label left + control right).
+function MailRow({ label, children, className = '', disabled = false }) {
+  return (
+    <div className={`flex items-center justify-between gap-3 border border-gray-200 rounded-lg px-3 py-2.5 ${disabled ? 'opacity-50' : ''} ${className}`}>
+      <span className="text-sm text-gray-800">{label}</span>
+      {children}
+    </div>
+  );
+}
+function MailCheckRow({ label, checked, onChange, highlight = false }) {
+  return (
+    <label className={`flex items-center gap-2.5 border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-800 cursor-pointer ${highlight ? 'bg-indigo-50' : ''}`}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="w-4 h-4 text-indigo-600 rounded" />
+      {label}
+    </label>
+  );
+}
+// "Migrate: From / To" date range with devemail-style preset filters. Empty = migrate all.
+function MailDateRange({ wiz, m, isDelta }) {
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const applyPreset = (months) => {
+    const to = new Date();
+    const from = new Date();
+    if (months >= 12) from.setFullYear(from.getFullYear() - Math.round(months / 12));
+    else from.setMonth(from.getMonth() - months);
+    wiz.setMailOption('fromDate', iso(from));
+    wiz.setMailOption('toDate', iso(to));
+  };
+  const presets = [['Last 3 Months', 3], ['Last 6 Months', 6], ['Last 9 Months', 9], ['Last 1 Year', 12]];
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-gray-700">Migrate: From / To</label>
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="date" value={m.fromDate || ''} max={m.toDate || undefined}
+          onChange={(e) => wiz.setMailOption('fromDate', e.target.value)}
+          className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm" />
+        <span className="text-gray-400 text-sm">→</span>
+        <input type="date" value={m.toDate || ''} min={m.fromDate || undefined}
+          onChange={(e) => wiz.setMailOption('toDate', e.target.value)}
+          className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm" />
+        {(m.fromDate || m.toDate) && (
+          <button type="button" onClick={() => { wiz.setMailOption('fromDate', ''); wiz.setMailOption('toDate', ''); }}
+            className="text-xs text-gray-500 hover:text-gray-700 underline">Clear</button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {presets.map(([label, months]) => (
+          <button key={label} type="button" onClick={() => applyPreset(months)}
+            className="text-xs px-2 py-1 rounded-md border border-gray-200 text-gray-600 hover:bg-indigo-50 hover:border-indigo-300">{label}</button>
+        ))}
+      </div>
+      <p className="text-[11px] text-gray-400">Leave blank to migrate all mail. A range limits migration to messages within these dates{isDelta ? '' : ''}.</p>
+    </div>
+  );
+}
+function MailOptions({ wiz }) {
+  const m = wiz.mailOptions || {};
+  const isDelta = wiz.migrationType === 'DELTA';
+  const allDeltaOn = !!m.calendars && !!m.contacts;
+  const setDeltaAll = (v) => { wiz.setMailOption('calendars', v); wiz.setMailOption('contacts', v); };
+  // devemail: enabling In-Place Archive (One-Time) greys out the Migration Options.
+  const optsDisabled = !isDelta && !!m.migrateAsInPlaceArchive;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      {/* Job Options — mirrors devemail: Job Type + Job Name (+ In-Place Archive for One-Time) */}
+      <div className="border border-gray-200 rounded-xl overflow-hidden self-start">
+        <div className="bg-indigo-50 text-gray-900 px-4 py-3 text-sm font-semibold">Job Options</div>
+        <div className="p-4 space-y-3">
+          <Field label="Job Type">
+            <select value={wiz.migrationType} onChange={(e) => wiz.setMigrationType(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+              <option value="FULL">One-Time</option>
+              <option value="DELTA">Delta</option>
+            </select>
+          </Field>
+          <Field label="Job Name">
+            <input value={m.jobName} onChange={(e) => wiz.setMailOption('jobName', e.target.value)}
+              placeholder="(auto-generated if blank)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+          </Field>
+          <MailDateRange wiz={wiz} m={m} isDelta={isDelta} />
+          {!isDelta && (
+            <MailRow label="Migrate As In-Place Archive :">
+              <MailToggle checked={!!m.migrateAsInPlaceArchive} onChange={(v) => wiz.setMailOption('migrateAsInPlaceArchive', v)} />
+            </MailRow>
+          )}
+        </div>
       </div>
 
-      {wiz.domain === 'content' && <ContentOptions wiz={wiz} />}
+      {/* Migration Options — One-Time: Archive/Rules/Groups toggles · Delta: Archive + Calendars/Contacts checkboxes */}
+      <div className="border border-gray-200 rounded-xl overflow-hidden self-start">
+        <div className="bg-indigo-50 text-gray-900 px-4 py-3 text-sm font-semibold">Migration Options</div>
+        <div className="p-4 space-y-2.5">
+          <MailRow label="Archive Mailbox :" disabled={optsDisabled}>
+            <MailToggle checked={!!m.archiveMailbox} disabled={optsDisabled} onChange={(v) => wiz.setMailOption('archiveMailbox', v)} />
+          </MailRow>
+          {isDelta ? (
+            <>
+              <MailCheckRow label="Select All" checked={allDeltaOn} onChange={setDeltaAll} highlight />
+              <MailCheckRow label="Calendars" checked={!!m.calendars} onChange={(v) => wiz.setMailOption('calendars', v)} />
+              <MailCheckRow label="Contacts" checked={!!m.contacts} onChange={(v) => wiz.setMailOption('contacts', v)} />
+            </>
+          ) : (
+            <>
+              <MailRow label="Migrate Rules :" disabled={optsDisabled}>
+                <MailToggle checked={!!m.migrateRules} disabled={optsDisabled} onChange={(v) => wiz.setMailOption('migrateRules', v)} />
+              </MailRow>
+              <MailRow label="Exclude Groups :" disabled={optsDisabled}>
+                <MailToggle checked={!!m.excludeGroups} disabled={optsDisabled} onChange={(v) => wiz.setMailOption('excludeGroups', v)} />
+              </MailRow>
+              {optsDisabled && (
+                <p className="text-xs text-gray-500 pt-0.5">Disabled while <strong>Migrate As In-Place Archive</strong> is on (matches devemail).</p>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -722,6 +877,22 @@ export function StepSummary({ wiz, onRun, running }) {
           </SummarySection>
         </>
       )}
+
+      {wiz.domain === 'mail' && (() => {
+        const m = wiz.mailOptions || {};
+        const isDelta = wiz.migrationType === 'DELTA';
+        const opts = isDelta
+          ? [`Archive Mailbox: ${m.archiveMailbox ? 'On' : 'Off'}`, `Calendars: ${m.calendars ? 'On' : 'Off'}`, `Contacts: ${m.contacts ? 'On' : 'Off'}`]
+          : [`Archive Mailbox: ${m.archiveMailbox ? 'On' : 'Off'}`, `Migrate Rules: ${m.migrateRules ? 'On' : 'Off'}`, `Exclude Groups: ${m.excludeGroups ? 'On' : 'Off'}`, `In-Place Archive: ${m.migrateAsInPlaceArchive ? 'On' : 'Off'}`];
+        const dateRange = (m.fromDate || m.toDate) ? `${m.fromDate || '…'} → ${m.toDate || '…'}` : 'all mail';
+        return (
+          <SummarySection title="Mail Options" subtitle={`Job Type: ${isDelta ? 'Delta' : 'One-Time'} · Job Name: ${m.jobName || '(auto)'} · Range: ${dateRange}`}>
+            <div className="px-4 py-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-gray-700">
+              {opts.map((t) => <span key={t} className="font-mono">{t}</span>)}
+            </div>
+          </SummarySection>
+        );
+      })()}
 
       <button type="button" onClick={onRun} disabled={running || pairs.length === 0}
         className="w-full md:w-auto px-8 py-3 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50">

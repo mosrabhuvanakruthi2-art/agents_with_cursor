@@ -454,12 +454,18 @@ const OUTLOOK_SKIP_SCAN_FOLDERS = new Set([
  * Scans every non-system folder (Inbox, Sent Items, Junk, Deleted Items, Archive, custom…)
  * so deep validation covers the full seeded set, not just Inbox.
  */
-async function collectOutlookQaCandidates(srcUser, maxMessages, subjectPrefix, selectFields, log) {
+async function collectOutlookQaCandidates(srcUser, maxMessages, subjectPrefix, selectFields, log, extraSkipFolders = []) {
   const folders = await outlookClient.getAllFoldersFlat(srcUser);
   if (!folders?.length) return [];
 
+  // Folders to skip: the always-skip set plus any caller-supplied extras (e.g. "archive" when
+  // the Archive Mailbox option is OFF, so archived mail isn't scanned or flagged as not-migrated).
+  const skip = new Set([
+    ...OUTLOOK_SKIP_SCAN_FOLDERS,
+    ...extraSkipFolders.map((s) => String(s).toLowerCase()),
+  ]);
   const scanFolders = folders.filter(
-    (f) => f.id && !OUTLOOK_SKIP_SCAN_FOLDERS.has((f.displayName || '').toLowerCase())
+    (f) => f.id && !skip.has((f.displayName || '').toLowerCase())
   );
 
   const perFolderCap = Math.min(

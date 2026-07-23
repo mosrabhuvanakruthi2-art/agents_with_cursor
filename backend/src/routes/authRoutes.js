@@ -14,6 +14,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const tokenStore = require('../clients/oauthTokenStore');
 const logger = require('../utils/logger');
@@ -361,6 +362,66 @@ router.post('/microsoft/signout', (req, res) => {
   logger.info(`[auth] Microsoft account disconnected: ${email || 'all'}`);
   tokenStore.removeMicrosoftToken(email || null);
   res.json({ success: true });
+});
+
+// ─── Microsoft LOGIN for the QA tool (PKCE) — issues our own app JWT ───────────
+// The browser runs the PKCE flow and redirects to Microsoft; it then POSTs the
+// returned { code, verifier, redirectUri } here. We exchange the code for a
+// Microsoft token (confidential client + PKCE), read the signed-in user's profile
+// from Graph, and return an app JWT the frontend stores to gate the UI. This is
+// the "Azure AD Cloudfuze domain" app, separate from the Graph cloud-connection app.
+router.post('/microsoft/exchange', async (req, res) => {
+  const { code, verifier, redirectUri } = req.body || {};
+  if (!code || !verifier || !redirectUri) {
+    return res.status(400).json({ error: 'code, verifier and redirectUri are required' });
+  }
+  if (!env.AZURE_CLIENT_ID || !env.AZURE_CLIENT_SECRET) {
+    return res.status(500).json({ error: 'Microsoft login not configured (AZURE_CLIENT_ID / AZURE_CLIENT_SECRET missing)' });
+  }
+  if (!env.JWT_SECRET) {
+    return res.status(500).json({ error: 'JWT_SECRET not configured on the server' });
+  }
+  const tenant = env.AZURE_TENANT_ID || 'common';
+  try {
+    // 1. Exchange the authorization code for a Microsoft access token.
+    const tokenRes = await axios.post(
+      `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: env.AZURE_CLIENT_ID,
+        client_secret: env.AZURE_CLIENT_SECRET,
+        code,
+        redirect_uri: redirectUri,
+        code_verifier: verifier,
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, validateStatus: () => true }
+    );
+    if (tokenRes.status !== 200 || !tokenRes.data.access_token) {
+      const msg = tokenRes.data?.error_description || tokenRes.data?.error || 'Token exchange failed';
+      logger.warn(`[auth] Microsoft login token exchange failed: ${msg}`);
+      return res.status(401).json({ error: msg });
+    }
+
+    // 2. Read the signed-in user's profile from Microsoft Graph.
+    const graphRes = await axios.get('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
+      validateStatus: () => true,
+    });
+    if (graphRes.status !== 200) {
+      return res.status(401).json({ error: 'Could not fetch user from Microsoft Graph' });
+    }
+    const email = String(graphRes.data.mail || graphRes.data.userPrincipalName || '').toLowerCase().trim();
+    const name = graphRes.data.displayName || '';
+    if (!email) return res.status(400).json({ error: 'Could not retrieve email from Microsoft account' });
+
+    // 3. Issue our own short-lived app JWT.
+    const token = jwt.sign({ email, name }, env.JWT_SECRET, { expiresIn: '8h' });
+    logger.info(`[auth] Microsoft login: ${email} signed in`);
+    res.json({ success: true, token, user: { email, name } });
+  } catch (err) {
+    logger.error(`[auth] Microsoft login exchange error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Box OAuth ────────────────────────────────────────────────────────────────

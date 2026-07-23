@@ -2,17 +2,20 @@
 const router = express.Router();
 const controller = require('../controllers/agentController');
 const docsSyncController = require('../controllers/docsSyncController');
+const { requireUser } = require('../middleware/authUser');
 
-router.post('/run', controller.runAgents);
-router.get('/executions', controller.getExecutions);
-router.get('/executions/:id', controller.getExecution);
-router.get('/executions/:id/logs', controller.getExecutionLogs);
-router.get('/stats', controller.getStats);
+// Execution endpoints are per-user: the signed-in user (from the login JWT) owns the runs they
+// start and only sees their own in Reports & Logs / Dashboard. requireUser attaches req.userEmail.
+router.post('/run', requireUser, controller.runAgents);
+router.get('/executions', requireUser, controller.getExecutions);
+router.get('/executions/:id', requireUser, controller.getExecution);
+router.get('/executions/:id/logs', requireUser, controller.getExecutionLogs);
+router.get('/stats', requireUser, controller.getStats);
 router.get('/test-connections', controller.testConnections);
 router.get('/users/source', controller.getSourceUsers);
 router.get('/users/destination', controller.getDestinationUsers);
 router.get('/mailbox-stats', controller.getMailboxStats);
-router.get('/executions/:id/pdf', controller.generatePdf);
+router.get('/executions/:id/pdf', requireUser, controller.generatePdf);
 router.post('/clean-destination', controller.cleanDestination);
 router.get('/source-mailbox-stats', controller.getSourceMailboxStats);
 router.post('/clean-source', controller.cleanSource);
@@ -34,8 +37,8 @@ router.get('/box/users', controller.getBoxUsers);
 router.post('/create-drive-data', controller.createDriveData);
 router.post('/update-drive-versions', controller.updateDriveVersions);
 router.post('/setup-drive-shared-links', controller.setupDriveSharedLinks);
-router.post('/executions/:id/cancel', controller.cancelExecution);
-router.post('/executions/:id/resume', controller.resumeExecution);
+router.post('/executions/:id/cancel', requireUser, controller.cancelExecution);
+router.post('/executions/:id/resume', requireUser, controller.resumeExecution);
 
 // ── Content (Box/Drive) cleanup — from dev ─────────────────────────────────────
 router.get('/content-stats', controller.getContentStats);

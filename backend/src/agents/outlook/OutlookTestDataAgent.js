@@ -274,6 +274,16 @@ const SANITY_CASES = [
   { subject: 'QA Sanity - Deleted Items',         textBody: 'Deleted items message sanity check.',         folder: 'Deleted Items', isRead: true  },
   // Archive
   { subject: 'QA Sanity - Archive',               textBody: 'Archive folder message sanity check.',        folder: 'Archive',       isRead: true  },
+  { subject: 'QA Sanity - Archive Unread',        textBody: 'Unread archive folder message sanity check.', folder: 'Archive',       isRead: false },
+  { subject: 'QA Sanity - Archive With Attachment', textBody: 'Archive message with attachment.',          folder: 'Archive',       isRead: true,
+    attachments: [{ name: 'qa-sanity-archive.txt', contentType: 'text/plain', content: 'QXJjaGl2ZSBRQSBmaWxl' }] },
+  { subject: 'QA Sanity - Archive HTML Body',
+    htmlBody: '<html><body><b>Archived</b> HTML message for <a href="https://www.cloudfuze.com">sanity check</a>.</body></html>',
+    folder: 'Archive',       isRead: true  },
+  { subject: 'QA Sanity - Archive High Importance', textBody: 'High importance archived message.',          folder: 'Archive',       isRead: false,
+    importance: 'high' },
+  { subject: 'QA Sanity - Archive Flagged',       textBody: 'Flagged archive message (STARRED in Gmail).', folder: 'Archive',       isRead: true,
+    flag: { flagStatus: 'flagged' } },
   // Custom folder
   { subject: 'QA Sanity - Custom Folder A',       textBody: 'Custom folder message sanity check.',         folder: 'QA-Sanity-Folder', isRead: true },
   { subject: 'QA Sanity - Custom Folder B',       textBody: 'Second message in custom folder.',            folder: 'QA-Sanity-Folder', isRead: false },
@@ -291,31 +301,43 @@ const SANITY_CASES = [
     subject: '' },
 ];
 
+// Smoke and Sanity are merged: a SMOKE run seeds the UNION of the built-in smoke cases and the
+// (Agent-Repo or built-in) sanity cases, deduped by subject. Extended-source entries are excluded
+// (handled by _createExtendedTestData for E2E). Returns [] never — always a usable case list.
+function mergedSmokeCases(data, log) {
+  const notExtended = (c) => c && c.source !== 'extended';
+  const smokeCustom  = ((data && data.smoke)  || []).filter(notExtended);
+  const sanityCustom = ((data && data.sanity) || []).filter(notExtended);
+  const sanityBase   = sanityCustom.length > 0 ? sanityCustom : SANITY_CASES;
+  const merged = [...SMOKE_CASES, ...smokeCustom, ...sanityBase];
+  const seen = new Set();
+  const deduped = merged.filter((c) => {
+    const k = String(c.subject || '').toLowerCase().trim();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (log) log.info(`SMOKE (merged Smoke+Sanity): ${deduped.length} case(s) — ${SMOKE_CASES.length} smoke + ${sanityBase.length} sanity (deduped)`);
+  return deduped;
+}
+
 function loadTestCases(testType, log) {
   try {
     const filePath = path.resolve(__dirname, '../../../data/custom-test-cases.json');
     if (!fs.existsSync(filePath)) {
-      log.warn('custom-test-cases.json not found — using fallback messages');
-      return testType === 'SANITY' ? SANITY_CASES : FALLBACK_CASES;
+      log.warn('custom-test-cases.json not found — using built-in cases');
+      return testType === 'E2E' ? FALLBACK_CASES : mergedSmokeCases(null, log);
     }
     const data  = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const key   = testType.toLowerCase();
-    // Filter out extended-source entries — those are handled by _createExtendedTestData
-    // with full Graph API attributes. Keeping them here would create plain-text duplicates.
-    // SMOKE always uses the built-in 10-case set for a fast, consistent quick check
-    if (key === 'smoke') {
-      log.info(`SMOKE test type — using built-in SMOKE_CASES (${SMOKE_CASES.length} cases) for quick QA run`);
-      return SMOKE_CASES;
+    // SANITY (merged Smoke+Sanity): union of built-in smoke cases + Agent-Repo/built-in sanity cases
+    if (key === 'sanity') {
+      return mergedSmokeCases(data, log);
     }
     const cases = (data[key] || []).filter(c => c.source !== 'extended');
     if (cases.length > 0) {
       log.info(`Loaded ${cases.length} custom test case(s) from Agent Repo for ${testType}`);
       return cases;
-    }
-    // SANITY: use built-in 20-message set when no custom cases defined
-    if (key === 'sanity') {
-      log.warn(`No sanity test cases in Agent Repo — using built-in SANITY_CASES (${SANITY_CASES.length} cases)`);
-      return SANITY_CASES;
     }
     // E2E: fall back to smoke cases (comprehensive base) rather than 5 hardcoded messages.
     // The _createExtendedTestData method then adds E2E-specific scenarios on top.
@@ -327,7 +349,7 @@ function loadTestCases(testType, log) {
     return FALLBACK_CASES;
   } catch (e) {
     log.warn(`Failed to load test cases: ${e.message} — using fallback`);
-    return testType === 'SANITY' ? SANITY_CASES : FALLBACK_CASES;
+    return testType === 'E2E' ? FALLBACK_CASES : mergedSmokeCases(null, log);
   }
 }
 
@@ -514,6 +536,14 @@ class OutlookTestDataAgent extends BaseAgent {
       }
     }
 
+    // SANITY (merged Smoke+Sanity): seed ONE inbox rule + a few Archive-folder mails, so "Migrate
+    // Rules" and "Archive Mailbox" are exercised. These run in the flow (not from the case list),
+    // so they seed even when the Agent Repo supplies custom cases. The full sets are E2E-only.
+    if (testType === 'SANITY') {
+      await this._createSanityRule(userEmail, summary, log, senderRotation);
+      await this._createSanityArchiveMails(userEmail, summary, log, senderRotation);
+    }
+
     // E2E extended scenarios
     if (testType === 'E2E') {
       await this._createExtendedTestData(userEmail, context, summary, log, senderRotation);
@@ -613,6 +643,91 @@ class OutlookTestDataAgent extends BaseAgent {
       ...(attachments ? { attachments } : {}),
     });
     return 'inject';
+  }
+
+  /**
+   * SANITY: create ONE Outlook inbox rule (From: <sender> → move to a dedicated folder) and
+   * deliver a single message through it, so a SANITY run with "Migrate Rules" on has a rule
+   * to migrate/validate (mirrors the E2E §24 pattern, minimal). Best-effort; never throws.
+   */
+  async _createSanityRule(userEmail, summary, log, senderRotation) {
+    try {
+      const rotation = (Array.isArray(senderRotation) && senderRotation.length > 0)
+        ? senderRotation
+        : (typeof env.buildOutlookInboundSenders === 'function' ? env.buildOutlookInboundSenders() : []);
+      const ruleSender = toSenderObject(rotation[rotation.length - 1] || `qa.sanity.sender@${userEmail.split('@')[1]}`);
+      const senderName = (ruleSender.name || ruleSender.address.split('@')[0]).replace(/\s+/g, '-');
+      const folderName = `QA-Sanity-Rule-From-${senderName}`;
+      const folderId   = await outlookClient.getOrCreateMailFolder(userEmail, folderName);
+
+      const rule = await outlookClient.createInboxRule(userEmail, {
+        displayName: `QA - Sanity Rule: route ${senderName} to ${folderName}`,
+        sequence:    100,
+        isEnabled:   true,
+        conditions:  { fromAddresses: [{ emailAddress: { address: ruleSender.address, name: ruleSender.name } }] },
+        actions:     { moveToFolder: folderId, stopProcessingRules: true },
+      });
+      log.info(`✓ SANITY rule created: "${rule.displayName}" → ${folderName}`);
+      if (!summary.foldersPopulated.includes(folderName)) summary.foldersPopulated.push(folderName);
+
+      // Deliver one message through the rule (real transport when the sender is a real account;
+      // otherwise inject directly into the target folder so the data still exists).
+      const canSend = rotation.length >= 1;
+      const via = await this._deliverThroughRule(userEmail, {
+        senderObj: ruleSender, targetFolderId: folderId,
+        subject: `QA Sanity - Rule Routed Email`,
+        body: `Email from ${senderName} routed to ${folderName} by an Outlook inbox rule — sanity Migrate Rules check.`,
+        contentType: 'text', isRead: true, canSend, log,
+      });
+      summary.messagesCreated++;
+      log.info(`✓ SANITY rule email (${via === 'rule' ? 'routed by rule' : 'injected'})`);
+    } catch (err) {
+      log.warn(`SANITY inbox rule failed (non-blocking): ${err.message}`);
+      summary.errors.push(`Sanity inbox rule: ${err.message}`);
+    }
+  }
+
+  /**
+   * SANITY: seed a few mails into the Outlook "Archive" folder so an Outlook→Gmail sanity run
+   * with "Archive Mailbox" ON has archived source mail to migrate + validate (the built-in
+   * SANITY archive cases don't seed when the Agent Repo overrides them, so do it in the flow).
+   * Best-effort; never throws.
+   */
+  async _createSanityArchiveMails(userEmail, summary, log, senderRotation) {
+    const rotation = (Array.isArray(senderRotation) && senderRotation.length > 0)
+      ? senderRotation.map(toSenderObject)
+      : [toSenderObject(`qa.sanity.sender@${userEmail.split('@')[1]}`)];
+    const pick = (i) => rotation[i % rotation.length];
+    const archiveMails = [
+      { subject: 'QA Sanity - Archive Read',            body: 'Archived email (read) for sanity Archive Mailbox check.', isRead: true },
+      { subject: 'QA Sanity - Archive Unread',          body: 'Archived email (unread) for sanity Archive Mailbox check.', isRead: false },
+      { subject: 'QA Sanity - Archive With Attachment', body: 'Archived email with attachment for sanity check.', isRead: true,
+        attachments: [{ name: 'qa-sanity-archive.txt', contentType: 'text/plain', contentBytes: 'QXJjaGl2ZSBRQSBmaWxl' }] },
+      { subject: 'QA Sanity - Archive HTML',            html: '<html><body><b>Archived</b> HTML for <a href="https://www.cloudfuze.com">sanity</a>.</body></html>', isRead: true },
+      { subject: 'QA Sanity - Archive High Importance', body: 'High-importance archived email for sanity check.', isRead: false, importance: 'high' },
+    ];
+    log.info(`SANITY: creating ${archiveMails.length} Archive-folder mail(s)…`);
+    for (let i = 0; i < archiveMails.length; i++) {
+      const am = archiveMails[i];
+      try {
+        await outlookClient.createMessageInFolder(userEmail, 'archive', {
+          subject: am.subject,
+          body: { contentType: am.html ? 'html' : 'text', content: am.html || am.body },
+          from: { emailAddress: pick(i) },
+          toRecipients: [{ emailAddress: { address: userEmail } }],
+          isRead: am.isRead !== false,
+          isDraft: false,
+          ...(am.importance ? { importance: am.importance } : {}),
+          ...(am.attachments ? { attachments: am.attachments } : {}),
+        });
+        summary.messagesCreated++;
+        if (!summary.foldersPopulated.includes('Archive')) summary.foldersPopulated.push('Archive');
+        log.info(`✓ SANITY Archive: "${am.subject}"`);
+      } catch (err) {
+        log.warn(`SANITY Archive mail "${am.subject}" failed: ${err.message}`);
+        summary.errors.push(`Sanity archive "${am.subject}": ${err.message}`);
+      }
+    }
   }
 
   async _createExtendedTestData(userEmail, context, summary, log, senderRotation) {

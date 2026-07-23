@@ -64,6 +64,8 @@ export default function useRunWizard() {
 
   // Options (step 5)
   const [testType, setTestType] = usePersistedState('rw-testType', 'E2E');
+  // Smoke was merged into Sanity — normalize any persisted legacy value so the selector highlights.
+  useEffect(() => { if (testType === 'SMOKE') setTestType('SANITY'); }, [testType, setTestType]);
   const [migrationType, setMigrationType] = usePersistedState('rw-migrationType', 'FULL');
 
   // Content migration options (CloudFuze Team Migration "Options" step). Permission
@@ -78,6 +80,19 @@ export default function useRunWizard() {
   const [jobOptions, setJobOptions] = usePersistedState('rw-jobOptions', {
     jobName: '', excludeFileTypes: '', replaceSpecialChar: '_',
   });
+  // Mail migration options (devemail server "Options & Preview" step). Defaults mirror the
+  // values the backend previously hardcoded, so a run behaves identically unless a toggle is
+  // changed: Archive Mailbox ON (backup:true), In-Place Archive OFF (archivedMailBox:false),
+  // Migrate Rules OFF (opt-in), Exclude Groups OFF (disableGroups:false).
+  // Delta additionally exposes Calendars/Contacts (default ON to match today's DELTA scope).
+  const [mailOptions, setMailOptions] = usePersistedState('rw-mailOptions', {
+    archiveMailbox: true, migrateAsInPlaceArchive: false,
+    migrateRules: false, excludeGroups: false,
+    calendars: true, contacts: true, jobName: '',
+    // Migrate date range (devemail "Migrate: From / To"). Empty = migrate everything.
+    fromDate: '', toDate: '',
+  });
+  const setMailOption = (key, val) => setMailOptions((o) => ({ ...o, [key]: val }));
   // Content mapping. sourceFolderName = the folder the test-data agent creates in the
   // source (deduped " 1" on conflict; the CSV uses the actual created name). Blank
   // destination → backend uses the cloud default (SharePoint /SANITY DATAA/Documents, Drive /OSM).
@@ -298,6 +313,64 @@ export default function useRunWizard() {
     setUnmappedDest((p) => p.filter((u) => u.id !== destUser.id));
   }
 
+  // Import source→destination user mappings from CSV text. Columns: Source User email,
+  // Destination User email (a header row is auto-detected/skipped). Emails are matched
+  // (case-insensitively) against the fetched source/destination user lists. Rows whose
+  // source is already mapped, or whose source/destination email isn't found, are skipped.
+  // Returns { added, skipped }.
+  function importUserMappingsCsv(text) {
+    const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return { added: 0, skipped: 0 };
+    const start = /source|destination|from|to/i.test(lines[0]) ? 1 : 0;
+    const srcByEmail = new Map(sourceUsers.map((u) => [String(u.email || '').toLowerCase(), u]));
+    const dstByEmail = new Map(destUsers.map((u) => [String(u.email || '').toLowerCase(), u]));
+    const mappedSrcIds = new Set(mappings.map((m) => m.source.id));
+    const newPairs = [];
+    const usedSrc = new Set();
+    const usedDst = new Set();
+    let skipped = 0;
+    for (let i = start; i < lines.length; i++) {
+      const cols = lines[i].split(',').map((c) => c.trim());
+      const srcEmail = (cols[0] || '').toLowerCase();
+      // Accept "Source, Destination" or a 4-col content-style row (dest is the 2nd non-empty).
+      const dstEmail = (cols[1] || cols[cols.length - 1] || '').toLowerCase();
+      if (!srcEmail || !dstEmail) { skipped++; continue; }
+      const s = srcByEmail.get(srcEmail);
+      const d = dstByEmail.get(dstEmail);
+      if (!s || !d || mappedSrcIds.has(s.id) || usedSrc.has(srcEmail) || usedDst.has(dstEmail)) { skipped++; continue; }
+      newPairs.push({ source: s, destination: d, autoMatched: false, imported: true });
+      usedSrc.add(srcEmail); usedDst.add(dstEmail);
+    }
+    if (newPairs.length === 0) return { added: 0, skipped };
+    // Add the mappings but do NOT auto-select them — importing a mapping list must not
+    // enqueue those users for migration/cleanup. The user explicitly checks who to migrate.
+    setMappings((prev) => [...prev, ...newPairs]);
+    const newSrcIds = new Set(newPairs.map((p) => p.source.id));
+    const newDstIds = new Set(newPairs.map((p) => p.destination.id));
+    setUnmappedSource((p) => p.filter((u) => !newSrcIds.has(u.id)));
+    setUnmappedDest((p) => p.filter((u) => !newDstIds.has(u.id)));
+    return { added: newPairs.length, skipped };
+  }
+
+  // Remove all CSV-imported mappings, restoring their users to the unmatched lists.
+  // Returns the number of pairs removed.
+  function clearImportedMappings() {
+    const removed = mappings.filter((m) => m.imported);
+    if (removed.length === 0) return 0;
+    const kept = [];
+    const keptOldIdx = [];
+    mappings.forEach((m, i) => { if (!m.imported) { kept.push(m); keptOldIdx.push(i); } });
+    setSelectedIndices((sel) => {
+      const next = new Set();
+      keptOldIdx.forEach((oldIdx, newIdx) => { if (sel.has(oldIdx)) next.add(newIdx); });
+      return next;
+    });
+    setUnmappedSource((p) => [...p, ...removed.map((m) => m.source)]);
+    setUnmappedDest((p) => [...p, ...removed.map((m) => m.destination)]);
+    setMappings(kept);
+    return removed.length;
+  }
+
   function removeMapping(idx) {
     const removed = mappings[idx];
     setMappings((p) => p.filter((_, i) => i !== idx));
@@ -351,7 +424,10 @@ export default function useRunWizard() {
       sourceProvider: srcProvider,
       destinationProvider: dstProvider,
     }));
-    const allMapped = mappings.map((m) => ({ sourceEmail: m.source.email, destinationEmail: m.destination.email }));
+    // userEmailMappings scopes BOTH what devemail migrates (one mailbox per entry) AND the
+    // recipient identity mapping used in validation. It MUST be the SELECTED pairs only —
+    // otherwise selecting one pair would still migrate every mapped user's mailbox.
+    const selectedMapped = pairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail }));
     const scope = scopesFor(migrationType);
     const server = {
       ...(migrationServerUrl ? { migrationServerUrl } : {}),
@@ -362,8 +438,31 @@ export default function useRunWizard() {
       domain, mode: (DOMAINS[domain] || DOMAINS.mail).mode,
       testType, migrationType, ...scope,
       sourceAdminEmail: srcEmail, destAdminEmail: dstEmail,
-      userEmailMappings: allMapped.length ? allMapped : pairs.map((p) => ({ sourceEmail: p.sourceEmail, destinationEmail: p.destinationEmail })),
+      userEmailMappings: selectedMapped,
       ...server,
+      // Mail migration options (devemail server toggles). Backend maps these to the devemail
+      // payload; when omitted the backend falls back to today's defaults (backup:true,
+      // archivedMailBox:false, disableGroups:false, mailRules off). In-Place Archive is a
+      // One-Time-only toggle; Calendars/Contacts are Delta-only (they drive the scope).
+      ...(domain === 'mail' ? (() => {
+        const inPlace = migrationType !== 'DELTA' && !!mailOptions.migrateAsInPlaceArchive;
+        // In-Place Archive (One-Time) supersedes the other Migration Options — devemail greys
+        // them out, so we send Archive Mailbox off and omit Migrate Rules / Exclude Groups.
+        return {
+          migrateRules: (migrationType === 'DELTA' || inPlace) ? undefined : (mailOptions.migrateRules || undefined),
+          excludeGroups: (migrationType === 'DELTA' || inPlace) ? undefined : (mailOptions.excludeGroups || undefined),
+          archiveMailbox: inPlace ? false : mailOptions.archiveMailbox,
+          migrateAsInPlaceArchive: migrationType === 'DELTA' ? false : !!mailOptions.migrateAsInPlaceArchive,
+          mailJobName: mailOptions.jobName || undefined,
+          // Migrate date range → devemail pickEmailsFromDate / pickEmailsBeforeDate (opt-in).
+          mailFromDate: mailOptions.fromDate || undefined,
+          mailToDate: mailOptions.toDate || undefined,
+          ...(migrationType === 'DELTA' ? {
+            includeCalendar: mailOptions.calendars,
+            includeContacts: mailOptions.contacts,
+          } : {}),
+        };
+      })() : {}),
       // Content Team-Migration options (permission flags + job options). Backend uses
       // these only for the content flow; harmless for mail/message.
       ...(domain === 'content' ? {
@@ -418,11 +517,12 @@ export default function useRunWizard() {
     dstProvider, setDstProvider, dstEmail, setDstEmail,
     accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, disconnect,
     fetched, needsFetch, fetchUsers, sourceUsers, destUsers, mappings, selectedIndices,
-    togglePair, selectAll, deselectAll, manualMap, removeMapping, unmappedSource, unmappedDest, resetMapping,
+    togglePair, selectAll, deselectAll, manualMap, removeMapping, importUserMappingsCsv, clearImportedMappings, unmappedSource, unmappedDest, resetMapping,
     migrationServerUrl, setMigrationServerUrl, migrationServerEmail, setMigrationServerEmail,
     migrationServerPassword, setMigrationServerPassword,
     testType, setTestType, migrationType, setMigrationType,
     contentOptions, toggleContentOption, setContentOption, jobOptions, setJobOption,
+    mailOptions, setMailOption,
     contentPaths, setContentPath,
     contentUserFolders, setContentUserFolder, clearContentUserFolders, importContentUserFoldersCsv,
     useExistingSource, setUseExistingSource,

@@ -11,14 +11,21 @@ import TestRepository from './pages/TestRepository';
 import ConnectClouds from './pages/ConnectClouds';
 import OAuthCallback from './pages/OAuthCallback';
 import CreateTestData from './pages/CreateTestData';
+import Login from './pages/Login';
+import { isLoggedIn } from './services/msalOauth';
+
+/** Gate the tool behind Microsoft login — show the Login screen until an app JWT exists. */
+function RequireAuth({ children }) {
+  return isLoggedIn() ? children : <Login />;
+}
 
 function App() {
   return (
     <ToastProvider>
     <Routes>
-      {/* Standalone page — no sidebar, used as OAuth popup target */}
+      {/* Standalone page — no sidebar, used as the cloud-connection OAuth popup target (unauthed) */}
       <Route path="/oauth-callback" element={<OAuthCallback />} />
-      <Route path="/" element={<Layout />}>
+      <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
         <Route index element={<Dashboard />} />
         <Route path="executions" element={<Executions />} />
         <Route path="test-case-generator" element={<TestCases />} />

@@ -126,10 +126,13 @@ async function validateOutlookToGmailDestination({
     destinationDomain: (context.destinationEmail || '').split('@')[1]?.toLowerCase() || null,
   };
 
+  // When "Archive Mailbox" is OFF, the Outlook Archive folder is intentionally NOT migrated,
+  // so skip it in the deep scan — archived mail must not be flagged as "Not Found in Destination".
+  const extraSkipFolders = context.archiveMailbox === false ? ['archive'] : [];
   const candidates = await collectOutlookQaCandidates(
     srcUser, maxMessages, subjectPrefix,
     'id,internetMessageId,subject,hasAttachments,receivedDateTime,sentDateTime',
-    log
+    log, extraSkipFolders
   );
 
   result.deepMailValidation.scannedSourceMessages = candidates.length;

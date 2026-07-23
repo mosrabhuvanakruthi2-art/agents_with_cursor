@@ -6,8 +6,20 @@ const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const { normalizeSubject } = require('../utils/mailMigrationComparator');
 const { generateTestFileBuffer } = require('../utils/testFileGenerator');
+const { realizePlaceholderLinks } = require('../utils/realizeLinks');
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+/**
+ * Return a shallow copy of a Graph message body with example.com placeholder hyperlink hosts
+ * rewritten to a real, reachable host (keeps scheme/path/query). No-op when there's no string body.
+ */
+function withRealizedLinks(mb) {
+  if (mb && mb.body && typeof mb.body.content === 'string') {
+    return { ...mb, body: { ...mb.body, content: realizePlaceholderLinks(mb.body.content) } };
+  }
+  return mb;
+}
 
 /** Microsoft Graph requires user principal names to be URL-encoded in /users/{segment}/ paths. */
 function graphUserPath(userId) {
@@ -853,10 +865,15 @@ async function batchDelete(requests, userId = null, options = {}) {
 
     let batchRes;
     try {
-      batchRes = await axios.post(`${GRAPH_BASE}/$batch`, batchBody, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        timeout: 60000,
-      });
+      // Retry transient gateway errors (502/503/504) and timeouts with backoff before falling
+      // back to individual deletes — large mailboxes make Graph's $batch slow enough to 504.
+      batchRes = await retryWithBackoff(
+        () => axios.post(`${GRAPH_BASE}/$batch`, batchBody, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          timeout: 60000,
+        }),
+        { label: 'Graph $batch delete', maxRetries: 4, baseDelay: 2000, maxDelay: 30000 }
+      );
     } catch (err) {
       // HTTP-level failure — fall back to individual operations (no retry loop)
       for (const req of pending) {
@@ -908,10 +925,16 @@ async function batchDelete(requests, userId = null, options = {}) {
  */
 async function emptyFolderViaApi(userId, folderId) {
   const token = await getAccessToken(userId);
-  await axios.post(
-    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/emptyFolder?deleteSubFolders=false`,
-    {},
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+  // Server-side empty of a large folder is slow — give it a longer timeout and retry transient
+  // gateway timeouts (504) with backoff. Persistent failure still bubbles up so the caller can
+  // fall back to paged batch delete.
+  await retryWithBackoff(
+    () => axios.post(
+      `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/emptyFolder?deleteSubFolders=false`,
+      {},
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 120000 }
+    ),
+    { label: `Graph emptyFolder ${folderId}`, maxRetries: 3, baseDelay: 3000, maxDelay: 30000 }
   );
 }
 
@@ -1771,6 +1794,7 @@ function buildMimeMessage(msg) {
  * received/sent email (isDraft=false, real receivedDateTime, real SMTP headers).
  */
 async function sendMailAsUser(senderEmail, messagePayload, saveToSentItems) {
+  messagePayload = withRealizedLinks(messagePayload);
   const token = await getAppAccessToken(getMsTenant(senderEmail));
   const uid   = graphUserPath(senderEmail);
   const msg   = {
@@ -2175,6 +2199,7 @@ async function getGraphIdByInternetMessageId(userId, folder, internetMessageId, 
  * Falls back to Graph POST only when EWS fails entirely (network error, auth failure).
  */
 async function createMessageInFolder(userId, folderId, messageBody) {
+  messageBody = withRealizedLinks(messageBody);
   const folderKey   = String(folderId).trim().toLowerCase();
   const isDraftFolder = folderKey === 'drafts' || folderKey === 'draft' || messageBody.isDraft === true;
 
@@ -2519,6 +2544,7 @@ async function getGroupsCount(userId = '') {
  *   and link name reflect the intended size.
  */
 async function createMessageWithLargeAttachment(userId, folderId, messageBody, fileName, sizeMB = 26) {
+  messageBody = withRealizedLinks(messageBody);
   const recipientToken = await getAppAccessToken(getMsTenant(userId));
   const fileBuffer     = generateTestFileBuffer(fileName, sizeMB);
   const sizeBytes      = fileBuffer.length;
