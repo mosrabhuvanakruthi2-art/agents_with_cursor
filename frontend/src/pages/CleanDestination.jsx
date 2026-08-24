@@ -252,7 +252,7 @@ export default function CleanDestinationPage() {
         </label>
         <div className="flex items-end gap-4">
           <input
-            type="email"
+            type="email" data-hj-suppress
             value={adminEmail}
             onChange={(e) => setAdminEmail(e.target.value)}
             placeholder="granger@gajha.com"
@@ -326,7 +326,7 @@ export default function CleanDestinationPage() {
                     return (
                       <tr key={user.email} className={'hover:bg-gray-50' + (isClean ? ' bg-green-50/50' : '') + (isCleaning ? ' bg-yellow-50/50' : '')}>
                         <td className="px-5 py-3">
-                          <p className="font-medium text-gray-900">{user.email}</p>
+                          <p data-hj-suppress className="font-medium text-gray-900">{user.email}</p>
                           <p className="text-xs text-gray-500">{user.displayName}</p>
                         </td>
                         <td className="px-5 py-3 text-right">

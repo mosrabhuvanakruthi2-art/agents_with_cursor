@@ -180,7 +180,7 @@ export default function ExecutionLogs() {
                 ) : combo ? (
                   <>{combo} · </>
                 ) : ctx.sourceEmail && ctx.destinationEmail ? (
-                  <>{ctx.sourceEmail} <span className="text-gray-400">→</span> {ctx.destinationEmail} · </>
+                  <span data-hj-suppress>{ctx.sourceEmail} <span className="text-gray-400">→</span> {ctx.destinationEmail} · </span>
                 ) : null}
                 <span className="font-mono text-gray-400">{selectedId.slice(0, 8)}</span>
               </p>
@@ -242,7 +242,7 @@ export default function ExecutionLogs() {
                             {combo && <span className="text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full truncate max-w-[40%]">{combo}</span>}
                             <span className="ml-auto"><StatusBadge status={e.status} /></span>
                           </div>
-                          <p className="text-xs text-gray-500 truncate mt-0.5">
+                          <p data-hj-suppress className="text-xs text-gray-500 truncate mt-0.5">
                             {bulkCount > 0 ? `${bulkCount} pairs` : (src && dst ? `${src} → ${dst}` : (e.status || ''))}
                             {e.createdAt ? ` · ${new Date(e.createdAt).toLocaleString()}` : ''}
                           </p>

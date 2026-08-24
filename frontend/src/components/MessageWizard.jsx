@@ -388,7 +388,7 @@ export default function MessageWizard({ resetToken = 0 }) {
               <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100 text-sm">
                 {pairs.map((p, i) => (
                   <div key={i} className="px-4 py-2 flex items-center justify-between">
-                    <span className="truncate">{p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}</span>
+                    <span data-hj-suppress className="truncate">{p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}</span>
                     <button type="button" onClick={() => setPairs((arr) => arr.filter((_, j) => j !== i))} className="text-gray-400 hover:text-red-500">✕</button>
                   </div>
                 ))}
@@ -398,7 +398,7 @@ export default function MessageWizard({ resetToken = 0 }) {
               <div className="bg-white border border-yellow-200 rounded-xl divide-y divide-gray-100">
                 <div className="px-4 py-2 bg-yellow-50 text-xs font-semibold text-yellow-800">Unmatched source — map manually</div>
                 {unmatched.map((s) => (
-                  <div key={s.id || s.email} className="px-4 py-2.5 flex items-center gap-3 text-sm">
+                  <div key={s.id || s.email} data-hj-suppress className="px-4 py-2.5 flex items-center gap-3 text-sm">
                     <span className="flex-1 truncate">{s.email}</span>
                     <span className="text-gray-400">→</span>
                     <select defaultValue="" onChange={(e) => mapUnmatched(s.email, e.target.value)} className="min-w-44 px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white">
@@ -446,7 +446,7 @@ export default function MessageWizard({ resetToken = 0 }) {
               {/* Search + select all / deselect all */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 min-w-48">
-                  <input value={targetSearch} onChange={(e) => setTargetSearch(e.target.value)} placeholder={`Search ${targetTab}…`}
+                  <input data-hj-suppress value={targetSearch} onChange={(e) => setTargetSearch(e.target.value)} placeholder={`Search ${targetTab}…`}
                     className="w-full pl-3 pr-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-400 outline-none" />
                 </div>
                 <button type="button" onClick={selectAll} className="px-3 py-2 text-xs font-semibold rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100">Select all</button>
@@ -489,11 +489,11 @@ export default function MessageWizard({ resetToken = 0 }) {
             </Field>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Email">
-                <input value={serverEmail} onChange={(e) => setServerEmail(e.target.value)}
+                <input data-hj-suppress value={serverEmail} onChange={(e) => setServerEmail(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
               </Field>
               <Field label="Password">
-                <input type="password" value={serverPassword} onChange={(e) => setServerPassword(e.target.value)}
+                <input type="password" data-hj-suppress value={serverPassword} onChange={(e) => setServerPassword(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
               </Field>
             </div>
@@ -560,7 +560,7 @@ function AccountColumn({ label, accounts, email, onPick }) {
         <p className="text-xs text-amber-600">No accounts connected — connect one on the{' '}
           <Link to="/connect" className="font-semibold text-indigo-600">Connect Clouds</Link> page.</p>
       ) : accounts.map((a) => (
-        <button key={a.email} type="button" onClick={() => onPick(a.email)}
+        <button key={a.email} data-hj-suppress type="button" onClick={() => onPick(a.email)}
           className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-colors ${email === a.email ? 'border-indigo-400 bg-indigo-50 text-indigo-700 font-semibold' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'}`}>
           {a.email}
         </button>
@@ -576,7 +576,7 @@ function Card({ title, lines }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
-      {lines.map((l, i) => <p key={i} className={`mt-1 text-sm ${i === 0 ? 'font-semibold text-gray-900' : 'text-gray-600'} truncate`}>{l}</p>)}
+      {lines.map((l, i) => <p key={i} data-hj-suppress className={`mt-1 text-sm ${i === 0 ? 'font-semibold text-gray-900' : 'text-gray-600'} truncate`}>{l}</p>)}
     </div>
   );
 }

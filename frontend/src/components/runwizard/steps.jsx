@@ -117,7 +117,7 @@ function ConnectCard({ provider, accounts, busy, hint, value, onChange, onConnec
       </div>
       {accounts.map((a) => (
         <div key={a.email} className="flex items-center gap-1.5 text-xs">
-          <span className="flex-1 truncate px-2.5 py-2 rounded-lg border border-gray-200 bg-white text-gray-700">
+          <span data-hj-suppress className="flex-1 truncate px-2.5 py-2 rounded-lg border border-gray-200 bg-white text-gray-700">
             {a.email}{a.isDwd && <span className="ml-1 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">DWD</span>}
           </span>
           <button type="button" onClick={() => onDisconnect(a.email)} title="Disconnect"
@@ -133,7 +133,7 @@ function ConnectCard({ provider, accounts, busy, hint, value, onChange, onConnec
         </button>
       ) : (
         <div className="flex gap-2">
-          <input type="email" value={value} onChange={(e) => onChange(e.target.value)} placeholder="admin@yourdomain.com"
+          <input type="email" data-hj-suppress value={value} onChange={(e) => onChange(e.target.value)} placeholder="admin@yourdomain.com"
             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white" />
           <button type="button" disabled={busy} onClick={onConnect}
             className="px-3 py-2 text-xs font-semibold rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">
@@ -212,7 +212,7 @@ function AccountPanel({ title, subtitle, accent, domain, accounts, providerList,
       </div>
       <div className="relative">
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search accounts"
+        <input data-hj-suppress value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search accounts"
           className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-400 outline-none" />
       </div>
       <div className="space-y-1.5 max-h-[20rem] overflow-y-auto pr-1">
@@ -225,14 +225,14 @@ function AccountPanel({ title, subtitle, accent, domain, accounts, providerList,
           // Service-specific icon: Gmail/Outlook for mail; Drive/Shared Drive/OneDrive/SharePoint/Box for content.
           const Icon = provMeta(iconKeyFor(domain, a.provider, service)).Icon;
           return (
-            <button key={`${service}:${a.email}`} type="button" onClick={() => onSelect(a, service)}
+            <button key={`${service}:${a.email}`} data-hj-suppress type="button" onClick={() => onSelect(a, service)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors ${selected ? 'border-indigo-300 bg-indigo-50/60' : 'border-transparent hover:bg-gray-50'}`}>
               <span className={`shrink-0 w-4 h-4 rounded-full border flex items-center justify-center ${selected ? 'border-indigo-500' : 'border-gray-300'}`}>
                 {selected && <span className="w-2 h-2 rounded-full bg-indigo-500" />}
               </span>
               <span className="shrink-0 w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center"><Icon className="w-5 h-5" /></span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-gray-900 truncate">{a.email}</span>
+                <span data-hj-suppress className="block text-sm font-semibold text-gray-900 truncate">{a.email}</span>
                 <span className="block text-xs text-gray-500 truncate">{PROVIDER_META[service]?.label || provMeta(a.provider).label}{a.isDwd ? ' · DWD' : ''}</span>
               </span>
             </button>
@@ -337,7 +337,7 @@ export function StepMap({ wiz }) {
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-48">
               <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search users by email"
+              <input data-hj-suppress value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search users by email"
                 className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-sm focus:ring-2 focus:ring-indigo-400 outline-none" />
             </div>
             <button type="button" onClick={() => wiz.selectAll(visibleIndices)} disabled={visibleIndices.length === 0}
@@ -367,7 +367,7 @@ export function StepMap({ wiz }) {
                 ) : visibleMappings.map(({ m, idx }) => (
                   <label key={idx} className={`px-4 py-2.5 flex items-center gap-3 text-sm cursor-pointer ${wiz.selectedIndices.has(idx) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'}`}>
                     <input type="checkbox" checked={wiz.selectedIndices.has(idx)} onChange={() => wiz.togglePair(idx)} className="w-4 h-4 text-indigo-600 rounded" />
-                    <span className="flex-1 min-w-0 truncate">{m.source.email} <span className="text-gray-400">→</span> {m.destination.email}</span>
+                    <span data-hj-suppress className="flex-1 min-w-0 truncate">{m.source.email} <span className="text-gray-400">→</span> {m.destination.email}</span>
                     <span className={`text-xs px-2 py-0.5 rounded-full ${m.autoMatched ? 'bg-green-100 text-green-700' : m.imported ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{m.autoMatched ? 'auto' : m.imported ? 'csv' : 'manual'}</span>
                     <button type="button" onClick={(e) => { e.preventDefault(); wiz.removeMapping(idx); }} className="text-gray-400 hover:text-red-500">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
@@ -382,7 +382,7 @@ export function StepMap({ wiz }) {
                 {visibleUnmapped.length === 0 ? (
                   <p className="px-4 py-3 text-sm text-gray-400">No unmatched users match “{q}”.</p>
                 ) : visibleUnmapped.map((s) => (
-                  <div key={s.id} className="px-4 py-2.5 flex items-center gap-3 text-sm">
+                  <div key={s.id} data-hj-suppress className="px-4 py-2.5 flex items-center gap-3 text-sm">
                     <span className="flex-1 truncate">{s.email}</span>
                     <span className="text-gray-400">→</span>
                     <select defaultValue="" onChange={(e) => e.target.value && wiz.manualMap(s, e.target.value)}
@@ -419,11 +419,11 @@ export function StepServer({ wiz }) {
       </Field>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Field label="Email (optional for devemail)">
-          <input type="email" value={wiz.migrationServerEmail} onChange={(e) => wiz.setMigrationServerEmail(e.target.value)}
+          <input type="email" data-hj-suppress value={wiz.migrationServerEmail} onChange={(e) => wiz.setMigrationServerEmail(e.target.value)}
             placeholder="e.g. bhuvana.mosra@cloudfuze.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
         </Field>
         <Field label="Password (optional for devemail)">
-          <input type="password" value={wiz.migrationServerPassword} onChange={(e) => wiz.setMigrationServerPassword(e.target.value)}
+          <input type="password" data-hj-suppress value={wiz.migrationServerPassword} onChange={(e) => wiz.setMigrationServerPassword(e.target.value)}
             placeholder="CloudFuze login password" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
         </Field>
       </div>
@@ -665,7 +665,7 @@ function PerUserFolderTable({ wiz, destDefault }) {
               <th className="text-left font-semibold px-3 py-2">Destination path</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody data-hj-suppress>
             {pairs.map((p) => {
               const email = (p.source.email || '').toLowerCase();
               const ov = wiz.contentUserFolders[email] || {};
@@ -673,12 +673,12 @@ function PerUserFolderTable({ wiz, destDefault }) {
                 <tr key={email} className="border-t border-gray-100">
                   <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.source.email}</td>
                   <td className="px-2 py-1.5">
-                    <input value={ov.sourceFolderName || ''} onChange={(e) => wiz.setContentUserFolder(email, 'sourceFolderName', e.target.value)}
+                    <input data-hj-suppress value={ov.sourceFolderName || ''} onChange={(e) => wiz.setContentUserFolder(email, 'sourceFolderName', e.target.value)}
                       placeholder={baseName} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
                   </td>
                   <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.destination.email}</td>
                   <td className="px-2 py-1.5">
-                    <input value={ov.destinationPath || ''} onChange={(e) => wiz.setContentUserFolder(email, 'destinationPath', e.target.value)}
+                    <input data-hj-suppress value={ov.destinationPath || ''} onChange={(e) => wiz.setContentUserFolder(email, 'destinationPath', e.target.value)}
                       placeholder={destDefault} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
                   </td>
                 </tr>
@@ -712,11 +712,11 @@ function ContentOptions({ wiz }) {
           <span><strong>Use existing source folder</strong> — skip data creation and migrate the folder(s) that already exist at the paths below.</span>
         </label>
         <Field label={wiz.useExistingSource ? 'Existing source folder path' : 'Source folder base name'}>
-          <input value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
+          <input data-hj-suppress value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
             placeholder={wiz.useExistingSource ? 'e.g. /NEWDATA or /Projects/Q1' : 'e.g. NEWDATA (default: Agent Box Data)'} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
         </Field>
         <Field label="Destination path">
-          <input value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
+          <input data-hj-suppress value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
             placeholder={`default ${destDefault}`} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
         </Field>
         <p className="sm:col-span-2 text-xs text-gray-500">
@@ -818,9 +818,9 @@ export function StepSummary({ wiz, onRun, running }) {
                     return (
                       <div key={i} className="px-4 py-2 flex items-center gap-2 text-sm">
                         <span className="w-3 text-amber-500">{isSel ? '★' : ''}</span>
-                        <span className="font-mono text-gray-700 truncate flex-1">{m.source.email}</span>
+                        <span data-hj-suppress className="font-mono text-gray-700 truncate flex-1">{m.source.email}</span>
                         <span className="text-indigo-400">→</span>
-                        <span className="font-mono text-gray-700 truncate flex-1 text-right">{m.destination.email}</span>
+                        <span data-hj-suppress className="font-mono text-gray-700 truncate flex-1 text-right">{m.destination.email}</span>
                       </div>
                     );
                   })}
@@ -840,7 +840,7 @@ export function StepSummary({ wiz, onRun, running }) {
                 <thead className="bg-gray-50 text-gray-500">
                   <tr><th className="text-left px-4 py-2 font-semibold">Source user</th><th className="text-left px-2 py-2 font-semibold">Source folder</th><th className="text-left px-2 py-2 font-semibold">Destination path</th></tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody data-hj-suppress className="divide-y divide-gray-100">
                   {pairs.map((p, i) => {
                     const ov = wiz.contentUserFolders[(p.source.email || '').toLowerCase()] || {};
                     return (
@@ -927,7 +927,7 @@ function SummaryCard({ title, lines }) {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
-      {lines.map((l, i) => <p key={i} className={`mt-1 text-sm ${i === 0 ? 'font-semibold text-gray-900' : 'text-gray-600 truncate'}`}>{l}</p>)}
+      {lines.map((l, i) => <p key={i} data-hj-suppress className={`mt-1 text-sm ${i === 0 ? 'font-semibold text-gray-900' : 'text-gray-600 truncate'}`}>{l}</p>)}
     </div>
   );
 }

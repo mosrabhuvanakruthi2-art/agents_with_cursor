@@ -164,7 +164,7 @@ export default function CreateTestData() {
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Admin Email</label>
           <div className="flex gap-3">
-            <input type="email" value={adminEmail}
+            <input type="email" data-hj-suppress value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && fetchUsers()}
               placeholder={provider === 'microsoft' ? 'admin@company.com' : 'admin@yourdomain.com'}
@@ -218,7 +218,7 @@ export default function CreateTestData() {
                     <tr key={user.email}
                       className={`transition-colors ${isRunning ? 'bg-blue-50/30' : isDone ? 'bg-green-50/30' : 'hover:bg-gray-50'}`}>
                       <td className="px-5 py-3">
-                        <p className="font-medium text-gray-900">{user.email}</p>
+                        <p data-hj-suppress className="font-medium text-gray-900">{user.email}</p>
                         {user.displayName && <p className="text-xs text-gray-500">{user.displayName}</p>}
                       </td>
                       <td className="px-5 py-3">

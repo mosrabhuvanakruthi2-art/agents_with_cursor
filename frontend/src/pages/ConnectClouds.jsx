@@ -219,7 +219,7 @@ export default function ConnectClouds() {
                 <Glyph cloud={a.provider} size={44} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-gray-900 capitalize">{ACCOUNT_NAME[a.provider] || a.provider}</p>
-                  <p className="text-sm text-gray-600 truncate">{a.email}</p>
+                  <p data-hj-suppress className="text-sm text-gray-600 truncate">{a.email}</p>
                   <span className="inline-block mt-0.5 text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{a.isDwd ? 'DWD Admin' : 'Admin'}</span>
                 </div>
                 <span className="text-sm text-gray-500 hidden sm:inline">Multiuser</span>
@@ -235,7 +235,7 @@ export default function ConnectClouds() {
               {expanded === a.email && (
                 <div className="border-t border-gray-100 px-4 py-3 text-xs text-gray-500 grid grid-cols-2 sm:grid-cols-3 gap-2">
                   <div><span className="text-gray-400">Provider:</span> {a.provider}</div>
-                  <div><span className="text-gray-400">Email:</span> {a.email}</div>
+                  <div><span className="text-gray-400">Email:</span> <span data-hj-suppress>{a.email}</span></div>
                   <div><span className="text-gray-400">Connected:</span> {a.connectedAt ? new Date(a.connectedAt).toLocaleString() : '—'}</div>
                 </div>
               )}
@@ -250,7 +250,7 @@ export default function ConnectClouds() {
           <div className="bg-white rounded-xl p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-gray-900">Connect {googleFor.name}</h3>
             <p className="text-xs text-gray-500">Domain-Wide Delegation — enter a Google Workspace admin email. No sign-in needed.</p>
-            <input type="email" value={googleEmail} autoFocus onChange={(e) => setGoogleEmail(e.target.value)}
+            <input type="email" data-hj-suppress value={googleEmail} autoFocus onChange={(e) => setGoogleEmail(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && submitGoogle()} placeholder="admin@yourdomain.com"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 outline-none" />
             <div className="flex justify-end gap-2">

@@ -39,7 +39,7 @@ export default function ResultsView({ exec }) {
                     <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
                     <Mini label="Status" value={<StatusBadge status={exec.status} />} />
                     {combinationLabel(ctx) && <Mini label="Combination" value={<span className="text-xs">{combinationLabel(ctx)}</span>} />}
-                    {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
+                    {!mappings && <Mini label="Direction" value={<span data-hj-suppress className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
                     <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
                   </div>
                   {mappings && (
@@ -47,7 +47,7 @@ export default function ResultsView({ exec }) {
                       <p className="text-xs text-gray-500 mb-2">Direction · {mappings.length} pairs</p>
                       <div className="space-y-1">
                         {mappings.map((p, i) => (
-                          <p key={i} className="text-xs text-gray-800">
+                          <p key={i} data-hj-suppress className="text-xs text-gray-800">
                             {p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}
                           </p>
                         ))}
@@ -352,7 +352,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
                   <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Destination (Teams)</th>
                   <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
                 </tr></thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody data-hj-suppress className="divide-y divide-gray-100">
                   {[
                     { label: 'Messages', src: src.totalMessages, cf: cf.totalPicked, dst: dst.totalMessages, tol: 0.02 },
                     { label: 'Thread Replies', src: src.totalReplies, cf: null, dst: dst.totalReplies, tol: 0.05 },
@@ -430,7 +430,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
                 <th className="px-5 py-2.5 text-center text-xs font-medium text-gray-500 uppercase">Severity</th>
                 <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Count</th>
               </tr></thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody data-hj-suppress className="divide-y divide-gray-100">
                 {bugCategoryList.map((cat, idx) => (
                   <tr key={idx} className="hover:bg-gray-50">
                     <td className="px-5 py-2.5 font-medium text-gray-900">{cat.category}</td>
@@ -463,7 +463,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
               <th className="px-4 py-2.5 text-center text-xs font-medium text-gray-500 uppercase">CF Status</th>
               <th className="px-4 py-2.5 text-center text-xs font-medium text-gray-500 uppercase">Result</th>
             </tr></thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody data-hj-suppress className="divide-y divide-gray-100">
               {channels.length === 0 ? (
                 <tr><td colSpan={9} className="px-4 py-4 text-center text-gray-400 text-sm">No channels validated</td></tr>
               ) : channels.map((ch, idx) => {
@@ -547,7 +547,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
                       <th className="px-3 py-2 text-center text-gray-500 font-medium">Result</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50">
+                  <tbody data-hj-suppress className="divide-y divide-gray-50">
                     {Object.entries(ch.features).map(([key, row], fi) => {
                       const statusMap = {
                         MATCH:                { cls: 'bg-green-100 text-green-700', label: '✓ Match' },
@@ -747,7 +747,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
                       <th className="px-3 py-2 text-center text-gray-500 font-medium w-14">Replies</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-50">
+                  <tbody data-hj-suppress className="divide-y divide-gray-50">
                     {(ch.deepMessageValidation.messageResults || [])
                       .filter(m => m.status !== 'EXTRA')
                       .map((msg, mi) => {
@@ -872,7 +872,7 @@ function MessageMigrationView({ exec, ctx, validation }) {
                 <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Src Count</th>
                 <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Channels</th>
               </tr></thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody data-hj-suppress className="divide-y divide-gray-100">
                 {klList.map((kl, idx) => (
                   <tr key={idx} className="hover:bg-gray-50">
                     <td className="px-5 py-2.5 font-medium text-gray-700">{kl.feature}</td>
@@ -1213,7 +1213,7 @@ function RunInfoCard({ exec, ctx }) {
         <Mini label="Execution ID" value={<span className="font-mono text-xs break-all">{exec.executionId}</span>} />
         <Mini label="Status" value={<StatusBadge status={exec.status} />} />
         {combo && <Mini label="Combination" value={<span className="text-xs">{combo}</span>} />}
-        {!mappings && <Mini label="Direction" value={<span className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
+        {!mappings && <Mini label="Direction" value={<span data-hj-suppress className="text-xs">{ctx.sourceEmail} → {ctx.destinationEmail}</span>} />}
         <Mini label="Created" value={<span className="text-xs">{exec.createdAt ? new Date(exec.createdAt).toLocaleString() : '—'}</span>} />
       </div>
       {mappings && (
@@ -1221,7 +1221,7 @@ function RunInfoCard({ exec, ctx }) {
           <p className="text-xs text-gray-500 mb-2">Direction · {mappings.length} pairs</p>
           <div className="space-y-1">
             {mappings.map((p, i) => (
-              <p key={i} className="text-xs text-gray-800">
+              <p key={i} data-hj-suppress className="text-xs text-gray-800">
                 {p.sourceEmail} <span className="text-gray-400">→</span> {p.destinationEmail}
               </p>
             ))}
@@ -1265,7 +1265,7 @@ function ComparisonTable({ title, sourceItems, destItems, mapping }) {
           <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Destination</th>
           <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Status</th>
         </tr></thead>
-        <tbody className="divide-y divide-gray-100">
+        <tbody data-hj-suppress className="divide-y divide-gray-100">
           {rows.map((r, idx) => (
             <tr key={idx} className={r.match ? 'bg-green-50/50' : 'bg-red-50/50'}>
               <td className="px-5 py-2.5 font-medium text-gray-900">{r.label}</td>
@@ -1297,7 +1297,7 @@ function CustomComparisonTable({ title, sourceItems, destItems }) {
           <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Destination</th>
           <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Status</th>
         </tr></thead>
-        <tbody className="divide-y divide-gray-100">
+        <tbody data-hj-suppress className="divide-y divide-gray-100">
           {rows.map((r, idx) => (
             <tr key={idx} className={r.match ? 'bg-green-50/50' : 'bg-red-50/50'}>
               <td className="px-5 py-2.5 font-medium text-gray-900">{r.name}</td>
