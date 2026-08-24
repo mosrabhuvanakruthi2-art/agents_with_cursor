@@ -91,8 +91,8 @@ export default function Executions() {
                         {exec.executionId.slice(0, 8)}…
                       </Link>
                     </td>
-                    <td className="px-6 py-3 text-gray-700">{exec.context?.sourceEmail || '—'}</td>
-                    <td className="px-6 py-3 text-gray-700">{exec.context?.destinationEmail || '—'}</td>
+                    <td data-hj-suppress className="px-6 py-3 text-gray-700">{exec.context?.sourceEmail || '—'}</td>
+                    <td data-hj-suppress className="px-6 py-3 text-gray-700">{exec.context?.destinationEmail || '—'}</td>
                     <td className="px-6 py-3 text-gray-700">{exec.context?.migrationType || '—'}</td>
                     <td className="px-6 py-3"><StatusBadge status={exec.status} /></td>
                     <td className="px-6 py-3 text-gray-500 text-xs">{new Date(exec.createdAt).toLocaleString()}</td>

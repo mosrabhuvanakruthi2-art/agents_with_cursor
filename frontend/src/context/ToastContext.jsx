@@ -42,7 +42,7 @@ function Toast({ toast, onDismiss }) {
         animate-[slideIn_0.2s_ease-out] ${s.wrap}`}
     >
       <span className={s.icon}>{ICONS[toast.type]}</span>
-      <div className="flex-1 min-w-0">
+      <div data-hj-suppress className="flex-1 min-w-0">
         {toast.title && <p className={`text-sm font-semibold leading-tight ${s.title}`}>{toast.title}</p>}
         {toast.message && <p className={`text-xs mt-0.5 leading-snug ${s.msg}`}>{toast.message}</p>}
       </div>

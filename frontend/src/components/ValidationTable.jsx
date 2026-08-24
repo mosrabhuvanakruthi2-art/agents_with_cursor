@@ -24,7 +24,7 @@ export default function ValidationTable({ title, rows, columns }) {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody data-hj-suppress className="divide-y divide-gray-100">
             {rows.map((row, idx) => (
               <tr key={idx} className="hover:bg-gray-50">
                 {columns.map((col) => (
