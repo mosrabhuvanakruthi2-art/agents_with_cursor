@@ -27,7 +27,7 @@ export default function LogViewer({ logs }) {
               )}
               {log.level && <span className="uppercase">[{log.level}] </span>}
               {log.agent && <span className="text-cyan-400">({log.agent}) </span>}
-              <span>{log.message}</span>
+              <span>{typeof log.message === 'string' ? log.message : JSON.stringify(log.message)}</span>
             </span>
           </div>
         ))}

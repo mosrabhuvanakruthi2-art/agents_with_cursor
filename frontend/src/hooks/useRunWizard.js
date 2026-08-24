@@ -288,7 +288,7 @@ export default function useRunWizard() {
       // User listing is done per connected-account type (google/microsoft/box). For content
       // the provider is a finer service (googledrive/onedrive/sharepoint) → map to its account.
       const [srcRes, destRes] = await Promise.all([
-        getSourceUsers(srcEmail, accountProviderFor(srcProvider)),
+        getSourceUsers(srcEmail, accountProviderFor(srcProvider), { allDomains: domain === 'content' }),
         getDestinationUsers(dstEmail, accountProviderFor(dstProvider)),
       ]);
       const src = srcRes.data.users || [];

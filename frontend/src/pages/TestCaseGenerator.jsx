@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   generateTestCases,
   getCustomTestCases,
@@ -288,7 +288,17 @@ export default function TestCaseGenerator() {
   const [folder, setFolder]             = usePersistedState('tcg-folder', '');
   const [generatedCases, setGeneratedCases] = usePersistedState('tcg-cases', []);
   const [savingState, setSavingState]   = usePersistedState('tcg-saving', {});
-  const [selected, setSelected]         = usePersistedState('tcg-selected', new Set());
+  // Persisted as a plain array (JSON-safe) — a Set doesn't survive JSON.stringify/parse and
+  // silently comes back as {} (no .has/.size), which crashed this page on reload.
+  const [selectedList, setSelectedList] = usePersistedState('tcg-selected-list', []);
+  const selected = useMemo(() => new Set(selectedList), [selectedList]);
+  const setSelected = useCallback((update) => {
+    setSelectedList((prevList) => {
+      const prevSet = new Set(prevList);
+      const nextSet = typeof update === 'function' ? update(prevSet) : update;
+      return [...nextSet];
+    });
+  }, [setSelectedList]);
 
   const abortControllerRef = useRef(null);
 

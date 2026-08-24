@@ -42,9 +42,12 @@ export function getExecutionLogs(id) {
   return api.get(`/agents/executions/${id}/logs`);
 }
 
-export function getSourceUsers(adminEmail, provider) {
+export function getSourceUsers(adminEmail, provider, { allDomains = false } = {}) {
   const params = new URLSearchParams({ adminEmail });
   if (provider) params.set('provider', provider);
+  // Content runs span every domain in the Workspace. A user missing from this list cannot be mapped
+  // at all — CSV import matches against it too — so the scope has to be right at fetch time.
+  if (allDomains) params.set('allDomains', '1');
   return api.get(`/agents/users/source?${params}`);
 }
 
