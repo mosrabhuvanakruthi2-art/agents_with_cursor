@@ -315,7 +315,7 @@ async function tryLiveFetchExpandedTest(resolvedIssueId, opts = {}) {
     if (env.MONGODB_URI) {
       try {
         await testExpandedDetailsMongoStore.upsertDetail(slim, slim.issueId || id, slim.jiraKey);
-        log.info({ stepCount: slim.steps?.length }, 'Saved to MongoDB test_expanded_details');
+        log.info('Saved to MongoDB test_expanded_details', { stepCount: slim.steps?.length });
       } catch (dbErr) {
         log.warn({ err: dbErr.message }, 'MongoDB upsert failed — returning payload anyway');
       }

@@ -895,9 +895,14 @@ function getConfiguredAccounts() {
  * List all users in the same Google Workspace domain using the People API Directory.
  * Falls back to returning configured accounts if the directory API is not available.
  */
-async function listDomainUsers(adminEmail) {
+async function listDomainUsers(adminEmail, { allDomains = false } = {}) {
   const tenant = getGoogleTenant(adminEmail);
   const domain = adminEmail.split('@')[1];
+  // A Workspace can host several domains (e.g. filefuze.co with snapbot.io alongside it). Listing
+  // only the admin's own domain hides those users, and a user who is not listed cannot be mapped —
+  // not even by CSV import, which matches against this list. allDomains widens the query to the whole
+  // Workspace. It defaults to false so the mail flows keep the exact single-domain list they expect.
+  const emailMatchesScope = (value) => Boolean(value) && (allDomains || String(value).endsWith(`@${domain}`));
 
   // Tenants with DWD service account: try Admin SDK first, then People API via SA impersonation
   if (hasServiceAccount(tenant)) {
@@ -910,7 +915,8 @@ async function listDomainUsers(adminEmail) {
       let pageToken = undefined;
       do {
         const res = await adminSdk.users.list({
-          domain,
+          // customer 'my_customer' spans every domain in the Workspace; 'domain' is one only.
+          ...(allDomains ? { customer: 'my_customer' } : { domain }),
           maxResults: 500,
           orderBy: 'email',
           pageToken,
@@ -929,7 +935,7 @@ async function listDomainUsers(adminEmail) {
         }
         pageToken = res.data.nextPageToken;
       } while (pageToken);
-      logger.info(`Admin SDK listed ${users.length} users for ${domain}`);
+      logger.info(`Admin SDK listed ${users.length} users for ${allDomains ? 'the whole Workspace' : domain}`);
       return users;
     } catch (err) {
       logger.warn(`Admin SDK user listing failed for ${adminEmail}: ${err.message} — trying People API via service account`);
@@ -949,7 +955,7 @@ async function listDomainUsers(adminEmail) {
         });
         const items = res.data.people || [];
         for (const p of items) {
-          const email = p.emailAddresses?.find((e) => e.value?.endsWith(`@${domain}`))?.value;
+          const email = p.emailAddresses?.find((e) => emailMatchesScope(e.value))?.value;
           const name = p.names?.[0];
           if (email) {
             users.push({
@@ -964,7 +970,7 @@ async function listDomainUsers(adminEmail) {
         pageToken = res.data.nextPageToken;
       } while (pageToken);
       if (users.length > 0) {
-        logger.info(`People API (SA) listed ${users.length} users for ${domain}`);
+        logger.info(`People API (SA) listed ${users.length} users for ${allDomains ? 'the whole Workspace' : domain}`);
         return users;
       }
     } catch (err) {
@@ -998,7 +1004,7 @@ async function listDomainUsers(adminEmail) {
 
         const items = res.data.people || [];
         for (const p of items) {
-          const email = p.emailAddresses?.find((e) => e.value?.endsWith(`@${domain}`))?.value;
+          const email = p.emailAddresses?.find((e) => emailMatchesScope(e.value))?.value;
           const name = p.names?.[0];
           if (email) {
             users.push({

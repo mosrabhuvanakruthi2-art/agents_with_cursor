@@ -1,3 +1,4 @@
+const fs = require('fs');
 const https = require('https');
 const axios = require('axios');
 const md5 = require('md5');

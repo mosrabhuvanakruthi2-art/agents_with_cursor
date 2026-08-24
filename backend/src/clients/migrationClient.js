@@ -104,6 +104,17 @@ function getApiModule() {
 }
 
 /**
+ * True when the active server is a content-migration server (qarelease style).
+ * Content servers expose /report/* and the newmultiuser Team-Migration API; they have no
+ * /email/* JAX-RS resources, so the mail-only mapping steps must not be sent there — CXF answers
+ * an unmatched path with a 500, not a 404.
+ * Marker: Basic-auth login via validateUser stores userId and rewrites baseUrl to /report.
+ */
+function isContentServer() {
+  return Boolean(runtimeConfig?.userId) || getApiModule() === 'report';
+}
+
+/**
  * True when the active server uses the NEW API format (newtestemail5 style).
  * New servers require email + MD5 password for login and use /email/* paths.
  * Legacy servers (devemail) use Basic auth and /mail/* paths.
@@ -723,29 +734,56 @@ function findCloudId(clouds, email, cloudNameHint) {
 
   // When cloudNameHint is provided, build a type-filtered subset for scoped matching.
   // This prevents cross-type domain matches (e.g. Box filefuze.co matching instead of SharePoint filefuze.co).
-  const hint = cloudNameHint ? String(cloudNameHint).toUpperCase().trim() : null;
+  // Compare on alphanumerics only. The provider key has no separators ('googleshareddrive') while the
+  // cloud name does ('GOOGLE_SHARED_DRIVES'), so a literal startsWith never matched and the Shared
+  // Drive cloud was invisible to type-scoped matching.
+  const squash = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const hint = cloudNameHint ? squash(cloudNameHint) : null;
   const typedClouds = hint
     ? clouds.filter((c) => {
-        const cn = String(c.cloudName || '').toUpperCase();
-        return cn === hint || cn.startsWith(hint + '_') || cn.startsWith(hint);
+        const cn = squash(c.cloudName);
+        return cn === hint || cn.startsWith(hint) || hint.startsWith(cn);
       })
     : [];
 
-  // 1. Exact email match — type-scoped first, then all clouds
+  // 1. Exact email match — within the requested type first
   const exactScoped = typedClouds.find((c) => cloudEmail(c) === norm);
   if (exactScoped) return { id: extractId(exactScoped), cloudName: exactScoped.cloudName, memberId: exactScoped.memberId };
 
-  const exactAll = clouds.find((c) => cloudEmail(c) === norm);
-  if (exactAll) return { id: extractId(exactAll), cloudName: exactAll.cloudName, memberId: exactAll.memberId };
-
-  // 2. Domain match — type-scoped first, then all clouds
+  // 2. Domain match — within the requested type
   const domain = norm.includes('@') ? norm.split('@')[1] : null;
-  if (domain) {
-    const domainScoped = typedClouds.find((c) => cloudEmail(c).endsWith('@' + domain));
-    if (domainScoped) return { id: extractId(domainScoped), cloudName: domainScoped.cloudName, memberId: domainScoped.memberId };
+  const domainScoped = domain ? typedClouds.find((c) => cloudEmail(c).endsWith('@' + domain)) : null;
+  if (domainScoped) return { id: extractId(domainScoped), cloudName: domainScoped.cloudName, memberId: domainScoped.memberId };
 
-    const domainAll = clouds.find((c) => cloudEmail(c).endsWith('@' + domain));
-    if (domainAll) return { id: extractId(domainAll), cloudName: domainAll.cloudName, memberId: domainAll.memberId };
+  // Cross-type fallback is allowed ONLY when the requested type has no registrations at all. With
+  // clouds of the right type present, matching a different type by email is never correct: it is how a
+  // SharePoint destination silently resolved to the same user's Box registration and the whole run
+  // failed downstream on a mismatched cloud id.
+  if (!hint || typedClouds.length === 0) {
+    const exactAll = clouds.find((c) => cloudEmail(c) === norm);
+    if (exactAll) {
+      if (hint) {
+        logger.warn(`CloudFuze findCloudId: no "${cloudNameHint}" cloud registered — falling back to `
+          + `"${exactAll.cloudName}" for ${norm}. Verify this is the intended cloud.`);
+      }
+      return { id: extractId(exactAll), cloudName: exactAll.cloudName, memberId: exactAll.memberId };
+    }
+    if (domain) {
+      const domainAll = clouds.find((c) => cloudEmail(c).endsWith('@' + domain));
+      if (domainAll) {
+        if (hint) {
+          logger.warn(`CloudFuze findCloudId: no "${cloudNameHint}" cloud registered — falling back to `
+            + `"${domainAll.cloudName}" by domain for ${norm}. Verify this is the intended cloud.`);
+        }
+        return { id: extractId(domainAll), cloudName: domainAll.cloudName, memberId: domainAll.memberId };
+      }
+    }
+  } else {
+    // Type exists but this account is not registered on it — say so, and name what IS registered.
+    const registered = typedClouds.map((c) => `${c.cloudName} (${cloudEmail(c) || 'no email'})`).join(', ');
+    logger.warn(`CloudFuze findCloudId: ${norm} has no "${cloudNameHint}" registration. `
+      + `Registered ${cloudNameHint} cloud(s): ${registered}. `
+      + 'Add the cloud in CloudFuze, or pin the id with CONTENT_SOURCE_CLOUD_ID / CONTENT_DEST_CLOUD_ID.');
   }
 
   // 3. cloudName-only fallback — first cloud matching the type hint (no email fields on this server)
@@ -994,6 +1032,12 @@ async function triggerMigration(context) {
       return '/';
     };
     const dcnUpper = String(context.destCloudName || context.destinationProvider || '').toUpperCase();
+    // '200' is NOT a valid SharePoint id and never was. Real destination ids from /filefolder have
+    // the form `/<cloudId>/<graphSiteId>:<TYPE>` with TYPE in { SITE, DOCUMENT_LIBRARY, FOLDER }, and
+    // the wizard depends on that `:TYPE` suffix — for GOOGLE_SHARED_DRIVES → SHAREPOINT_ONLINE_BUSINESS
+    // it splits toRootId on ':' and branches on FOLDER / DOCUMENT_LIBRARY (multiUserMapping.js ~16987).
+    // It is left as-is only because the isCSV route in use does not send root ids at all; switching to
+    // the folder route (folder:"true") requires resolving the real composite id first.
     const destFolderId = context.destRootId || (dcnUpper.includes('SHAREPOINT') ? '200' : 'root');
 
     const pathOverride   = (env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim();
@@ -1003,13 +1047,29 @@ async function triggerMigration(context) {
     // Multi-user: context.userFolderMappings has one entry per Map-Users pair (each with its
     // own seeded folder). Single-user / legacy: synthesize one unit from the seeded folder.
     // A diagnostic CONTENT_SOURCE_PATH_OVERRIDE forces the single-unit path.
+    // A Shared Drive folder id on its own is not enough for CloudFuze to read the folder: given one,
+    // it reports the folder as a single object (job …aad8, "Total: 1") or, with pickInsideFolder=true,
+    // finds nothing inside it at all (job …ab66, "Total: 0") — while the folder really held 77 files.
+    // Passing the DRIVE id as the root gives the scan its Shared Drive context; sourceFolderPath still
+    // says which folder inside the drive to take.
+    const sharedDriveRootId = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''))
+      ? (context.sourceDriveId || null)
+      : null;
+    if (sharedDriveRootId) {
+      logger.info(`CloudFuze content: Shared Drive source — using drive id ${sharedDriveRootId} as fromRootId `
+        + '(a bare folder id yields an empty scan)');
+    }
+
     let units;
     if (Array.isArray(context.userFolderMappings) && context.userFolderMappings.length > 0 && !pathOverride) {
       units = context.userFolderMappings.map((u) => ({
         sourceEmail: u.sourceEmail || context.sourceEmail,
         destinationEmail: u.destinationEmail || context.destinationEmail,
         sourcePath: u.sourcePath || '/',
-        fromRootId: u.sourceRootId || u.sourcePath || '/',
+        fromRootId: sharedDriveRootId || u.sourceRootId || u.sourcePath || '/',
+        // The folder's own id, kept separately: fromRootId above prefers the DRIVE id, which the
+        // isCSV route must not use (the scan then looks at the drive root and finds nothing).
+        folderRootId: u.sourceRootId || null,
         destinationPath: resolveDestPath(u.destinationPath),
       }));
     } else {
@@ -1018,7 +1078,8 @@ async function triggerMigration(context) {
         sourceEmail: context.sourceEmail,
         destinationEmail: context.destinationEmail,
         sourcePath,
-        fromRootId: rootIdOverride || context.sourceRootId || sourcePath,
+        fromRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || sourcePath,
+        folderRootId: rootIdOverride || context.sourceRootId || null,
         destinationPath: resolveDestPath(context.destinationPath),
       }];
     }
@@ -1151,53 +1212,204 @@ async function triggerMigration(context) {
       logger.warn(`CloudFuze content deleteAll/mapplist failed (${delErr?.response?.status || delErr.message}) — continuing`);
     }
 
-    let resolvedMappings = [];
-    for (const u of units) {
-      const unmappedUrl = `${contentOrigin}/proxyservices/v1/mapping/user/unmapped/list`
-        + `?sourceCloudId=${encodeURIComponent(u.srcCloudId)}`
-        + `&destCloudId=${encodeURIComponent(u.dstCloudId)}`
-        + `&sourcePath=${encodeURIComponent(u.sourcePath)}`
-        + `&destPath=${encodeURIComponent(u.destinationPath)}`
-        + `&sourceFolderId=${encodeURIComponent(u.fromRootId)}`
-        + `&destFolderId=${encodeURIComponent(destFolderId)}`
-        + `&isFolder=true`;
-      try {
-        const unmappedRes = await axios.post(unmappedUrl, {}, migrationAxiosConfig({
-          headers: { Authorization: contentAuth, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    // NOTE ON ORDER: this must run AFTER deleteAll/mapplist above. It was originally placed
+    // before it, so the mappings were registered and then wiped one second later — the upload
+    // returned 200 with an empty cfMappingCachesList and the migration still saw nothing.
+    // ── Step 1a: Register the PATH mapping (source folder → destination folder) ───────
+    // This step is described at the top of this function as step 1 of the Team Migration flow
+    // ("POST /mapping/user/path/csv — upload path-based CSV mapping") but was never implemented:
+    // the only CSV we ever uploaded was manualmapping/csv, which maps USERS, not PATHS. Without a
+    // registered path pair CloudFuze knows who to migrate but not which folder, so its scan returns
+    // nothing — every content job in this project's history has reported 0 items moved.
+    //
+    // The column header is not documented anywhere we have. CloudFuze echoes unmatched/error rows
+    // back the way manualmapping/csv does, so the full response is logged verbatim: if the header is
+    // wrong the reply tells us what it wanted, which is far cheaper than guessing blind.
+    let pathCsvId = null;
+    let pathCsvName = null;
+    try {
+      const pathRows = units
+        .filter((u) => u.sourcePath && u.destinationPath)
+        .map((u) => `${u.sourceEmail},${u.sourcePath},${u.destinationEmail},${u.destinationPath}`);
+      if (pathRows.length > 0) {
+        const pathCsv = ['Source User,Source Folder,Destination User,Destination Path', ...pathRows].join(String.fromCharCode(13,10));
+        const pathUrl = `${contentOrigin}/proxyservices/v1/mapping/user/path/csv`
+          + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}`;
+        logger.info(`CloudFuze path mapping CSV → POST ${pathUrl}
+${pathCsv}`);
+        // Content-Type MUST be */* here. Proven by probing the endpoint directly:
+        //   application/json      → 200 but the body is never read (empty list for a real CSV, for
+        //                            garbage, and for an empty body alike)
+        //   text/csv, text/plain, application/octet-stream, application/csv → 500
+        //   multipart/form-data   → the parser reads the MIME headers as rows and stops at the
+        //                            blank line before the content, so the CSV is never reached
+        //   */*                   → cfMappingCachesList comes back populated — the mapping registers
+        const pathRes = await axios.post(pathUrl, pathCsv, migrationAxiosConfig({
+          headers: { Authorization: contentAuth, 'Content-Type': '*/*', 'X-Requested-With': 'XMLHttpRequest' },
           timeout: 40000,
+          validateStatus: () => true,
         }));
-        const mapped = Array.isArray(unmappedRes.data) ? unmappedRes.data : (unmappedRes.data ? [unmappedRes.data] : []);
-        resolvedMappings.push(...mapped);
-        const m0 = mapped[0] || {};
-        // ── CSV-style validation (Source Path Review / Destination Path Review) ──
-        // A resolved, provisioned pair = the source folder exists and the destination resolves =
-        // PASS (equivalent to CloudFuze's validated-CSV PASS / CREATED-PASS). No pair = FAIL.
-        const srcResolved = Boolean(m0?.sourceCloudDetails?.emailId);
-        const provisionedOk = m0?.sourceCloudDetails?.provisionedUser !== false;
-        u.srcReview = (mapped.length > 0 && srcResolved) ? 'PASS' : 'FAIL';
-        u.dstReview = (mapped.length > 0) ? 'CREATED-PASS' : 'FAIL';
-        u.validated = mapped.length > 0 && srcResolved && provisionedOk;
-        logger.info(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}"]: ${u.validated ? 'PASS ✓' : 'FAIL ✗'}  (Source Path Review: ${u.srcReview}, Destination Path Review: ${u.dstReview})`);
-      } catch (mapErr) {
-        u.validated = false;
-        u.srcReview = 'FAIL';
-        u.dstReview = 'FAIL';
-        logger.warn(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}"]: FAIL ✗ (unmapped/list error ${mapErr?.response?.status || mapErr.message})`);
+        logger.info(`CloudFuze path mapping CSV response: HTTP ${pathRes.status} ${JSON.stringify(pathRes.data).slice(0, 500)}`);
+        const uploaded = Array.isArray(pathRes.data?.cfMappingCachesList) ? pathRes.data.cfMappingCachesList : [];
+        pathCsvId = uploaded[0]?.csvId ?? null;
+        pathCsvName = uploaded[0]?.csvName ?? null;
+        const errorLines = pathRes.data?.errorLines;
+        if (Array.isArray(errorLines) && errorLines.length > 0) {
+          logger.warn(`CloudFuze path/csv rejected ${errorLines.length} line(s): ${JSON.stringify(errorLines).slice(0, 300)}`);
+        }
       }
+    } catch (pathErr) {
+      logger.warn(`CloudFuze path/csv upload failed (${pathErr?.response?.status || pathErr.message}) — continuing`);
     }
 
-    // cache/list — secondary log only (the unmapped/list results above are authoritative).
+    // ── Step 1b: run CloudFuze's OWN mapping validation, then read its verdict ──────
+    // Previously this step POSTed /mapping/user/unmapped/list and declared PASS whenever a row came
+    // back. That was our verdict, not CloudFuze's: the row comes back for an unvalidated mapping
+    // too, so every run logged "PASS ✓" while CloudFuze still held mapped:false. Worse,
+    // unmapped/list CREATES a second mapping row, so cache/list reported 2 pairs for one uploaded
+    // pair. Both behaviours are gone.
+    //
+    // The real sequence, from the Team-Migration wizard (multiUserMapping.js —
+    // fetchCsvValidationStatus ~22215, fetchNewValidationStatus ~22253):
+    //   1. POST /mapping/download/csvcreator/{csvId}/asynchronous?...&first=true  ← starts validation
+    //   2. POST /mapping/check/csvvalidationstatus/{csvId}?...                    ← poll until ready
+    // Both are POST. csvId is the SMALL INTEGER csvId off the mapping row, not the Mongo id — the
+    // Mongo id returns HTTP 500. Calling step 2 without step 1 returns "Total Saved Count :0" and
+    // validates nothing, which is why the mapping never resolved.
+    const cfUserId = runtimeConfig.userId;
+    if (pathCsvId != null && cfUserId) {
+      const vQuery = `userId=${encodeURIComponent(cfUserId)}`
+        + `&sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}`
+        + `&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`;
+      try {
+        const kickUrl = `${contentOrigin}/proxyservices/v1/mapping/download/csvcreator/${pathCsvId}/asynchronous`
+          + `?${vQuery}&csvName=${encodeURIComponent(pathCsvName || '')}&first=true`;
+        const kickRes = await axios.post(kickUrl, null, migrationAxiosConfig({
+          headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
+          timeout: 60000,
+        }));
+        logger.info(`CloudFuze mapping validation started (csvId=${pathCsvId}): ${JSON.stringify(kickRes.data)}`);
+      } catch (kickErr) {
+        logger.warn(`CloudFuze csvcreator/asynchronous failed (${kickErr?.response?.status || kickErr.message}) — polling anyway`);
+      }
+
+      const statusUrl = `${contentOrigin}/proxyservices/v1/mapping/check/csvvalidationstatus/${pathCsvId}?${vQuery}`;
+      let ready = false;
+      for (let attempt = 1; attempt <= CSV_VALIDATION_MAX_POLLS; attempt++) {
+        await new Promise((r) => setTimeout(r, CSV_VALIDATION_POLL_MS));
+        let body = '';
+        try {
+          const res = await axios.post(statusUrl, null, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
+            timeout: 30000,
+          }));
+          body = String(res.data ?? '');
+        } catch (pollErr) {
+          logger.warn(`CloudFuze csvvalidationstatus poll ${attempt} failed (${pollErr?.response?.status || pollErr.message})`);
+          continue;
+        }
+        logger.info(`CloudFuze mapping validation poll ${attempt}/${CSV_VALIDATION_MAX_POLLS}: ${body}`);
+        if (/report is ready/i.test(body)) { ready = true; break; }
+      }
+      if (!ready) {
+        logger.warn(`CloudFuze mapping validation did not report ready within ${CSV_VALIDATION_MAX_POLLS} poll(s) — reading whatever verdict exists`);
+      }
+    } else {
+      logger.warn(`CloudFuze mapping validation skipped (csvId=${pathCsvId}, userId=${cfUserId ? 'set' : 'missing'}) — the verdict below is therefore unvalidated`);
+    }
+
+    // ── Step 1c: read CloudFuze's verdict off the mapping rows ──────────────────
+    // cache/list is now authoritative. CloudFuze states the reason a pair cannot migrate in
+    // userErrorDescription (e.g. "Please Make this as Licensed user" for an unlicensed destination
+    // user) and flags it via provisionedUser / licenced / failMapping / pathException. None of those
+    // fields were read before, so a pair CloudFuze had already rejected was reported as PASS and
+    // submitted anyway — the job then ran to PROCESSED having moved nothing.
+    let cachedRows = [];
     try {
       const cacheUrl = `${contentOrigin}/proxyservices/v1/mapping/user/cache/list`
-        + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=50&matchBy=`;
+        + `?sourceCloudId=${encodeURIComponent(context.sourceCloudId)}&destCloudId=${encodeURIComponent(context.destCloudId)}&pageNo=1&pageSize=500&matchBy=`;
       const cacheRes = await axios.get(cacheUrl, migrationAxiosConfig({
         headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
         timeout: 30000,
       }));
-      const cached = Array.isArray(cacheRes.data) ? cacheRes.data : [];
-      logger.info(`CloudFuze content cache/list: ${cached.length} cached pair(s)`);
+      const raw = cacheRes.data;
+      cachedRows = Array.isArray(raw)
+        ? raw
+        : (Array.isArray(raw?.cfMappingCachesList) ? raw.cfMappingCachesList
+          : (Array.isArray(raw?.content) ? raw.content : []));
+      logger.info(`CloudFuze content cache/list: ${cachedRows.length} mapping row(s)`);
     } catch (cacheErr) {
       logger.warn(`CloudFuze content cache/list failed (${cacheErr?.response?.status || cacheErr.message})`);
+    }
+
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    for (const u of units) {
+      // Match on source email + source folder path; fall back to source email alone when exactly one
+      // row carries it, so a path CloudFuze normalised ("QA/Documents" → "/QA/Documents") still pairs.
+      const byBoth = cachedRows.filter((r) => norm(r?.sourceCloudDetails?.emailId) === norm(u.sourceEmail)
+        && norm(r?.sourceCloudDetails?.folderPath) === norm(u.sourcePath));
+      const byEmail = cachedRows.filter((r) => norm(r?.sourceCloudDetails?.emailId) === norm(u.sourceEmail));
+      const row = byBoth[0] || (byEmail.length === 1 ? byEmail[0] : null);
+
+      if (!row) {
+        u.validated = false;
+        u.srcReview = 'FAIL';
+        u.dstReview = 'FAIL';
+        u.blockReason = 'no mapping row returned by CloudFuze for this pair';
+        logger.warn(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}"]: FAIL ✗ — ${u.blockReason}`);
+        continue;
+      }
+
+      const verdict = contentMappingVerdict(row, u);
+
+      // Per-user SUB-cloud ids as CloudFuze resolved them. These are what the pair must carry: a
+      // named user in the CSV resolves to their own sub-cloud, not the admin cloud we started from.
+      if (verdict.srcCloudId) u.srcCloudId = verdict.srcCloudId;
+      if (verdict.dstCloudId) u.dstCloudId = verdict.dstCloudId;
+      u.teamFolder = verdict.teamFolder;
+      u.migrateFolderName = verdict.migrateFolderName;
+      // THE paths as CloudFuze stored them. It normalises what the CSV gave it — "QA/Documents"
+      // becomes "/QA/Documents" — and then create/job must send back exactly that. Sending the
+      // un-normalised form makes the server reject the pair with
+      //   errorDescription: "Migration not Allowed for wrong CSV paths", processStatus: CONFLICT
+      // and attach 0 pairs. That error is set on the WORKSPACE, not returned by any call we make,
+      // which is why every content run since June looked silent rather than rejected.
+      u.registeredSourcePath = (row.sourceCloudDetails || {}).folderPath || null;
+      u.registeredDestPath = (row.destCloudDetails || {}).folderPath || null;
+      u.srcReview = verdict.srcReview;
+      u.dstReview = verdict.dstReview;
+      u.validated = verdict.validated;
+      u.blockReason = verdict.blockReason;
+
+      // CloudFuze leaves the mapping unresolved: `mapped` stays false and neither side gets a
+      // pathRootFolderId, so the job attaches 0 pairs and nothing migrates. Cause still unknown —
+      // these have been tested and ELIMINATED, so do not re-spend time on them:
+      //   • source type            — My Drive (G_SUITE) fails identically to Shared Drive
+      //   • destination membership — a site the destination user IS a member of fails the same way
+      //   • destination licensing  — provisionedUser true, no userErrorDescription
+      //   • CSV header             — correct now; the row registers and validation reports ready
+      //   • validation not run     — csvcreator + csvvalidationstatus complete first
+      //   • route / root ids       — folder:"true" with real composite ids, and teamFolder, all 0 pairs
+      // Warn rather than fail: which field flips on a successful run has never been observed, so this
+      // is not safe to treat as a hard gate. The hard stop is the totalPairsCount check after start.
+      const dstPathRoot = (row.destCloudDetails || {}).pathRootFolderId;
+      const srcPathRoot = (row.sourceCloudDetails || {}).pathRootFolderId;
+      if (verdict.mapped !== true || dstPathRoot == null) {
+        logger.warn(
+          `CloudFuze did not resolve the mapping for ${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}" `
+          + `(mapped=${verdict.mapped}, source pathRootFolderId=${srcPathRoot}, destination pathRootFolderId=${dstPathRoot}). `
+          + 'The path CSV registered and CloudFuze reported its validation ready, but neither path was '
+          + 'resolved to a folder id, so the job will attach 0 pairs and migrate nothing. Cause is '
+          + 'CloudFuze-side and unidentified — see docs/content-migration-path-mapping-findings.md for '
+          + 'what has already been eliminated.'
+        );
+      }
+
+      if (u.validated) {
+        logger.info(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}"]: PASS ✓  (Source Path Review: ${u.srcReview}, Destination Path Review: ${u.dstReview}, mapped=${verdict.mapped}, teamFolder=${u.teamFolder})`);
+      } else {
+        logger.error(`CloudFuze CSV VALIDATION [${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}"]: FAIL ✗ — ${u.blockReason}`);
+      }
     }
 
     // ── Validation gate: per-pair — skip failed, migrate the rest ──────────────
@@ -1208,13 +1420,12 @@ async function triggerMigration(context) {
     const failedUnits = units.filter((u) => !u.validated);
     logger.info(`CloudFuze CSV VALIDATION summary: ${passedUnits.length}/${units.length} PASS, ${failedUnits.length} FAIL`);
     for (const u of failedUnits) {
-      logger.warn(`CloudFuze CSV VALIDATION: SKIPPING ${u.sourceEmail} "${u.sourcePath}" — failed validation (Source ${u.srcReview}/Destination ${u.dstReview}); this pair is NOT migrated`);
+      logger.warn(`CloudFuze CSV VALIDATION: SKIPPING ${u.sourceEmail} "${u.sourcePath}" — ${u.blockReason || `Source ${u.srcReview}/Destination ${u.dstReview}`}; this pair is NOT migrated`);
     }
     if (passedUnits.length === 0 && env.CONTENT_REQUIRE_CSV_MAPPING !== 'false') {
       throw new Error(
         `CloudFuze content: ALL ${units.length} pair(s) failed validation — nothing to migrate. `
-        + `Failed: ${failedUnits.map((u) => `${u.sourceEmail} "${u.sourcePath}"`).join('; ')}. `
-        + `Verify the source folder(s) exist and the destination is valid.`
+        + failedUnits.map((u) => `${u.sourceEmail} "${u.sourcePath}" → ${u.destinationEmail}: ${u.blockReason || 'unknown reason'}`).join(' | ')
       );
     }
     logger.info(`CloudFuze CSV VALIDATION: migrating ${passedUnits.length} passed pair(s)${failedUnits.length ? `, skipping ${failedUnits.length} failed` : ''} (destFolderId="${destFolderId}")`);
@@ -1228,19 +1439,48 @@ async function triggerMigration(context) {
     // response; it appears as 1+ in the get/moveJob job list once the pair is attached.
     // One workspace pair per VALIDATED transfer unit (failed pairs are never migrated). The
     // folder IDs are the real Box folder ids; toRootId is the resolved destination root.
+    // `folder:"true"` and `isCSV:"true"` are two MUTUALLY EXCLUSIVE routes on the server, and we
+    // were taking the wrong one. The Team-Migration UI (multiUserMapping.js ~16800) sends
+    // `folder:"true"` with real fromRootId/toRootId only when the user picked a folder in the
+    // folder-picker; when the pair came from a path CSV it sends `isCSV:"true"` with the PATHS and
+    // NO root ids, and the server resolves the paths against the mapping cache we registered in
+    // step 1a. We were uploading the path CSV and then asking for the folder-id route, so the
+    // registered mapping was never consumed (it stayed mapped:false) and the scan treated the
+    // Shared Drive folder id as a single opaque object — CloudFuze's own report said
+    // "Total No of Files/Folders: 1", the folder and nothing inside it.
+    //
+    // Every content pair here comes from the path CSV, so every pair takes the isCSV route.
+    // Matching the UI byte-for-byte also drops fromMailId/toMailId (the UI keeps those in a
+    // separate EmailObj) and the drive-id fromRootId experiment, which was never justified.
     const workspacePairs = passedUnits.map((u) => ({
       // Per-user SUB-cloud ids (fallback to admin) so CloudFuze attributes each workspace to the
       // right source/destination user instead of the admin.
       fromCloudId: { id: u.srcCloudId },
       toCloudId: { id: u.dstCloudId },
-      fromMailId: u.sourceEmail,
-      toMailId: u.destinationEmail,
-      fromRootId: u.fromRootId,
-      toRootId: destFolderId,
-      sourceFolderPath: u.sourcePath,
-      destFolderPath: u.destinationPath,
-      destinationFolderName: 'null',
-      folder: 'true',
+      // Echo back the registered paths, not the ones we typed into the CSV — see the note above.
+      // Falls back to the requested path only when the mapping row carried none.
+      sourceFolderPath: u.registeredSourcePath || u.sourcePath,
+      destFolderPath: u.registeredDestPath || u.destinationPath,
+      // fromRootId is REQUIRED on this route, despite the wizard's generic builder omitting it.
+      // Proof: the only content jobs on this server that ever scanned anything are Box→SharePoint
+      // isCSV jobs, and every one carries a real source root id —
+      //   job 6a84316c… sourceFolderPath "/"    fromRootId "0"             totalFilesAndFolders 55
+      //   job 6a843cf4… sourceFolderPath "/LFN" fromRootId "409671580491"  totalFilesAndFolders 20
+      // i.e. the id OF the folder named in sourceFolderPath. Ours sent null, so CloudFuze had no
+      // folder to scan from and rejected the pair with "Migration not Allowed for wrong CSV paths"
+      // and totalFilesAndFolders 0.
+      // The id must be of the FOLDER named in sourceFolderPath, not the drive containing it.
+      // Working job 6a843cf4 pairs sourceFolderPath "/LFN" with fromRootId "409671580491" — the
+      // folder id. u.fromRootId prefers the Shared DRIVE id (set further up for the folder-picker
+      // route), which makes the scan look at the drive root and find nothing, so prefer the folder.
+      fromRootId: u.folderRootId || u.fromRootId || null,
+      // The wizard sends the mapping row's own migrateFolderName here and omits teamFolder entirely
+      // on the isCSV route (multiUserMapping.js ~16878); teamFolder appears only on the
+      // DROPBOX_BUSINESS→G_SUITE variant. We were sending the literal STRING 'null' plus a
+      // teamFolder the server never asked for on this route.
+      // The wizard sends '' here, never null, on the isCSV route.
+      destinationFolderName: u.migrateFolderName ?? '',
+      isCSV: 'true',
     }));
 
     const createJobUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/job`;
@@ -1273,8 +1513,26 @@ async function triggerMigration(context) {
 
     const updateParams = [
       `jobName=${encodeURIComponent(jobName)}`,
-      `migrateFolderName=${encodeURIComponent('/')}`,
+      // The wizard sends this EMPTY. We were sending "/", and that is the one input that differs
+      // between a job CloudFuze accepts and one it rejects with "Migration not Allowed for wrong
+      // CSV paths" — with "/" the server also derives a toRootId (a SharePoint drive id) that the
+      // wizard job never has, which is what makes the pair mismatch the registered mapping.
+      `migrateFolderName=${encodeURIComponent(env.CONTENT_MIGRATE_FOLDER_NAME || '')}`,
       `isDeltaMigration=${isDelta}`,
+      // pickInsideFolder was hardcoded true here on the theory that without it CloudFuze treats the
+      // pair as one opaque object (job 6a88539a reported "Total No of Files/Folders: 1"). But the
+      // same findings doc records job 6a885ddc WITH pickInsideFolder=true reporting "Total: 0" —
+      // worse, not better — and a network capture of the wizard's own update call sends neither
+      // pickInsideFolder nor teamFoldersMigrate. Since the only content jobs on this server that ever
+      // scanned anything came from that UI, default to omitting it and make it opt-in.
+      ...(env.CONTENT_PICK_INSIDE_FOLDER === 'true' ? ['pickInsideFolder=true'] : []),
+      // "Team Folders" is Google's original name for Shared Drives. It is the only field in the
+      // job whose meaning is specific to this source type, and it had been false on every run
+      // while migrating a GOOGLE_SHARED_DRIVES cloud — the scan found the folder but never its
+      // contents. Set only for Shared Drive sources so Box/OneDrive/My Drive are unaffected.
+      // Also omitted by the wizard. Previously implied by "source is a Shared Drive"; now opt-in so
+      // the two flags can be varied independently while the scan behaviour is still unexplained.
+      ...(env.CONTENT_TEAM_FOLDERS_MIGRATE === 'true' ? ['teamFoldersMigrate=true'] : []),
       `fileFolderLink=${opt('sharedLinks')}`,            // Shared Links
       `externalUsers=${opt('externalShares')}`,          // External Shares
       `metaData=${opt('customMetadata')}`,               // Custom Metadata
@@ -1316,11 +1574,70 @@ async function triggerMigration(context) {
     }));
     logger.info(`CloudFuze start migration response: ${JSON.stringify(startRes.data)}`);
 
+    // The server echoes the pairs it actually registered in previewDetail. A job that starts with
+    // fewer pairs than were submitted migrates nothing for the missing ones and still reports
+    // PROCESSED, so the gap has to be raised here — the status alone cannot show it.
+    const registered = Array.isArray(startRes.data?.previewDetail) ? startRes.data.previewDetail.length : 0;
+    if (registered === 0) {
+      throw new Error(`CloudFuze started job ${jobId} with 0 registered pair(s) — ${passedUnits.length} were submitted; nothing would migrate`);
+    }
+    // previewDetail being populated is NOT proof the job has work. It echoes the submitted pair;
+    // totalPairsCount is the count CloudFuze will actually process. Every content job in this
+    // project's history started with previewDetail=[1 pair] and totalPairsCount=0, passed this guard
+    // on the previewDetail check alone, ran to PROCESSED, and moved nothing.
+    // A job that starts with no attached pairs will migrate nothing. That is a migration FAILURE and
+    // must never be reported as success — but it is not a crash either: the caller still needs to
+    // produce a QA report saying exactly this. Throwing here aborted the whole flow and took the
+    // report with it, which is worse for the user than the false success it replaced. Hand the
+    // condition back as a verdict and let MigrationAgent route it to the content-report path.
+    // CloudFuze records why it refused a pair on the WORKSPACE record, not in any response we get
+    // from create/update/start. Read it — it is the difference between "nothing happened" and
+    // "Migration not Allowed for wrong CSV paths".
+    let workspaceError = null;
+    try {
+      const wsRes = await axios.get(
+        `${contentOrigin}/proxyservices/v1/move/newmultiuser/get/list/${jobId}?page_nbr=1&page_size=5`,
+        migrationAxiosConfig({ headers: { Authorization: contentAuth }, timeout: 30000 })
+      );
+      const ws = (Array.isArray(wsRes.data) ? wsRes.data : [])[0] || {};
+      workspaceError = ws.errorDescription || ws.exceptionMessage || null;
+      if (workspaceError) {
+        logger.error(`CloudFuze workspace rejected the pair: "${workspaceError}" `
+          + `(processStatus=${ws.processStatus}, sourceFolderPath=${JSON.stringify(ws.sourceFolderPath)}, `
+          + `destFolderPath=${JSON.stringify(ws.destFolderPath)}, toRootId=${JSON.stringify(ws.toRootId)})`);
+      } else {
+        logger.info(`CloudFuze workspace: processStatus=${ws.processStatus}, no errorDescription`);
+      }
+    } catch (wsErr) {
+      logger.warn(`CloudFuze workspace read failed (${wsErr?.response?.status || wsErr.message})`);
+    }
+
+    const attachedPairs = Number(startRes.data?.totalPairsCount ?? 0) || 0;
+    // Only a workspace errorDescription means CloudFuze refused the pair. Do NOT gate on
+    // attachedPairs: totalPairsCount is 0 in this response even for a healthy job — it is populated
+    // only in GET /move/newmultiuser/get/moveJob. Gating on it failed every run on a non-problem.
+    const zeroPairsReason = workspaceError
+      ? `CloudFuze refused the migration pair: "${workspaceError}". Job ${jobId}; `
+        + `${registered} pair(s) submitted, so nothing will migrate. `
+        + 'The most common cause is a pair whose paths or root ids do not match the registered '
+        + 'mapping — see docs/content-migration-path-mapping-findings.md.'
+      : null;
+    if (zeroPairsReason) logger.error(zeroPairsReason);
+    if (registered < passedUnits.length) {
+      logger.warn(`CloudFuze job ${jobId}: only ${registered}/${passedUnits.length} submitted pair(s) were registered by the server`);
+    }
+
     contentMoveId = jobId;
 
     return {
       jobId,
-      status: 'INITIATED',
+      status: zeroPairsReason ? 'NO_WORK_ATTACHED' : 'INITIATED',
+      zeroPairs: Boolean(zeroPairsReason),
+      zeroPairsReason,
+      attachedPairs,
+      registeredPairs: registered,
+      pairsSubmitted: passedUnits.length,
+      pairsRegistered: registered,
       rawResponse: startRes.data,
       initiatePath: 'move/newmultiuser',
       // Permission mapping used (source user → destination user, per CloudFuze email match) +
@@ -1465,6 +1782,45 @@ async function triggerMigration(context) {
   throw lastErr || new Error('Migration initiate failed: no path candidates');
 }
 
+/**
+ * CloudFuze's verdict on one path-CSV mapping row, as a pure function so the pass/fail rule is
+ * testable without a live server. `row` is one entry of cfMappingCachesList / cache/list.
+ *
+ * CloudFuze reports why a pair cannot migrate on the row itself — provisionedUser=false and a
+ * human-readable userErrorDescription (e.g. "Please Make this as Licensed user") — plus failMapping
+ * and pathException flags. A row is returned even when the mapping is unvalidated, so the row's
+ * mere existence proves nothing and must never be read as PASS.
+ */
+function contentMappingVerdict(row, unit) {
+  const src = (row && row.sourceCloudDetails) || {};
+  const dst = (row && row.destCloudDetails) || {};
+  const sourceEmail = (unit && unit.sourceEmail) || 'source user';
+  const destinationEmail = (unit && unit.destinationEmail) || 'destination user';
+
+  const blockers = [];
+  if (src.provisionedUser === false) blockers.push(`source user ${sourceEmail} is not provisioned`);
+  if (dst.provisionedUser === false) blockers.push(`destination user ${destinationEmail} is not provisioned`);
+  if (src.userErrorDescription) blockers.push(`source: ${String(src.userErrorDescription).trim()}`);
+  if (dst.userErrorDescription) blockers.push(`destination: ${String(dst.userErrorDescription).trim()}`);
+  if (row && row.failMapping === true) blockers.push('CloudFuze flagged failMapping');
+  if (row && row.pathException === true) blockers.push('CloudFuze flagged pathException');
+
+  const mapped = Boolean(row && row.mapped === true);
+  return {
+    validated: blockers.length === 0,
+    blockReason: blockers.join('; '),
+    // CloudFuze's own review columns; null until validation has run, reported as UNVALIDATED.
+    srcReview: src.sourcePathReview || (mapped ? 'PASS' : 'UNVALIDATED'),
+    dstReview: dst.destPathReview || (mapped ? 'PASS' : 'UNVALIDATED'),
+    mapped,
+    // teamFolder belongs to THIS row — the wizard reads it here (multiUserMapping.js ~16605).
+    teamFolder: String(Boolean(row && row.teamFolder === true)),
+    migrateFolderName: (row && row.migrateFolderName) != null ? row.migrateFolderName : null,
+    srcCloudId: src.id || null,
+    dstCloudId: dst.id || null,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // STEP 6 — Poll for migration completion
 //   New server → GET /email/user/jobs?deltaMigration=&pageNo=0&pageSize=50
@@ -1498,6 +1854,12 @@ const TERMINAL_STATUSES = new Set([
 // ─────────────────────────────────────────────────────────────
 // Content migration: real terminal states. NOT_PROCESSED / VERSION_NOT_PROCESSED /
 // IN_PROGRESS / QUEUED are TRANSIENT (the job is queued or running) — keep polling.
+// CloudFuze validates an uploaded path CSV asynchronously (csvcreator → csvvalidationstatus).
+// It has answered "CSV report is ready" on the first poll for a single-row CSV; the ceiling is for
+// a large CSV, not the normal case.
+const CSV_VALIDATION_POLL_MS = 4000;
+const CSV_VALIDATION_MAX_POLLS = 15;
+
 const CONTENT_TERMINAL_STATUSES = new Set([
   'PROCESSED', 'PROCESS', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
   'PROCESSED_WITH_CONFLICT_AND_PAUSE', 'CONFLICT', 'CONFLICTS', 'PAUSE',
@@ -1565,8 +1927,21 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
 
     if (onProgress) onProgress(attempt, maxPolls, status || null);
 
-    // Real terminal state → done.
-    if (CONTENT_TERMINAL_STATUSES.has(status)) return status;
+    // Real terminal state → done. A terminal PROCESSED that moved nothing is reported as its own
+    // status rather than plain success: 'the run completed' is not a pass when zero files landed,
+    // and returning PROCESSED here is how 28 content runs were recorded as successful.
+    if (CONTENT_TERMINAL_STATUSES.has(status)) {
+      const movedNothing = (processedCount === null || processedCount === 0)
+        && (totalCount === null || totalCount === 0);
+      if (movedNothing && (status === 'PROCESSED' || status === 'PROCESS')) {
+        logger.error(
+          `CloudFuze content job ${moveId} reached ${status} but reports no processed items `
+          + `(totalCount=${totalCount}, processedCount=${processedCount}) — treating as PROCESSED_EMPTY, not success`
+        );
+        return 'PROCESSED_EMPTY';
+      }
+      return status;
+    }
 
     // NOT_PROCESSED / IN_PROGRESS / QUEUED are transient — keep polling so a queued job
     // gets time to start and scan. Guard: if it stays NOT_PROCESSED with zero files for
@@ -1950,6 +2325,7 @@ module.exports = {
   register,
   getClouds,
   findCloudId,
+  isContentServer,
   getDomains,
   getPermissionMapping,
   uploadUserCSV,
@@ -1967,4 +2343,5 @@ module.exports = {
   fetchCurrentJobStatus,
   getLastJobReport,
   migrationAxiosConfig,
+  contentMappingVerdict,
 };

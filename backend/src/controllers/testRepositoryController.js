@@ -121,14 +121,14 @@ async function getTestDetail(req, res) {
       const firstStep = detail.steps[0];
       if (Array.isArray(firstStep?.customfields) && firstStep.customfields.length > 0) {
         log.info(
+          'Step custom fields — set JIRA_XRAY_STEP_TEST_STEPS_CUSTOMFIELD_ID in .env to pin the "Test Steps" column to the correct ID',
           {
             stepCustomfieldIds: firstStep.customfields.map((c) => c.id),
             stepCustomfieldPreviews: firstStep.customfields.map((c) => ({
               id: c.id,
               preview: String(c.valuePlain || '').slice(0, 80),
             })),
-          },
-          'Step custom fields — set JIRA_XRAY_STEP_TEST_STEPS_CUSTOMFIELD_ID in .env to pin the "Test Steps" column to the correct ID'
+          }
         );
       }
       // If enrich repaired any leaked paragraphs, persist corrected steps back to MongoDB in background.

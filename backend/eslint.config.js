@@ -18,4 +18,20 @@ module.exports = [
       'no-unused-vars': ['warn', { args: 'none', ignoreRestSiblings: true }],
     },
   },
+  {
+    // Playwright automation: the callbacks passed to page.evaluate() / $eval() run inside the BROWSER,
+    // so document/window/CSS are legitimately defined there even though the file itself is Node.
+    // Without this, every DOM reference in those callbacks reports a false no-undef error.
+    files: [
+      'src/services/cfBrowserAutomation.js',
+      'src/clients/devemailBrowserClient.js',
+      'src/clients/qareleaseBrowserClient.js',
+    ],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+      },
+    },
+  },
 ];

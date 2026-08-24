@@ -1,11 +1,12 @@
 const MigrationAgent = require('../agents/migration/MigrationAgent');
 const CleanupAgent = require('../agents/cleanup/CleanupAgent');
 const MigrationContext = require('../models/MigrationContext');
+const env = require('../config/env');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
 const neutaraClient = require('../clients/neutaraClient');
-const { resolve: resolveAgents } = require('./agentRegistry');
+const { resolve: resolveAgents, list: listCombinations } = require('./agentRegistry');
 const devemailClient = require('../clients/devemailClient');
 
 /**
@@ -18,7 +19,21 @@ function agentsFor(context) {
   const dst = context.destinationProvider || 'microsoft';
   const set = resolveAgents(domain, src, dst);
   if (!set) {
-    throw new Error(`No agents registered for ${domain}: ${src} → ${dst}`);
+    // Say what IS registered. The registry loads combination files once, when the module is first
+    // required, so a file added while the server is running stays invisible until a restart — listing
+    // the loaded set turns "combination missing" into "server needs restarting" at a glance.
+    const available = listCombinations()
+      .filter((c) => c.domain === domain)
+      .map((c) => `${c.sourceProvider} → ${c.destinationProvider}`)
+      .sort();
+    const known = available.length > 0
+      ? `Registered for ${domain}: ${available.join(', ')}.`
+      : `Nothing is registered for domain "${domain}".`;
+    throw new Error(
+      `No agents registered for ${domain}: ${src} → ${dst}. ${known} `
+      + 'If the combination file exists on disk but is not listed, this process loaded the registry '
+      + 'before it was added — restart the server.'
+    );
   }
   return set;
 }
@@ -428,9 +443,16 @@ class AgentOrchestrator {
       }
 
       // ── Use-existing-folder mode: skip seeding, resolve each user's EXISTING folder ──────
-      // When context.useExistingSource is set, the source folder(s) already exist — we resolve
-      // each path to its Box folder id (As-User per user) and migrate directly. No data creation.
-      if (isContentMode && context.useExistingSource && context.sourceProvider === 'box' && cufEntries.length > 0) {
+      // When context.useExistingSource is set, the source folder(s) already exist — resolve each
+      // named folder to its real id and migrate directly. No data creation.
+      //
+      // This resolution used to be gated to `sourceProvider === 'box'`. For a Drive or Shared Drive
+      // source the block was skipped entirely, so userFolderMappings stayed empty and the flow fell
+      // back to migrating `/` — the whole drive root — instead of the folder the user named. It did
+      // that silently: the run looked normal and the wrong source only showed up in the path CSV.
+      const useExistingProvider = String(context.sourceProvider || '').toLowerCase();
+      const useExistingIsDrive = ['googledrive', 'googleshareddrive', 'google', 'drive'].includes(useExistingProvider);
+      if (isContentMode && context.useExistingSource && useExistingProvider === 'box' && cufEntries.length > 0) {
         log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing folder(s)`);
         const boxClient = require('../clients/boxClient');
         const adminEmail = context.sourceAdminEmail || context.sourceEmail;
@@ -458,6 +480,62 @@ class AgentOrchestrator {
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingIsDrive && cufEntries.length > 0) {
+        // Drive / Shared Drive equivalent of the Box branch above. A Shared Drive folder is resolved
+        // within its drive, so the drive id is carried too — CloudFuze needs it as the scan root.
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing Drive folder(s)`);
+        const driveClient = require('../clients/driveClient');
+        const isSharedDrive = useExistingProvider === 'googleshareddrive';
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          const folderName = (e.sourceFolderName || context.sourceFolderName || '').trim().replace(/^\/+/, '');
+          if (!folderName) {
+            log.warn(`Content useExistingSource: no source folder named for ${e.sourceEmail} — skipping`);
+            continue;
+          }
+          try {
+            let driveId = null;
+            if (isSharedDrive) {
+              const drive = await driveClient.resolveSharedDriveByName(env.GOOGLE_SHARED_DRIVE_NAME, e.sourceEmail);
+              if (!drive) {
+                log.warn(`Content useExistingSource: Shared Drive "${env.GOOGLE_SHARED_DRIVE_NAME}" not visible to ${e.sourceEmail} — skipping`);
+                continue;
+              }
+              driveId = drive.id;
+            }
+            const hits = (await driveClient.findFoldersByName(folderName, e.sourceEmail))
+              .filter((h) => (driveId ? h.driveId === driveId : true));
+            if (hits.length === 0) {
+              log.warn(`Content useExistingSource: folder "${folderName}" not found for ${e.sourceEmail} — skipping`);
+              continue;
+            }
+            if (hits.length > 1) {
+              log.warn(`Content useExistingSource: ${hits.length} folders named "${folderName}" for ${e.sourceEmail} — using the first (${hits[0].id})`);
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: `/${folderName}`,
+              sourceRootId: String(hits[0].id),
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "/${folderName}" (id=${hits[0].id}${driveId ? `, drive=${driveId}` : ''})`);
+            if (driveId) context.sourceDriveId = driveId;
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderName}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing source folder could be resolved — refusing to run. '
+            + 'Migrating with no resolved folder falls back to the drive root, which is never what was asked for.'
+          );
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
       }
 
       // Step 1: Generate test data.
@@ -481,6 +559,7 @@ class AgentOrchestrator {
         if (sourceData?.rootFolderName) {
           context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
           if (sourceData.rootFolderId) context.sourceRootId = String(sourceData.rootFolderId);
+          if (sourceData.sharedDriveId) context.sourceDriveId = String(sourceData.sharedDriveId);
           log.info(`Content source captured from ${dataAgent.getName()}: path=${context.sourceTestDataPath} folderId=${context.sourceRootId || '(none)'}`);
 
           // Multi-user: one transfer unit per per-user entry. unit 0 reuses the folder Step 1
@@ -603,6 +682,10 @@ class AgentOrchestrator {
         migrationResult,
         validationSummary: validationResult,
         contentMigrationReport: migrationResult?.contentMigrationReport || null,
+        // A migration that attached no work moved nothing. Validation still runs (its findings are
+        // the report), but the run must not read as a pass anywhere downstream.
+        migrationFailed: Boolean(migrationResult?.migrationFailed),
+        migrationFailureReason: migrationResult?.failureReason || null,
       };
 
       executionService.update(context.executionId, {
@@ -612,8 +695,19 @@ class AgentOrchestrator {
         completedAt: new Date().toISOString(),
       });
 
-      // Auto-raise Neutara bug on validation failure (fire-and-forget — never blocks the flow)
-      if (validationResult?.overallStatus === 'FAIL') {
+      // Auto-raise Neutara bug on validation failure (fire-and-forget — never blocks the flow).
+      //
+      // Suppressed when the migration attached no work: every validation finding is then just a
+      // restatement of "nothing was copied", and filing them as content defects is actively
+      // misleading. Execution ac77ad80 (22 Aug) filed 5 such tickets against a destination nothing
+      // had ever been written to. The migration failure is the bug; report it once, in the run.
+      if (migrationResult?.migrationFailed) {
+        const note = `Migration moved nothing (${migrationResult.finalStatus}) — no bug raised; `
+          + 'validation findings only restate that the destination is empty. '
+          + `Cause: ${migrationResult.failureReason || 'unknown'}`;
+        log.warn(note);
+        executionService.update(context.executionId, { knownLimitationsNote: note });
+      } else if (validationResult?.overallStatus === 'FAIL') {
         const execRecord = executionService.get(context.executionId);
         neutaraClient.createBug(execRecord).then((issue) => {
           if (issue?.knownLimitationsOnly) {

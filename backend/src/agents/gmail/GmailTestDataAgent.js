@@ -1414,7 +1414,11 @@ class GmailTestDataAgent extends BaseAgent {
     const custom = [];
     const addIf = (name, subject, body) => {
       const id = qaIds[name];
-      if (id) custom.push({ subject, textBody: body, labelIds: [id], mailDirection: 'incoming', inboundFrom: inboundSenders?.[0] || toEmail });
+      // correspondentEmail is this function's parameter carrying the caller's toEmail. The previous
+      // `inboundSenders?.[0] || toEmail` referenced two identifiers that live in the CALLER
+      // (_createEmails) and are undeclared here, so this line threw a ReferenceError — optional
+      // chaining guards a null value, not an undeclared name — for every label that resolved an id.
+      if (id) custom.push({ subject, textBody: body, labelIds: [id], mailDirection: 'incoming', inboundFrom: correspondentEmail });
     };
     addIf('QA-TestLabel', 'QA E2E - In QA-TestLabel', 'E2E: user label QA-TestLabel.');
     addIf('QA-TestLabel', 'QA E2E - Second mail in QA-TestLabel', 'E2E: second message under QA-TestLabel.');

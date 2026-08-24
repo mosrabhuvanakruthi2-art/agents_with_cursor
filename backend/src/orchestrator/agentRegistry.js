@@ -31,7 +31,21 @@ function resolve(domain, sourceProvider, destinationProvider) {
 
 // Exports are assigned BEFORE auto-loading so that combination files can safely
 // `require('../agentRegistry')` while this module is still initializing.
-module.exports = { register, resolve };
+/**
+ * Every registered combination, as `[{ domain, sourceProvider, destinationProvider }]`.
+ *
+ * Exists so a failed resolution can say what IS available. The registry is populated once, when this
+ * module is first required, so a combination file added while the server is running is invisible until
+ * a restart — an error that lists the loaded combinations makes that obvious immediately.
+ */
+function list() {
+  return [...registry.keys()].map((k) => {
+    const [domain, sourceProvider, destinationProvider] = k.split(':');
+    return { domain, sourceProvider, destinationProvider };
+  });
+}
+
+module.exports = { register, resolve, list };
 
 // Combinations live in per-domain subfolders: combinations/<domain>/<combo>.js
 // (e.g. combinations/mail/gmailToOutlook.js, combinations/content/boxToSharepoint.js).

@@ -321,6 +321,8 @@ const USER_LISTING_PROVIDER = {
 async function getSourceUsers(req, res) {
   try {
     const { adminEmail, provider: rawProvider } = req.query;
+    // Content runs list every domain in the Workspace; mail keeps its single-domain list.
+    const allDomains = req.query.allDomains === '1' || req.query.allDomains === 'true';
     const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
@@ -355,7 +357,7 @@ async function getSourceUsers(req, res) {
         liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
       } else if (provider === 'google' || !provider) {
         const gmailClient = require('../clients/gmailClient');
-        liveUsers = await gmailClient.listDomainUsers(adminEmail);
+        liveUsers = await gmailClient.listDomainUsers(adminEmail, { allDomains });
       }
     } catch (liveErr) {
       logger.warn(`getSourceUsers: live fetch failed (${liveErr.message}) — trying config fallback`);

@@ -17,6 +17,8 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const tokenStore = require('../clients/oauthTokenStore');
+// Used to verify Domain-Wide Delegation actually works before registering an account as DWD.
+const driveClient = require('../clients/driveClient');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -109,8 +111,11 @@ router.get('/google/url', (req, res) => {
     return res.status(400).json({ error: `Google OAuth not configured for tenant ${tenant} (GOOGLE_CLIENT_ID_${tenant} / GOOGLE_CLIENT_SECRET_${tenant} missing)` });
   }
   const isPopup = req.query.source === 'popup';
-  // agent=message → Google Chat scopes (message product); else mail scopes (Gmail/Calendar).
-  const agent = req.query.agent === 'message' ? 'message' : 'mail';
+  // agent=message → Google Chat scopes (message product); agent=content → Drive scopes (content
+  // product); else mail scopes (Gmail/Calendar). Without the content option a Drive migration could
+  // only ever authenticate through Domain-Wide Delegation, because no OAuth path requested the Drive
+  // scope at all.
+  const agent = ['message', 'content'].includes(req.query.agent) ? req.query.agent : 'mail';
   // Encode source + tenant + agent in state so the callback reconstructs the right client/tag.
   const state = `${isPopup ? 'popup' : 'default'}:${tenant}:${agent}`;
   const identityScopes = [
@@ -136,10 +141,18 @@ router.get('/google/url', (req, res) => {
     'https://www.googleapis.com/auth/chat.delete',
     'https://www.googleapis.com/auth/drive.file',
   ];
+  // Content product: full Drive access, covering My Drive AND Shared Drives (a Shared Drive is not a
+  // separate scope — it needs `drive`, plus supportsAllDrives on each call).
+  const contentScopes = [
+    'https://www.googleapis.com/auth/drive',
+    ...identityScopes,
+  ];
+  const scopeFor = { message: messageScopes, content: contentScopes, mail: mailScopes };
+
   const oAuth2Client = googleOAuthClient(tenant);
   const url = oAuth2Client.generateAuthUrl({
     access_type: 'offline',
-    scope: agent === 'message' ? messageScopes : mailScopes,
+    scope: scopeFor[agent] || mailScopes,
     prompt: 'consent',
     state,
   });
@@ -150,7 +163,8 @@ router.get('/google/callback', async (req, res) => {
   const { code, error, state } = req.query;
   // State format: "<source>:<tenant>:<agent>" — fall back to legacy "popup"/"default"
   const [source = 'default', tenant = '1', agentRaw = 'mail'] = (state || 'default:1:mail').split(':');
-  const agent = agentRaw === 'message' ? 'message' : 'mail';
+  // 'content' tags a Drive-scoped token so the content product can tell it from a mail token.
+  const agent = ['message', 'content'].includes(agentRaw) ? agentRaw : 'mail';
   const isPopup = source === 'popup';
   const successBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
   const errorBase = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
@@ -194,11 +208,28 @@ router.post('/google/signout', (req, res) => {
   res.json({ success: true });
 });
 
-router.post('/dwd', (req, res) => {
+// Registering DWD without checking it is how a dead Google account gets created: the claim is stored,
+// every later Drive call fails with `unauthorized_client`, and the cause is invisible at the point of
+// the mistake. Verify the service account can really impersonate the user first, and when it cannot,
+// say so and point at the OAuth route that does work — /api/auth/google/url?agent=content.
+router.post('/dwd', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'email required' });
-  tokenStore.setDwdAccount(email.trim().toLowerCase());
-  logger.info(`[auth] DWD account registered: ${email}`);
+  const normalized = email.trim().toLowerCase();
+
+  const check = await driveClient.verifyDwd(normalized);
+  if (!check.ok) {
+    logger.warn(`[auth] DWD registration refused for ${normalized}: ${check.reason}`);
+    return res.status(400).json({
+      error: `${normalized} cannot be connected via Domain-Wide Delegation: ${check.reason}. `
+        + 'Grant the service-account client id the Drive scope in the Google Admin console, or connect '
+        + 'this account with OAuth instead — open /api/auth/google/url?agent=content and sign in as '
+        + `${normalized}.`,
+    });
+  }
+
+  tokenStore.setDwdAccount(normalized);
+  logger.info(`[auth] DWD account registered (impersonation verified): ${normalized}`);
   res.json({ success: true });
 });
 

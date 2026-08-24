@@ -1,5 +1,6 @@
 const { BaseAgent } = require('../core/BaseAgent');
 const driveClient = require('../../clients/driveClient');
+const env = require('../../config/env');
 const logger = require('../../utils/logger');
 
 // ─── Static file content buffers ─────────────────────────────────────────────
@@ -187,13 +188,30 @@ class DriveTestDataAgent extends BaseAgent {
 
     logger.info(`[DriveTestDataAgent] Starting — user: ${sourceEmail}, target folder: ${sourceFolderName}`);
 
-    // Find or create the target folder at My Drive root
-    let rootFolder = await driveClient.findByName(sourceFolderName, 'root', sourceEmail);
+    // Shared Drive target, when one is configured. A Shared Drive's id doubles as its root folder id,
+    // so everything below is unchanged apart from where the tree is rooted. Shared Drives are also the
+    // only place the Content Manager (fileOrganizer) role exists, so the permission matrix needs one.
+    const sharedDriveName = context.sourceSharedDriveName || env.GOOGLE_SHARED_DRIVE_NAME;
+    let sharedDrive = null;
+    if (sharedDriveName) {
+      sharedDrive = await driveClient.resolveSharedDriveByName(sharedDriveName, sourceEmail);
+      if (sharedDrive) {
+        logger.info(`[DriveTestDataAgent] Seeding into Shared Drive "${sharedDrive.name}" (${sharedDrive.id})`);
+      } else {
+        logger.warn(`[DriveTestDataAgent] Shared Drive "${sharedDriveName}" not visible to ${sourceEmail} — falling back to My Drive`);
+        this.errors.push({ scenario: 'sharedDrive', error: `Shared Drive "${sharedDriveName}" not found` });
+      }
+    }
+    this.results.sharedDrive = sharedDrive ? { id: sharedDrive.id, name: sharedDrive.name } : null;
+    const parentRoot = sharedDrive?.id || 'root';
+
+    // Find or create the target folder at the chosen root
+    let rootFolder = await driveClient.findByName(sourceFolderName, parentRoot, sourceEmail);
     if (rootFolder) {
       logger.info(`[DriveTestDataAgent] Found existing folder: ${sourceFolderName} (${rootFolder.id})`);
     } else {
       logger.info(`[DriveTestDataAgent] Creating folder: ${sourceFolderName}`);
-      rootFolder = await driveClient.createFolder(sourceFolderName, null, sourceEmail);
+      rootFolder = await driveClient.createFolder(sourceFolderName, sharedDrive?.id || null, sourceEmail);
       logger.info(`[DriveTestDataAgent] Created: ${sourceFolderName} (${rootFolder.id})`);
     }
     this.results.rootFolderId = rootFolder.id;
@@ -211,12 +229,78 @@ class DriveTestDataAgent extends BaseAgent {
     await this._createSpecialCharsFolder(rootFolder.id, sourceEmail);
     await this._createLongNameFolder(rootFolder.id, sourceEmail);
     await this._createSharedLinks(sourceEmail);
+    // Scenarios that exist so no documented feature is left unexercised (and therefore reported
+    // "not assessed") in the Shared Drive → SharePoint checklist.
+    await this._createPermissionMatrix(rootFolder.id, sourceEmail, editorEmail, viewerEmail, sharedDrive, {
+      // The manual QA suite's dominant dimensions: group grants (most of its cases) and external users.
+      groupEmail: context.groupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '',
+      externalEmail: context.externalEmail || env.GOOGLE_TEST_EXTERNAL_EMAIL || '',
+    });
+    await this._createLinkMatrix(rootFolder.id, sourceEmail, sharedDrive);
+    await this._createLegacyOfficeFiles(rootFolder.id, sourceEmail);
+    await this._createOverLimitPath(rootFolder.id, sourceEmail);
+
+    // Inventory of what was actually created, mirroring how the mail agent reports its counters.
+    // Printed to the log AND returned, so the execution record answers "what data exists in the
+    // source?" without anyone opening Drive — and so a seed that silently created nothing is visible.
+    const r = this.results;
+    const count = (v) => (Array.isArray(v) ? v.length : (v ? 1 : 0));
+    const summary = {
+      rootFolderName: sourceFolderName,
+      rootFolderId: r.rootFolderId || null,
+      sharedDrive: r.sharedDrive ? `${r.sharedDrive.name} (${r.sharedDrive.id})` : '(My Drive)',
+      fileTypes: count(r.filesCreated) || count(r.filesFolderIds),
+      nativeFiles: count(r.nativeFiles),
+      versionedFiles: count(r.versionFiles),
+      fileFormats: count(r.legacyOfficeFiles),
+      permissionGrants: count(r.permissionMatrix),
+      sharedLinkGrants: count(r.linkMatrix),
+      sharedLinks: count(r.sharedLinks),
+      deepNestingLevels: count(r.deepNestingFolders),
+      specialCharsFolder: r.specialCharsName || null,
+      overLimitPathChars: r.overLimitPath?.approxLength || 0,
+      warnings: this.errors.length,
+    };
+
+    logger.info('[DriveTestDataAgent] ── Seeded data inventory ──────────────────────────────');
+    logger.info(`[DriveTestDataAgent]   target            : ${summary.sharedDrive}`);
+    logger.info(`[DriveTestDataAgent]   root folder       : ${summary.rootFolderName} (${summary.rootFolderId || 'not created'})`);
+    logger.info(`[DriveTestDataAgent]   file types        : ${summary.fileTypes}`);
+    logger.info(`[DriveTestDataAgent]   declared formats  : ${summary.fileFormats}  (.doc/.xls/.ppt + pass-through)`);
+    logger.info(`[DriveTestDataAgent]   Google native     : ${summary.nativeFiles}  (Doc/Sheet/Slides)`);
+    logger.info(`[DriveTestDataAgent]   versioned files   : ${summary.versionedFiles}`);
+    logger.info(`[DriveTestDataAgent]   permission grants : ${summary.permissionGrants}  (users + groups + external)`);
+    logger.info(`[DriveTestDataAgent]   shared-link grants: ${summary.sharedLinkGrants}  (anonymous + organization)`);
+    logger.info(`[DriveTestDataAgent]   deep nesting      : ${summary.deepNestingLevels} level(s)`);
+    logger.info(`[DriveTestDataAgent]   special chars     : ${summary.specialCharsFolder || '(none)'}`);
+    logger.info(`[DriveTestDataAgent]   over-limit path   : ${summary.overLimitPathChars} chars`);
+    if (this.errors.length > 0) {
+      logger.warn(`[DriveTestDataAgent]   warnings          : ${this.errors.length} scenario(s) not seeded — these features cannot be validated:`);
+      for (const w of this.errors.slice(0, 20)) {
+        logger.warn(`[DriveTestDataAgent]     - ${w.scenario}${w.item ? `/${w.item}` : ''}: ${w.error}`);
+      }
+    }
+    logger.info('[DriveTestDataAgent] ───────────────────────────────────────────────────────');
+
+    // A seed that created no root folder produced no data at all; say so rather than reporting success.
+    if (!r.rootFolderId) {
+      throw new Error(
+        'DriveTestDataAgent created no data — the root folder was never created. '
+        + 'Check Drive access for the source account (the Drive scope must be granted) and the '
+        + 'Shared Drive name.'
+      );
+    }
 
     logger.info('[DriveTestDataAgent] All inscope scenarios completed');
     return {
-      rootFolderId: this.results.rootFolderId,
-      scenarios: this.results,
-      sharedLinks: this.results.sharedLinks || [],
+      rootFolderId: r.rootFolderId,
+      rootFolderName: sourceFolderName,
+      // The Shared Drive the data lives in. CloudFuze needs it to enumerate the folder's children:
+      // given only a folder id it reports zero contents (job 6a885ddc7371a25e3aa6ab66).
+      sharedDriveId: this.results.sharedDrive?.id || null,
+      summary,
+      scenarios: r,
+      sharedLinks: r.sharedLinks || [],
       warnings: this.errors,
     };
   }
@@ -365,6 +449,238 @@ class DriveTestDataAgent extends BaseAgent {
       }
     } else if (!viewerEmail) {
       logger.info('[DriveTestDataAgent]   Skipping viewer share — viewerEmail not provided');
+    }
+  }
+
+  // ── Permission matrix (features 4.2–4.8) ──────────────────────────────────
+  /**
+   * Seed one folder and one file at every source role the feature doc lists, so each of features
+   * 4.2–4.8 has something to validate.
+   *
+   * Content Manager (`fileOrganizer`) exists only on Shared Drives — on My Drive the API rejects it,
+   * so that role is skipped with a logged reason rather than silently omitted.
+   */
+  async _createPermissionMatrix(rootId, ownerEmail, editorEmail, viewerEmail, sharedDrive, principals) {
+    logger.info('[DriveTestDataAgent] Permission matrix (features 4.2–4.8)');
+    const grantees = [editorEmail, viewerEmail].filter(Boolean);
+    if (grantees.length === 0) {
+      logger.info('[DriveTestDataAgent]   Skipping — no editorEmail/viewerEmail provided');
+      this.results.permissionMatrix = { skipped: 'no grantee emails provided' };
+      return;
+    }
+
+    // reader/commenter/writer work anywhere; fileOrganizer is Shared Drive only.
+    const roles = ['reader', 'commenter', 'writer'];
+    if (sharedDrive) roles.push('fileOrganizer');
+    else logger.info('[DriveTestDataAgent]   fileOrganizer (Content Manager) needs a Shared Drive — skipped');
+
+    const container = await driveClient.createFolder('Permission Matrix', rootId, ownerEmail);
+    this.results.permissionMatrixFolderId = container.id;
+    const seeded = [];
+
+    // The manual QA suite covers three principals per role — internal user, external user, and GROUP
+    // — with group grants making up the majority of its cases. Group and external grantees are only
+    // seeded when configured; a missing one is logged so the checklist can honestly say "not
+    // exercised" instead of implying the dimension passed.
+    const { groupEmail, externalEmail } = principals || {};
+    if (!groupEmail) logger.info('[DriveTestDataAgent]   No group email configured — group permissions not seeded');
+    if (!externalEmail) logger.info('[DriveTestDataAgent]   No external email configured — external shares not seeded');
+
+    for (const [roleIndex, role] of roles.entries()) {
+      // Indexed on the role so the same role always gets the same grantee across runs.
+      const grantee = grantees[roleIndex % grantees.length];
+      // A folder at this role
+      try {
+        const folder = await driveClient.createFolder(`folder_${role}`, container.id, ownerEmail);
+        await driveClient.shareFile(folder.id, grantee, role, ownerEmail);
+        seeded.push({ itemType: 'folder', role, grantee, principal: 'user', id: folder.id });
+        logger.info(`[DriveTestDataAgent]   folder_${role} shared with ${grantee} as ${role}`);
+
+        // Same role, granted to a group — the dimension most of the QA suite exercises.
+        if (groupEmail) {
+          try {
+            await driveClient.shareFile(folder.id, groupEmail, role, ownerEmail);
+            seeded.push({ itemType: 'folder', role, grantee: groupEmail, principal: 'group', id: folder.id });
+            logger.info(`[DriveTestDataAgent]   folder_${role} shared with group ${groupEmail} as ${role}`);
+          } catch (err) {
+            logger.warn(`[DriveTestDataAgent]   folder_${role} group share failed: ${err.message}`);
+            this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_group`, error: err.message });
+          }
+        }
+        // Same role, granted to a user outside the source domain (feature 4.9).
+        if (externalEmail) {
+          try {
+            await driveClient.shareFile(folder.id, externalEmail, role, ownerEmail);
+            seeded.push({ itemType: 'folder', role, grantee: externalEmail, principal: 'external', id: folder.id });
+            logger.info(`[DriveTestDataAgent]   folder_${role} shared externally with ${externalEmail} as ${role}`);
+          } catch (err) {
+            logger.warn(`[DriveTestDataAgent]   folder_${role} external share failed: ${err.message}`);
+            this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_external`, error: err.message });
+          }
+        }
+      } catch (err) {
+        logger.warn(`[DriveTestDataAgent]   folder_${role} failed: ${err.message}`);
+        this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}`, error: err.message });
+      }
+
+      // fileOrganizer is a folder-level role in the feature doc; files use reader/commenter/writer.
+      if (role === 'fileOrganizer') continue;
+      try {
+        const file = await driveClient.uploadFile(
+          `file_${role}.txt`, 'text/plain',
+          Buffer.from(`Shared at the "${role}" role to validate the permission mapping.`),
+          container.id, ownerEmail
+        );
+        await driveClient.shareFile(file.id, grantee, role, ownerEmail);
+        seeded.push({ itemType: 'file', role, grantee, id: file.id });
+        logger.info(`[DriveTestDataAgent]   file_${role}.txt shared with ${grantee} as ${role}`);
+      } catch (err) {
+        logger.warn(`[DriveTestDataAgent]   file_${role}.txt failed: ${err.message}`);
+        this.errors.push({ scenario: 'permissionMatrix', item: `file_${role}`, error: err.message });
+      }
+    }
+
+    this.results.permissionMatrix = seeded;
+  }
+
+  // ── Shared-link matrix (features 5.2–5.15) ────────────────────────────────
+  /**
+   * Seed both link scopes at every role, on a folder and a file:
+   *   'anyone' → "Anyone with the link"        (SharePoint: anonymous)
+   *   'domain' → the source organization link  (SharePoint: "People in <org> with the link")
+   * Without both scopes present, a run cannot tell a preserved public link from one quietly
+   * narrowed to the organization.
+   */
+  async _createLinkMatrix(rootId, ownerEmail, sharedDrive) {
+    logger.info('[DriveTestDataAgent] Shared-link matrix (features 5.2–5.15)');
+    const domain = String(ownerEmail || '').split('@')[1] || '';
+    const container = await driveClient.createFolder('Shared Link Matrix', rootId, ownerEmail);
+    this.results.linkMatrixFolderId = container.id;
+
+    const folderRoles = sharedDrive
+      ? ['reader', 'commenter', 'writer', 'fileOrganizer']
+      : ['reader', 'commenter', 'writer'];
+    const fileRoles = ['reader', 'commenter', 'writer'];
+    const scopes = domain ? ['anyone', 'domain'] : ['anyone'];
+    if (!domain) logger.warn('[DriveTestDataAgent]   No domain on the owner email — organization links skipped');
+
+    const seeded = [];
+    for (const scope of scopes) {
+      for (const role of folderRoles) {
+        try {
+          const folder = await driveClient.createFolder(`link_folder_${scope}_${role}`, container.id, ownerEmail);
+          await driveClient.createLinkPermission(folder.id, { type: scope, role, domain }, ownerEmail);
+          seeded.push({ itemType: 'folder', scope, role, id: folder.id });
+          logger.info(`[DriveTestDataAgent]   link_folder_${scope}_${role}`);
+        } catch (err) {
+          logger.warn(`[DriveTestDataAgent]   link_folder_${scope}_${role} failed: ${err.message}`);
+          this.errors.push({ scenario: 'linkMatrix', item: `folder_${scope}_${role}`, error: err.message });
+        }
+      }
+      for (const role of fileRoles) {
+        try {
+          const file = await driveClient.uploadFile(
+            `link_file_${scope}_${role}.txt`, 'text/plain',
+            Buffer.from(`Link-shared: scope "${scope}", role "${role}".`),
+            container.id, ownerEmail
+          );
+          await driveClient.createLinkPermission(file.id, { type: scope, role, domain }, ownerEmail);
+          seeded.push({ itemType: 'file', scope, role, id: file.id });
+          logger.info(`[DriveTestDataAgent]   link_file_${scope}_${role}.txt`);
+        } catch (err) {
+          logger.warn(`[DriveTestDataAgent]   link_file_${scope}_${role} failed: ${err.message}`);
+          this.errors.push({ scenario: 'linkMatrix', item: `file_${scope}_${role}`, error: err.message });
+        }
+      }
+    }
+
+    this.results.linkMatrix = seeded;
+  }
+
+  // ── File formats (feature 12.1) ───────────────────────────────────────────
+  /**
+   * .doc / .xls / .ppt must arrive as .docx / .xlsx / .pptx; every other declared format must arrive
+   * unchanged. Both expectations need a file in the source to be validated against.
+   */
+  async _createLegacyOfficeFiles(rootId, email) {
+    logger.info('[DriveTestDataAgent] File formats (feature 12.1)');
+    const container = await driveClient.createFolder('File Formats', rootId, email);
+    this.results.legacyOfficeFolderId = container.id;
+
+    // The three legacy formats CloudFuze upgrades, plus the declared pass-through formats that the
+    // other scenarios don't already seed (_createFilesFolder covers txt/csv/json/xml/jpg/png/zip/pdf).
+    // Without these, feature 12.1 can only ever be validated for a subset of its formats.
+    const files = [
+      { name: 'legacy_document.doc', mime: 'application/msword' },
+      { name: 'legacy_workbook.xls', mime: 'application/vnd.ms-excel' },
+      { name: 'legacy_deck.ppt', mime: 'application/vnd.ms-powerpoint' },
+      { name: 'macro_workbook.xlsm', mime: 'application/vnd.ms-excel.sheet.macroEnabled.12' },
+      { name: 'macro_document.docm', mime: 'application/vnd.ms-word.document.macroEnabled.12' },
+      { name: 'macro_deck.pptm', mime: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12' },
+      { name: 'notebook.one', mime: 'application/onenote' },
+      { name: 'diagram.vsdx', mime: 'application/vnd.visio' },
+      { name: 'clip.mp4', mime: 'video/mp4' },
+      { name: 'audio.mp3', mime: 'audio/mpeg' },
+      { name: 'bundle.rar', mime: 'application/vnd.rar' },
+      { name: 'modern_document.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      { name: 'modern_workbook.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      { name: 'modern_deck.pptx', mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+    ];
+    const seeded = [];
+    for (const f of files) {
+      try {
+        // Content is plain text; the point is the extension and the declared type, which is what
+        // drives CloudFuze's conversion.
+        const created = await driveClient.uploadFile(
+          f.name, f.mime,
+          Buffer.from(`Legacy format fixture for the file-conversion feature (${f.name}).`),
+          container.id, email
+        );
+        seeded.push({ name: f.name, id: created.id });
+        logger.info(`[DriveTestDataAgent]   Uploaded ${f.name}`);
+      } catch (err) {
+        logger.warn(`[DriveTestDataAgent]   ${f.name} failed: ${err.message}`);
+        this.errors.push({ scenario: 'legacyOffice', item: f.name, error: err.message });
+      }
+    }
+    this.results.legacyOfficeFiles = seeded;
+  }
+
+  // ── Over-limit path (feature 11.1) ────────────────────────────────────────
+  /**
+   * Build a destination path past SharePoint's 400-character limit so the placeholder-link behaviour
+   * can be validated. The limit counts the URL-ENCODED path, and each segment is capped at 255, so
+   * this uses several long-but-legal segments rather than one enormous name.
+   */
+  async _createOverLimitPath(rootId, email) {
+    logger.info('[DriveTestDataAgent] Over-limit path (feature 11.1)');
+    const container = await driveClient.createFolder('Over Limit Path', rootId, email);
+    this.results.overLimitRootId = container.id;
+
+    const segment = 'L'.repeat(120);
+    let parentId = container.id;
+    const segments = [];
+    try {
+      // 4 × 120 characters plus separators and the destination prefix clears 400.
+      for (let i = 1; i <= 4; i++) {
+        const folder = await driveClient.createFolder(`${segment}${i}`, parentId, email);
+        parentId = folder.id;
+        segments.push(folder.name);
+      }
+      const file = await driveClient.uploadFile(
+        'over_limit_target.txt', 'text/plain',
+        Buffer.from('This file sits past the 400-character SharePoint path limit. A Folder/File Path Link URL is the expected destination outcome.'),
+        parentId, email
+      );
+      this.results.overLimitPath = {
+        depth: segments.length,
+        approxLength: segments.join('/').length,
+        fileId: file.id,
+      };
+      logger.info(`[DriveTestDataAgent]   Built a ${segments.join('/').length}-character path`);
+    } catch (err) {
+      logger.warn(`[DriveTestDataAgent]   Over-limit path failed: ${err.message}`);
+      this.errors.push({ scenario: 'overLimitPath', error: err.message });
     }
   }
 

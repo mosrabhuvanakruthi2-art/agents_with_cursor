@@ -243,6 +243,51 @@ class ValidationResult {
       threadChainResults: [],
       summary: '',
     };
+    /**
+     * Deep source↔destination CONTENT comparison (files/folders). Defaults to disabled so every
+     * existing consumer and persisted document stays valid.
+     * Populated by validation/combinations/content/<combo>.js; feature reference:
+     * backend/data/feature-scope/*-inscope.md
+     */
+    this.deepContentValidation = {
+      enabled: false,
+      scannedSourceItems: 0,
+      pairedCount: 0,
+      skippedCount: 0,
+      missing: [],
+      extra: [],
+      misplaced: [],
+      /** Items over the SharePoint path limit — a placeholder link is the documented outcome. */
+      placeholderLinks: [],
+      /** Google-only types (Forms, Sites, Maps, shortcuts) that have no SharePoint equivalent. */
+      notMigratable: [],
+      /** Source roles with no comparable destination permission (e.g. ownership). Reported, not failed. */
+      notComparable: [],
+      hashedCount: 0,
+      /** Files deliberately NOT byte-compared (converted/native/capped), each with its reason. */
+      notHashedCount: 0,
+      hashMismatches: [],
+      permissionMismatches: [],
+      sharedLinkMismatches: [],
+      conversionMismatches: [],
+      timestampDrift: [],
+      /** Version differences are informational — the Google API merges revisions. Never a failure. */
+      versionInfo: [],
+      notificationLeaks: [],
+      /** Per-feature pass/fail/na rollup against the combination's documented feature list. */
+      featureChecklist: [],
+      featureSummary: null,
+      itemResults: [],
+      summary: '',
+    };
+  }
+
+  /**
+   * @param {object} row - { path, name, type, found, destName?, permissions?, sharedLinks?,
+   *                         versions?, timestamps?, contentHash? }
+   */
+  addDeepContentItemResult(row) {
+    this.deepContentValidation.itemResults.push(row);
   }
 
   addMismatch(category, field, expected, actual) {
@@ -365,6 +410,7 @@ class ValidationResult {
       destinationData: this.destinationData,
       comparison: this.comparison,
       deepMailValidation: this.deepMailValidation,
+      deepContentValidation: this.deepContentValidation,
       mismatches: this.mismatches,
       overallStatus: this.overallStatus,
       aiAnalysis: this.aiAnalysis,

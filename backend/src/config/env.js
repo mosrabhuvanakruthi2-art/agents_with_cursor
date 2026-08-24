@@ -1,7 +1,7 @@
 const dotenv = require('dotenv');
 const path = require('path');
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const requiredVars = [
   'GOOGLE_CLIENT_ID',
@@ -485,6 +485,48 @@ module.exports = {
    * Defaults to enabled; set to the string 'false' to proceed anyway (legacy behaviour).
    */
   CONTENT_REQUIRE_CSV_MAPPING: (process.env.CONTENT_REQUIRE_CSV_MAPPING || '').trim() || 'true',
+
+  /**
+   * Deep content validation (files/folders source↔destination comparison).
+   * Feature reference: backend/data/feature-scope/google-shared-drive-to-sharepoint-*.md
+   *
+   * ENABLE_DEEP_CONTENT_VALIDATION   — master switch; off means content runs stay report-only
+   * CONTENT_DEEP_VALIDATE_METADATA   — Tier C: permissions, links, versions, timestamps
+   * CONTENT_DEEP_VALIDATE_LINKS      — shared-link scope/type comparison (part of Tier C)
+   * CONTENT_DEEP_VALIDATE_FILE_HASH  — Tier B: SHA-256 of file bytes. Two full downloads per file,
+   *                                    so it is OFF by default and capped by DEEP_CONTENT_MAX_FILES.
+   * CONTENT_DEEP_VALIDATE_NOTIFICATIONS — checks the destination mailbox received no SharePoint
+   *                                    sharing mail (features 9.1/9.2); needs mailbox access.
+   */
+  ENABLE_DEEP_CONTENT_VALIDATION: (process.env.ENABLE_DEEP_CONTENT_VALIDATION || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_METADATA: (process.env.CONTENT_DEEP_VALIDATE_METADATA || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_LINKS: (process.env.CONTENT_DEEP_VALIDATE_LINKS || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_FILE_HASH: (process.env.CONTENT_DEEP_VALIDATE_FILE_HASH || '').trim().toLowerCase() === 'true',
+  CONTENT_DEEP_VALIDATE_NOTIFICATIONS: (process.env.CONTENT_DEEP_VALIDATE_NOTIFICATIONS || '').trim().toLowerCase() === 'true',
+  DEEP_CONTENT_MAX_FILES: (() => {
+    const n = parseInt(process.env.DEEP_CONTENT_MAX_FILES ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 500;
+  })(),
+
+  /**
+   * Destination SharePoint target. These were hardcoded in the Box→SharePoint validator; the defaults
+   * keep that behaviour so nothing changes for existing runs, while combinations beyond the first are
+   * not pinned to one tenant.
+   */
+  SHAREPOINT_HOSTNAME: (process.env.SHAREPOINT_HOSTNAME || 'filefuze.sharepoint.com').trim(),
+  SHAREPOINT_SITE_PATH: (process.env.SHAREPOINT_SITE_PATH || '/sites/SANITYDATAA').trim(),
+
+  /** Name of the Google Shared Drive holding the source test data (Shared Drive → SharePoint runs). */
+  GOOGLE_SHARED_DRIVE_NAME: (process.env.GOOGLE_SHARED_DRIVE_NAME || '').trim(),
+
+  /**
+   * Extra grantees the content permission matrix seeds alongside the internal editor/viewer.
+   * The manual QA suite treats these as first-class dimensions — group grants are the majority of
+   * its Shared Drive → SharePoint cases, and external shares are feature 4.9. Leave blank and those
+   * dimensions are reported "not exercised" rather than silently assumed to pass.
+   */
+  GOOGLE_TEST_GROUP_EMAIL: (process.env.GOOGLE_TEST_GROUP_EMAIL || '').trim(),
+  GOOGLE_TEST_EXTERNAL_EMAIL: (process.env.GOOGLE_TEST_EXTERNAL_EMAIL || '').trim(),
 
   // ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
   /** 4th Google tenant (message product). */

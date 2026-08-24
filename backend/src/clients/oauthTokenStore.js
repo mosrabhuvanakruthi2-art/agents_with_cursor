@@ -170,13 +170,38 @@ function removeGoogleToken(email) {
   removeFromMongo('google', key);
 }
 
+/**
+ * Mark an account as usable via Domain-Wide Delegation.
+ *
+ * This used to replace the whole entry with `{ isDwd, connectedAt }`, silently destroying an existing
+ * `refreshToken`. That is how a working Drive account became unusable: driveClient.getAuth() returns
+ * the service-account JWT immediately when no refreshToken is stored, so once the token was gone the
+ * OAuth fallback could not run and every Drive call failed with `unauthorized_client`. The two
+ * credentials are independent — registering DWD says nothing about the OAuth token — so keep both.
+ */
+/**
+ * The merge rule for marking an account DWD, split out from the file write so it can be tested
+ * without touching the real token store.
+ */
+function dwdEntryFrom(prev, nowIso) {
+  const p = prev || {};
+  const entry = { isDwd: true, connectedAt: p.connectedAt || nowIso || new Date().toISOString() };
+  if (p.refreshToken) {
+    entry.refreshToken = p.refreshToken;
+    if (p.agent) entry.agent = p.agent;
+  }
+  return entry;
+}
+
 function setDwdAccount(email) {
   const data = read();
   const key = email.toLowerCase();
-  const entry = { isDwd: true, connectedAt: data.google.accounts[key]?.connectedAt || new Date().toISOString() };
+  const entry = dwdEntryFrom(data.google.accounts[key]);
   data.google.accounts[key] = entry;
   write(data);
-  syncToMongo('google', key, { isDwd: true, connectedAt: entry.connectedAt });
+  const synced = { isDwd: true, connectedAt: entry.connectedAt };
+  if (entry.refreshToken) synced.refreshToken = entry.refreshToken;
+  syncToMongo('google', key, synced);
 }
 
 function getGoogleStatus() {
@@ -411,6 +436,7 @@ module.exports = {
   setGoogleToken,
   removeGoogleToken,
   setDwdAccount,
+  dwdEntryFrom,
   getGoogleStatus,
   getGoogleAccountsMap,
   // Microsoft

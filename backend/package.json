@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node test/googleAccountsPicker.test.js && node test/mailMigrationComparator.test.js",
+    "test": "node test/googleAccountsPicker.test.js && node test/mailMigrationComparator.test.js && node test/dwdEntry.test.js && node test/contentMappingVerdict.test.js && node test/deepContentCore.test.js && node test/contentPermissionMatrix.test.js && node test/contentTolerance.test.js && node test/contentFunctionalityChecklist.test.js && node test/checklistZeroPaired.test.js && node test/contentCombinationSuite.test.js && node test/contentFileFormats.test.js && node test/sharePointValidationAgent.test.js && node test/contentPdfReport.test.js",
+    "test:report": "node scripts/test-report.js",
     "lint": "eslint src",
     "generate-gmail-test-xlsx": "node scripts/generate-gmail-test-cases-xlsx.js",
     "import-test-repository": "node scripts/import-test-repository.js",
@@ -14,7 +15,8 @@
     "backfill-test-expanded-details": "node scripts/backfill-test-expanded-details.js",
     "audit-test-steps-mongo": "node scripts/audit-test-steps-mongo.js",
     "mongo-connect-test": "node scripts/mongo-connect-test.js",
-    "debug-test-steps": "node scripts/debug-test-steps.js"
+    "debug-test-steps": "node scripts/debug-test-steps.js",
+    "seed-drive-test-data": "node scripts/seed-drive-test-data.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.89.0",

@@ -1,3 +1,8 @@
+/* global selectRow */
+// selectRow is defined by SELECT_ROW_FN, a function source string injected into the page with
+// eval() inside page.evaluate() callbacks. It exists at runtime in the browser context, but no
+// static analysis can see it — hence the global declaration rather than an import.
+
 /**
  * CloudFuze Browser Automation — Playwright-based
  *

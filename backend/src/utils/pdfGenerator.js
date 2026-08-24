@@ -2440,8 +2440,14 @@ function drawFolderStructureSection(doc, fs) {
   doc.fontSize(8.5).font(F_BOLD).fillColor(st.fg).text(`Structure: ${fs.status}${fs.status === 'PASS' ? ' — identical' : ''}`, MARGIN, sy + 4, { width: 150, align: 'center', lineBreak: false });
   doc.y = sy + 22;
 
-  drawTreeBlock(doc, 'Box (Source)', buildAsciiTree(fs.boxRootName, fs.boxFolderPaths));
-  drawTreeBlock(doc, 'SharePoint (Destination)', buildAsciiTree(fs.spRootName, fs.spFolderPaths));
+  // Field names differ per source cloud: Box→SharePoint emits box*/sp*, later combinations emit the
+  // neutral source*/dest*. Accept both so one renderer serves every content combination.
+  const srcRootName = fs.sourceRootName ?? fs.boxRootName;
+  const dstRootName = fs.destRootName ?? fs.spRootName;
+  const srcPaths = fs.sourceFolderPaths ?? fs.boxFolderPaths;
+  const dstPaths = fs.destFolderPaths ?? fs.spFolderPaths;
+  drawTreeBlock(doc, `${fs.sourceLabel || 'Box'} (Source)`, buildAsciiTree(srcRootName, srcPaths));
+  drawTreeBlock(doc, `${fs.destLabel || 'SharePoint'} (Destination)`, buildAsciiTree(dstRootName, dstPaths));
 
   if (fs.status !== 'PASS') {
     const diffs = [];
@@ -2475,7 +2481,9 @@ function drawContentItemTree(doc, items, opts = {}) {
     const x = MARGIN + indent;
     const tagW = 50;
     const availW = CONTENT_W - indent - tagW - 8;
-    const label = `${it.type === 'folder' ? '📁' : '📄'} ${it.name}${it.spName && it.spName !== it.name ? `  →  ${it.spName}` : ''}`;
+    // destName is the neutral field; spName is the original Box→SharePoint name for it.
+    const destName = it.destName ?? it.spName;
+    const label = `${it.type === 'folder' ? '📁' : '📄'} ${it.name}${destName && destName !== it.name ? `  →  ${destName}` : ''}`;
     doc.fontSize(8).font(F_BOLD);
     const nameH = doc.heightOfString(label, { width: availW });
     const rowH = Math.max(14, nameH + 3);
@@ -2488,7 +2496,12 @@ function drawContentItemTree(doc, items, opts = {}) {
     doc.y = y + rowH;
 
     for (const p of (it.permissions || [])) {
-      const pStr = `↳ ${p.user}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: Box "${p.boxRole}" → SP ${p.spRoles && p.spRoles.length ? p.spRoles.join('/') : 'no access'} ${p.match ? '✓' : '✗'}`;
+      const srcRole = p.sourceRole ?? p.boxRole;
+      const dstRoles = p.destRoles ?? p.spRoles;
+      const srcLabel = it.sourceLabel || (p.boxRole !== undefined ? 'Box' : 'Source');
+      const via = p.viaGroup ? ' (via group)' : '';
+      const who = p.principalType === 'group' ? `group ${p.user}` : p.user;
+      const pStr = `↳ ${who}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: ${srcLabel} "${srcRole}" → SP ${dstRoles && dstRoles.length ? dstRoles.join('/') : 'no access'}${via} ${p.match ? '✓' : '✗'}`;
       const pw = CONTENT_W - indent - 14;
       ensureSpace(doc, 11);
       const py = doc.y;
@@ -2496,11 +2509,22 @@ function drawContentItemTree(doc, items, opts = {}) {
       doc.y = py + Math.max(9, doc.heightOfString(pStr, { width: pw }));
     }
     const extras = [];
-    if (it.versions) extras.push(`versions Box ${it.versions.box} → SP ${it.versions.sp}${it.versions.sp < it.versions.box ? ' ✗' : ' ✓'}`);
+    if (it.versions) {
+      const sv = it.versions.source ?? it.versions.box;
+      const dv = it.versions.dest ?? it.versions.sp;
+      // Counts are informational for Google sources — the API merges revisions — so no ✗ is shown
+      // when the destination simply has fewer.
+      const mark = it.versions.source !== undefined ? '' : (dv < sv ? ' ✗' : ' ✓');
+      extras.push(`versions ${sv} → SP ${dv}${mark}`);
+    }
     if (it.timestamps) extras.push(`modified ${it.timestamps.match ? 'preserved ✓' : 'changed ✗'}`);
     if (it.author) extras.push(`modifiedBy ${it.author.spModBy || '?'} ${it.author.match ? '✓' : '✗'}`);
     if (it.comments) extras.push(`${it.comments} comment(s) (Box)`);
     if (it.sharedLink) extras.push(`shared link ${it.sharedLink.onDest ? 'present ✓' : 'not on dest ✗'}`);
+    for (const l of (it.sharedLinks || [])) {
+      extras.push(`link ${l.sourceType}/${l.sourceRole} → ${l.actual} ${l.match ? '✓' : '✗'}`);
+    }
+    if (it.contentHash) extras.push(`content hash ${it.contentHash.ok ? 'identical ✓' : 'DIFFERS ✗'}`);
     if (extras.length) {
       ensureSpace(doc, 10);
       const ey = doc.y;
@@ -2512,6 +2536,58 @@ function drawContentItemTree(doc, items, opts = {}) {
     doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle).text(`… ${items.length - MAX} more item(s) not shown`, MARGIN, doc.y + 2);
     doc.moveDown(0.5);
   }
+}
+
+/**
+ * Per-feature checklist for a content combination: one row per documented feature, with its state.
+ * "Not assessed" rows are printed too, with the reason — a feature the run could not exercise must
+ * be visible as such rather than quietly missing from the report.
+ */
+function drawContentFeatureChecklist(doc, checklist, summary) {
+  drawSectionHeader(doc, 'Feature Checklist — documented features for this combination');
+
+  if (summary?.line) {
+    ensureSpace(doc, 14);
+    doc.fontSize(8.5).font(F_BOLD).fillColor(C.text)
+      .text(summary.line, MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.4);
+  }
+
+  const STATE = {
+    pass: { bg: C.passBg, fg: C.pass, txt: 'PASS' },
+    fail: { bg: C.failBg, fg: C.fail, txt: 'FAIL' },
+    na: { bg: C.subtleBg || C.passBg, fg: C.subtle, txt: 'N/A' },
+    info: { bg: C.passBg, fg: C.subtle, txt: 'INFO' },
+  };
+
+  let category = null;
+  for (const row of checklist) {
+    if (row.category !== category) {
+      category = row.category;
+      ensureSpace(doc, 14);
+      doc.fontSize(8).font(F_BOLD).fillColor(C.subtle)
+        .text(category, MARGIN, doc.y, { width: CONTENT_W });
+      doc.moveDown(0.15);
+    }
+    const st = STATE[row.status] || STATE.na;
+    ensureSpace(doc, 20);
+    const y = doc.y;
+    const tagW = 30;
+    doc.save().fillColor(st.bg).roundedRect(MARGIN, y + 1, tagW, 11, 2).fill().restore();
+    doc.fontSize(6.5).font(F_BOLD).fillColor(st.fg)
+      .text(st.txt, MARGIN, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
+
+    const textX = MARGIN + tagW + 6;
+    const textW = CONTENT_W - tagW - 6;
+    doc.fontSize(8).font(F_BOLD).fillColor(C.text)
+      .text(`${row.id}  ${row.feature}`, textX, y, { width: textW });
+    if (row.detail) {
+      doc.fontSize(7).font(F_REGULAR).fillColor(C.subtle)
+        .text(row.detail, textX, doc.y, { width: textW });
+    }
+    doc.moveDown(0.25);
+  }
+  doc.moveDown(0.4);
 }
 
 function generateContentValidationPdf(execution, stream) {
@@ -2565,6 +2641,12 @@ function generateContentValidationPdf(execution, stream) {
     // Legacy single-folder report (no per-user breakdown).
     drawSectionHeader(doc, '2 — Validation Checks (location, name, permissions, versions, timestamps, metadata, comments, shared links)');
     drawContentChecksTable(doc, checks);
+  }
+
+  // Per-feature rollup against the combination's documented feature list, when the validator
+  // produced one. This is the section that answers "which documented features actually work".
+  if (Array.isArray(v.featureChecklist) && v.featureChecklist.length > 0) {
+    drawContentFeatureChecklist(doc, v.featureChecklist, v.featureSummary);
   }
 
   drawFooter(doc, context);
