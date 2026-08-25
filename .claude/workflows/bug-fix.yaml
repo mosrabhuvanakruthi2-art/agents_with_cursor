@@ -1,0 +1,260 @@
+# GStack workflow — bug fix
+#
+# Repo: Migration QA Agent System (Node.js + Express backend in backend/, React + Vite SPA in frontend/)
+# Leaner than new-feature.yaml: no separate architecture step and no user design-approval gate, because a
+# fix restores intended behavior rather than defining new behavior.
+#
+# Two absolute rules, identical to new-feature.yaml:
+#   1. Nothing is committed without explicit user approval at the Commit Decision Gate (last step).
+#   2. Deployment, CI/CD, and release automation are OUT OF SCOPE. There is deliberately no DevOps agent.
+#
+# Escalate to new-feature.yaml when the "fix" turns out to need a design decision — a new field on
+# MigrationContext / ValidationResult, a change to validation/shared/* affecting all four combinations,
+# a new endpoint, an auth model change, or a new dependency.
+
+name: bug-fix
+description: >
+  Diagnose and fix a defect in the Migration QA Agent System:
+  root-cause diagnosis (read-only debugger) → DIAGNOSIS CONFIRMATION → fix → QA → conditional
+  security review → code review → conditional documentation → COMMIT DECISION.
+
+# Diagnosis is deliberately separated from repair: gstack-debugger is read-only and cannot patch,
+# so the fix targets an explained mechanism rather than the first plausible-looking cause.
+# Loop-back gates return to implementation with max_retries: 2, then escalate to the user.
+
+use_when:
+  - Something is broken, throwing, hanging, or producing a wrong validation verdict
+  - A validation result is wrong — false pass or false fail
+  - A migration or execution gets stuck in a non-terminal state
+  - A cleanup flow deletes too much or too little
+  - A UI page shows stale, missing, or wrong execution data
+  - A regression in one migration combination
+
+out_of_scope:
+  - Deployment, CI/CD, release automation, infrastructure
+  - New behavior — that is new-feature.yaml
+
+steps:
+
+  - id: bug-analysis
+    name: Bug analysis — root cause before any edit
+    agent: gstack-debugger
+    blocking: false
+    rules:
+      - No guess-and-patch. The root cause is identified and stated before a line changes
+      - Read the real files; do not reason from memory of how the code "probably" works
+      - A fix that makes the symptom disappear without an explained mechanism is not a fix
+      - The debugger is READ-ONLY and never applies the fix — diagnosis and repair are separate roles
+      - Rule out at least one alternative theory, with the evidence that kills it
+      - Name the fault owner — this repo / CloudFuze / Graph / Google / environment / data.
+        If the fault is upstream, do not manufacture a local change to look productive
+    actions:
+      - Reproduce, or state precisely why it cannot be reproduced locally (e.g. needs live Gmail/Graph/CloudFuze)
+      - Locate the defect — which combination, which domain (mail | content | message), which layer
+        (route → controller → orchestrator → agent → client → validation → comparator → tolerance → store)
+      - Read backend/logs/app.log and the per-execution log (backend/logs/<executionId>.log) when relevant
+      - Check git log / git blame for the change that introduced it
+      - State the mechanism — what input, in what state, produces what wrong output
+      - Assess blast radius — how many combinations, how many stored executions, whether past results are wrong
+      - Choose the narrowest correct fix and name the exact files
+      - Decide the escalation question explicitly — does this need a design and a user approval gate?
+        If yes, stop and switch to new-feature.yaml
+    outputs:
+      - Root cause (one mechanical sentence), evidence with file:line, rejected alternatives,
+        fault owner, blast radius, recurrence trigger, files to change, the regression test to write,
+        and the escalate-or-not decision
+
+  - id: diagnosis-approval
+    name: Diagnosis confirmation gate
+    type: gate
+    blocking: true
+    depends_on: [bug-analysis]
+    approver: user
+    rules:
+      - No code changes while this gate is open
+      - Cheap to confirm, expensive to skip — a wrong diagnosis produces a fix that hides the defect
+      - If the diagnosis says escalate, this becomes new-feature.yaml and re-enters at requirements
+    prompt: |
+      ROOT CAUSE IDENTIFIED — confirm before I change anything.
+      Symptom: <what was observed>
+      Root cause: <one sentence>
+      Fault owner: <this repo | CloudFuze | Graph | Google | environment | data>
+      Blast radius: <one pair | one combination | all>
+      Files to change: <list>     Regression test: <case>
+      Ruled out: <alternative theory + why>
+      Reply "go" to fix it, or tell me what you think it actually is.
+    on_reject: { return_to: bug-analysis }
+
+  - id: implementation
+    name: Fix implementation
+    blocking: false
+    depends_on: [diagnosis-approval]
+    agents:
+      - agent: gstack-backend-engineer
+        scope: backend/
+      - agent: gstack-frontend-engineer
+        scope: frontend/
+        condition: the defect is in the SPA
+    constraints:
+      - Fix the identified root cause, nothing else — no drive-by refactors riding along in a bug fix
+      - Stay inside the affected combination's files where the defect is combination-specific
+        (orchestrator/combinations/<domain>/<combo>.js, validation/combinations/<combo>.js,
+        utils/mailTolerance/<combo>.js)
+      - A fix in validation/shared/deepMailCore.js, shared/deepMessageCore.js, or
+        utils/mailMigrationComparator.js is a shared-contract change — verify all four mail combinations
+        and flag it loudly for review
+      - Preserve backward compatibility with existing Mongo execution documents
+      - No new dependency in a bug fix
+      - Repo conventions hold — CommonJS in backend/, ESM in frontend/, env.js for config, logger not
+        console, retry.js on external calls, LF endings
+    required:
+      - A regression test in backend/test/*.test.js whenever the defect is in a pure function
+        (comparator, normalizer, tolerance band, mapping table, recipient expectation) — and it must be
+        wired into the `test` script chain in backend/package.json
+      - If no unit test is possible, state exactly why and hand the verification to QA as manual steps
+    verification:
+      - cd backend && npm run lint    # clean: 0 errors, warnings only — any error is from this change
+      - cd backend && npm test
+      - cd frontend && npm run lint   # if frontend touched
+      - cd frontend && npm run build  # if frontend touched
+    outputs:
+      - Root cause, the fix, files changed, regression test added, real lint/test output
+
+  - id: qa
+    name: QA — fix verification and regression sweep
+    agent: gstack-qa-engineer
+    type: verdict_gate
+    blocking: false
+    depends_on: [implementation]
+    verdicts: [PASS, PASS WITH ISSUES, FAIL]
+    on_fail: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    actions:
+      - Confirm the original failing scenario now passes, using the same input that failed
+      - Confirm the fix fails correctly on genuinely bad data — a fix that turns a false fail into a
+        blanket pass is worse than the bug
+      - Regression-sweep the neighbouring surface — the other mail combinations if shared code changed,
+        the other test types (SMOKE / SANITY / E2E), bulk mappedPairs runs, cancel/resume,
+        and the Mongo-connected vs file-fallback paths
+      - Re-check tolerance bands at the boundary — just inside passes, just outside fails
+      - Verify honest reporting — ValidationResult counts, deep-validation summary, and the PDF report
+        reflect what was actually checked
+      - Log hygiene — emails masked, no tokens or passwords
+    rules:
+      - A scenario that could not be run is reported as NOT RUN, with ordered manual steps for a human
+      - Never report a pass on inference
+
+  - id: security-review
+    name: Security review (conditional)
+    agent: gstack-security-reviewer
+    type: gate
+    blocking: true
+    depends_on: [qa]
+    condition_any:
+      - The fix touches authentication, the app JWT, authRoutes.js, or middleware/authUser.js
+      - The fix touches authorization or per-user scoping (requireUser, ownsExecution)
+      - The fix touches input validation, request parsing, or query construction
+      - The fix touches file handling — attachments, uploads, generated PDF/xlsx/docx, log or data file paths
+      - The fix touches an external call — Gmail, Graph, CloudFuze devemail/qarelease/s2cdev, Slack, Box,
+        Drive, Jira Xray, OpenAI/Anthropic — or the migrationServerUrl / credentials path
+      - The fix touches secrets, env.js, .env.example, or the oauth token store
+      - The fix touches Playwright automation or any eval / page.evaluate surface
+      - The fix touches a cleanup or delete endpoint
+      - The fix renders migrated mailbox content into the UI or into a report
+    if_condition_not_met:
+      action: skip
+      record: "Security review skipped — fix touches none of the conditional surfaces. Reason: <state it>"
+      note: When in doubt, run it. Skipping is a decision that must be justified in the summary.
+    blocks_on: [Critical, High]
+    on_blocked: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    focus:
+      - Whether the fix itself opened a hole (a loosened check, a widened query, a broadened delete scope)
+      - Secret exposure in new log lines or error responses
+      - ownsExecution still enforced on every execution read path the fix touched
+      - NoSQL operator injection, path traversal, CRLF, unescaped content in reports
+    rules:
+      - Critical or High BLOCKS the commit gate; fix, then re-audit
+      - Infrastructure and CI/CD hardening are out of scope
+
+  - id: code-review
+    name: Code review
+    agent: gstack-code-reviewer
+    type: verdict_gate
+    blocking: false
+    depends_on: [security-review]
+    verdicts: [APPROVED, APPROVED WITH COMMENTS, CHANGES REQUESTED]
+    on_changes_requested: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    focus:
+      - The fix addresses the stated root cause, not the symptom
+      - Scope discipline — no unrelated changes riding along
+      - Combination isolation preserved; any shared-contract change justified and checked everywhere
+      - A regression test exists and is wired into the npm test chain, or its absence is explained
+      - Repo conventions and backward compatibility with stored executions
+      - Verification actually ran, with real output
+
+  - id: documentation
+    name: Documentation (conditional)
+    agent: gstack-documentation-engineer
+    blocking: false
+    depends_on: [code-review]
+    condition_any:
+      - Observable behavior changed — validation verdicts, mapping rules, tolerance bands, status semantics
+      - An API request or response shape, status code, or endpoint changed
+      - An env var was added, renamed, or its default changed
+      - A documented combination rule, agent order, or CloudFuze endpoint changed
+      - An existing doc is now wrong because of this fix
+    if_condition_not_met:
+      action: skip
+      record: "Documentation skipped — internal fix with no behavior or contract change."
+    updates:
+      - README.md, ARCHITECTURE.md, CONTRIBUTING.md, docs/cloudfuze-apis.md, backend/.env.example, CLAUDE.md
+      - JSDoc where the fix changed a documented contract
+    rules:
+      - Document what shipped, read from the diff
+      - No real secrets or customer data in docs; preserve existing content
+      - No deployment section, no release notes
+
+  - id: commit-decision-gate
+    name: Commit Decision Gate
+    type: gate
+    blocking: true
+    final: true
+    depends_on: [documentation]
+    approver: user
+    rules:
+      - NEVER auto-commit. NEVER auto-push. A one-line fix is not an exception
+      - This is always the LAST step of the workflow
+      - Cannot be reached while security-review is BLOCKED or code review is CHANGES REQUESTED
+      - Never assume a branch — ask, every time
+      - Current branch is dev and main is the usual PR target; that is context, not a default choice
+      - Deployment is OUT OF SCOPE — after the push, whatever automation already exists outside this
+        workflow handles it. Do not deploy, do not offer to deploy, do not touch CI/CD config
+    sequence:
+      - step: summarize
+        show:
+          - Root cause, in one or two sentences
+          - The fix and the files changed (git diff --stat)
+          - Verdicts — QA, security (or "skipped, because …"), code review
+          - Regression test added (or why none was possible)
+          - Lint and test results, as actually observed
+          - Docs updated, or "skipped, because …"
+      - step: ask_commit
+        prompt: "Commit and push this fix?"
+        options: [yes, no]
+        on_no: stop_and_leave_working_tree_untouched
+      - step: ask_branch
+        condition: user answered yes
+        prompt: "Which branch?"
+        options:
+          - current branch (dev)
+          - an existing branch (which one?)
+          - a new branch (what name?)
+        rules:
+          - Wait for the answer; never pick for the user
+          - If a new branch is chosen, create it before committing
+      - step: commit_and_push
+        actions:
+          - Stage only the files belonging to this fix — never `git add -A` over unrelated edits
+          - Verify no .env, backend/config/*.json, oauth-tokens.json, or data/*.json is staged
+          - "Commit message follows this repo’s existing style — fix(scope): …"
+          - Push to the branch the user named
+          - Report the commit SHA and the branch, and state that deployment is out of scope

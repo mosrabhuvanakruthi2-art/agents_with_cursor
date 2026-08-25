@@ -41,6 +41,49 @@ async function graphGet(url, email) {
 }
 
 /**
+ * Delete one item (file or folder) from a site's default document library, by path.
+ *
+ * The only destructive call in this client. It exists because content cleanup had no way to clear a
+ * SharePoint destination — /api/agents/clean-content supports Box only — so every QA run stacked
+ * another copy of the migrated tree next to the last one (`Agent Files`, `Agent Files 1` …), and the
+ * validation report attributed those duplicates to the migration as "extra" and "misplaced".
+ *
+ * Deleting a folder removes everything under it. The path is logged at warn level on purpose: this
+ * is not something that should ever happen quietly.
+ *
+ * @param {string} siteId  Graph site id
+ * @param {string} path    '/Agent Shared Drive 1' — library-root relative
+ * @param {string} email   destination account (selects the tenant)
+ * @returns {Promise<boolean>} true when deleted, false when the path did not exist
+ */
+async function deleteItemByPath(siteId, path, email) {
+  const clean = `/${String(path || '').replace(/^\/+/, '')}`;
+  if (clean === '/') throw new Error('deleteItemByPath: refusing to delete the library root');
+
+  const tenant = getMsTenant(email || '');
+  const token = await getAppAccessToken(tenant || '1');
+  // encodeURI leaves #, ? and % unescaped, so a path like "/Special !@#$…" is truncated at the # and
+  // Graph answers 404 — the delete silently reported "already absent" for exactly the special-character
+  // folders this suite exists to test. Encode per segment and escape the reserved characters Graph
+  // needs literally.
+  const encoded = clean.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+  const url = `${GRAPH_BASE}/sites/${siteId}/drive/root:${encoded}`;
+  logger.warn(`[SharePoint] DELETE ${clean}`);
+  try {
+    await retryWithBackoff(
+      () => axios.delete(url, { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 }),
+      { label: `SharePoint DELETE ${clean}`, maxRetries: 2 }
+    );
+    return true;
+  } catch (err) {
+    if (err?.response?.status === 404) {
+      logger.info(`[SharePoint] ${clean} already absent`);
+      return false;
+    }
+    throw err;
+  }
+}
+/**
  * Resolve a SharePoint site by its hostname + relative path.
  * hostname = 'filefuze.sharepoint.com', sitePath = '/sites/SANITYDATAA'
  * Returns the full site object including siteId.
@@ -336,4 +379,5 @@ module.exports = {
   getItemMetadata,
   downloadItemContent,
   resolveTenantHostname,
+  deleteItemByPath,
 };

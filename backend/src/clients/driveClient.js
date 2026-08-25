@@ -226,6 +226,10 @@ async function uploadVersion(fileId, mimeType, content, email) {
       fileId,
       media: { mimeType, body },
       fields: 'id, name, version',
+      // Without this, a file that lives in a Shared Drive is invisible to the update and the API
+      // answers "File not found: <fileId>". That is why every versioned_doc_*.txt failed to get
+      // versions 2-5 and File Version History sat at NA in the report.
+      supportsAllDrives: true,
     });
     return res.data;
   });
@@ -250,6 +254,10 @@ async function createNativeFile(name, gMimeType, parentId, email) {
         parents: parentId ? [parentId] : [],
       },
       fields: 'id, name, mimeType',
+      // Same omission as uploadVersion above: without it the Shared Drive parent cannot be
+      // resolved and the API answers "File not found: <parentId>", which is why all three
+      // Google native files (Doc/Sheet/Slide) failed to seed.
+      supportsAllDrives: true,
     });
     return res.data;
   });

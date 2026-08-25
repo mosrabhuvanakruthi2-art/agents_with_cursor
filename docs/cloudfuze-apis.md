@@ -9,7 +9,7 @@ Canonical config in code: [`backend/src/config/cloudfuzeApis.js`](../backend/src
 | **Content** | `qarelease.cloudfuze.com` | `CONTENT_MIGRATION_SERVER_URL/_EMAIL/_PASSWORD` | `clients/migrationClient.js` (content path) | `agents/migration/MigrationAgent.js` |
 | **Message** | `s2cdev.cloudfuze.com/proxyservices/v1` | **wizard** `migrationServer*` (env `CHAT_MIGRATION_API_*` fallback) | `clients/chatMigrationClient.js` | `agents/message/MessageMigrationAgent.js` |
 
-> Server URLs/credentials are in `backend/.env` (gitignored) → read by `backend/src/config/env.js`.
+> Server URLs/credentials are in `.env` at the repo root (gitignored) → read by `backend/src/config/env.js`.
 > Endpoint paths are coded in the client files above. Message creds come from the UI per migration — no hardcoded account.
 
 ---

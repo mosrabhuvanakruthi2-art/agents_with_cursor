@@ -168,19 +168,54 @@ function testTreePairingPerFormat() {
   assert.strictEqual(res.matchedCount, migratable.length, 'every format matched exactly once');
   assert.strictEqual(res.extra.length, 0, 'and nothing was left over');
 
-  // A converted file that arrives with the WRONG extension must not pair
-  const wrong = core.compareTrees(
+  // A file that arrives UNCONVERTED still pairs — deliberately, and this replaces the opposite
+  // assertion. Presence and format are two different questions and belong in two different checks:
+  //
+  //   compareTrees   answers "did the item reach the destination, in the right place?"
+  //   feature 12.1   answers "was it converted to the right format?"
+  //
+  // Refusing to pair conflated them and reported one file three times — missing (nothing matched
+  // .docx), extra (the .doc nobody claimed), and misplaced — while the conversion check skipped
+  // every unpaired file and so reported PASS. Run 6a8d53d2 passed feature 12.1 with all six legacy
+  // Office files sitting unconverted at the destination. Pairing them makes the structure check
+  // truthful and leaves the defect to the check that names it.
+  const unconverted = core.compareTrees(
     [asFile(FORMATS.find((f) => f.name === 'legacy.doc'))],
     [{ type: 'file', path: '/legacy.doc', name: 'legacy.doc' }]
   );
-  assert.strictEqual(wrong.status, 'FAIL', '.doc that stayed .doc was not converted');
+  assert.strictEqual(unconverted.matchedCount, 1, 'the file IS present, so structure must pair it');
+  assert.strictEqual(unconverted.missing.length, 0, 'and must not also call it missing');
+  assert.strictEqual(unconverted.extra.length, 0, 'and must not also call it extra');
 
-  // A native file that arrives without its export extension must not pair
-  const nativeWrong = core.compareTrees(
+  // The converted name still wins when BOTH names are present at the destination.
+  const both = core.compareTrees(
+    [asFile(FORMATS.find((f) => f.name === 'legacy.doc'))],
+    [
+      { type: 'file', path: '/legacy.doc', name: 'legacy.doc' },
+      { type: 'file', path: '/legacy.docx', name: 'legacy.docx' },
+    ]
+  );
+  assert.strictEqual(both.matchedCount, 1, 'exactly one destination item may claim the source');
+  assert.strictEqual(both.extra.length, 1, 'the other is left over');
+  assert.strictEqual(both.extra[0].name, 'legacy.doc',
+    'the CONVERTED name must be preferred, leaving the unconverted copy as the extra');
+
+  // Same rule for a Google native file that arrives without its export extension.
+  const nativeUnconverted = core.compareTrees(
     [asFile(FORMATS.find((f) => f.mime === `${G}document`))],
     [{ type: 'file', path: '/Q1 Notes', name: 'Q1 Notes' }]
   );
-  assert.strictEqual(nativeWrong.status, 'FAIL', 'a Google Doc must arrive as .docx');
+  assert.strictEqual(nativeUnconverted.matchedCount, 1,
+    'a Google Doc that arrived without .docx is still present — 12.1 reports the format defect');
+
+  // A file that is genuinely absent must STILL be reported missing — the fallback must not
+  // manufacture a pair out of nothing.
+  const absent = core.compareTrees(
+    [asFile(FORMATS.find((f) => f.name === 'legacy.doc'))],
+    []
+  );
+  assert.strictEqual(absent.matchedCount, 0, 'nothing to pair with');
+  assert.strictEqual(absent.missing.length, 1, 'a truly absent file is still missing');
 }
 
 function testFormatsWithAwkwardNames() {

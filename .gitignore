@@ -2,8 +2,11 @@
 node_modules/
 
 # Secrets — use .env.example only in git
+# .env.* also covers backups (.env.bak-*, .env.old) — these hold real credentials
 .env
 **/.env
+.env.*
+**/.env.*
 !.env.example
 !**/.env.example
 
@@ -31,9 +34,10 @@ backend/data/custom-test-cases.json
 backend/data/test-repository.json
 backend/data/channel-cache.json
 
-# Claude IDE local config
+# Claude IDE config
+# settings.json is SHARED — it carries the GStack enforcement hooks the whole team needs.
+# Only personal preferences (settings.local.json) stay out of git.
 .claude/settings.local.json
-.claude/settings.json
 .claude/scheduled_tasks.lock
 backend/config/gem-co-service-account.json
 backend/config/*.json

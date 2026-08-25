@@ -100,7 +100,11 @@ class AgentOrchestrator {
     log.info('Bulk Phase 0/3: cleaning previous QA test data from all pairs in parallel');
     await Promise.all(pairs.map(async (pair) => {
       const { context } = pair;
-      if (context.skipCleanup === true || pair.isContentMode) return;
+      // Content used to be excluded here. CleanupAgent now has a content branch that clears the
+      // seeded source folder and the seeded items at the SharePoint destination, so content runs
+      // need it too — without it each run seeded and migrated on top of the previous one and the
+      // duplicates were reported as migration failures.
+      if (context.skipCleanup === true) return;
       executionService.update(context.executionId, {
         currentAgent: 'CleanupAgent',
         progress: '[0/3] CleanupAgent: removing previous QA test data…',
@@ -388,8 +392,10 @@ class AgentOrchestrator {
 
     try {
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
-      // Skipped on resume (skipCleanup) and for content migration (no test data to clean).
-      if (context.skipCleanup !== true && !isContentMode) {
+      // Skipped only on resume (skipCleanup). Content was excluded here on the grounds that there
+      // was "no test data to clean", which was untrue: seeded folders accumulate on the source and
+      // migrated copies accumulate at the destination. CleanupAgent now handles both.
+      if (context.skipCleanup !== true) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: 'CleanupAgent',

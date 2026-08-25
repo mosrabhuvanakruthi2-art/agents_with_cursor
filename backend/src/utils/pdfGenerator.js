@@ -2590,6 +2590,107 @@ function drawContentFeatureChecklist(doc, checklist, summary) {
   doc.moveDown(0.4);
 }
 
+/**
+ * Collapse one check's detail string into distinct reasons with counts.
+ *
+ * Content checks report every affected item on one line, joined by " | ", each shaped roughly as
+ * "<path> — <reason>". A permissions failure therefore arrives as 77 segments that name the SAME
+ * underlying cause 77 times. Grouping on the reason turns that into one row saying "x77", which is
+ * the difference between a report a reviewer can act on and one they scroll past.
+ */
+function groupFailureReasons(detail) {
+  const segments = String(detail || '').split(' | ').map((x) => x.trim()).filter(Boolean);
+  const counts = new Map();
+  for (const seg of segments) {
+    // The reason is the text after the last em dash; without one the whole segment is the reason.
+    const cut = seg.lastIndexOf('—');
+    const reason = (cut >= 0 ? seg.slice(cut + 1) : seg).trim() || seg.trim();
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Failure Index for content runs — the mail report opens with one and the content report did not,
+ * so a reviewer had to read every table to find out what was actually wrong. Lists each failing
+ * check once, with its distinct root causes and how many items each affects.
+ */
+function drawContentFailureIndex(doc, checks, perUser) {
+  const failing = [];
+  const collect = (list, who) => {
+    for (const c of (list || [])) {
+      if (String(c.status).toUpperCase() !== 'FAIL') continue;
+      failing.push({ who, name: String(c.name || c.check || ''), reasons: groupFailureReasons(c.detail) });
+    }
+  };
+  collect(checks, null);
+  for (const u of (perUser || [])) collect(u.checks, u.sourceEmail || '');
+  if (failing.length === 0) return;
+
+  drawSectionHeader(doc, `Failure Index — ${failing.length} failing check(s), most affected first`);
+
+  const NAME_W = 175;
+  const CNT_W = 42;
+  const REASON_W = CONTENT_W - NAME_W - CNT_W;
+  const totalOf = (f) => f.reasons.reduce((n, r) => n + r.count, 0);
+  failing.sort((a, b) => totalOf(b) - totalOf(a));
+
+  // Header row
+  ensureSpace(doc, 30);
+  let y = doc.y;
+  doc.save().fillColor('#F1F5F9').rect(MARGIN, y, CONTENT_W, 18).fill().restore();
+  doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
+  doc.text('Check', MARGIN + 6, y + 5, { width: NAME_W - 10, lineBreak: false });
+  doc.text('Items', MARGIN + NAME_W, y + 5, { width: CNT_W - 6, align: 'right', lineBreak: false });
+  doc.text('Root cause', MARGIN + NAME_W + CNT_W + 6, y + 5, { width: REASON_W - 10, lineBreak: false });
+  y += 18;
+  doc.save().strokeColor(C.border).lineWidth(0.5)
+    .moveTo(MARGIN, y).lineTo(MARGIN + CONTENT_W, y).stroke().restore();
+  doc.y = y;
+
+  for (const f of failing) {
+    // At most three distinct causes per check keeps the index to one screen; the per-check tables
+    // below still carry every line.
+    const shown = f.reasons.slice(0, 3);
+    const hidden = f.reasons.length - shown.length;
+    const label = (f.who && !f.name.startsWith('[')) ? `[${f.who}] ${f.name}` : f.name;
+
+    for (let i = 0; i < shown.length; i++) {
+      const r = shown[i];
+      const reasonText = r.reason.length > 300 ? `${r.reason.slice(0, 300)}…` : r.reason;
+      const h = Math.max(
+        doc.fontSize(7.5).font(F_REGULAR).heightOfString(reasonText, { width: REASON_W - 10 }),
+        doc.fontSize(8).font(F_BOLD).heightOfString(label, { width: NAME_W - 10 })
+      ) + 8;
+      ensureSpace(doc, h + 2);
+      const rowY = doc.y;
+      if (i === 0) {
+        doc.save().fillColor(C.failBg).rect(MARGIN, rowY, 3, h).fill().restore();
+        doc.fontSize(8).font(F_BOLD).fillColor(C.text)
+          .text(label, MARGIN + 6, rowY + 4, { width: NAME_W - 10 });
+      }
+      doc.fontSize(8).font(F_BOLD).fillColor(r.count > 1 ? C.fail : C.subtle)
+        .text(r.count > 1 ? `x${r.count}` : '1', MARGIN + NAME_W, rowY + 4,
+          { width: CNT_W - 6, align: 'right', lineBreak: false });
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt)
+        .text(reasonText, MARGIN + NAME_W + CNT_W + 6, rowY + 4, { width: REASON_W - 10 });
+      doc.y = rowY + h;
+    }
+    if (hidden > 0) {
+      ensureSpace(doc, 14);
+      doc.fontSize(7).font(F_REGULAR).fillColor(C.muted)
+        .text(`+ ${hidden} further distinct cause(s) — see the per-check table below`,
+          MARGIN + NAME_W + CNT_W + 6, doc.y + 1, { width: REASON_W - 10 });
+      doc.y += 12;
+    }
+    doc.save().strokeColor(C.border).lineWidth(0.4)
+      .moveTo(MARGIN, doc.y).lineTo(MARGIN + CONTENT_W, doc.y).stroke().restore();
+    doc.y += 4;
+  }
+  doc.moveDown(0.6);
+}
 function generateContentValidationPdf(execution, stream) {
   const doc = new PDFDocument({ margin: MARGIN, size: 'A4' });
   registerUnicodeFonts(doc);
@@ -2617,6 +2718,9 @@ function generateContentValidationPdf(execution, stream) {
   }
 
   drawContentSummaryCards(doc, checks);
+
+  // What actually failed, and why — before any of the detail tables.
+  drawContentFailureIndex(doc, globalChecks, perUser);
 
   if (perUser.length > 0) {
     // Migration / site-level checks first, then one section per migrated user.

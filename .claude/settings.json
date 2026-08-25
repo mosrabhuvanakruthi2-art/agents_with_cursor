@@ -1,0 +1,31 @@
+{
+  "$comment": [
+    "SHARED GStack settings — committed on purpose so every developer gets the same enforcement.",
+    "Personal preferences and permission allow-lists belong in .claude/settings.local.json, which stays gitignored.",
+    "This file wires .claude/hooks/gstack-guard.js as a PreToolUse hook: it BLOCKS unapproved commits,",
+    "force-push, blanket `git add -A`, writes to secret files, and any attempt to edit the guard itself.",
+    "Every other GStack rule (design gate, requirements gate, verdict gates) is instruction-only in CLAUDE.md."
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gstack-guard.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gstack-guard.js"
+          }
+        ]
+      }
+    ]
+  }
+}

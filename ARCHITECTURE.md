@@ -67,4 +67,4 @@ backend/src/
 frontend/src/                         # Dashboard, forms, execution hooks
 ```
 
-For setup and env vars, see **`README.md`** and **`backend/.env.example`**.
+For setup and env vars, see **`README.md`** and **`.env.example` at the repo root**.

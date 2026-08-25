@@ -59,7 +59,9 @@
       "PowerShell(Get-Process *)",
       "PowerShell(Start-Process powershell -ArgumentList \"-NoExit\", \"-Command\", \"Set-Location 'C:\\\\Users\\\\BhuvanaMosra\\\\OneDrive - CloudFuze, Inc\\\\Desktop\\\\agents with cursor\\\\backend'; node src/server.js\" -WindowStyle Normal)",
       "PowerShell(Start-Process powershell -ArgumentList \"-NoExit\", \"-Command\", \"Set-Location 'C:\\\\Users\\\\BhuvanaMosra\\\\OneDrive - CloudFuze, Inc\\\\Desktop\\\\agents with cursor\\\\frontend'; npm run dev\" -WindowStyle Normal)",
-      "PowerShell(Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Output \"done\")"
+      "PowerShell(Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Output \"done\")",
+      "Bash(git fetch *)",
+      "Bash(cd \"C:/Users/SrinidhPerla/Downloads\" && head -c 2000 \"validation-report-googleshareddrive-to-sharepoint-ac77ad80.pdf\" | strings | head -40; echo \"=== filters ===\"; strings \"validation-report-googleshareddrive-to-sharepoint-ac77ad80.pdf\" | grep -o \"/Filter */[A-Za-z0-9]*\" | sort | uniq -c)"
     ]
   }
 }

@@ -98,14 +98,78 @@ export default function ResultsView({ exec }) {
           // Collapse per-message recipient/permission-mapping issues (deepMail + headers) into a
           // single count row instead of one line per mail. Applies to all combinations.
           const isRecipientIssue = (m) => m.category === 'deepMail' && m.kind === 'headers';
+
+          // Content checks report every affected item on one line joined by " | ", each shaped
+          // "<path> — <reason>". A permissions failure therefore arrives as 80 segments naming the
+          // SAME cause 80 times, and the deep test paths are 400+ characters, so the raw string
+          // sprawled across the page and buried the actual problem. Mail already collapses its
+          // per-message recipient issues into one counted row; do the same for content.
+          const isContentIssue = (m) => m.category === 'content';
+          const summarizeContent = (m) => {
+            const segments = String(m.actual ?? '').split(' | ').map((x) => x.trim()).filter(Boolean);
+            const counts = new Map();
+            for (const seg of segments) {
+              const cut = seg.lastIndexOf('—');
+              const reason = (cut >= 0 ? seg.slice(cut + 1) : seg).trim() || seg;
+              counts.set(reason, (counts.get(reason) || 0) + 1);
+            }
+            const causes = [...counts.entries()]
+              .map(([reason, count]) => ({ reason, count }))
+              .sort((a, b) => b.count - a.count);
+            // The check name often carries the AUTHORITATIVE total, e.g. "— 80 mismatch", while the
+            // detail string lists only the first ~20 examples. Reporting the sample size as though
+            // it were the total put two contradicting numbers side by side ("80 mismatch" next to
+            // "20 affected items"), so prefer the stated total and say how many are shown.
+            const stated = /(\d+)\s*(?:mismatch|item|file|issue)/i.exec(String(m.field ?? ''));
+            const statedTotal = stated ? Number(stated[1]) : null;
+            const shown = segments.length;
+            const total = (statedTotal && statedTotal > shown) ? statedTotal : shown;
+            return { field: m.field, causes, total, shown, truncated: total > shown };
+          };
+          // Long deep-nesting paths are unreadable in full; keep the ends, drop the middle.
+          const shorten = (text, max = 220) => {
+            const t = String(text ?? '');
+            if (t.length <= max) return t;
+            return `${t.slice(0, max - 60)} … ${t.slice(-55)}`;
+          };
           const recipientIssues = validation.mismatches.filter(isRecipientIssue);
-          const otherIssues = validation.mismatches.filter((m) => !isRecipientIssue(m));
+          const contentIssues = validation.mismatches.filter(isContentIssue).map(summarizeContent);
+          const otherIssues = validation.mismatches
+            .filter((m) => !isRecipientIssue(m) && !isContentIssue(m));
           return (
             <div className="mt-4">
               <h3 className="text-sm font-semibold text-red-800 mb-2">
                 Key Issues ({validation.mismatches.length} failed)
               </h3>
               <div className="space-y-2">
+                {contentIssues.map((c, idx) => (
+                  <div key={`c${idx}`} className="bg-red-50 rounded-lg p-3 text-sm">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-semibold text-red-800">{c.field}</span>
+                      <span className="text-xs text-gray-500">
+                        {c.total} affected item{c.total === 1 ? '' : 's'}
+                        {c.truncated ? ` (${c.shown} shown)` : ''},{' '}
+                        {c.causes.length} distinct cause{c.causes.length === 1 ? '' : 's'}
+                        {c.truncated ? ' in the sample' : ''}
+                      </span>
+                    </div>
+                    <ul className="mt-1.5 space-y-1">
+                      {c.causes.slice(0, 3).map((r, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className={`flex-shrink-0 text-xs font-semibold px-1.5 rounded ${r.count > 1 ? 'bg-red-200 text-red-900' : 'bg-gray-200 text-gray-700'}`}>
+                            {r.count > 1 ? `x${r.count}${c.truncated ? '+' : ''}` : '1'}
+                          </span>
+                          <span className="text-gray-700 break-words">{shorten(r.reason)}</span>
+                        </li>
+                      ))}
+                      {c.causes.length > 3 && (
+                        <li className="text-xs text-gray-500 pl-1">
+                          + {c.causes.length - 3} further distinct cause(s) — see the PDF for every line
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                ))}
                 {otherIssues.map((m, idx) => (
                   <div key={idx} className="flex items-start gap-3 bg-red-50 rounded-lg p-3 text-sm">
                     <span className="text-red-500 font-medium flex-shrink-0">{m.category}</span>

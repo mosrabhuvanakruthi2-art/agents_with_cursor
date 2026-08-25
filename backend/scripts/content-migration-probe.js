@@ -61,10 +61,45 @@ const line = (s) => console.log(s);
 const rule = () => line('─'.repeat(72));
 
 /** Items directly under the destination folder, or null when the folder is absent. */
-async function destSnapshot(siteId) {
-  return sharepointClient
-    .listFolderChildren(siteId, `/${FOLDER_NAME}`, DEST_EMAIL)
+/**
+ * Where the migrated folder actually landed, and what is in it.
+ *
+ * This used to look ONLY at `/<FOLDER_NAME>`, which made the probe report "nothing arrived" while
+ * the migration had in fact succeeded into `<FOLDER_NAME> 1`. CloudFuze appends a counter when a
+ * folder of that name already exists at the destination — and one usually does, because our own
+ * seeding/validation leaves an empty shell behind. The probe then compared against the empty shell.
+ * That single narrow check cost hours of debugging a migration that was working.
+ *
+ * SharePointValidationAgent.findMigratedRoot already does this correctly; this mirrors it, and also
+ * lists the library root so anything unexpected is visible rather than silently missed.
+ */
+async function destSnapshot(siteId, label) {
+  const root = await sharepointClient
+    .listFolderChildren(siteId, '/', DEST_EMAIL)
     .catch(() => null);
+  if (root === null) {
+    line(`${label}: destination library root unreadable`);
+    return null;
+  }
+
+  // Candidates: the exact name, then the counter-suffixed variants CloudFuze creates.
+  const base = FOLDER_NAME;
+  const isCandidate = (name) => name === base || new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d+$`).test(name);
+  const candidates = root.filter((k) => k.folder && isCandidate(k.name));
+
+  const counted = [];
+  for (const c of candidates) {
+    const kids = await sharepointClient.listFolderChildren(siteId, `/${c.name}`, DEST_EMAIL).catch(() => []);
+    counted.push({ name: c.name, count: kids.length, items: kids });
+  }
+  counted.sort((a, b) => b.count - a.count);
+
+  line(`${label}: library root has ${root.length} item(s); ${counted.length} candidate root(s) for "${base}"`);
+  for (const c of counted) line(`             "${c.name}" → ${c.count} item(s)`);
+  if (counted.length === 0) line('             (no folder matching the source name — content may be at the library root)');
+
+  // The migrated root is the candidate holding content; an empty one only counts if it is the only one.
+  return counted[0] ? counted[0].items : [];
 }
 
 (async () => {
@@ -90,9 +125,8 @@ async function destSnapshot(siteId) {
 
   // ── Destination: record what is there BEFORE, so "did anything arrive" is answerable ──
   const site = await sharepointClient.getSite(SITE_HOST, SITE_PATH, DEST_EMAIL);
-  const before = await destSnapshot(site.id);
   line(`destination: ${SITE_HOST}${SITE_PATH} → ${DEST_PATH}`);
-  line(`             "${FOLDER_NAME}" before: ${before === null ? 'does not exist' : `${before.length} item(s)`}`);
+  const before = await destSnapshot(site.id, 'BEFORE     ');
 
   // ── CloudFuze clouds ────────────────────────────────────────────────────────
   migrationClient.setRuntimeConfig({
@@ -148,9 +182,10 @@ async function destSnapshot(siteId) {
   line(`status     : ${status}`);
 
   // ── Did anything actually land? ─────────────────────────────────────────────
-  const after = await destSnapshot(site.id);
   rule();
-  line(`RESULT     : "${FOLDER_NAME}" after: ${after === null ? 'does not exist' : `${after.length} item(s)`}`);
+  const after = await destSnapshot(site.id, 'AFTER      ');
+  const gained = (after ? after.length : 0) - (before ? before.length : 0);
+  line(`RESULT     : ${after === null ? 'destination unreadable' : `${after.length} item(s) in the migrated root (${gained >= 0 ? '+' : ''}${gained} vs before)`}`);
   if (after && after.length > 0) {
     line(`             ${after.slice(0, 12).map((k) => k.name).join(', ')}`);
     line('             ✅ files arrived');

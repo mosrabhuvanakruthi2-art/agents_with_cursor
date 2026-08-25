@@ -349,21 +349,44 @@ async function validateUnit(unit, deps) {
     push('PASS', '6. File conversion (feature 12.1)', 'No files needed conversion');
   } else {
     const wrong = [];
+    const notConverted = [];
+    // Destination paths that found no source partner, indexed for the lookup below.
+    const extraByPath = new Map(cmp.extra.map((i) => [String(i.path || '').toLowerCase(), i]));
     for (const item of convertibles) {
       const pair = cmp.matched.get(item.path);
-      if (!pair) continue;
       const expected = core.expectedDestExtension(item.name, item.mimeType);
+      if (!pair) {
+        // `continue` here was a FALSE PASS. A convertible file that was NOT converted cannot pair:
+        // pairing looks for the converted name (.pptx) while the destination holds the original
+        // (.ppt), so the source side counts as missing and the destination side as extra — and this
+        // check saw neither and reported "all converted". Run 6a8d53d2 passed feature 12.1 while all
+        // six legacy Office files sat unconverted at the destination.
+        //
+        // Distinguish the two cases, because they are different defects: the file arrived with its
+        // original extension (conversion did not run), or it never arrived at all.
+        const sameName = extraByPath.get(String(item.path).toLowerCase());
+        if (sameName) {
+          notConverted.push(`${item.path}: still ${core.extensionOf(item.name) || '(none)'}`
+            + `${expected ? `, expected ${expected}` : ''}`);
+        } else {
+          wrong.push(`${item.path}: absent from the destination (expected ${expected || 'a converted copy'})`);
+        }
+        continue;
+      }
       const actual = core.extensionOf(pair.dest.name);
       if (expected && actual !== expected) {
         wrong.push(`${item.path}: expected ${expected}, got ${actual || '(none)'}`);
       }
     }
-    found.conversionMismatches = wrong;
-    push(wrong.length === 0 ? 'PASS' : 'FAIL',
+    found.conversionMismatches = wrong.concat(notConverted);
+    found.notConverted = notConverted;
+    const allIssues = notConverted.concat(wrong);
+    push(allIssues.length === 0 ? 'PASS' : 'FAIL',
       `6. File conversion (feature 12.1) — ${convertibles.length} file(s)`,
-      wrong.length === 0
-        ? `All converted to the expected format (.doc→.docx, .xls→.xlsx, .ppt→.pptx, Google native → Office)`
-        : wrong.slice(0, 15).join(' | '));
+      allIssues.length === 0
+        ? 'All converted to the expected format (.doc→.docx, .xls→.xlsx, .ppt→.pptx, Google native → Office)'
+        : `${notConverted.length} arrived unconverted, ${wrong.length} wrong or absent — `
+          + allIssues.slice(0, 15).join(' | '));
   }
 
   // ── Sizes

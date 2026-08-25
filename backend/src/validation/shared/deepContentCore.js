@@ -36,8 +36,20 @@ const roleMap = require('../contentRoleMap');
  * Returned as a FRESH regex each call rather than a shared `/g` constant: a global regex carries
  * `lastIndex` between `.test()` calls, so a shared instance makes results depend on call order.
  */
+/**
+ * Characters SharePoint Online actually rejects in a file or folder name:  " * : < > ? /  |
+ *
+ * The set used to also include ~ # % & { }. Those have been permitted since the 2017 special-character
+ * update, and treating them as invalid made the validator predict a destination name that never occurs.
+ * Observed on run 6a8d53d2: source "Special !@#$%^&*()-_+=[] Folder" arrived as
+ * "Special !@#$%^&-()-_+=[] Folder" — # % & all preserved, only * replaced — while the validator
+ * expected "Special !@_$_^__()-_+=[] Folder" and so reported the folder missing, its real name extra,
+ * and every child misplaced. One wrong character class, four wrong findings.
+ *
+ * A leading ~ is handled by isReservedName(), not here, because only its position is a problem.
+ */
 function spInvalidChars() {
-  return /[~"#%&*:<>?/\\{|}]/g;
+  return /["*:<>?/\\|]/g;
 }
 
 /** Names SharePoint refuses regardless of characters. */
@@ -346,6 +358,23 @@ function notHashableReason(item) {
  *                      link is the documented expected outcome (feature 11.1)
  *   misplaced        — present on both sides under different parents
  */
+/**
+ * Names a destination item may legitimately carry for this source item, best first.
+ *
+ * The converted name comes first because conversion is the documented behaviour (feature 12.1:
+ * .doc→.docx, .xls→.xlsx, .ppt→.pptx, Google native → Office). The ORIGINAL name is accepted as a
+ * fallback so that a file which was NOT converted still pairs with its counterpart.
+ *
+ * Without that fallback one unconverted file produced three separate findings: missing on the source
+ * side (nothing matched .pptx), extra on the destination side (the .ppt nobody claimed), and a
+ * silent skip in the conversion check, which then reported PASS. Pairing them means the structure
+ * check sees a match and the conversion check owns the defect — one file, one finding.
+ */
+function destNameCandidatesFor(item) {
+  const converted = convertName(item.name, item.mimeType);
+  return converted === item.name ? [item.name] : [converted, item.name];
+}
+
 function compareTrees(sourceItems, destItems, opts = {}) {
   const { destPrefix = '', pathLimit = PATH_LENGTH_LIMIT, segmentLimit = SEGMENT_LENGTH_LIMIT } = opts;
   const source = Array.isArray(sourceItems) ? sourceItems : [];
@@ -401,17 +430,24 @@ function compareTrees(sourceItems, destItems, opts = {}) {
   const unmatchedSource = [];
 
   for (const s of source) {
-    const expectedName = convertName(s.name, s.mimeType);
+    const nameCandidates = destNameCandidatesFor(s);
     const siblings = parentKeyCandidates(s.path).flatMap((k) => destByParent.get(k) || []);
-    let hit = siblings.find(
-      (d) => !claimed.has(d) && d.type === s.type && namesMatch(expectedName, d.name)
-    );
+    let hit = null;
+    for (const cand of nameCandidates) {
+      hit = siblings.find(
+        (d) => !claimed.has(d) && d.type === s.type && namesMatch(cand, d.name)
+      );
+      if (hit) break;
+    }
     // Mixed per-segment renames miss all three fast keys; fall back to a segment-wise comparison.
     if (!hit) {
-      hit = dest.find(
-        (d) => !claimed.has(d) && d.type === s.type && namesMatch(expectedName, d.name)
-          && parentSegmentsMatch(s.path, d.path)
-      );
+      for (const cand of nameCandidates) {
+        hit = dest.find(
+          (d) => !claimed.has(d) && d.type === s.type && namesMatch(cand, d.name)
+            && parentSegmentsMatch(s.path, d.path)
+        );
+        if (hit) break;
+      }
     }
     if (hit) {
       claimed.add(hit);
@@ -436,9 +472,10 @@ function compareTrees(sourceItems, destItems, opts = {}) {
   const usedExtra = new Set();
   const stillMissing = [];
   for (const s of unmatchedSource) {
-    const expectedName = convertName(s.name, s.mimeType);
+    const nameCandidates = destNameCandidatesFor(s);
     const pool = extra.filter(
-      (e) => !usedExtra.has(e) && e.type === s.type && namesMatch(expectedName, e.name)
+      (e) => !usedExtra.has(e) && e.type === s.type
+        && nameCandidates.some((cand) => namesMatch(cand, e.name))
     );
     if (pool.length > 0) {
       const moved = pool[0];

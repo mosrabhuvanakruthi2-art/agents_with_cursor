@@ -1052,12 +1052,27 @@ async function triggerMigration(context) {
     // finds nothing inside it at all (job …ab66, "Total: 0") — while the folder really held 77 files.
     // Passing the DRIVE id as the root gives the scan its Shared Drive context; sourceFolderPath still
     // says which folder inside the drive to take.
-    const sharedDriveRootId = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''))
-      ? (context.sourceDriveId || null)
-      : null;
+    // A Google Shared Drive migrates as the DRIVE, not as a folder inside it. Proven by comparing
+    // job 6a8c4f2d — the only Shared Drive job on this server that ever moved data — against every
+    // failing one:
+    //
+    //   worked   sourceFolderPath "/QA_TeamDrive"        fromRootId "0AJoAzUBzPvRXUk9PVA"  396 items
+    //   failed   sourceFolderPath "/Agent Shared Drive"  fromRootId "1Jtyvw…"                0 items
+    //
+    // Passing the drive id while still naming a subfolder as the path (an earlier attempt) also
+    // scans nothing: the id and the path have to describe the same object. Reproducing the worked
+    // configuration migrated 63 items (37 files, 26 folders) end to end.
+    //
+    // The seeded folder still arrives as a folder at the destination, because it is a child of the
+    // drive and the tree is preserved — so the validator's expectations do not change.
+    const isSharedDrive = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''));
+    const sharedDriveRootId = isSharedDrive ? (context.sourceDriveId || null) : null;
+    const sharedDriveName = isSharedDrive
+      ? String(context.sourceDriveName || env.GOOGLE_SHARED_DRIVE_NAME || '').trim()
+      : '';
     if (sharedDriveRootId) {
-      logger.info(`CloudFuze content: Shared Drive source — using drive id ${sharedDriveRootId} as fromRootId `
-        + '(a bare folder id yields an empty scan)');
+      logger.info(`CloudFuze content: Shared Drive source — migrating the drive itself `
+        + `(id ${sharedDriveRootId}${sharedDriveName ? `, "${sharedDriveName}"` : ''}); a subfolder id scans nothing`);
     }
 
     let units;
@@ -1065,11 +1080,12 @@ async function triggerMigration(context) {
       units = context.userFolderMappings.map((u) => ({
         sourceEmail: u.sourceEmail || context.sourceEmail,
         destinationEmail: u.destinationEmail || context.destinationEmail,
-        sourcePath: u.sourcePath || '/',
+        // For a Shared Drive both fields describe the DRIVE; otherwise keep the caller's folder.
+        sourcePath: (sharedDriveRootId && sharedDriveName) ? `/${sharedDriveName}` : (u.sourcePath || '/'),
         fromRootId: sharedDriveRootId || u.sourceRootId || u.sourcePath || '/',
-        // The folder's own id, kept separately: fromRootId above prefers the DRIVE id, which the
-        // isCSV route must not use (the scan then looks at the drive root and finds nothing).
-        folderRootId: u.sourceRootId || null,
+        folderRootId: sharedDriveRootId || u.sourceRootId || null,
+        // Kept for the report so the QA output still names the folder the run seeded.
+        seededFolderPath: u.sourcePath || null,
         destinationPath: resolveDestPath(u.destinationPath),
       }));
     } else {
@@ -1077,9 +1093,10 @@ async function triggerMigration(context) {
       units = [{
         sourceEmail: context.sourceEmail,
         destinationEmail: context.destinationEmail,
-        sourcePath,
+        sourcePath: (sharedDriveRootId && sharedDriveName && !pathOverride) ? `/${sharedDriveName}` : sourcePath,
         fromRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || sourcePath,
-        folderRootId: rootIdOverride || context.sourceRootId || null,
+        folderRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || null,
+        seededFolderPath: sourcePath,
         destinationPath: resolveDestPath(context.destinationPath),
       }];
     }
@@ -1312,7 +1329,10 @@ ${pathCsv}`);
         if (/report is ready/i.test(body)) { ready = true; break; }
       }
       if (!ready) {
-        logger.warn(`CloudFuze mapping validation did not report ready within ${CSV_VALIDATION_MAX_POLLS} poll(s) — reading whatever verdict exists`);
+        logger.warn(`CloudFuze mapping validation did not report ready within ${CSV_VALIDATION_MAX_POLLS} `
+          + `poll(s) (${Math.round((CSV_VALIDATION_MAX_POLLS * CSV_VALIDATION_POLL_MS) / 1000)}s) — reading `
+          + 'whatever verdict exists. An unresolved mapping is the known precursor to a 1-item scan; '
+          + 'raise CONTENT_CSV_VALIDATION_MAX_POLLS if this keeps timing out.');
       }
     } else {
       logger.warn(`CloudFuze mapping validation skipped (csvId=${pathCsvId}, userId=${cfUserId ? 'set' : 'missing'}) — the verdict below is therefore unvalidated`);
@@ -1394,14 +1414,17 @@ ${pathCsv}`);
       // is not safe to treat as a hard gate. The hard stop is the totalPairsCount check after start.
       const dstPathRoot = (row.destCloudDetails || {}).pathRootFolderId;
       const srcPathRoot = (row.sourceCloudDetails || {}).pathRootFolderId;
+      // Report this at INFO, not WARN, and do not predict failure from it. A control run of the
+      // known-working Box combination (job 6a8d0b9e, BOX_BUSINESS → SHAREPOINT) returned exactly the
+      // same mapped=false with both pathRootFolderId null. This endpoint reports that for healthy
+      // pairs too, so it does not indicate that the job will migrate nothing — the earlier wording
+      // claimed it did, and that claim sent two days of debugging down the wrong path.
       if (verdict.mapped !== true || dstPathRoot == null) {
-        logger.warn(
-          `CloudFuze did not resolve the mapping for ${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}" `
+        logger.info(
+          `CloudFuze mapping row unresolved for ${u.sourceEmail} "${u.sourcePath}" → "${u.destinationPath}" `
           + `(mapped=${verdict.mapped}, source pathRootFolderId=${srcPathRoot}, destination pathRootFolderId=${dstPathRoot}). `
-          + 'The path CSV registered and CloudFuze reported its validation ready, but neither path was '
-          + 'resolved to a folder id, so the job will attach 0 pairs and migrate nothing. Cause is '
-          + 'CloudFuze-side and unidentified — see docs/content-migration-path-mapping-findings.md for '
-          + 'what has already been eliminated.'
+          + 'Informational only: the working Box combination reports the same values. Judge the job by '
+          + 'the workspace totalFilesAndFolders and by what reaches the destination, not by this row.'
         );
       }
 
@@ -1503,7 +1526,21 @@ ${pathCsv}`);
     // ── Step 3: Update job options (migration settings) ───────────────────────
     const isDelta = context.migrationType === 'DELTA';
     const jobName = (context.jobName || `Agent-${context.sourceProvider || 'content'}-to-${context.destinationProvider || 'content'}-${jobId}`).slice(0, 80);
-    const toDate = new Date().toISOString().slice(0, 10) + ' 00:00:00';
+    // CloudFuze applies this as a "migrate files up to this date" filter (it lands on the workspace
+    // as pickFilestoDate). Using TODAY at 00:00 excluded every file the QA flow had just seeded:
+    // seeding runs minutes before the migration, so its files are always newer than midnight and
+    // fell outside the window. Job 6a8c830c (seeded 17:32, toDate 2026-08-24 00:00) picked 0 files
+    // for this reason, while job 6a8c4f2d moved data because its source had been seeded on an
+    // earlier day and so fell inside the window.
+    //
+    // Use the END of today so anything seeded during this run is inside the range. Overridable for
+    // a deliberate historical cut.
+    // The Shared Drive job that moved data carried pickFilestoDate=null — no cutoff at all — so send
+    // no filter for that source. Elsewhere keep a cutoff but use TOMORROW: the previous 'today
+    // 00:00' excluded everything the run had just seeded, since seeding happens minutes earlier.
+    const toDate = env.CONTENT_MIGRATION_TO_DATE
+      || (isSharedDrive ? 'null'
+        : new Date(Date.now() + 86400000).toISOString().slice(0, 10) + ' 00:00:00');
 
     // Migration options selected in the Run Agent "Options" step (context.contentOptions).
     // Each maps to a CloudFuze newmultiuser param. Default = true to preserve prior
@@ -1525,14 +1562,17 @@ ${pathCsv}`);
       // worse, not better — and a network capture of the wizard's own update call sends neither
       // pickInsideFolder nor teamFoldersMigrate. Since the only content jobs on this server that ever
       // scanned anything came from that UI, default to omitting it and make it opt-in.
-      ...(env.CONTENT_PICK_INSIDE_FOLDER === 'true' ? ['pickInsideFolder=true'] : []),
+      // Both flags were present on the job that moved data and are required together: with only one
+      // of them set the scan still reports a single item. Forced on for Shared Drive sources; still
+      // opt-in for Box/OneDrive/My Drive, whose working jobs carry neither.
+      ...((isSharedDrive || env.CONTENT_PICK_INSIDE_FOLDER === 'true') ? ['pickInsideFolder=true'] : []),
       // "Team Folders" is Google's original name for Shared Drives. It is the only field in the
       // job whose meaning is specific to this source type, and it had been false on every run
       // while migrating a GOOGLE_SHARED_DRIVES cloud — the scan found the folder but never its
       // contents. Set only for Shared Drive sources so Box/OneDrive/My Drive are unaffected.
       // Also omitted by the wizard. Previously implied by "source is a Shared Drive"; now opt-in so
       // the two flags can be varied independently while the scan behaviour is still unexplained.
-      ...(env.CONTENT_TEAM_FOLDERS_MIGRATE === 'true' ? ['teamFoldersMigrate=true'] : []),
+      ...((isSharedDrive || env.CONTENT_TEAM_FOLDERS_MIGRATE === 'true') ? ['teamFoldersMigrate=true'] : []),
       `fileFolderLink=${opt('sharedLinks')}`,            // Shared Links
       `externalUsers=${opt('externalShares')}`,          // External Shares
       `metaData=${opt('customMetadata')}`,               // Custom Metadata
@@ -1646,7 +1686,16 @@ ${pathCsv}`);
       migratedUsers: passedUnits.map((u) => ({
         sourceEmail: u.sourceEmail,
         destinationEmail: u.permDestEmail || u.destinationEmail,
-        sourcePath: u.sourcePath,
+        // Report the SEEDED folder, not the drive we asked CloudFuze to migrate. For a Shared
+        // Drive those differ: the request names the drive ("/QA_TeamDrive") because that is the
+        // only form CloudFuze scans, while what lands at the destination — and what validation
+        // must compare — is the seeded folder ("/Agent Shared Drive"), a child of that drive.
+        // deepContentCore.resolveUnits() prefers migratedUsers over userFolderMappings, so leaking
+        // the drive path here made validation hunt for "QA_TeamDrive" on both sides and find
+        // neither, reporting 0 matched against a migration that had moved 83 items.
+        sourcePath: u.seededFolderPath || u.sourcePath,
+        // The path actually sent to CloudFuze, kept for diagnosis.
+        requestedSourcePath: u.sourcePath,
         destinationPath: u.destinationPath,
         attributed: Boolean(u.attributed),
       })),
@@ -1857,8 +1906,17 @@ const TERMINAL_STATUSES = new Set([
 // CloudFuze validates an uploaded path CSV asynchronously (csvcreator → csvvalidationstatus).
 // It has answered "CSV report is ready" on the first poll for a single-row CSV; the ceiling is for
 // a large CSV, not the normal case.
-const CSV_VALIDATION_POLL_MS = 4000;
-const CSV_VALIDATION_MAX_POLLS = 15;
+// Path-CSV validation is what populates pathRootFolderId on the mapping row, and the old ceiling of
+// 15 polls x 4s did time out ("still under processing" at the last poll) on a run whose mapping row
+// was stale. Raised to a 5-minute margin so the wait is the server's to end, not ours.
+//
+// This is NOT the cure for the 1-item scan. Probe job 6a8c8932 cleared the stale mappings first,
+// validation then answered "CSV report is ready" on poll 1/60 — and the row still came back
+// mapped=false with both pathRootFolderId null. Validation completing and the path resolving are
+// separate things; only the first is ours to wait for.
+// Overridable so this can be tuned without a code change.
+const CSV_VALIDATION_POLL_MS = env.CONTENT_CSV_VALIDATION_POLL_MS;
+const CSV_VALIDATION_MAX_POLLS = env.CONTENT_CSV_VALIDATION_MAX_POLLS;
 
 const CONTENT_TERMINAL_STATUSES = new Set([
   'PROCESSED', 'PROCESS', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
@@ -1927,19 +1985,53 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
 
     if (onProgress) onProgress(attempt, maxPolls, status || null);
 
-    // Real terminal state → done. A terminal PROCESSED that moved nothing is reported as its own
-    // status rather than plain success: 'the run completed' is not a pass when zero files landed,
-    // and returning PROCESSED here is how 28 content runs were recorded as successful.
+    // Real terminal state → done. A terminal PROCESSED that demonstrably moved nothing is reported as
+    // PROCESSED_EMPTY, because 'the run completed' is not a pass when zero files landed.
+    //
+    // But ABSENT counts are not evidence of zero. This poll response (move/queue/status,
+    // move/clouds/status) carries no count fields at all, so totalCount/processedCount are almost
+    // always null — and treating null as zero reported PROCESSED_EMPTY on a run that had genuinely
+    // migrated 71 items, turning a success into a spurious FAIL in the report. Only a real, non-null
+    // zero counts; when the counts are unknown, ask the workspace, and if that is unavailable too,
+    // return the status and let validation decide from the destination itself.
     if (CONTENT_TERMINAL_STATUSES.has(status)) {
-      const movedNothing = (processedCount === null || processedCount === 0)
-        && (totalCount === null || totalCount === 0);
-      if (movedNothing && (status === 'PROCESSED' || status === 'PROCESS')) {
-        logger.error(
-          `CloudFuze content job ${moveId} reached ${status} but reports no processed items `
-          + `(totalCount=${totalCount}, processedCount=${processedCount}) — treating as PROCESSED_EMPTY, not success`
-        );
-        return 'PROCESSED_EMPTY';
+      const isProcessed = status === 'PROCESSED' || status === 'PROCESS';
+      if (!isProcessed) return status;
+
+      const countsKnown = totalCount !== null || processedCount !== null;
+      if (countsKnown) {
+        if ((processedCount || 0) === 0 && (totalCount || 0) === 0) {
+          logger.error(`CloudFuze content job ${moveId} reached ${status} with totalCount=${totalCount}, `
+            + `processedCount=${processedCount} — nothing migrated, treating as PROCESSED_EMPTY`);
+          return 'PROCESSED_EMPTY';
+        }
+        return status;
       }
+
+      // Counts unknown: the workspace record does carry totalFilesAndFolders.
+      try {
+        const wsRes = await axios.get(
+          `${contentOrigin}/proxyservices/v1/move/newmultiuser/get/list/${moveId}?page_nbr=1&page_size=5`,
+          migrationAxiosConfig({ headers: { Authorization: token }, timeout: 30000 })
+        );
+        const ws = (Array.isArray(wsRes.data) ? wsRes.data : [])[0] || {};
+        const scanned = Number(ws.totalFilesAndFolders ?? NaN);
+        if (Number.isFinite(scanned)) {
+          lastJobDetails = { workspaceId: moveId, totalCount: scanned, processedCount: scanned };
+          if (scanned === 0) {
+            logger.error(`CloudFuze content job ${moveId} reached ${status} but the workspace reports `
+              + `totalFilesAndFolders=0 — nothing migrated, treating as PROCESSED_EMPTY`);
+            return 'PROCESSED_EMPTY';
+          }
+          logger.info(`CloudFuze content job ${moveId}: ${status}, workspace scanned ${scanned} item(s)`);
+          return status;
+        }
+      } catch (wsErr) {
+        logger.warn(`CloudFuze workspace count read failed (${wsErr?.response?.status || wsErr.message})`);
+      }
+
+      logger.info(`CloudFuze content job ${moveId}: ${status} with no counts available — reporting `
+        + `${status}; validation compares the destination and decides.`);
       return status;
     }
 

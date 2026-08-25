@@ -1,0 +1,432 @@
+# GStack workflow — new feature / significant change
+#
+# Repo: Migration QA Agent System (Node.js + Express backend in backend/, React + Vite SPA in frontend/)
+# Read by Claude Code as the ordered playbook for the gstack-* agents in .claude/agents/.
+#
+# Two absolute rules:
+#   1. Nothing is committed without explicit user approval at the Commit Decision Gate (last step).
+#   2. Deployment, CI/CD, and release automation are OUT OF SCOPE. There is deliberately no DevOps
+#      agent in this workflow — deployment is handled by whatever automation already exists outside it.
+
+name: new-feature
+description: >
+  Full SDLC for a new feature or any significant change in the Migration QA Agent System:
+  requirements → feasibility → user stories → REQUIREMENTS APPROVAL → design → DESIGN APPROVAL →
+  implementation → automated tests → code review → QA → security → final review → seeded test cases
+  → documentation → reliability review → COMMIT DECISION.
+
+# Three human gates, in order. The first two must not be skipped or self-approved:
+#   1. requirements-approval — a named human approves the requirements doc
+#   2. user-approval         — a named human approves the design (NON-NEGOTIABLE)
+#   3. commit-decision-gate  — ask whether to commit, then ask which branch (NON-NEGOTIABLE)
+#
+# Loop-back gates (code review, QA, security) return work to implementation with max_retries: 2,
+# then escalate to the user with what was tried instead of grinding indefinitely.
+
+use_when:
+  - A new feature or user-facing capability
+  - A new migration combination (mail / content / message) or a new domain
+  - A change to MigrationContext, MessageMigrationContext, or ValidationResult
+  - A change to validation/shared/deepMailCore.js, shared/deepMessageCore.js, or mailMigrationComparator.js
+  - A new or changed API endpoint under /api
+  - Auth, JWT, or per-user execution scoping changes
+  - A new external integration (Gmail, Graph, CloudFuze server, Slack, Box, Drive, Jira Xray, OpenAI/Anthropic)
+  - A new MongoDB collection or a change to a persisted document shape
+  - Any change spanning three or more files
+
+out_of_scope:
+  - Deployment, CI/CD, release automation, infrastructure, environment provisioning
+  - Anything that runs after the code is committed and pushed
+
+steps:
+
+  - id: requirements-analysis
+    name: Requirements analysis
+    agent: gstack-business-analyst
+    blocking: false
+    inputs:
+      - The user's request, verbatim
+      - CLAUDE.md, ARCHITECTURE.md, CONTRIBUTING.md, docs/cloudfuze-apis.md
+      - backend/data/feature-scope/*.md (per-combination in/out-of-scope docs)
+      - The real repo state (never assumptions from memory)
+    actions:
+      - Restate who is blocked, what problem, what outcome — in three sentences
+      - Stop and ask if the request has more than one reasonable reading
+      - git log --oneline -20 and grep for the concept before assuming it is new
+      - Identify product/domain (mail | content | message) and affected combination(s), individually
+      - Identify affected test types (SMOKE | SANITY | E2E)
+      - Write numbered, independently testable behaviour rules with concrete values
+      - State scope in / scope out, edge cases, failure modes, assumptions, risks
+    outputs:
+      - ai-sdlc/requirements/specs/NNN-slug.md with Status: Draft and Approved by empty
+    rules:
+      - No implementation detail — no file paths as instructions, no schemas, no signatures
+      - Scope: Out must be non-empty
+      - Never self-approve
+
+  - id: feasibility
+    name: Feasibility and blast radius
+    agent: gstack-tech-lead
+    blocking: false
+    depends_on: [requirements-analysis]
+    actions:
+      - Verify each requirement against files actually opened — a stub is not an implementation
+      - Confirm the combination is registered in orchestrator/agentRegistry.js at all
+      - Classify blast radius — Contained / Cross-combination / Contract / Platform — naming the files
+      - For Cross-combination radius, list every combination needing re-verification
+      - Confirm the work needs no new dependency, or name the one it needs and why
+      - Confirm or correct the pipeline choice
+    outputs:
+      - A "## Feasibility & Blast Radius" section appended to the requirements doc
+      - Verdict — FEASIBLE / FEASIBLE WITH CAVEATS / BLOCKED
+    rules:
+      - No design decisions — placement risk is yours, placement choices belong to the architect
+      - Separate "missing upstream capability" from "blocked" — they are not the same
+
+  - id: user-stories
+    name: User stories and acceptance criteria
+    agent: gstack-product-owner
+    blocking: false
+    depends_on: [feasibility]
+    skip_if: feasibility verdict is BLOCKED
+    actions:
+      - Write stories in the voice of a QA engineer or migration lead — the real users of this repo
+      - Give every criterion as Given/When/Then with concrete values
+      - State the expected verdict per criterion — PASS / FAIL / WARN / known_limitation
+      - Name the combination(s) and test type(s) each story applies to
+      - Include at least one negative criterion per story — a case that MUST fail
+      - Trace every story to a numbered behaviour rule
+    outputs:
+      - A "## User Stories & Acceptance Criteria" section appended to the requirements doc
+      - A Definition of Done for the whole set
+    rules:
+      - "Never accept 'the run completed' as an acceptance criterion"
+      - No new scope — if a story needs absent behaviour, send it back to the business analyst
+
+  - id: requirements-approval
+    name: Requirements approval gate
+    type: gate
+    blocking: true
+    depends_on: [user-stories]
+    approver: user
+    rules:
+      - No agent may set Status: Approved — a named human does, and is recorded in the doc
+      - Design does not start while this gate is open
+      - Read Behaviour and Scope: Out closely — that is where misunderstandings hide
+      - If requirements change later, this gate re-opens
+    prompt: |
+      REQUIREMENTS COMPLETE — awaiting your approval.
+      Doc: ai-sdlc/requirements/specs/NNN-slug.md
+      Behaviour rules: <count>   Stories: <count>   Blast radius: <radius>
+      Feasibility: <verdict>
+      Please check Behaviour and Scope: Out specifically.
+      Reply "approved" (and I will record you as approver) or tell me what to change.
+    on_reject: { return_to: requirements-analysis }
+
+  - id: architecture-design
+    name: Architecture and system design
+    agent: gstack-architect
+    blocking: false
+    depends_on: [requirements-approval]
+    actions:
+      - Decide placement — per-combination file vs shared contract (validation/shared/*, mailMigrationComparator)
+      - Data model changes with backward-compatible defaults; name the owning Mongo store; say whether a
+        backend/scripts/ backfill is needed
+      - API surface — method, path under /api, request fields, response shape, status codes
+        (400 / 401 / 404 / 409 / 202 / 500), whether requireUser applies, whether ownsExecution filtering applies
+      - Sync vs "202 + executionId + setImmediate + client polls" decision
+      - New env vars (name, default, env.js handling, .env.example entry) — no secrets in source
+      - Winston logging points via logger.child({ agent, executionId }); confirm masking is not bypassed
+      - Frontend impact — page, wizard step, api.js function, hook — or an explicit "no UI impact"
+      - Test plan — which pure functions become node+assert cases, which behavior only QA can verify live
+      - Risk, rollback, cancel/resume behavior, Mongo-down behavior
+      - At least one rejected alternative with the reason
+    outputs:
+      - Written design naming files to create and files to modify
+      - New dependencies (default — none)
+
+  - id: user-approval
+    name: User approval gate
+    type: gate
+    blocking: true
+    depends_on: [architecture-design]
+    approver: user
+    rules:
+      - The architect MUST NOT approve its own design
+      - Silence, "sounds good in principle", or agent confidence is NOT approval
+      - Only an explicit user approval opens this gate
+      - If requirements change after approval, the design is re-opened and re-approved
+      - No implementation agent may start while this gate is open
+    prompt: |
+      DESIGN COMPLETE — awaiting your approval.
+      Files to be created: <list>
+      Files to be modified: <list>
+      New dependencies: <none | name + justification>
+      Reply "approved" to start implementation, or tell me what to change.
+    on_reject: { return_to: architecture-design }
+
+  - id: implementation
+    name: Implementation
+    blocking: false
+    depends_on: [user-approval]
+    agents:
+      - agent: gstack-backend-engineer
+        scope: backend/
+        covers:
+          - Data models (MigrationContext, MessageMigrationContext, ValidationResult)
+          - Orchestrator combinations and agentRegistry registration
+          - Agents extending BaseAgent; validation combinations and tolerance bands
+          - Routes + controllers, input validation, requireUser / ownsExecution
+          - Error handling with flat { error } responses; Winston logging; retry.js on external calls
+          - Mongo stores via db/mongo.js getDb() with a null branch; backend/data file fallback
+          - node + assert tests in backend/test/, wired into the npm test chain in backend/package.json
+      - agent: gstack-frontend-engineer
+        scope: frontend/
+        condition: the design has UI impact
+        covers:
+          - Pages under src/pages, components, run-wizard steps
+          - API functions in src/services/api.js (the only axios instance)
+          - Polling via useAgentExecution / useMessageAgentExecution
+          - Auth-gated routes inside RequireAuth; sessionStorage app_token untouched
+          - Tailwind styling consistent with sibling pages; StatusBadge for statuses
+    constraints:
+      - Implement the approved design; do not redesign mid-implementation — return to gstack-architect instead
+      - No new dependency, framework, language, ORM, or test framework beyond the approved design
+      - CommonJS in backend/, ESM in frontend/; LF endings; 2-space indent; single quotes; semicolons
+      - process.env only inside backend/src/config/env.js
+      - No console.log in backend/src; no secrets in logs or responses
+    verification:
+      - cd backend && npm run lint    # clean: 0 errors, warnings only — any error is from this change
+      - cd backend && npm test
+      - cd frontend && npm run lint   # if frontend touched
+      - cd frontend && npm run build  # if frontend touched
+    outputs:
+      - Files changed, env vars added, endpoints added/changed, tests added, real lint/test output
+      - Anything in the approved design that was NOT done, stated explicitly
+
+  - id: test-engineering
+    name: Automated tests
+    agent: gstack-test-engineer
+    blocking: false
+    depends_on: [implementation]
+    actions:
+      - Write node + assert cases in backend/test/ for the new pure functions
+      - Wire every new test file into the && chain in backend/package.json — without this it never runs
+      - Cover every deterministically-testable acceptance criterion; hand the rest to QA by name
+      - Include at least one negative case per new subject
+      - Tolerance and mapping logic — test just inside AND just outside the band
+      - Run `cd backend && npm test` and confirm the new file appears in the output
+    constraints:
+      - No test framework or assertion library — plain node + assert only
+      - No network, no credentials, no MongoDB required; must pass on a clean clone with no .env
+      - Never edit production code — findings go back to the engineer
+    outputs:
+      - Test files added, the package.json chain diff, real pasted npm test output
+      - Coverage gaps handed explicitly to gstack-qa-engineer
+
+  - id: code-review-1
+    name: Code review (pass 1)
+    agent: gstack-code-reviewer
+    type: verdict_gate
+    blocking: false
+    depends_on: [test-engineering]
+    verdicts: [APPROVED, APPROVED WITH COMMENTS, CHANGES REQUESTED]
+    on_changes_requested: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    focus:
+      - Combination isolation — no cross-combination edits; shared-contract changes justified
+      - Repo conventions (module system, env.js, logger, retry.js, BaseAgent lifecycle, 202-and-poll)
+      - Maintainability, duplication, naming, backward compatibility of persisted shapes
+      - Tests exist for new pure functions and are wired into the npm test chain
+      - Verification actually ran, with real output
+
+  - id: qa
+    name: QA — functional validation
+    agent: gstack-qa-engineer
+    type: verdict_gate
+    blocking: false
+    depends_on: [code-review-1]
+    verdicts: [PASS, PASS WITH ISSUES, FAIL]
+    on_fail: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    passes:
+      - Happy path through the real surface (HTTP endpoint or UI), not an internal function call
+      - Input validation — missing / empty / null / wrong type / bad enum / malformed email → 400 with { error }
+      - Error paths — CloudFuze login failure, Graph 401/403/429, Gmail quota, stuck job, Mongo down
+      - Edge cases — empty mailbox, single message, duplicate subjects, unicode/emoji, long subjects,
+        attachment size boundaries, nested labels/folders, broken thread chain, same source and destination,
+        one-pair and many-pair mappedPairs
+    domain_checks:
+      - All four mail combinations (google→microsoft, microsoft→google, google→google, microsoft→microsoft)
+      - Tier A / Tier B (SHA-256 attachment hashes) / Tier C deep validation counts are honest
+      - Folder/label mapping both ways, including a deliberately wrong mapping that MUST fail
+      - Tolerance bands in utils/mailTolerance — just inside passes, just outside fails
+      - userEmailMappings To/Cc/Bcc rewriting, distribution lists, internal-domain rewrites
+      - Bulk mappedPairs phase order, shared bulkId combined report, partial-failure behavior
+      - Per-user execution scoping via ownsExecution; 401 on missing/expired token
+      - Cleanup flows target only the intended scope; refusal cases tested as hard as success cases
+      - Cancel / resume state transitions; no orphaned RUNNING executions; no double-seeding
+      - Mongo hydrate on restart, orphaned runs → interrupted, and the data/executions.json fallback
+      - PDF / xlsx / docx report contents match ValidationResult
+      - Playwright paths — missing Chromium degrades to a clear error; browsers always closed
+      - Scheduler registers once when SCHEDULER_ENABLED
+      - Log hygiene — emails masked, no tokens or passwords anywhere
+    rules:
+      - A scenario that could not be run is reported as NOT RUN, with manual steps for a human
+      - Never report a pass on inference
+
+  - id: security-review
+    name: Security review
+    agent: gstack-security-reviewer
+    type: gate
+    blocking: true
+    depends_on: [qa]
+    blocks_on: [Critical, High]
+    on_blocked: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    focus:
+      - Secret exposure — source, tests, docs, logs, responses, staged files, .env.example placeholders
+      - migrationServerPassword never persisted to an execution, data/*.json, a report, or a log
+      - Authentication — requireUser coverage, jwt.verify not decode, expiry enforced, JWT_SECRET absent → 500
+      - Authorization — ownsExecution on every execution read (executions, logs, PDF, stats); IDOR on new :id
+      - Cleanup/delete endpoints derive their target from validated, owned input
+      - Injection — NoSQL operator injection, path traversal on log/data/report paths, CRLF in headers,
+        new eval / new Function / page.evaluate with interpolated input, prompt injection into ai/agentBrain.js
+      - XSS — dangerouslySetInnerHTML, unescaped mailbox content in PDF/docx HTML, unchecked href/src schemes
+      - CSRF/CORS — Bearer-header auth today; flag a shift to cookies, or credentials:true on the open CORS policy
+      - SSRF — user-supplied migrationServerUrl and any new outbound fetch; TLS never disabled
+      - Resource abuse — unbounded mappedPairs, deep-validation caps, payload size limits
+      - File handling — validated names, bounded sizes, writes confined to backend/data or backend/logs
+      - Dependencies and crypto — new deps justified, md5 not used for a security decision, SHA-256 for integrity
+    rules:
+      - Critical or High BLOCKS the commit gate; fix, then re-audit before the workflow advances
+      - Do not downgrade a real finding to keep things moving; do not inflate hardening into a blocker
+      - Infrastructure and CI/CD hardening are out of scope
+
+  - id: code-review-final
+    name: Final code review
+    agent: gstack-code-reviewer
+    type: verdict_gate
+    blocking: false
+    depends_on: [security-review]
+    verdicts: [APPROVED, APPROVED WITH COMMENTS, CHANGES REQUESTED]
+    on_changes_requested: { return_to: implementation, max_retries: 2, on_exhausted: escalate_to_user }
+    focus:
+      - Every pass-1 finding was actually addressed
+      - The QA and security fixes are themselves correct — fixes under pressure are where regressions live
+      - Nothing unrelated was smuggled in with the fixes
+      - Do not re-litigate what pass 1 already accepted unless the fixes changed it
+
+  - id: test-case-authoring
+    name: Seeded QA test cases
+    agent: gstack-test-case-author
+    blocking: false
+    depends_on: [code-review-final]
+    actions:
+      - Add cases to the seeded catalogs so FUTURE runs exercise the new behaviour, not just this one
+      - backend/data/gmail-test-cases.xlsx (sheets Mail, Drafts) / outlook-test-cases.xlsx, or the
+        content/message seeding path for those products
+      - Name the validation check in validation/** that will detect each case
+      - Seed the documented known-limitation cases too — they must classify as such, not be absent
+      - Anything gstack-qa-engineer had to verify by hand is a candidate for permanent automation here
+      - Confirm the loader picked the rows up — the "Loaded N mail case(s)" count must increase
+    constraints:
+      - Read utils/gmailTestCasesExcel.js first — a SANITY run also includes SMOKE rows, and
+        skipinbox=Y without a userlabel is silently dropped
+      - Subjects unique and matching the existing "QA Sanity 12 - …" convention; uniqueness drives pairing
+      - No real customer addresses, tenant ids, or tokens
+      - Never regenerate an xlsx from defaults unless asked — it destroys curated rows
+    outputs:
+      - Catalogs changed, cases added with the criterion each traces to, loader output proving pickup
+      - What remains manual, and why
+
+  - id: documentation
+    name: Documentation
+    agent: gstack-documentation-engineer
+    blocking: false
+    depends_on: [test-case-authoring]
+    updates:
+      - README.md — endpoint table, env vars, project structure, quick start
+      - ARCHITECTURE.md — agents, orchestrator order, HTTP surface, mermaid flow, external systems
+      - CONTRIBUTING.md — new combination or a change to the combination-per-file rules
+      - docs/cloudfuze-apis.md — CloudFuze server, endpoint, client, or credential-source changes
+      - backend/.env.example — every new env var, placeholder values only
+      - CLAUDE.md — stack summary or workflow rule changes, appended without dropping existing content
+      - JSDoc on new exported functions and new context/result fields
+    rules:
+      - Document what shipped, read from the diff — not the design
+      - Never invent a default, path, or status code; read it from the code
+      - No real secrets, tenant ids, or customer emails in docs
+      - Preserve existing content; do not restructure
+      - No deployment section, no release notes
+
+  - id: sre-review
+    name: Reliability and observability review
+    agent: gstack-sre
+    type: advisory
+    blocking: false
+    depends_on: [documentation]
+    focus:
+      - Every external call the change touches — does it have a TIMEOUT? This is the highest-yield check
+        in this repo; an unbounded calendar call once stalled a bulk run for 106 minutes
+      - Promise.all barriers over users/pairs — one hung item freezing every later phase
+      - Terminal-state writes on EVERY exit path — throw, reject, timeout, cancel, process death.
+        A missing one leaves an execution RUNNING forever and the UI frozen
+      - Progress logging in long loops — silence is indistinguishable from a hang
+      - Bounded retries via utils/retry.js; a 429 must not become a self-inflicted outage
+      - Log hygiene — emails masked, no tokens; logger.info(message, meta) with message FIRST
+        (reversed args make the object the message and silently drop the text)
+      - Degradation when getDb() returns null, and when Gmail / Graph / CloudFuze are down
+      - Upstream faults surfaced as upstream — a Java stack trace or AADSTS error is not a local bug
+    rules:
+      - Advisory only — this does NOT block the commit gate; say so plainly when a finding is severe
+        enough that it would block if it could
+      - Separate this change's risk from pre-existing debt; never conflate them
+      - Never touch deployment, CI/CD, or infrastructure — not even as a suggestion
+    outputs:
+      - Verdict — SOUND / SOUND WITH RISKS / WOULD BLOCK IF BLOCKING
+      - Findings with file:line and a concrete failure scenario
+      - A one-paragraph runbook note — if this breaks at 3am, what to check first
+
+  - id: commit-decision-gate
+    name: Commit Decision Gate
+    type: gate
+    blocking: true
+    final: true
+    depends_on: [sre-review]
+    approver: user
+    rules:
+      - NEVER auto-commit. NEVER auto-push. No exceptions, no "obviously fine" cases
+      - This is always the LAST step of the workflow
+      - Cannot be reached while security-review is BLOCKED or a verdict gate is CHANGES REQUESTED
+      - Never assume a branch — ask, every time
+      - Current branch is dev and main is the usual PR target; that is context, not a default choice
+      - Deployment is OUT OF SCOPE — after the push, whatever automation already exists outside this
+        workflow handles it. Do not deploy, do not offer to deploy, do not touch CI/CD config
+    sequence:
+      - step: summarize
+        show:
+          - Files changed (git diff --stat)
+          - What shipped, in one paragraph
+          - Verdicts — code review pass 1, QA, security, final code review
+          - Lint and test results, as actually observed
+          - Docs updated
+          - Anything left undone or deferred
+      - step: ask_commit
+        prompt: "Commit and push these changes?"
+        options: [yes, no]
+        on_no: stop_and_leave_working_tree_untouched
+      - step: ask_branch
+        condition: user answered yes
+        prompt: "Which branch?"
+        options:
+          - current branch (dev)
+          - an existing branch (which one?)
+          - a new branch (what name?)
+        rules:
+          - Wait for the answer; never pick for the user
+          - If a new branch is chosen, create it before committing
+      - step: commit_and_push
+        actions:
+          - Stage only the files belonging to this change — never `git add -A` over unrelated edits
+          - Verify no .env, backend/config/*.json, oauth-tokens.json, or data/*.json is staged
+          - "Commit message follows this repo’s existing style — feat(scope): … / fix(scope): …"
+          - Push to the branch the user named
+          - Report the commit SHA and the branch, and state that deployment is out of scope

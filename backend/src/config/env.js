@@ -509,6 +509,38 @@ module.exports = {
   })(),
 
   /**
+   * CloudFuze content-job flags. These are read by migrationClient when it builds the
+   * newmultiuser update call. They MUST be declared here: this module is an explicit whitelist and
+   * never spreads process.env, so a var that is only referenced as env.FOO — without a line in this
+   * object — is permanently `undefined`. That is not hypothetical: CONTENT_TEAM_FOLDERS_MIGRATE and
+   * CONTENT_PICK_INSIDE_FOLDER were both introduced as opt-in flags guarded by
+   * `env.X === 'true'` while missing from here, which made the opt-in unreachable and pinned both
+   * flags to false on every run for as long as they existed.
+   *
+   * CONTENT_TEAM_FOLDERS_MIGRATE — "Team Folders" is Google's old name for Shared Drives. With it
+   *   false against a GOOGLE_SHARED_DRIVES cloud, the scan finds the root folder but not its
+   *   contents (one item scanned, an empty folder at the destination).
+   * CONTENT_PICK_INSIDE_FOLDER — whether CloudFuze descends into the named folder rather than
+   *   treating the pair as one opaque object.
+   * CONTENT_MIGRATE_FOLDER_NAME — wrapper folder created at the destination; blank matches the
+   *   wizard, which sends an empty value.
+   * CONTENT_CSV_VALIDATION_* — how long to wait for path-CSV validation before giving up.
+   */
+  CONTENT_TEAM_FOLDERS_MIGRATE: (process.env.CONTENT_TEAM_FOLDERS_MIGRATE || '').trim().toLowerCase(),
+  CONTENT_PICK_INSIDE_FOLDER: (process.env.CONTENT_PICK_INSIDE_FOLDER || '').trim().toLowerCase(),
+  CONTENT_MIGRATE_FOLDER_NAME: (process.env.CONTENT_MIGRATE_FOLDER_NAME || '').trim(),
+  /** Optional override for the job's 'migrate files up to' cutoff, 'YYYY-MM-DD HH:mm:ss'. */
+  CONTENT_MIGRATION_TO_DATE: (process.env.CONTENT_MIGRATION_TO_DATE || '').trim(),
+  CONTENT_CSV_VALIDATION_POLL_MS: (() => {
+    const n = parseInt(process.env.CONTENT_CSV_VALIDATION_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 5000;
+  })(),
+  CONTENT_CSV_VALIDATION_MAX_POLLS: (() => {
+    const n = parseInt(process.env.CONTENT_CSV_VALIDATION_MAX_POLLS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 60;
+  })(),
+
+  /**
    * Destination SharePoint target. These were hardcoded in the Box→SharePoint validator; the defaults
    * keep that behaviour so nothing changes for existing runs, while combinations beyond the first are
    * not pinned to one tenant.
