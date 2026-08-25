@@ -141,8 +141,15 @@ async function getDefaultDrive(siteId, email) {
  * folderPath: '/' for library root, '/Agent Box Data' for a subfolder.
  * Returns array of DriveItem objects.
  */
-async function listFolderChildren(siteId, folderPath, email) {
-  const url = driveItemUrl(siteId, folderPath, '/children');
+/**
+ * @param {object} [opts]
+ * @param {string} [opts.select]  Graph $select list. Graph omits some facets unless asked for —
+ *   `publication` (check-out state) is one of them — but naming any field drops every default
+ *   field not listed, so a caller passing this must list everything it needs.
+ */
+async function listFolderChildren(siteId, folderPath, email, opts = {}) {
+  const suffix = opts.select ? `/children?$select=${encodeURIComponent(opts.select)}` : '/children';
+  const url = driveItemUrl(siteId, folderPath, suffix);
   logger.info(`[SharePoint] listFolderChildren: GET ${url}`);
   const data = await graphGet(url, email);
   return Array.isArray(data?.value) ? data.value : [];
@@ -203,13 +210,24 @@ async function countItemsRecursive(siteId, folderPath, email, maxDepth = 3, _dep
 }
 
 /**
+ * Fields buildFolderTree needs. `publication` carries check-out state and is NOT returned by
+ * default, so it must be named — and once anything is named, every other field we read has to be
+ * named too or it comes back undefined.
+ */
+const TREE_FIELDS = [
+  'id', 'name', 'size', 'folder', 'file', 'webUrl', 'parentReference',
+  'createdBy', 'lastModifiedBy', 'createdDateTime', 'lastModifiedDateTime',
+  'fileSystemInfo', 'publication',
+].join(',');
+
+/**
  * Build a flat tree of { name, type, path } for every item under rootPath in the default drive.
  * type = 'file' | 'folder'
  */
 async function buildFolderTree(siteId, rootPath, email, maxDepth = 5, _depth = 0) {
   let items;
   try {
-    items = await listFolderChildren(siteId, rootPath, email);
+    items = await listFolderChildren(siteId, rootPath, email, { select: TREE_FIELDS });
   } catch (err) {
     if (err?.response?.status === 404) return [];
     throw err;
@@ -231,6 +249,14 @@ async function buildFolderTree(siteId, rootPath, email, maxDepth = 5, _depth = 0
       modifiedAt: fs.lastModifiedDateTime || item.lastModifiedDateTime || null,
       createdBy: (item.createdBy?.user?.email || item.createdBy?.user?.displayName || '').toLowerCase() || null,
       modifiedBy: (item.lastModifiedBy?.user?.email || item.lastModifiedBy?.user?.displayName || '').toLowerCase() || null,
+      // A file checked out with no checked-in version is invisible to every other user in
+      // SharePoint. Our reads use an app-only token, which sees it regardless — so without this
+      // flag a run can report every file present while the destination user sees an empty folder.
+      checkedOut: item.publication ? item.publication.level === 'checkout' : false,
+      checkedOutBy: (item.publication
+        && item.publication.checkedOutBy
+        && item.publication.checkedOutBy.user
+        && (item.publication.checkedOutBy.user.email || item.publication.checkedOutBy.user.displayName)) || null,
     });
     if (type === 'folder' && _depth < maxDepth) {
       const children = await buildFolderTree(siteId, itemPath, email, maxDepth, _depth + 1);

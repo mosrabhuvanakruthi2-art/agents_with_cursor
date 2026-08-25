@@ -786,11 +786,32 @@ function findCloudId(clouds, email, cloudNameHint) {
       + 'Add the cloud in CloudFuze, or pin the id with CONTENT_SOURCE_CLOUD_ID / CONTENT_DEST_CLOUD_ID.');
   }
 
-  // 3. cloudName-only fallback — first cloud matching the type hint (no email fields on this server)
-  if (hint && typedClouds.length > 0) {
+  // 3. cloudName-only fallback — ONLY for servers whose cloud records carry no email at all.
+  //
+  // Taking typedClouds[0] whenever the type matched was actively dangerous: it returned a cloud
+  // belonging to a DIFFERENT user and the caller had no way to tell. Observed on 2026-08-25 —
+  // the granger@gajha.com SharePoint registration was removed from the qarelease account, this
+  // fallback silently substituted erik@voohalu.co's SharePoint cloud, and the job was built to
+  // migrate into the wrong tenant. CloudFuze rejected it with "destination user granger@gajha.com
+  // is not provisioned; Please Make this as Licensed user", which sent the investigation after a
+  // licence that was never the problem.
+  //
+  // Guessing a destination is worse than failing: at best it wastes a run, at worst it writes
+  // somebody else's data into somebody else's tenant. So substitute only when no email is
+  // available to match against, and otherwise return null and let the caller fail loudly.
+  const anyEmailKnown = typedClouds.some((c) => cloudEmail(c) !== '');
+  if (hint && typedClouds.length > 0 && !anyEmailKnown) {
     const nameHit = typedClouds[0];
-    logger.info(`CloudFuze findCloudId: matched "${nameHit.cloudName}" via cloudNameHint "${cloudNameHint}" (no email match)`);
+    logger.info(`CloudFuze findCloudId: matched "${nameHit.cloudName}" via cloudNameHint `
+      + `"${cloudNameHint}" — this server exposes no email on its cloud records, so the type is `
+      + 'the only thing available to match on.');
     return { id: extractId(nameHit), cloudName: nameHit.cloudName, memberId: nameHit.memberId };
+  }
+  if (hint && typedClouds.length > 0) {
+    logger.error(`CloudFuze findCloudId: refusing to guess a "${cloudNameHint}" cloud for ${norm}. `
+      + `${typedClouds.length} cloud(s) of that type are registered but none belong to that account. `
+      + 'Register the cloud in CloudFuze (Manage Clouds), or pin the id with '
+      + 'CONTENT_SOURCE_CLOUD_ID / CONTENT_DEST_CLOUD_ID.');
   }
 
   return null;

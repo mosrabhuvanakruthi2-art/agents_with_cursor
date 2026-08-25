@@ -77,7 +77,14 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
     }
 
     const emailMap = core.buildEmailMap(context);
-    const mapEmail = (e) => emailMap[String(e || '').toLowerCase()] || String(e || '').toLowerCase();
+    // With { detail: true } the caller learns whether a mapping actually existed, instead of
+    // silently receiving the input back and comparing it against a tenant it cannot belong to.
+    const mapEmail = (e, opts) => {
+      const key = String(e || '').toLowerCase();
+      const hit = emailMap[key];
+      if (opts && opts.detail) return { email: hit || key, mapped: Boolean(hit) };
+      return hit || key;
+    };
     const units = core.resolveUnits(context);
     logger.info(`[GoogledriveToSharepoint validation] validating ${units.length} user unit(s)`);
 
@@ -343,6 +350,29 @@ async function validateUnit(unit, deps) {
       `${reserved.slice(0, 8).map((i) => i.name).join(', ')} — SharePoint reserves these; confirm CloudFuze's rewrite manually`);
   }
 
+  // ── Destination files still checked out are invisible to the destination user ──────────
+  // Found the hard way: a run delivered 41 files, our app-only reads listed all 41, and the
+  // destination user saw an empty folder in SharePoint because every file was checked out to the
+  // uploading app and never checked in. Presence is not the same as availability, so check both.
+  {
+    const destFiles = destTree.filter((d) => d.type === 'file');
+    const stuck = destFiles.filter((d) => d.checkedOut);
+    if (destFiles.length === 0) {
+      push('INFO', '1b. Destination files available to the user', 'No destination files to assess');
+    } else if (stuck.length === 0) {
+      push('PASS', '1b. Destination files available to the user',
+        `all ${destFiles.length} file(s) are checked in and visible`);
+    } else {
+      const who = [...new Set(stuck.map((d) => d.checkedOutBy).filter(Boolean))];
+      push('FAIL', `1b. Destination files available to the user — ${stuck.length} invisible`,
+        `${stuck.length} of ${destFiles.length} destination file(s) are checked out and therefore `
+        + 'invisible to the destination user in SharePoint, even though the bytes are present. '
+        + `Checked out by: ${who.join(', ') || 'unknown'}. `
+        + 'Fix at the destination: Library settings → Versioning settings → '
+        + '"Require documents to be checked out" = No, then check the existing files in.');
+    }
+  }
+
   // ── Feature 12.1: conversion produced the right extension
   const convertibles = sourceTree.filter((i) => i.type === 'file' && core.isConverted(i));
   if (convertibles.length === 0) {
@@ -445,6 +475,7 @@ async function validateUnit(unit, deps) {
     let permSkipped = 0;
     let permReadFailed = 0;
     const notComparable = [];
+    const unmappedPrincipals = [];
     const permMismatches = [];
     const escalations = [];
     const linkMismatches = [];
@@ -503,6 +534,9 @@ async function validateUnit(unit, deps) {
         for (const n of res.notComparable) {
           notComparable.push(`${target.source.path} — ${n.user}: "${n.sourceRole}" — ${n.reason}`);
         }
+        for (const u of (res.unmappedPrincipals || [])) {
+          unmappedPrincipals.push(`${u.user} (${u.principalType}, "${u.sourceRole}")`);
+        }
         for (const e of res.escalations) {
           escalations.push(`${target.source.path} — ${e.user}: Drive "${e.sourceRole}" (expect ${e.expected}) `
             + `→ SharePoint ${e.destRoles.join('/')}`);
@@ -529,6 +563,18 @@ async function validateUnit(unit, deps) {
 
     found.permissionMismatches = permMismatches;
     found.notComparable = notComparable;
+    found.unmappedPrincipals = unmappedPrincipals;
+
+    // Principals with no destination mapping are a configuration gap, not a migration defect:
+    // CloudFuze has nobody to re-grant their access to. Reported on their own row so the
+    // permission verdict below is about grants that actually should have migrated.
+    if (unmappedPrincipals.length > 0) {
+      const distinct = [...new Set(unmappedPrincipals)];
+      push('INFO', `8b. Permissions not migratable — ${distinct.length} unmapped principal(s)`,
+        `${distinct.slice(0, 12).join(' | ')}`
+        + (distinct.length > 12 ? ` | +${distinct.length - 12} more` : '')
+        + '. Map these under Map Users to bring their permissions into scope.');
+    }
     found.sharedLinkMismatches = linkMismatches;
 
     if (permChecked === 0) {
@@ -548,14 +594,56 @@ async function validateUnit(unit, deps) {
     }
 
     if (env.CONTENT_DEEP_VALIDATE_LINKS) {
+      // A destination that refuses anonymous sharing cannot receive an "anyone with the link"
+      // grant, and the combination document is explicit that this is expected rather than a
+      // defect: "If external sharing is restricted or disabled in SharePoint, those permissions
+      // may not be applied in the destination" (Shared Drive to SharePoint, #13 External Shares).
+      //
+      // Split the two cases so a blocked tenant policy is not reported as a migration failure
+      // while genuine organization-scope losses still are.
+      //
+      // The policy is DECLARED, not inferred. An earlier version concluded "the site blocks
+      // anonymous sharing" whenever no anonymous link matched — but one genuinely failed link
+      // produces that same shape, so a real defect would have been reported as expected
+      // behaviour. Verify the destination (Graph createLink with scope=anonymous returns
+      // "notAllowed: sharing has been disabled on this site" when blocked) and set
+      // CONTENT_DEST_ANONYMOUS_SHARING=blocked. Unset, these stay failures.
+      // Only "nothing arrived at all" is consistent with the site refusing anonymous sharing. A link
+      // that arrived NARROWED to organization scope is data loss: the destination demonstrably can
+      // hold a link, it just holds a weaker one. The first version of this check matched on the word
+      // "anonymous" alone and so excused those downgrades — contentCombinationSuite.test.js caught
+      // it via its 'a public link narrowed to the organization fails the run' negative case.
+      const anonBlockedShape = (m) => /expect anonymous/i.test(m)
+        && /→ no link on destination/i.test(m);
+      const anonMismatches = linkMismatches.filter(anonBlockedShape);
+      const anonymousBlocked = anonMismatches.length > 0
+        && String(env.CONTENT_DEST_ANONYMOUS_SHARING || '').toLowerCase() === 'blocked';
+      // Only excused when the policy is declared. Otherwise a missing anonymous link is a failure
+      // like any other — excusing it unconditionally would have hidden real defects.
+      const otherMismatches = anonymousBlocked
+        ? linkMismatches.filter((m) => !anonBlockedShape(m))
+        : linkMismatches;
+
+      if (anonymousBlocked) {
+        push('INFO', `9b. Anonymous links not applicable — ${anonMismatches.length} item(s)`,
+          `The destination site does not permit anonymous ("anyone with the link") sharing, so `
+          + 'these links cannot be recreated. Per the combination document (#13 External Shares): '
+          + '"If external sharing is restricted or disabled in SharePoint, those permissions may '
+          + 'not be applied in the destination." Organization-scope links are still validated below.');
+      }
+
       if (linkChecked === 0) {
         push('WARN', '9. Shared links (features 5.2–5.15)', 'No shared links on the source to verify');
-      } else if (linkMismatches.length === 0) {
+      } else if (otherMismatches.length === 0) {
         push('PASS', '9. Shared links (features 5.2–5.15)',
-          `${linkChecked} item(s) with links verified — scope and access level both preserved`);
+          `${linkChecked} item(s) with links verified — scope and access level both preserved`
+          + (anonymousBlocked ? ` (${anonMismatches.length} anonymous link(s) not applicable — see 9b)` : ''));
       } else {
-        push('FAIL', `9. Shared links (features 5.2–5.15) — ${linkMismatches.length} mismatch`,
-          linkMismatches.slice(0, 20).join(' | '));
+        push('FAIL', `9. Shared links (features 5.2–5.15) — ${otherMismatches.length} mismatch`,
+          // List the SAME set the count is about. Reporting the full list under a filtered
+          // count put two contradicting numbers in one row: "7 mismatch" above eighty anonymous
+          // lines that had just been excused.
+          otherMismatches.slice(0, 20).join(' | '));
       }
     }
 

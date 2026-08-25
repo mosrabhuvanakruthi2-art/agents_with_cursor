@@ -183,7 +183,12 @@ class DriveTestDataAgent extends BaseAgent {
   }
 
   async execute(context) {
-    const { sourceEmail, editorEmail, viewerEmail, sourceFolderName = 'Agent My Drive' } = context;
+    const { sourceEmail, sourceFolderName = 'Agent My Drive' } = context;
+    // The main QA flow never sets these — only the standalone seeding endpoint does — so the
+    // permission matrix skipped silently on every real run. Fall back to configuration, the same
+    // way groupEmail and externalEmail already do.
+    const editorEmail = context.editorEmail || env.GOOGLE_TEST_EDITOR_EMAIL || '';
+    const viewerEmail = context.viewerEmail || env.GOOGLE_TEST_VIEWER_EMAIL || '';
     if (!sourceEmail) throw new Error('sourceEmail is required for DriveTestDataAgent');
 
     logger.info(`[DriveTestDataAgent] Starting — user: ${sourceEmail}, target folder: ${sourceFolderName}`);
@@ -234,6 +239,9 @@ class DriveTestDataAgent extends BaseAgent {
     await this._createPermissionMatrix(rootFolder.id, sourceEmail, editorEmail, viewerEmail, sharedDrive, {
       // The manual QA suite's dominant dimensions: group grants (most of its cases) and external users.
       groupEmail: context.groupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '',
+      // GOOGLE_TEST_GROUP_EMAIL may be a comma-separated list; each role then gets its own group.
+      groupEmails: String(context.groupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '')
+        .split(',').map((x) => x.trim()).filter(Boolean),
       externalEmail: context.externalEmail || env.GOOGLE_TEST_EXTERNAL_EMAIL || '',
     });
     await this._createLinkMatrix(rootFolder.id, sourceEmail, sharedDrive);
@@ -483,7 +491,14 @@ class DriveTestDataAgent extends BaseAgent {
     // seeded when configured; a missing one is logged so the checklist can honestly say "not
     // exercised" instead of implying the dimension passed.
     const { groupEmail, externalEmail } = principals || {};
-    if (!groupEmail) logger.info('[DriveTestDataAgent]   No group email configured — group permissions not seeded');
+    const groupEmails = (principals && principals.groupEmails && principals.groupEmails.length)
+      ? principals.groupEmails
+      : (groupEmail ? [groupEmail] : []);
+    if (groupEmails.length === 0) {
+      logger.info('[DriveTestDataAgent]   No group email configured — group permissions not seeded');
+    } else {
+      logger.info(`[DriveTestDataAgent]   ${groupEmails.length} group(s) configured for permission grants`);
+    }
     if (!externalEmail) logger.info('[DriveTestDataAgent]   No external email configured — external shares not seeded');
 
     for (const [roleIndex, role] of roles.entries()) {
@@ -492,16 +507,50 @@ class DriveTestDataAgent extends BaseAgent {
       // A folder at this role
       try {
         const folder = await driveClient.createFolder(`folder_${role}`, container.id, ownerEmail);
-        await driveClient.shareFile(folder.id, grantee, role, ownerEmail);
-        seeded.push({ itemType: 'folder', role, grantee, principal: 'user', id: folder.id });
-        logger.info(`[DriveTestDataAgent]   folder_${role} shared with ${grantee} as ${role}`);
+
+        // Google refuses some roles for some accounts — "Cannot set the requested role for that
+        // user as they lack the necessary license". Two things used to go wrong when it did:
+        //
+        //   1. The rotation put `commenter` and `fileOrganizer` on an unlicensed account, so
+        //      features 4.3 and 4.5 were never seeded and reported NA rather than pass or fail.
+        //   2. The throw escaped to the outer try, which skipped the GROUP and EXTERNAL grants for
+        //      that role as well — one licence limit silently cost three test cases.
+        //
+        // So try the assigned grantee, fall back to any other configured account that can hold the
+        // role, and keep the failure local either way.
+        const candidates = [grantee, ...grantees.filter((g) => g !== grantee)];
+        let userGrantee = null;
+        let lastErr = null;
+        for (const who of candidates) {
+          try {
+            await driveClient.shareFile(folder.id, who, role, ownerEmail);
+            userGrantee = who;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (!/lack the necessary license/i.test(err.message || '')) break;
+          }
+        }
+        if (userGrantee) {
+          seeded.push({ itemType: 'folder', role, grantee: userGrantee, principal: 'user', id: folder.id });
+          logger.info(`[DriveTestDataAgent]   folder_${role} shared with ${userGrantee} as ${role}`
+            + (userGrantee === grantee ? '' : ` (fell back from ${grantee} — licence)`));
+        } else {
+          logger.warn(`[DriveTestDataAgent]   folder_${role} user share failed for every configured `
+            + `account: ${lastErr ? lastErr.message : 'unknown'}`);
+          this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_user`,
+            error: lastErr ? lastErr.message : 'no grantee could hold this role' });
+        }
 
         // Same role, granted to a group — the dimension most of the QA suite exercises.
-        if (groupEmail) {
+        const roleGroup = groupEmails.length > 0
+          ? groupEmails[roleIndex % groupEmails.length]
+          : null;
+        if (roleGroup) {
           try {
-            await driveClient.shareFile(folder.id, groupEmail, role, ownerEmail);
-            seeded.push({ itemType: 'folder', role, grantee: groupEmail, principal: 'group', id: folder.id });
-            logger.info(`[DriveTestDataAgent]   folder_${role} shared with group ${groupEmail} as ${role}`);
+            await driveClient.shareFile(folder.id, roleGroup, role, ownerEmail);
+            seeded.push({ itemType: 'folder', role, grantee: roleGroup, principal: 'group', id: folder.id });
+            logger.info(`[DriveTestDataAgent]   folder_${role} shared with group ${roleGroup} as ${role}`);
           } catch (err) {
             logger.warn(`[DriveTestDataAgent]   folder_${role} group share failed: ${err.message}`);
             this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_group`, error: err.message });

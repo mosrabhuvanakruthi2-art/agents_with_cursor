@@ -468,6 +468,10 @@ function compareTrees(sourceItems, destItems, opts = {}) {
     extraByName.get(k).push(e);
   }
 
+  // Declared with the other accumulators: the relocation branch in the misplaced loop below writes
+  // to placeholderLinks, which runs before the point these used to be declared.
+  const placeholderLinks = [];
+  const notMigratable = [];
   const misplaced = [];
   const usedExtra = new Set();
   const stillMissing = [];
@@ -480,7 +484,22 @@ function compareTrees(sourceItems, destItems, opts = {}) {
     if (pool.length > 0) {
       const moved = pool[0];
       usedExtra.add(moved);
-      misplaced.push({ name: s.name, type: s.type, source: s.path, dest: moved.path });
+      // An item whose destination path would exceed the SharePoint limit cannot live where the
+      // source put it, so the destination relocates it and leaves a placeholder link behind. That
+      // is documented behaviour (in-scope feature 11.1), not a migration defect — reporting it as
+      // "misplaced" made a deliberately over-length test path look like three separate failures
+      // plus two unexplained extras.
+      if (expectPlaceholderLink(s.path, { prefix: destPrefix, limit: pathLimit, segmentLimit })) {
+        placeholderLinks.push({
+          path: s.path,
+          type: s.type,
+          encodedLength: encodedPathLength(joinPath(destPrefix, s.path)),
+          relocatedTo: moved.path,
+          reason: 'over the SharePoint path limit — relocated by the destination, which is expected',
+        });
+      } else {
+        misplaced.push({ name: s.name, type: s.type, source: s.path, dest: moved.path });
+      }
     } else {
       stillMissing.push(s);
     }
@@ -488,8 +507,6 @@ function compareTrees(sourceItems, destItems, opts = {}) {
 
   // Absent AND over the path limit = the documented placeholder-link outcome, not a defect.
   // Absent AND a Google-only type = expected, since there is nothing to convert it into.
-  const placeholderLinks = [];
-  const notMigratable = [];
   const missing = [];
   for (const s of stillMissing) {
     if (isUnmigratableNative(s.mimeType)) {
@@ -511,6 +528,23 @@ function compareTrees(sourceItems, destItems, opts = {}) {
     }
   }
 
+  // Destination-side artifacts of the over-limit relocation: the ".url" placeholder the destination
+  // writes in place of the file it could not store, and any ancestor folder it created to hold the
+  // relocated copy. Both have no source counterpart by definition, so counting them as "extra"
+  // reported the platform behaving as documented as though it were a defect.
+  const relocationRoots = placeholderLinks
+    .map((pl) => pl.relocatedTo)
+    .filter(Boolean)
+    .map((x) => String(x).split('/').filter(Boolean)[0])
+    .filter(Boolean);
+  const isPlaceholderArtifact = (e) => {
+    if (/^FolderPathLink\d*\.url$/i.test(String(e.name || ''))) return true;
+    const first = String(e.path || '').split('/').filter(Boolean)[0];
+    return Boolean(first) && relocationRoots.includes(first);
+  };
+  const placeholderArtifacts = extra.filter((e) => !usedExtra.has(e) && isPlaceholderArtifact(e));
+  placeholderArtifacts.forEach((e) => usedExtra.add(e));
+
   const remainingExtra = extra.filter((e) => !usedExtra.has(e));
   const status = missing.length === 0 && remainingExtra.length === 0 && misplaced.length === 0
     ? 'PASS'
@@ -523,6 +557,7 @@ function compareTrees(sourceItems, destItems, opts = {}) {
     totalDest: dest.length,
     missing,
     extra: remainingExtra,
+    placeholderArtifacts,
     misplaced,
     placeholderLinks,
     notMigratable,
@@ -647,6 +682,7 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
   const escalations = [];
   const viaGroup = [];
   const notComparable = [];
+  const unmappedPrincipals = [];
   let checked = 0;
 
   // Group grants on the destination, for the membership fallback below.
@@ -671,8 +707,27 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
       continue;
     }
 
+    // A source principal with no destination mapping cannot be re-granted: CloudFuze has nobody
+    // to give the permission to. Counting that as a permission mismatch blamed the migration for
+    // a configuration gap — every grant to an unmapped principal failed, which is how one
+    // unmapped group produced 80 identical "SharePoint no access" rows and buried the grants that
+    // genuinely did not migrate.
+    const mapping = mapEmail ? mapEmail(sp.email, { detail: true }) : null;
+    const expected = (mapping && typeof mapping === 'object')
+      ? mapping.email
+      : (mapping || String(sp.email).toLowerCase());
+    const isMapped = (mapping && typeof mapping === 'object') ? Boolean(mapping.mapped) : true;
+    if (!isMapped) {
+      unmappedPrincipals.push({
+        user: sp.email,
+        principalType,
+        sourceRole: sp.role,
+        reason: 'no destination user is mapped for this principal, so the permission cannot be '
+          + 'migrated — map it under Map Users to bring it into scope',
+      });
+      continue;
+    }
     checked++;
-    const expected = mapEmail ? mapEmail(sp.email) : String(sp.email).toLowerCase();
     const destRoles = dest
       .filter((d) => String(d.email || '').toLowerCase() === expected)
       .flatMap((d) => d.roles || []);
@@ -709,7 +764,7 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
     if (cmp.overGranted) escalations.push({ ...row, note: 'destination grants more access than the source' });
   }
 
-  return { checked, matches, mismatches, escalations, viaGroup, notComparable };
+  return { checked, matches, mismatches, escalations, viaGroup, notComparable, unmappedPrincipals };
 }
 
 /**

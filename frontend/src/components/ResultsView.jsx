@@ -81,6 +81,9 @@ export default function ResultsView({ exec }) {
       {/* Run info — stays visible after validation completes; shows all pairs for bulk runs */}
       <RunInfoCard exec={exec} ctx={ctx} />
       {/* Overall status */}
+      {/* Content runs have no labels/folders pair, so they get their own comparison. */}
+      {validation?.perUser?.length > 0 && <ContentComparison perUser={validation.perUser} />}
+
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center gap-4 mb-2">
           <h2 className="text-lg font-semibold text-gray-900">Overall Status</h2>
@@ -1300,6 +1303,185 @@ function Mini({ label, value }) {
   return <div className="bg-gray-50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">{label}</p><div className="text-gray-800">{value}</div></div>;
 }
 
+/**
+ * Source vs Destination for CONTENT runs — the mail equivalent of ComparisonTable.
+ *
+ * Mail shows a side-by-side count per folder ("INBOX -> Inbox  5  5  Match") and content showed
+ * nothing, so there was no at-a-glance answer to "did the data arrive?". Content has no labels, so
+ * the rows are the top-level folders of the migrated tree, counting how many of each folder's items
+ * were found at the destination. Derived from perUser[].items, which carries { path, name, type,
+ * found } for every item the validator walked.
+ */
+function ContentComparison({ perUser }) {
+  const units = Array.isArray(perUser) ? perUser : [];
+  if (units.length === 0) return null;
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold text-gray-900">Source vs Destination Comparison</h2>
+      {units.map((u, ui) => {
+        const items = Array.isArray(u.items) ? u.items : [];
+        const fs2 = u.folderStructure || {};
+
+        // Group by the first path segment. Depth-0 items (the migrated root itself) sit in "(root)".
+        const groups = new Map();
+        for (const it of items) {
+          const segs = String(it.path || '').split('/').filter(Boolean);
+          const key = segs.length === 0 ? '(root level)' : segs[0];
+          if (!groups.has(key)) groups.set(key, { total: 0, found: 0 });
+          const g = groups.get(key);
+          g.total += 1;
+          if (it.found) g.found += 1;
+        }
+        const rows = [...groups.entries()]
+          .map(([label, g]) => ({ label, srcCount: g.total, destCount: g.found, match: g.found === g.total }))
+          .sort((a, b) => (a.match === b.match ? b.srcCount - a.srcCount : a.match ? 1 : -1));
+
+        const totalItems = items.length;
+        const foundItems = items.filter((i) => i.found).length;
+        const structureOk = Array.isArray(fs2.missing) ? fs2.missing.length === 0 : null;
+
+        // A Match/Mismatch column alone does not say WHAT differs, which is the first thing a
+        // reviewer asks. Split the difference into its four kinds. Three are problems; the fourth is
+        // the destination legitimately renaming things, shown as proof the rename rules worked
+        // rather than hidden.
+        const notFound = items.filter((i) => !i.found);
+        const extraItems = Array.isArray(fs2.extra) ? fs2.extra : [];
+        const misplacedItems = Array.isArray(fs2.misplaced) ? fs2.misplaced : [];
+        const renamed = items.filter((i) => i.found && i.destName && i.destName !== i.name);
+        const issueCount = notFound.length + extraItems.length + misplacedItems.length;
+        const elide = (v, keepStart, keepEnd) => {
+          const x = String(v == null ? "" : v);
+          return x.length > keepStart + keepEnd + 10 ? x.slice(0, keepStart) + " … " + x.slice(-keepEnd) : x;
+        };
+
+        return (
+          <div key={ui} className="space-y-4">
+            {units.length > 1 && (
+              <p className="text-sm font-medium text-gray-700">{u.sourceEmail} → {u.destinationEmail}</p>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <MatchCard label="All items reached destination" ok={foundItems === totalItems} />
+              <MatchCard label="Nothing missing" ok={structureOk !== false} />
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <ResultCard label="Source Items" value={totalItems} />
+              <ResultCard label="Found at Destination" value={foundItems} />
+              <ResultCard label="Missing" value={Array.isArray(fs2.missing) ? fs2.missing.length : 0} />
+              <ResultCard label="Folders Compared" value={rows.length} />
+            </div>
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-100">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Folders ({rows.length}) — items found at the destination
+                </h3>
+              </div>
+              <table className="w-full text-sm">
+                <thead><tr className="bg-gray-50">
+                  <th className="px-5 py-2.5 text-left text-xs font-medium text-gray-500 uppercase">Folder</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Source</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Destination</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-medium text-gray-500 uppercase">Status</th>
+                </tr></thead>
+                <tbody className="divide-y divide-gray-100">
+                  {rows.map((r, idx) => (
+                    <tr key={idx} className={r.match ? 'bg-green-50/50' : 'bg-red-50/50'}>
+                      <td className="px-5 py-2.5 font-medium text-gray-900 break-all">
+                        {r.label.length > 70 ? `${r.label.slice(0, 40)} … ${r.label.slice(-12)}` : r.label}
+                      </td>
+                      <td className="px-5 py-2.5 text-right text-gray-700">{r.srcCount}</td>
+                      <td className="px-5 py-2.5 text-right text-gray-700">{r.destCount}</td>
+                      <td className="px-5 py-2.5 text-right">
+                        <span className={`text-xs font-semibold ${r.match ? 'text-green-600' : 'text-red-600'}`}>
+                          {r.match ? 'Match' : 'Mismatch'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {(issueCount > 0 || renamed.length > 0) && (
+              <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Differences — {issueCount} issue{issueCount === 1 ? "" : "s"}
+                  {renamed.length > 0 ? ", " + renamed.length + " expected rename" + (renamed.length === 1 ? "" : "s") : ""}
+                </h3>
+
+                {notFound.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-red-700 uppercase tracking-wider mb-1.5">
+                      Not found at destination ({notFound.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {notFound.slice(0, 10).map((i, k) => (
+                        <li key={k} className="text-sm text-gray-700 bg-red-50 rounded px-2 py-1 break-all">
+                          <span className="text-xs text-red-600 font-medium mr-2">{i.type}</span>
+                          {elide(i.path, 60, 40)}
+                        </li>
+                      ))}
+                      {notFound.length > 10 && (
+                        <li className="text-xs text-gray-500">+ {notFound.length - 10} more</li>
+                      )}
+                    </ul>
+                  </div>
+                )}
+
+                {extraItems.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1.5">
+                      Extra at destination, no source counterpart ({extraItems.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {extraItems.slice(0, 10).map((x, k) => (
+                        <li key={k} className="text-sm text-gray-700 bg-amber-50 rounded px-2 py-1 break-all">
+                          {elide(x, 60, 40)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {misplacedItems.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1.5">
+                      Arrived in a different folder ({misplacedItems.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {misplacedItems.slice(0, 10).map((m2, k) => (
+                        <li key={k} className="text-sm text-gray-700 bg-amber-50 rounded px-2 py-1 break-all">
+                          {elide(m2 && m2.name, 40, 12)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {renamed.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-blue-700 uppercase tracking-wider mb-1.5">
+                      Renamed by the destination, expected ({renamed.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {renamed.slice(0, 10).map((i, k) => (
+                        <li key={k} className="text-sm text-gray-700 bg-blue-50 rounded px-2 py-1 break-all">
+                          {elide(i.name, 34, 10)}
+                          <span className="text-gray-400 mx-2">→</span>
+                          {elide(i.destName, 34, 10)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function MatchCard({ label, ok }) {
   return (
     <div className={`rounded-xl border p-4 ${ok ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>

@@ -557,6 +557,27 @@ module.exports = {
    * its Shared Drive → SharePoint cases, and external shares are feature 4.9. Leave blank and those
    * dimensions are reported "not exercised" rather than silently assumed to pass.
    */
+  /**
+   * Principals the permission matrix (in-scope features 4.2-4.8) grants access to. All four were
+   * unset, so _createPermissionMatrix skipped every case and features 4.2-4.8 sat at NA on every
+   * run — the machinery was built and never switched on.
+   *
+   * EDITOR/VIEWER must be users that already appear in the run's user mapping, or CloudFuze has
+   * no destination principal to re-grant to and the check fails for a reason that is not a defect.
+   * Note that some accounts cannot hold the `commenter` role at all — Google rejects it with
+   * "lack the necessary license" — so the editor account should be a licensed one.
+   */
+  /**
+   * Set to 'blocked' when the destination site refuses anonymous ("anyone with the link")
+   * sharing. The combination document is explicit that this is expected rather than a defect:
+   * "If external sharing is restricted or disabled in SharePoint, those permissions may not be
+   * applied in the destination" (#13 External Shares). Verify before setting it — Graph
+   * createLink with scope=anonymous answers "notAllowed: sharing has been disabled on this site".
+   * Left unset, missing anonymous links are reported as failures.
+   */
+  CONTENT_DEST_ANONYMOUS_SHARING: (process.env.CONTENT_DEST_ANONYMOUS_SHARING || '').trim().toLowerCase(),
+  GOOGLE_TEST_EDITOR_EMAIL: (process.env.GOOGLE_TEST_EDITOR_EMAIL || '').trim(),
+  GOOGLE_TEST_VIEWER_EMAIL: (process.env.GOOGLE_TEST_VIEWER_EMAIL || '').trim(),
   GOOGLE_TEST_GROUP_EMAIL: (process.env.GOOGLE_TEST_GROUP_EMAIL || '').trim(),
   GOOGLE_TEST_EXTERNAL_EMAIL: (process.env.GOOGLE_TEST_EXTERNAL_EMAIL || '').trim(),
 
