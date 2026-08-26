@@ -690,6 +690,26 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
     .filter((d) => String(d.principalType || '') === 'group')
     .flatMap((d) => d.roles || []);
 
+  /**
+   * Recognise the same group on both sides. A group is NOT mapped through Map Users: CloudFuze
+   * migrates it AS A GROUP, so the destination tenant holds it under its own address — often with
+   * no email at all, only a display name. Compare on alphanumerics of the local part and of the
+   * display name, which pairs qa-group-view@filefuze.co with the destination group "qa-group-view"
+   * and everyone_at_exinent@filefuze.co with "EveryoneatExinent@gajha.com".
+   */
+  const normKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const groupKeys = (email, name) => {
+    const keys = new Set();
+    const e = String(email || '').toLowerCase();
+    if (e) {
+      keys.add(normKey(e));
+      keys.add(normKey(e.split('@')[0]));
+    }
+    if (name) keys.add(normKey(name));
+    keys.delete('');
+    return keys;
+  };
+
   for (const sp of Array.isArray(sourcePerms) ? sourcePerms : []) {
     if (!sp?.email) continue;
     const principalType = String(sp.type || 'user').toLowerCase() === 'group' ? 'group' : 'user';
@@ -712,6 +732,34 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
     // a configuration gap — every grant to an unmapped principal failed, which is how one
     // unmapped group produced 80 identical "SharePoint no access" rows and buried the grants that
     // genuinely did not migrate.
+    // ── GROUP: matched group-to-group, never through a user mapping ──────────────────────
+    // Mapping a group to a PERSON (as CONTENT_EXTRA_USER_MAPPINGS did) told this comparison to
+    // expect that person to hold the grant. CloudFuze never does that, so every group grant failed
+    // against a user who was never meant to have it. Unmapped, they were excused as "not
+    // migratable" instead — also wrong: they had migrated, correctly, as groups.
+    if (principalType === 'group') {
+      const srcKeys = groupKeys(sp.email, sp.name);
+      const hit = dest.find((d) => d.principalType === 'group'
+        && [...groupKeys(d.email, d.name)].some((k) => srcKeys.has(k)));
+      checked++;
+      const destRoles = hit ? (hit.roles || []) : [];
+      const cmp = roleMap.compareDriveAccess(sp.role, destRoles);
+      const row = {
+        user: sp.email,
+        principalType: 'group',
+        mappedTo: hit ? (hit.email || hit.name) : '(no matching group at the destination)',
+        sourceRole: sp.role,
+        destRoles,
+        expected: cmp.expectedSpLabel,
+        match: cmp.match,
+      };
+      if (cmp.match) matches.push(row); else mismatches.push(row);
+      if (cmp.overGranted) {
+        escalations.push({ ...row, note: 'destination grants more access than the source' });
+      }
+      continue;
+    }
+
     const mapping = mapEmail ? mapEmail(sp.email, { detail: true }) : null;
     const expected = (mapping && typeof mapping === 'object')
       ? mapping.email
@@ -800,6 +848,8 @@ function compareSharedLinks(sourceLinks, destLinks) {
   const results = [];
   const mismatches = [];
 
+  const dest = Array.isArray(destLinks) ? destLinks : [];
+
   for (const link of Array.isArray(sourceLinks) ? sourceLinks : []) {
     const cmp = roleMap.compareSharedLink(link, destLinks);
     const row = {
@@ -810,6 +860,9 @@ function compareSharedLinks(sourceLinks, destLinks) {
       scopeMatch: cmp.scopeMatch,
       typeMatch: cmp.typeMatch,
       match: cmp.match,
+      // True when an anonymous link was expected and the destination holds no anonymous link at
+      // all. Whether that is EXCUSABLE is decided after the loop — it depends on the whole item.
+      anonymousAbsent: cmp.expectedScope === 'anonymous' && !cmp.scopeMatch,
     };
     results.push(row);
     if (!cmp.match) {
@@ -820,6 +873,25 @@ function compareSharedLinks(sourceLinks, destLinks) {
           : `link scope preserved but type is not "${cmp.expectedType}"`,
       });
     }
+  }
+
+  // A missing anonymous link is excusable only when it is CONSISTENT with the destination refusing
+  // anonymous sharing. Two shapes are:
+  //   - the destination holds no link at all, or
+  //   - every link it holds is claimed by a DIFFERENT source link that matched.
+  // Both mean "the anonymous link simply could not be created".
+  //
+  // The shape that is NOT excusable is a public link that arrived NARROWED to organization scope
+  // with no organization source link to explain it: the destination demonstrably can hold a link,
+  // it just holds a weaker one, and that is data loss. contentCombinationSuite covers it.
+  //
+  // This was previously decided by regex over the rendered message, whose "actual" text carried
+  // the item's OTHER links — so an item holding both an anonymous and an organization source link
+  // never matched the pattern, and four excusable rows were reported as defects.
+  const otherSourceLinkMatched = results.some((r) => !r.anonymousAbsent && r.match);
+  const anonymousExcusable = dest.length === 0 || otherSourceLinkMatched;
+  for (const m of mismatches) {
+    m.anonymousExcusable = Boolean(m.anonymousAbsent && anonymousExcusable);
   }
 
   return { checked: results.length, results, mismatches };

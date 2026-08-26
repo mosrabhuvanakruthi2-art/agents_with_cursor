@@ -575,6 +575,17 @@ module.exports = {
    * createLink with scope=anonymous answers "notAllowed: sharing has been disabled on this site".
    * Left unset, missing anonymous links are reported as failures.
    */
+  /**
+   * Extra source->destination principal pairs, appended to every run's user mapping.
+   * Format: "source1:dest1,source2:dest2".
+   *
+   * Exists because the wizard can only map principals it fetched as MAILBOXES. A group, shared
+   * mailbox or distribution list is never in that list, so its permissions could not be mapped —
+   * CloudFuze had no destination principal to re-grant to, and the validator correctly reported
+   * them out of scope ("no GROUP permissions were exercised"). Configuring the pairs here means
+   * every run carries them without depending on someone importing a CSV by hand.
+   */
+  CONTENT_EXTRA_USER_MAPPINGS: (process.env.CONTENT_EXTRA_USER_MAPPINGS || '').trim(),
   CONTENT_DEST_ANONYMOUS_SHARING: (process.env.CONTENT_DEST_ANONYMOUS_SHARING || '').trim().toLowerCase(),
   GOOGLE_TEST_EDITOR_EMAIL: (process.env.GOOGLE_TEST_EDITOR_EMAIL || '').trim(),
   GOOGLE_TEST_VIEWER_EMAIL: (process.env.GOOGLE_TEST_VIEWER_EMAIL || '').trim(),

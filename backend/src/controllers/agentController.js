@@ -8,6 +8,45 @@ const path = require('path');
 
 const logsDir = path.resolve(__dirname, '../../logs');
 
+/**
+ * Append CONTENT_EXTRA_USER_MAPPINGS to the mappings a run was given.
+ *
+ * The wizard can only offer principals it fetched as mailboxes, so groups, shared mailboxes and
+ * distribution lists cannot be mapped through the UI at all. Without a destination principal
+ * CloudFuze has nobody to re-grant their permissions to, and the run reports them as out of scope.
+ * Pairs configured here are added to every run, and never override a pair the caller supplied.
+ */
+function mergeConfiguredMappings(given) {
+  // Required here rather than at module scope, matching how the rest of this file reads config.
+  const env = require('../config/env');
+  const extra = String(env.CONTENT_EXTRA_USER_MAPPINGS || '').trim();
+  if (!extra) return given;
+
+  const seen = new Set(given
+    .map((m) => String((m && m.sourceEmail) || '').toLowerCase())
+    .filter(Boolean));
+  const added = [];
+  for (const piece of extra.split(',')) {
+    const [rawSrc, rawDst] = String(piece).split(':');
+    const sourceEmail = String(rawSrc || '').trim().toLowerCase();
+    const destinationEmail = String(rawDst || '').trim().toLowerCase();
+    if (!sourceEmail || !destinationEmail) {
+      logger.warn(`CONTENT_EXTRA_USER_MAPPINGS: ignoring malformed entry "${piece.trim()}" `
+        + '— expected source:destination');
+      continue;
+    }
+    // A pair supplied by the caller wins: the run screen is the more specific instruction.
+    if (seen.has(sourceEmail)) continue;
+    seen.add(sourceEmail);
+    added.push({ sourceEmail, destinationEmail, fromConfig: true });
+  }
+  if (added.length > 0) {
+    logger.info(`Added ${added.length} configured principal mapping(s) from `
+      + `CONTENT_EXTRA_USER_MAPPINGS: ${added.map((a) => `${a.sourceEmail} -> ${a.destinationEmail}`).join(', ')}`);
+  }
+  return [...given, ...added];
+}
+
 async function runAgents(req, res) {
   try {
     const {
@@ -29,7 +68,9 @@ async function runAgents(req, res) {
       migrationServerEmail,
       migrationServerPassword,
     } = req.body;
-    const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
+    const normalizedUserMappings = mergeConfiguredMappings(
+      Array.isArray(userEmailMappings) ? userEmailMappings : []
+    );
 
     // Bulk migration: multiple mapped pairs — phased execution
     // Phase 0 (parallel): cleanup all accounts

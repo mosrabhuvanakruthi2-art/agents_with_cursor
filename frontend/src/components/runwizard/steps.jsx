@@ -319,8 +319,21 @@ export function StepMap({ wiz }) {
                 if (!file) return;
                 const text = await file.text();
                 e.target.value = '';
-                const { added, skipped } = wiz.importUserMappingsCsv(text);
-                alert(`Mapped ${added} user pair(s) from CSV (not selected — check the pair(s) you want to migrate)${skipped ? ` · ${skipped} row(s) skipped (source already mapped or email not found)` : ''}.`);
+                const { added, skipped, skipReasons, synthetic } = wiz.importUserMappingsCsv(text);
+                // Report the outcome precisely. The previous message lumped every skip under
+                // "email not found", which is what made three silently-dropped group rows look
+                // like nothing had happened at all.
+                const lines = [`Mapped ${added} pair(s) from CSV.`];
+                if (synthetic) {
+                  lines.push(`${synthetic} of them name a principal that is not a fetched mailbox `
+                    + '(group, shared mailbox or distribution list) — kept as typed.');
+                }
+                if (added) lines.push('None are selected yet — tick the pair(s) you want to migrate.');
+                if (skipped) {
+                  lines.push(`${skipped} row(s) skipped:`);
+                  lines.push((skipReasons || []).slice(0, 8).join('\n'));
+                }
+                alert(lines.join('\n\n'));
               }} />
             </label>
             {wiz.mappings.some((m) => m.imported) && (
@@ -331,7 +344,7 @@ export function StepMap({ wiz }) {
               </button>
             )}
           </div>
-          <p className="text-[11px] text-gray-400">CSV columns: <span className="font-mono">Source User, Destination User</span> (emails; a header row is auto-detected). Matched against the fetched source/destination mailboxes.</p>
+          <p className="text-[11px] text-gray-400">CSV columns: <span className="font-mono">Source User, Destination User</span> (emails; a header row is auto-detected). Addresses that are not fetched mailboxes — groups, shared mailboxes, distribution lists — are kept as typed.</p>
 
           {/* Search + bulk select */}
           <div className="flex flex-wrap items-center gap-2">

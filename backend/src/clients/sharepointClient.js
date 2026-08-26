@@ -281,16 +281,20 @@ async function getItemPermissions(siteId, itemPath, email) {
     const permissions = (Array.isArray(data?.value) ? data.value : []).map((p) => {
       const granted = p.grantedToV2 || p.grantedTo || {};
       const idsV2   = Array.isArray(p.grantedToIdentitiesV2) ? p.grantedToIdentitiesV2 : [];
-      const user    = granted.user || granted.siteUser || idsV2[0]?.user || null;
-      // A permission can be granted to a GROUP rather than a person. Migrations that preserve
-      // group access land here, and treating a group grant as "no user access" would fail a
-      // correct migration, so the principal type travels with the row.
+      // GROUP is resolved FIRST, and that order is the whole point. Graph returns a group grant
+      // as { group, siteUser } — a siteUser entry exists for groups as well as for people — so
+      // testing siteUser first classified every migrated group as a USER whose "email" was
+      // SharePoint's claims string (c:0t.c|tenant|<objectId>). Nothing can ever match that, so a
+      // migration that had preserved group access correctly was reported as failing.
       const group   = granted.group || granted.siteGroup || idsV2[0]?.group || null;
-      const principal = user || group;
+      const user    = group ? null : (granted.user || idsV2[0]?.user || granted.siteUser || null);
+      const principal = group || user;
       return {
+        // A group from another tenant often carries no email at all, only a displayName, so the
+        // name travels separately and group matching falls back to it.
         email: (principal?.email || principal?.loginName || '').toLowerCase() || null,
         name: principal?.displayName || null,
-        principalType: user ? 'user' : (group ? 'group' : 'unknown'),
+        principalType: group ? 'group' : (user ? 'user' : 'unknown'),
         roles: Array.isArray(p.roles) ? p.roles.map((r) => String(r).toLowerCase()) : [],
         isLink: Boolean(p.link),
         linkScope: p.link?.scope || null, // 'anonymous' | 'organization' | 'users'

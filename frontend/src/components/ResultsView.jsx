@@ -1328,13 +1328,17 @@ function ContentComparison({ perUser }) {
         for (const it of items) {
           const segs = String(it.path || '').split('/').filter(Boolean);
           const key = segs.length === 0 ? '(root level)' : segs[0];
-          if (!groups.has(key)) groups.set(key, { total: 0, found: 0 });
+          if (!groups.has(key)) groups.set(key, { total: 0, found: 0, placeholder: 0 });
           const g = groups.get(key);
           g.total += 1;
           if (it.found) g.found += 1;
+          // Over SharePoint's 400-character path limit the destination creates a Folder/File Path
+          // Link URL instead (combination document #37). Counting that as a shortfall made a
+          // deliberately over-length test path read as three missing items.
+          else if (it.placeholder) g.placeholder += 1;
         }
         const rows = [...groups.entries()]
-          .map(([label, g]) => ({ label, srcCount: g.total, destCount: g.found, match: g.found === g.total }))
+          .map(([label, g]) => ({ label, srcCount: g.total, destCount: g.found, match: g.found + g.placeholder === g.total }))
           .sort((a, b) => (a.match === b.match ? b.srcCount - a.srcCount : a.match ? 1 : -1));
 
         const totalItems = items.length;
@@ -1345,7 +1349,10 @@ function ContentComparison({ perUser }) {
         // reviewer asks. Split the difference into its four kinds. Three are problems; the fourth is
         // the destination legitimately renaming things, shown as proof the rename rules worked
         // rather than hidden.
-        const notFound = items.filter((i) => !i.found);
+        // A placeholder is documented behaviour, not an absence — the same treatment `renamed`
+        // already gets below: reported as proof the rule worked, never counted as an issue.
+        const placeholders = items.filter((i) => i.placeholder);
+        const notFound = items.filter((i) => !i.found && !i.placeholder);
         const extraItems = Array.isArray(fs2.extra) ? fs2.extra : [];
         const misplacedItems = Array.isArray(fs2.misplaced) ? fs2.misplaced : [];
         const renamed = items.filter((i) => i.found && i.destName && i.destName !== i.name);
@@ -1361,7 +1368,7 @@ function ContentComparison({ perUser }) {
               <p className="text-sm font-medium text-gray-700">{u.sourceEmail} → {u.destinationEmail}</p>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <MatchCard label="All items reached destination" ok={foundItems === totalItems} />
+              <MatchCard label="All items reached destination" ok={notFound.length === 0} />
               <MatchCard label="Nothing missing" ok={structureOk !== false} />
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -1402,11 +1409,12 @@ function ContentComparison({ perUser }) {
               </table>
             </div>
 
-            {(issueCount > 0 || renamed.length > 0) && (
+            {(issueCount > 0 || renamed.length > 0 || placeholders.length > 0) && (
               <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-gray-900">
                   Differences — {issueCount} issue{issueCount === 1 ? "" : "s"}
                   {renamed.length > 0 ? ", " + renamed.length + " expected rename" + (renamed.length === 1 ? "" : "s") : ""}
+                  {placeholders.length > 0 ? ", " + placeholders.length + " expected placeholder" + (placeholders.length === 1 ? "" : "s") : ""}
                 </h3>
 
                 {notFound.length > 0 && (
@@ -1452,6 +1460,22 @@ function ContentComparison({ perUser }) {
                       {misplacedItems.slice(0, 10).map((m2, k) => (
                         <li key={k} className="text-sm text-gray-700 bg-amber-50 rounded px-2 py-1 break-all">
                           {elide(m2 && m2.name, 40, 12)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {placeholders.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1.5">
+                      Over the path limit — placeholder link expected ({placeholders.length})
+                    </p>
+                    <ul className="space-y-1">
+                      {placeholders.slice(0, 10).map((i, k) => (
+                        <li key={k} className="text-sm text-gray-700 bg-amber-50 rounded px-2 py-1 break-all">
+                          {elide(i.name, 34, 10)}
+                          <span className="text-gray-500 ml-2 text-xs">over 400 characters — the destination creates a Folder/File Path Link URL (doc #37)</span>
                         </li>
                       ))}
                     </ul>

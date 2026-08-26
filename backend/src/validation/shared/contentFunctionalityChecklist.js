@@ -99,18 +99,31 @@ function buildCoverageReport(permObs, linkObs) {
   };
 }
 
-/** Verdict for one row of the shared-link matrix (features 5.2–5.15). */
-function evalLinkRow(observations, itemType, linkType, role) {
+/**
+ * Verdict for one row of the shared-link matrix (features 5.2–5.15).
+ *
+ * @param {boolean} anonymousBlocked  the destination is DECLARED to refuse anonymous sharing
+ *   (CONTENT_DEST_ANONYMOUS_SHARING=blocked). An "Anyone with link" row cannot then be a defect —
+ *   the validator's own check 9b reports it at INFO, and these rows must agree with it. They did
+ *   not: one run reported 4 failing checks beside 16 failing features, 7 of which were anonymous
+ *   rows that 9b had already excused.
+ */
+function evalLinkRow(observations, itemType, linkType, role, anonymousBlocked = false) {
   const seen = observations.filter((o) => norm(o.itemType) === itemType
     && norm(o.linkType) === norm(linkType) && norm(o.role) === norm(role));
-  const scopeLabel = norm(linkType) === 'anyone' ? 'Anyone with link' : 'organization';
+  const isAnonRow = norm(linkType) === 'anyone';
+  const scopeLabel = isAnonRow ? 'Anyone with link' : 'organization';
   if (seen.length === 0) {
     return na(`No ${itemType} had an "${scopeLabel} — ${ROLE_LABEL[norm(role)] || role}" link in the source — not exercised`);
   }
   const bad = seen.filter((o) => !o.match);
-  return bad.length === 0
-    ? pass(`${seen.length} link(s) — scope and access level both preserved`)
-    : fail(`${bad.length}/${seen.length} link(s) wrong: ${bad.slice(0, 5).map((o) => o.path).join(', ')}`);
+  if (bad.length === 0) return pass(`${seen.length} link(s) — scope and access level both preserved`);
+  if (isAnonRow && anonymousBlocked) {
+    return info(`${bad.length}/${seen.length} anonymous link(s) absent — the destination site does not `
+      + 'permit anonymous sharing, so they cannot be recreated (combination document #13 External '
+      + 'Shares). Reported, never failed. Organization-scope rows below are still validated.');
+  }
+  return fail(`${bad.length}/${seen.length} link(s) wrong: ${bad.slice(0, 5).map((o) => o.path).join(', ')}`);
 }
 
 /**
@@ -213,24 +226,29 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
       verdicts[`5.${n}`] = na('Shared-link validation was switched off (CONTENT_DEEP_VALIDATE_LINKS=false)');
     }
   } else {
-    const linkBad = linkObs.filter((o) => !o.match);
+    // Excused anonymous rows are excluded from the aggregate too, or 5.1 contradicts 5.2-5.15.
+    const anonBlocked = Boolean(d.anonymousBlocked);
+    const isAnon = (o) => norm(o.linkType) === 'anyone';
+    const anonExcused = anonBlocked ? linkObs.filter((o) => !o.match && isAnon(o)).length : 0;
+    const linkBad = linkObs.filter((o) => !o.match && !(anonBlocked && isAnon(o)));
+    const excusedNote = anonExcused ? ` (${anonExcused} anonymous link(s) not applicable — see 5.2)` : '';
     verdicts['5.1'] = linkObs.length === 0
       ? na('No shared links in the source — not exercised')
       : (linkBad.length === 0
-        ? pass(`${linkObs.length} link(s) migrated to the equivalent SharePoint configuration`)
-        : fail(`${linkBad.length}/${linkObs.length} link(s) wrong`));
+        ? pass(`${linkObs.length - anonExcused} link(s) migrated to the equivalent SharePoint configuration${excusedNote}`)
+        : fail(`${linkBad.length}/${linkObs.length - anonExcused} link(s) wrong${excusedNote}`));
     // 5.2–5.9 folders, 5.10–5.15 files
-    verdicts['5.2'] = evalLinkRow(linkObs, 'folder', 'anyone', 'reader');
-    verdicts['5.3'] = evalLinkRow(linkObs, 'folder', 'anyone', 'commenter');
-    verdicts['5.4'] = evalLinkRow(linkObs, 'folder', 'anyone', 'writer');
-    verdicts['5.5'] = evalLinkRow(linkObs, 'folder', 'anyone', 'fileOrganizer');
+    verdicts['5.2'] = evalLinkRow(linkObs, 'folder', 'anyone', 'reader', anonBlocked);
+    verdicts['5.3'] = evalLinkRow(linkObs, 'folder', 'anyone', 'commenter', anonBlocked);
+    verdicts['5.4'] = evalLinkRow(linkObs, 'folder', 'anyone', 'writer', anonBlocked);
+    verdicts['5.5'] = evalLinkRow(linkObs, 'folder', 'anyone', 'fileOrganizer', anonBlocked);
     verdicts['5.6'] = evalLinkRow(linkObs, 'folder', 'domain', 'reader');
     verdicts['5.7'] = evalLinkRow(linkObs, 'folder', 'domain', 'commenter');
     verdicts['5.8'] = evalLinkRow(linkObs, 'folder', 'domain', 'writer');
     verdicts['5.9'] = evalLinkRow(linkObs, 'folder', 'domain', 'fileOrganizer');
-    verdicts['5.10'] = evalLinkRow(linkObs, 'file', 'anyone', 'reader');
-    verdicts['5.11'] = evalLinkRow(linkObs, 'file', 'anyone', 'commenter');
-    verdicts['5.12'] = evalLinkRow(linkObs, 'file', 'anyone', 'writer');
+    verdicts['5.10'] = evalLinkRow(linkObs, 'file', 'anyone', 'reader', anonBlocked);
+    verdicts['5.11'] = evalLinkRow(linkObs, 'file', 'anyone', 'commenter', anonBlocked);
+    verdicts['5.12'] = evalLinkRow(linkObs, 'file', 'anyone', 'writer', anonBlocked);
     verdicts['5.13'] = evalLinkRow(linkObs, 'file', 'domain', 'reader');
     verdicts['5.14'] = evalLinkRow(linkObs, 'file', 'domain', 'commenter');
     verdicts['5.15'] = evalLinkRow(linkObs, 'file', 'domain', 'writer');

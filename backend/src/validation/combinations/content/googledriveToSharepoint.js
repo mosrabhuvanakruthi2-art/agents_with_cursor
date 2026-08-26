@@ -138,6 +138,9 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
       metadataChecked: env.CONTENT_DEEP_VALIDATE_METADATA,
       linksChecked: env.CONTENT_DEEP_VALIDATE_LINKS,
       migrationType: String(context.migrationType || 'FULL').toUpperCase(),
+      // Set true by a unit that found the destination refuses anonymous sharing AND the policy is
+      // declared via CONTENT_DEST_ANONYMOUS_SHARING=blocked. Consumed by the feature checklist.
+      anonymousBlocked: false,
     };
 
     if (siteId) {
@@ -436,7 +439,11 @@ async function validateUnit(unit, deps) {
       sizeIssues.slice(0, 15).map((s) => `[${s.status}] ${s.line}`).join(' | '));
   }
 
-  // Seed the per-item report rows (drives the tree printed in the PDF)
+  // Seed the per-item report rows (drives the tree printed in the PDF).
+  // An item over SharePoint's 400-character path limit is NOT absent: the destination creates a
+  // Folder/File Path Link URL in its place (combination document #37), which is why check 11 and
+  // the structure comparison already exclude it. The per-item rows did not know that, so a
+  // deliberately over-length test path printed three red "Missing" rows for documented behaviour.
   itemDetails.set('/', {
     path: '/', name: sourceFolderName || '(root)', type: 'folder', depth: 0,
     found: Boolean(spRootItem), destName: spRootItem?.name || null, permissions: [],
@@ -447,6 +454,8 @@ async function validateUnit(unit, deps) {
       path: item.path, name: item.name, type: item.type,
       depth: core.segmentsOf(item.path).length,
       found: Boolean(pair), destName: pair?.dest?.name || null,
+      // Reported as the documented placeholder outcome rather than as a missing item.
+      placeholder: !pair && placeholderPaths.has(item.path),
       mimeType: item.mimeType, permissions: [],
     });
   }
@@ -555,8 +564,12 @@ async function validateUnit(unit, deps) {
           });
         }
         for (const m of res.mismatches) {
-          linkMismatches.push(`${target.source.path} — Drive ${m.sourceType}/${m.sourceRole} `
-            + `(expect ${m.expected}) → ${m.actual}: ${m.reason}`);
+          linkMismatches.push({
+            text: `${target.source.path} — Drive ${m.sourceType}/${m.sourceRole} `
+              + `(expect ${m.expected}) → ${m.actual}: ${m.reason}`,
+            // Carried as a FACT from the comparison rather than re-derived from the text above.
+            anonExcusable: Boolean(m.anonymousExcusable),
+          });
         }
       }
     }
@@ -575,7 +588,7 @@ async function validateUnit(unit, deps) {
         + (distinct.length > 12 ? ` | +${distinct.length - 12} more` : '')
         + '. Map these under Map Users to bring their permissions into scope.');
     }
-    found.sharedLinkMismatches = linkMismatches;
+    found.sharedLinkMismatches = linkMismatches.map((m) => m.text);
 
     if (permChecked === 0) {
       push('WARN', '8. Permissions (features 4.1–4.8)', 'No shared items on the source to verify');
@@ -613,15 +626,19 @@ async function validateUnit(unit, deps) {
       // hold a link, it just holds a weaker one. The first version of this check matched on the word
       // "anonymous" alone and so excused those downgrades — contentCombinationSuite.test.js caught
       // it via its 'a public link narrowed to the organization fails the run' negative case.
-      const anonBlockedShape = (m) => /expect anonymous/i.test(m)
-        && /→ no link on destination/i.test(m);
-      const anonMismatches = linkMismatches.filter(anonBlockedShape);
+      // The comparison decides which anonymous losses are consistent with a blocked destination
+      // (see compareSharedLinks); this only applies the DECLARED policy to them.
+      const anonMismatches = linkMismatches.filter((m) => m.anonExcusable);
       const anonymousBlocked = anonMismatches.length > 0
         && String(env.CONTENT_DEST_ANONYMOUS_SHARING || '').toLowerCase() === 'blocked';
+      // The feature rows (5.2-5.5, 5.10-5.12) must reach the SAME verdict as check 9b below.
+      // Without this they failed 7 anonymous rows that 9b had just reported as not applicable,
+      // which is how one run showed 4 failing checks beside 16 failing features.
+      found.anonymousBlocked = anonymousBlocked;
       // Only excused when the policy is declared. Otherwise a missing anonymous link is a failure
       // like any other — excusing it unconditionally would have hidden real defects.
       const otherMismatches = anonymousBlocked
-        ? linkMismatches.filter((m) => !anonBlockedShape(m))
+        ? linkMismatches.filter((m) => !m.anonExcusable)
         : linkMismatches;
 
       if (anonymousBlocked) {
@@ -643,7 +660,7 @@ async function validateUnit(unit, deps) {
           // List the SAME set the count is about. Reporting the full list under a filtered
           // count put two contradicting numbers in one row: "7 mismatch" above eighty anonymous
           // lines that had just been excused.
-          otherMismatches.slice(0, 20).join(' | '));
+          otherMismatches.slice(0, 20).map((m) => m.text).join(' | '));
       }
     }
 
@@ -834,6 +851,9 @@ function accumulate(totals, unitResult) {
   totals.notHashedCount += (f.notHashed || []).length;
   totals.specialChars.total += f.specialChars?.total || 0;
   totals.specialChars.arrived += f.specialChars?.arrived || 0;
+  // Declared destination policy, not a per-unit measurement: if any unit saw the site refuse
+  // anonymous sharing, the feature rows for anonymous links are not applicable for the run.
+  if (f.anonymousBlocked) totals.anonymousBlocked = true;
 }
 
 /**

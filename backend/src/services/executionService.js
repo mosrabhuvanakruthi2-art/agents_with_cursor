@@ -51,9 +51,19 @@ const executions = loadExecutionsFile();
  */
 function persist(execution) {
   if (mongoStore.isReady()) {
-    mongoStore.upsertExecution(execution).catch((err) =>
-      logger.error(`[executionService] Mongo upsert failed for ${execution?.executionId}: ${err.message}`)
-    );
+    mongoStore.upsertExecution(execution).catch((err) => {
+      logger.error(
+        `[executionService] Mongo upsert failed for ${execution?.executionId}: ${err.message}`
+        + ' — falling back to the local file'
+      );
+      // isReady() only proves a CLIENT OBJECT exists, not that writes succeed. When the client is
+      // up but every write fails — a TLS handshake break, an Atlas IP allow-list change — the
+      // Mongo branch skipped the file write entirely and the execution lived only in this
+      // process's memory. Eight results, including a 51-minute run, were one restart from gone.
+      // Rewriting the whole file on the error path is the right trade: an outage is rare, and
+      // losing a finished validation run is worse than the extra IO.
+      saveExecutionsFile(executions);
+    });
   } else {
     saveExecutionsFile(executions);
   }

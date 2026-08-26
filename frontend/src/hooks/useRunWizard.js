@@ -329,19 +329,37 @@ export default function useRunWizard() {
     const usedSrc = new Set();
     const usedDst = new Set();
     let skipped = 0;
+    const skipReasons = [];
     for (let i = start; i < lines.length; i++) {
       const cols = lines[i].split(',').map((c) => c.trim());
       const srcEmail = (cols[0] || '').toLowerCase();
       // Accept "Source, Destination" or a 4-col content-style row (dest is the 2nd non-empty).
       const dstEmail = (cols[1] || cols[cols.length - 1] || '').toLowerCase();
-      if (!srcEmail || !dstEmail) { skipped++; continue; }
-      const s = srcByEmail.get(srcEmail);
-      const d = dstByEmail.get(dstEmail);
-      if (!s || !d || mappedSrcIds.has(s.id) || usedSrc.has(srcEmail) || usedDst.has(dstEmail)) { skipped++; continue; }
-      newPairs.push({ source: s, destination: d, autoMatched: false, imported: true });
+      if (!srcEmail || !dstEmail) { skipped++; skipReasons.push(`row ${i + 1}: missing an email`); continue; }
+
+      // A CSV row may name a principal that is not a mailbox — a group, a shared mailbox, a
+      // distribution list. Those are never in the fetched user lists, so requiring a match
+      // discarded them silently: three qa-group rows vanished and group permissions could not be
+      // validated at all, while the run reported "no GROUP permissions were exercised".
+      //
+      // Synthesise a principal for anything not found. The backend only needs the address pair to
+      // build its mapping, and CloudFuze resolves the principal itself.
+      const synth = (email, side) => ({ id: `csv:${side}:${email}`, email, displayName: email, fromCsv: true });
+      const s = srcByEmail.get(srcEmail) || synth(srcEmail, 'src');
+      const d = dstByEmail.get(dstEmail) || synth(dstEmail, 'dst');
+      if (mappedSrcIds.has(s.id) || usedSrc.has(srcEmail) || usedDst.has(dstEmail)) {
+        skipped++;
+        skipReasons.push(`${srcEmail}: already mapped`);
+        continue;
+      }
+      newPairs.push({
+        source: s, destination: d, autoMatched: false, imported: true,
+        // Flagged so the row can show that it came from CSV rather than a fetched mailbox.
+        synthetic: Boolean(s.fromCsv || d.fromCsv),
+      });
       usedSrc.add(srcEmail); usedDst.add(dstEmail);
     }
-    if (newPairs.length === 0) return { added: 0, skipped };
+    if (newPairs.length === 0) return { added: 0, skipped, skipReasons };
     // Add the mappings but do NOT auto-select them — importing a mapping list must not
     // enqueue those users for migration/cleanup. The user explicitly checks who to migrate.
     setMappings((prev) => [...prev, ...newPairs]);
@@ -349,7 +367,12 @@ export default function useRunWizard() {
     const newDstIds = new Set(newPairs.map((p) => p.destination.id));
     setUnmappedSource((p) => p.filter((u) => !newSrcIds.has(u.id)));
     setUnmappedDest((p) => p.filter((u) => !newDstIds.has(u.id)));
-    return { added: newPairs.length, skipped };
+    return {
+      added: newPairs.length,
+      skipped,
+      skipReasons,
+      synthetic: newPairs.filter((p2) => p2.synthetic).length,
+    };
   }
 
   // Remove all CSV-imported mappings, restoring their users to the unmatched lists.

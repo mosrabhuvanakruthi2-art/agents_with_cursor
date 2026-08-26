@@ -2489,8 +2489,16 @@ function drawContentItemTree(doc, items, opts = {}) {
     const rowH = Math.max(14, nameH + 3);
     ensureSpace(doc, rowH + 2);
     const y = doc.y;
-    const tag = it.found ? { bg: C.passBg, fg: C.pass, txt: 'Found' } : { bg: C.failBg, fg: C.fail, txt: 'Missing' };
-    doc.fontSize(8).font(F_BOLD).fillColor(it.found ? C.text : C.fail).text(label, x, y + 1, { width: availW });
+    // Three states, not two. An item over the SharePoint path limit is replaced by a Folder/File
+    // Path Link URL at the destination (combination document #37) — printing it as "Missing" in red
+    // reported documented platform behaviour as data loss, and contradicted check 11 on the same page.
+    const tag = it.found
+      ? { bg: C.passBg, fg: C.pass, txt: 'Found' }
+      : it.placeholder
+        ? { bg: C.warnBg, fg: C.warn, txt: 'Placeholder' }
+        : { bg: C.failBg, fg: C.fail, txt: 'Missing' };
+    const labelColor = it.found ? C.text : (it.placeholder ? C.warn : C.fail);
+    doc.fontSize(8).font(F_BOLD).fillColor(labelColor).text(label, x, y + 1, { width: availW });
     doc.save().fillColor(tag.bg).roundedRect(MARGIN + CONTENT_W - tagW, y + 1, tagW, 12, 2).fill().restore();
     doc.fontSize(6.5).font(F_BOLD).fillColor(tag.fg).text(tag.txt, MARGIN + CONTENT_W - tagW, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
     doc.y = y + rowH;
