@@ -23,6 +23,7 @@ const {
   summarizeChecklist,
 } = require('../../shared/contentFunctionalityChecklist');
 const tolerance = require('../../../utils/contentTolerance');
+const roleMap = require('../../contentRoleMap');
 const env = require('../../../config/env');
 const logger = require('../../../utils/logger');
 
@@ -143,10 +144,41 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
       anonymousBlocked: false,
     };
 
+    // ── Per-unit source drive ────────────────────────────────────────────────────────────────
+    // A multi-drive run has one unit per source Shared Drive. Those units share the same
+    // sourcePath ("/Agent Shared Drive") and differ ONLY by drive, so validating them all against
+    // the single run-wide drive resolved above compares unit 2's destination with unit 1's source
+    // tree — every check would report on data that was never in that drive.
+    //
+    // Units that name no drive keep the run-wide one, so single-drive runs are unchanged.
+    const driveCache = new Map();
+    const driveForUnit = async (unit) => {
+      const name = String(unit.sourceDriveName || '').trim();
+      if (!name) return sharedDrive;
+      const key = name.toLowerCase();
+      if (driveCache.has(key)) return driveCache.get(key);
+
+      const email = unit.sourceEmail || context.sourceEmail;
+      let resolved = null;
+      try {
+        resolved = await driveClient.resolveSharedDriveByName(name, email);
+      } catch (err) {
+        gPush('FAIL', `Source Shared Drive resolved — "${name}"`, err.message);
+        driveCache.set(key, null);
+        return null;
+      }
+      gPush(resolved ? 'PASS' : 'FAIL', `Source Shared Drive resolved — "${name}"`,
+        resolved ? `"${resolved.name}" (${resolved.id})`
+          : `No Shared Drive named "${name}" is visible to ${email}`);
+      driveCache.set(key, resolved);
+      return resolved;
+    };
+
     if (siteId) {
       for (const unit of units) {
         try {
-          const res = await validateUnit(unit, { agent: this, context, siteId, sharedDrive, bands, mapEmail });
+          const unitDrive = await driveForUnit(unit);
+          const res = await validateUnit(unit, { agent: this, context, siteId, sharedDrive: unitDrive, bands, mapEmail });
           perUser.push(res);
           accumulate(totals, res);
         } catch (err) {
@@ -222,6 +254,44 @@ async function validateUnit(unit, deps) {
       push('FAIL', '2. Folder name preserved', `Source "${sourceFolderName}" not found in destination`);
     }
   }
+
+  // ── Drive-level role cap ──────────────────────────────────────────────────────────────────
+  // In a Shared Drive the drive membership decides what a principal can actually do. An item-level
+  // grant above that role is accepted by the API but does not raise real access, and CloudFuze
+  // re-grants at the drive-level role.
+  //
+  // Measured on run 6e2a2352, same folder and same item grant in both drives:
+  //   QA_Team1  qa-group-view drive=fileOrganizer  item=fileOrganizer  → SharePoint edit   PASS
+  //   QA_Team2  qa-group-view drive=commenter      item=fileOrganizer  → SharePoint read   "FAIL"
+  //
+  // The destination tracked the DRIVE role in both cases, so SharePoint was right and the
+  // expectation was wrong: comparing the raw item grant demanded Edit for a group that only ever
+  // had Commenter on the drive. Capping the expectation removes that false failure without
+  // weakening anything — a grant at or below the drive role is still compared exactly as before.
+  //
+  // Contained to this combination on purpose: Box has no equivalent of drive membership, so
+  // deepContentCore.comparePermissions is left untouched.
+  const driveRoleByPrincipal = new Map();
+  if (sharedDrive?.id) {
+    try {
+      const rootPerms = await driveClient.listPermissions(sharedDrive.id, unit.sourceEmail);
+      for (const g of rootPerms.grants || []) {
+        if (g.email) driveRoleByPrincipal.set(String(g.email).toLowerCase(), g.role);
+      }
+    } catch (err) {
+      logger.warn(`[GoogledriveToSharepoint] drive-level permissions unavailable for "${sharedDrive.name}": ${err.message}`);
+    }
+  }
+
+  /** The lower of the item grant and the principal's drive membership. */
+  const capGrantsToDriveRole = (grants) => (grants || []).map((g) => {
+    const driveRole = driveRoleByPrincipal.get(String(g.email || '').toLowerCase());
+    if (!driveRole) return g;
+    const itemLevel = roleMap.LEVEL[roleMap.driveRoleLevel(g.role)] ?? 0;
+    const driveLevel = roleMap.LEVEL[roleMap.driveRoleLevel(driveRole)] ?? 0;
+    if (driveLevel === 0 || driveLevel >= itemLevel) return g;
+    return { ...g, role: driveRole, cappedFrom: g.role };
+  });
 
   // ── Build both trees
   let sourceTree = [];
@@ -492,12 +562,14 @@ async function validateUnit(unit, deps) {
     for (const target of targets) {
       if (permChecked >= maxItems) { permSkipped++; continue; }
 
-      const sourcePerms = await driveClient.listPermissions(target.source.id, unit.sourceEmail)
+      const rawSourcePerms = await driveClient.listPermissions(target.source.id, unit.sourceEmail)
         .catch((err) => {
           logger.warn(`[GoogledriveToSharepoint] source permissions unavailable for ${target.source.path}: ${err.message}`);
           return null;
         });
-      if (!sourcePerms) { permReadFailed++; continue; }
+      if (!rawSourcePerms) { permReadFailed++; continue; }
+      // Cap each grant at the principal's DRIVE-level role before comparing (see driveRoleCap).
+      const sourcePerms = { ...rawSourcePerms, grants: capGrantsToDriveRole(rawSourcePerms.grants) };
 
       const hasGrants = sourcePerms.grants.length > 0;
       const hasLinks = sourcePerms.links.length > 0;

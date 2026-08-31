@@ -4,6 +4,7 @@ const env = require('../config/env');
 const tokenStore = require('./oauthTokenStore');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
+const { normalizeDriveName } = require('../utils/driveNames');
 
 /** Return '2' or '3' if the email belongs to the second/third Google tenant, else '1'. */
 function getGoogleTenant(email) {
@@ -460,12 +461,17 @@ async function listSharedDrives(email) {
   return drives;
 }
 
-/** Find a Shared Drive by name (case-insensitive). Returns { id, name } or null. */
+/**
+ * Find a Shared Drive by name (case-insensitive). Returns { id, name } or null.
+ *
+ * Names arrive path-style from a CSV column or GOOGLE_SHARED_DRIVE_NAME, so both ends are
+ * normalised — "/QA_Team1/" resolves the drive named "QA_Team1".
+ */
 async function resolveSharedDriveByName(name, email) {
-  const wanted = String(name || '').trim().toLowerCase();
+  const wanted = normalizeDriveName(name).toLowerCase();
   if (!wanted) return null;
   const drives = await listSharedDrives(email);
-  return drives.find((d) => String(d.name || '').trim().toLowerCase() === wanted) || null;
+  return drives.find((d) => normalizeDriveName(d.name).toLowerCase() === wanted) || null;
 }
 
 /**

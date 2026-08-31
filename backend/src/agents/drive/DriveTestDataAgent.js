@@ -2,6 +2,7 @@ const { BaseAgent } = require('../core/BaseAgent');
 const driveClient = require('../../clients/driveClient');
 const env = require('../../config/env');
 const logger = require('../../utils/logger');
+const { normalizeDriveName } = require('../../utils/driveNames');
 
 // ─── Static file content buffers ─────────────────────────────────────────────
 
@@ -196,16 +197,28 @@ class DriveTestDataAgent extends BaseAgent {
     // Shared Drive target, when one is configured. A Shared Drive's id doubles as its root folder id,
     // so everything below is unchanged apart from where the tree is rooted. Shared Drives are also the
     // only place the Content Manager (fileOrganizer) role exists, so the permission matrix needs one.
-    const sharedDriveName = context.sourceSharedDriveName || env.GOOGLE_SHARED_DRIVE_NAME;
+    const sharedDriveName = normalizeDriveName(context.sourceSharedDriveName || env.GOOGLE_SHARED_DRIVE_NAME);
     let sharedDrive = null;
     if (sharedDriveName) {
       sharedDrive = await driveClient.resolveSharedDriveByName(sharedDriveName, sourceEmail);
-      if (sharedDrive) {
-        logger.info(`[DriveTestDataAgent] Seeding into Shared Drive "${sharedDrive.name}" (${sharedDrive.id})`);
-      } else {
-        logger.warn(`[DriveTestDataAgent] Shared Drive "${sharedDriveName}" not visible to ${sourceEmail} — falling back to My Drive`);
-        this.errors.push({ scenario: 'sharedDrive', error: `Shared Drive "${sharedDriveName}" not found` });
+      if (!sharedDrive) {
+        // This used to warn and seed into My Drive instead. That made a wrong drive name invisible:
+        // the run seeded My Drive, migrated My Drive and reported SUCCESS, while every log line and
+        // the report still said "Shared Drive". It is not hypothetical — GOOGLE_SHARED_DRIVE_NAME
+        // sat at a drive that had been renamed, and nothing surfaced it.
+        //
+        // A drive that was explicitly named and cannot be resolved is a configuration error, so
+        // stop. Seeding somewhere else tests the wrong location, which CLAUDE.md §1 calls a bug in
+        // this system's own terms. Runs that name no drive at all are untouched and still use
+        // My Drive legitimately.
+        throw new Error(
+          `Shared Drive "${sharedDriveName}" is not visible to ${sourceEmail}. `
+          + 'Check the name matches exactly and that the account is a member of the drive '
+          + '(Manage members → Manager). Refusing to fall back to My Drive, which would seed and '
+          + 'validate the wrong location while reporting success.'
+        );
       }
+      logger.info(`[DriveTestDataAgent] Seeding into Shared Drive "${sharedDrive.name}" (${sharedDrive.id})`);
     }
     this.results.sharedDrive = sharedDrive ? { id: sharedDrive.id, name: sharedDrive.name } : null;
     const parentRoot = sharedDrive?.id || 'root';
@@ -244,6 +257,10 @@ class DriveTestDataAgent extends BaseAgent {
         .split(',').map((x) => x.trim()).filter(Boolean),
       externalEmail: context.externalEmail || env.GOOGLE_TEST_EXTERNAL_EMAIL || '',
     });
+    // Drive-level ("Level 1") membership — feature 4.10. Everything above grants on folders and
+    // files; nothing granted on the DRIVE itself, so "is this drive open to everyone or restricted
+    // to a few" was never seeded and never testable. Runs only when the row declares a mode.
+    await this._applyDriveAccessMode(sharedDrive, sourceEmail, context);
     await this._createLinkMatrix(rootFolder.id, sourceEmail, sharedDrive);
     await this._createLegacyOfficeFiles(rootFolder.id, sourceEmail);
     await this._createOverLimitPath(rootFolder.id, sourceEmail);
@@ -306,6 +323,12 @@ class DriveTestDataAgent extends BaseAgent {
       // The Shared Drive the data lives in. CloudFuze needs it to enumerate the folder's children:
       // given only a folder id it reports zero contents (job 6a885ddc7371a25e3aa6ab66).
       sharedDriveId: this.results.sharedDrive?.id || null,
+      // The name too, so a multi-drive run can record which drive each transfer unit actually
+      // used. Reading it back off the resolved drive rather than the requested string means the
+      // report shows Google's own spelling.
+      sharedDriveName: this.results.sharedDrive?.name || null,
+      // Drive-level membership actually applied (feature 4.10), or null when no mode was declared.
+      driveAccess: this.results.driveAccess || null,
       summary,
       scenarios: r,
       sharedLinks: r.sharedLinks || [],
@@ -458,6 +481,73 @@ class DriveTestDataAgent extends BaseAgent {
     } else if (!viewerEmail) {
       logger.info('[DriveTestDataAgent]   Skipping viewer share — viewerEmail not provided');
     }
+  }
+
+  // ── Drive-level membership (feature 4.10) ─────────────────────────────────
+  /**
+   * Grant access on the DRIVE itself, so a run can prove that an open drive stays open and a
+   * restricted drive stays restricted after migration.
+   *
+   * Two modes, declared per row:
+   *   open        — the configured everyone-group gets Content Manager at the drive root. Folders
+   *                 and files inherit it; nothing is granted per item (the approved reading of
+   *                 "all levels" — see spec 002 Assumptions).
+   *   restricted  — only the named principals are granted, and the everyone-group is NOT.
+   *
+   * `organizer` (Manager) is deliberately never granted: the in-scope document maps Viewer,
+   * Commenter, Contributor and Content Manager to a destination access level and gives Manager
+   * none, so a Manager grant migrates to nothing and would only add noise.
+   *
+   * A no-op without a Shared Drive or without an access mode, so existing runs are unchanged.
+   */
+  async _applyDriveAccessMode(sharedDrive, ownerEmail, context) {
+    const mode = String(context.driveAccessMode || '').trim().toLowerCase();
+    if (!sharedDrive || !mode) {
+      this.results.driveAccess = null;
+      return;
+    }
+    if (mode !== 'open' && mode !== 'restricted') {
+      logger.warn(`[DriveTestDataAgent] Unknown driveAccessMode "${mode}" — skipping drive-level grants`);
+      this.results.driveAccess = { mode, skipped: 'unknown mode' };
+      return;
+    }
+
+    const everyoneGroup = String(context.everyoneGroupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '')
+      .split(',').map((s) => s.trim()).filter(Boolean)[0] || '';
+
+    // The "few" for a restricted drive: the same principals the folder matrix already uses, so the
+    // two drives differ only in whether the everyone-group is present.
+    const few = [
+      [env.GOOGLE_TEST_EDITOR_EMAIL, 'fileOrganizer'],
+      [env.GOOGLE_TEST_VIEWER_EMAIL, 'reader'],
+    ].filter(([who]) => who);
+
+    const granted = [];
+    const targets = mode === 'open'
+      ? (everyoneGroup ? [[everyoneGroup, 'fileOrganizer']] : [])
+      : few;
+
+    if (targets.length === 0) {
+      // Reported rather than passed silently: with nothing to grant, feature 4.10 has not been
+      // exercised and must not come out green.
+      logger.warn(`[DriveTestDataAgent] driveAccessMode=${mode} but no principal configured `
+        + `(${mode === 'open' ? 'GOOGLE_TEST_GROUP_EMAIL' : 'GOOGLE_TEST_EDITOR_EMAIL / GOOGLE_TEST_VIEWER_EMAIL'}) — nothing seeded`);
+      this.results.driveAccess = { mode, driveId: sharedDrive.id, granted: [], skipped: 'no principal configured' };
+      return;
+    }
+
+    for (const [who, role] of targets) {
+      try {
+        // A Shared Drive's id doubles as its root folder id, so the same permissions call works.
+        await driveClient.shareFile(sharedDrive.id, who, role, ownerEmail);
+        granted.push({ email: who, role });
+        logger.info(`[DriveTestDataAgent]   drive "${sharedDrive.name}" shared with ${who} as ${role} (mode=${mode})`);
+      } catch (err) {
+        logger.warn(`[DriveTestDataAgent]   drive-level grant failed for ${who} as ${role}: ${err.message}`);
+        this.errors.push({ scenario: 'driveAccess', item: `${who}:${role}`, error: err.message });
+      }
+    }
+    this.results.driveAccess = { mode, driveId: sharedDrive.id, driveName: sharedDrive.name, granted, everyoneGroup: mode === 'open' ? everyoneGroup : null };
   }
 
   // ── Permission matrix (features 4.2–4.8) ──────────────────────────────────

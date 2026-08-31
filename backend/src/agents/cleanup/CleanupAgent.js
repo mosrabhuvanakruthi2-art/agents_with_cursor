@@ -3,6 +3,7 @@ const outlookClient = require('../../clients/outlookClient');
 const gmailClient   = require('../../clients/gmailClient');
 const logger        = require('../../utils/logger');
 const env           = require('../../config/env');
+const { normalizeDriveName } = require('../../utils/driveNames');
 
 /**
  * Full-wipe helpers for Outlook accounts.
@@ -151,14 +152,40 @@ async function cleanContentSides(context, log, summary) {
   // worth having on their own; the mapping failure is a separate, still-open problem.
   if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
     try {
-      let driveId = null;
+      // EVERY drive the run touches, not just GOOGLE_SHARED_DRIVE_NAME.
+      //
+      // Reading the env var alone meant a two-drive run only ever emptied the folder in the FIRST
+      // drive. The second drive's folder kept the previous run's data and gained the new seed on top,
+      // so its source held every folder twice — run c4722d01 measured 24 children in QA_Team2 against
+      // 12 in QA_Team1. The migration then faithfully copied the duplicates, and validation reported
+      // 14 missing / 11 extra / 73 misplaced against a migration that had done nothing wrong.
+      //
+      // An empty id set means "no drive filter" (My Drive), which is the pre-existing behaviour.
+      const driveIds = new Set();
       if (srcProvider === 'googleshareddrive') {
-        const drive = await driveClient.resolveSharedDriveByName(env.GOOGLE_SHARED_DRIVE_NAME, context.sourceEmail);
-        driveId = drive ? drive.id : null;
+        const wantedDrives = [...new Set([
+          ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+            .map((u) => normalizeDriveName(u && u.sourceDriveName)),
+          ...(Array.isArray(context.userFolderMappings) ? context.userFolderMappings : [])
+            .map((u) => normalizeDriveName(u && u.sourceDriveName)),
+          normalizeDriveName(context.sourceSharedDriveName),
+          normalizeDriveName(env.GOOGLE_SHARED_DRIVE_NAME),
+        ].filter(Boolean))];
+        for (const name of wantedDrives) {
+          try {
+            const drive = await driveClient.resolveSharedDriveByName(name, context.sourceEmail);
+            if (drive) driveIds.add(drive.id);
+            else log.warn(`CleanupAgent: Shared Drive "${name}" not visible — nothing to clean there`);
+          } catch (dErr) {
+            summary.sourceContent.errors.push(`resolve drive ${name}: ${dErr.message}`);
+          }
+        }
+        log.info(`CleanupAgent: source drives in play: ${wantedDrives.map((n) => `"${n}"`).join(', ')} `
+          + `(${driveIds.size} resolved)`);
       }
       const roots = (await Promise.all(folderNames.map((n) => driveClient.findFoldersByName(n, context.sourceEmail))))
         .flat()
-        .filter((h) => (driveId ? h.driveId === driveId : true));
+        .filter((h) => (driveIds.size > 0 ? driveIds.has(h.driveId) : true));
       for (const root of roots) {
         const children = await driveClient.listChildren(root.id, context.sourceEmail);
         for (const child of children) {
@@ -184,20 +211,49 @@ async function cleanContentSides(context, log, summary) {
   // Destination: delete only the seeded/migrated items, by allowlist.
   if (dstProvider === 'sharepoint' && context.destinationEmail) {
     try {
+      const deepContentCore = require('../../validation/shared/deepContentCore');
       const site = await sharepointClient.getSite(env.SHAREPOINT_HOSTNAME, env.SHAREPOINT_SITE_PATH, context.destinationEmail);
-      const root = await sharepointClient.listFolderChildren(site.id, '/', context.destinationEmail);
-      const targets = root.filter((k) => isSeededContentName(k.name, folderNames));
-      log.info(`CleanupAgent: destination root has ${root.length} item(s); ${targets.length} seeded `
-        + `item(s) to delete, ${root.length - targets.length} left untouched`);
-      for (const t of targets) {
+
+      // A multi-drive run puts each source drive in its own destination sub-folder, so the seeded
+      // tree is no longer at the library root — it is at "/QA_Team1/Agent Shared Drive". Scanning
+      // only the root would leave every previous run's data in place and the next run would then
+      // migrate on top of it, which is what produced 70 extra / 260 misplaced items on an earlier
+      // run. So scan the root AND each row's destination folder.
+      //
+      // Read from contentUserFolders, not userFolderMappings: cleanup runs BEFORE seeding, and the
+      // mappings do not exist yet at this point.
+      const destRoots = [...new Set([
+        '/',
+        ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+          .map((u) => deepContentCore.inDrivePath(u && u.destinationPath))
+          .filter((p) => p && p !== '/'),
+      ])];
+
+      for (const base of destRoots) {
+        let children;
         try {
-          await sharepointClient.deleteItemByPath(site.id, `/${t.name}`, context.destinationEmail);
-          summary.destContent.foldersDeleted += 1;
-        } catch (err) {
-          summary.destContent.errors.push(`${t.name}: ${err.message}`);
+          children = await sharepointClient.listFolderChildren(site.id, base, context.destinationEmail);
+        } catch (listErr) {
+          // A destination folder that does not exist yet is the normal case on a first run.
+          log.info(`CleanupAgent: destination "${base}" not readable (${listErr?.response?.status || listErr.message}) — nothing to clean there`);
+          continue;
+        }
+        const targets = children.filter((k) => isSeededContentName(k.name, folderNames));
+        log.info(`CleanupAgent: destination "${base}" has ${children.length} item(s); ${targets.length} seeded `
+          + `item(s) to delete, ${children.length - targets.length} left untouched`);
+        // The wrapper folder itself is deliberately NOT deleted — it may have existed before this
+        // run with unrelated content. Only names on the seeded allowlist are removed.
+        for (const t of targets) {
+          const path = `${base === '/' ? '' : base}/${t.name}`;
+          try {
+            await sharepointClient.deleteItemByPath(site.id, path, context.destinationEmail);
+            summary.destContent.foldersDeleted += 1;
+          } catch (err) {
+            summary.destContent.errors.push(`${path}: ${err.message}`);
+          }
         }
       }
-      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s)`);
+      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s) across ${destRoots.length} location(s)`);
     } catch (err) {
       summary.destContent.errors.push(err.message);
       log.warn(`CleanupAgent: destination content cleanup failed (non-blocking): ${err.message}`);

@@ -1007,6 +1007,12 @@ function resolveUnits(context) {
       destinationEmail: m.destinationEmail || context.destinationEmail,
       sourcePath: m.sourcePath || context.sourceTestDataPath || '',
       destinationPath: m.destinationPath || context.destinationPath || '/',
+      // The drive must survive BOTH branches. It was added to the userFolderMappings branch below
+      // only, and this branch wins whenever a migration ran — so every unit reached validation with
+      // no drive, the validator fell back to one run-wide drive, and unit 2 was compared against
+      // unit 1's source tree.
+      sourceDriveName: m.sourceDriveName || null,
+      sourceDriveId: m.sourceDriveId || null,
     }));
   }
 
@@ -1017,6 +1023,12 @@ function resolveUnits(context) {
       destinationEmail: f.destinationEmail || context.destinationEmail,
       sourcePath: f.sourcePath || context.sourceTestDataPath || '',
       destinationPath: f.destinationPath || context.destinationPath || '/',
+      // Carried through so a validator can resolve the SOURCE per unit. Two units may share a
+      // sourcePath ("/Agent Shared Drive") and differ only by drive, in which case resolving one
+      // drive for the whole run compares the second destination against the first drive's tree.
+      // Additive: existing consumers ignore these, so every other combination is unaffected.
+      sourceDriveName: f.sourceDriveName || null,
+      sourceDriveId: f.sourceDriveId || null,
     }));
   }
 

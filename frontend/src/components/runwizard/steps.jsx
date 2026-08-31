@@ -646,26 +646,63 @@ function PerUserFolderTable({ wiz, destDefault }) {
       </p>
     );
   }
-  const baseName = wiz.contentPaths.sourceFolderName || 'Agent Box Data';
+  const rows = wiz.effectiveFolderRows();
   const onCsv = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const n = wiz.importContentUserFoldersCsv(text);
+    const { count, destination } = wiz.importContentUserFoldersCsv(text);
     e.target.value = '';
-    alert(`Imported folder overrides for ${n} user(s).`);
+    // Report the ROW count, not a user count: several rows may name the same user (one per
+    // Shared Drive), which is exactly the case the old keyed import silently collapsed.
+    alert(count === 0
+      ? 'No data rows found in that CSV.'
+      : `Imported ${count} row(s). Rows naming the same source user are kept separately — one per Shared Drive.`
+        + (destination ? `\n\nDestination drive set to "${destination}" from the CSV.` : '')
+        + '\n\nSet Drive access on each row — the CSV has no column for it.');
+  };
+  /** Destination user is not editable here: it comes from the Map Users step for this row's source. */
+  const destFor = (email) => {
+    const m = pairs.find((p) => (p.source.email || '').toLowerCase() === String(email || '').toLowerCase());
+    return (m || pairs[0])?.destination?.email || '';
+  };
+  /**
+   * What the backend will use when the row's destination is left blank: the shared base path plus
+   * this row's drive name. Two drives therefore land in separate folders without anyone typing them.
+   *
+   * The base is the user's OWN destination field, not `destDefault` — that prop is a hardcoded
+   * per-provider fallback ("/SANITY DATAA/Documents") shown as a hint elsewhere on this step.
+   * Using it here made the placeholder promise "/SANITY DATAA/Documents/QA_Team1" while
+   * buildPayload sent "/QA/Documents/QA_Team1", so the preview contradicted the run.
+   */
+  /**
+   * The destination this row will actually migrate into. Mirrors buildPayload exactly.
+   *
+   * Accepts either CSV style: a BASE on every row ("/QA/Documents") gets the drive appended, a FULL
+   * path ("/QA/Documents/QA_Team1") is used as-is. The append is idempotent, so it never doubles up.
+   */
+  const autoDest = (r) => {
+    const drive = String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '');
+    const rowBase = String(r.destinationPath || '').trim();
+    const typed = rowBase || String(wiz.contentPaths.destinationPath || '').trim();
+    const base = (typed || String(destDefault || '')).replace(/\/+$/, '');
+    const endsWithDrive = Boolean(drive) && base.toLowerCase().endsWith(`/${drive.toLowerCase()}`);
+    // `base` is the trailing-slash-stripped form; fall back to the raw values only when it is empty.
+    return drive && base && !endsWithDrive ? `${base}/${drive}` : (base || typed || destDefault);
   };
   return (
     <div className="sm:col-span-2">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-gray-700">Per-user folders ({pairs.length})</span>
+        <span className="text-xs font-semibold text-gray-700">Per-user folders ({rows.length})</span>
         <div className="flex items-center gap-2">
           <label className="text-xs font-medium text-indigo-600 hover:text-indigo-700 cursor-pointer">
             Import CSV
             <input type="file" accept=".csv,text/csv" onChange={onCsv} className="hidden" />
           </label>
-          <button type="button" onClick={() => wiz.clearContentUserFolders()}
-            className="text-xs font-medium text-gray-500 hover:text-gray-700">Reset to base</button>
+          <button type="button" onClick={() => wiz.addContentFolderRow()}
+            className="text-xs font-medium text-indigo-600 hover:text-indigo-700">+ Add row</button>
+          <button type="button" onClick={() => wiz.clearContentFolderRows()}
+            className="text-xs font-medium text-indigo-600 hover:text-indigo-700">Reset to base</button>
         </div>
       </div>
       <div className="overflow-x-auto border border-gray-200 rounded-lg">
@@ -673,35 +710,115 @@ function PerUserFolderTable({ wiz, destDefault }) {
           <thead className="bg-gray-50 text-gray-600">
             <tr>
               <th className="text-left font-semibold px-3 py-2">Source user</th>
-              <th className="text-left font-semibold px-3 py-2">Source folder</th>
+              <th className="text-left font-semibold px-3 py-2">Source drive</th>
+              <th className="text-left font-semibold px-3 py-2">Drive access</th>
               <th className="text-left font-semibold px-3 py-2">Destination user</th>
-              <th className="text-left font-semibold px-3 py-2">Destination path</th>
+              <th className="text-left font-semibold px-3 py-2">Destination drive</th>
+              <th className="px-2 py-2"><span className="sr-only">Remove</span></th>
             </tr>
           </thead>
           <tbody>
-            {pairs.map((p) => {
-              const email = (p.source.email || '').toLowerCase();
-              const ov = wiz.contentUserFolders[email] || {};
-              return (
-                <tr key={email} className="border-t border-gray-100">
-                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.source.email}</td>
-                  <td className="px-2 py-1.5">
-                    <input value={ov.sourceFolderName || ''} onChange={(e) => wiz.setContentUserFolder(email, 'sourceFolderName', e.target.value)}
-                      placeholder={baseName} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-gray-100">
+                <td className="px-2 py-1.5">
+                  <select value={r.sourceEmail || ''} onChange={(e) => wiz.updateContentFolderRow(r.id, 'sourceEmail', e.target.value)}
+                    className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono bg-white">
+                    {/* A CSV row can name a source user that is not among the selected pairs. Without
+                        its own option the select renders blank and the value looks lost, so carry it. */}
+                    {!pairs.some((p) => (p.source.email || '').toLowerCase() === String(r.sourceEmail || '').toLowerCase())
+                      && r.sourceEmail && <option value={r.sourceEmail}>{r.sourceEmail} (not mapped)</option>}
+                    {pairs.map((p) => (
+                      <option key={p.source.email} value={p.source.email}>{p.source.email}</option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-2 py-1.5">
+                  <input value={r.sourceDriveName || ''} onChange={(e) => wiz.updateContentFolderRow(r.id, 'sourceDriveName', e.target.value)}
+                    placeholder="(shared drive)" className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                </td>
+                <td className="px-2 py-1.5">
+                  {/* Feature 4.10. "Open" grants the everyone-group at the drive root; "Restricted"
+                      grants only the named few. The DIFFERENCE between two drives is the test —
+                      it proves a restricted drive does not arrive open. Blank = no drive-level
+                      seeding, which is how every run behaved before. */}
+                  <select value={r.driveAccessMode || ''} onChange={(e) => wiz.updateContentFolderRow(r.id, 'driveAccessMode', e.target.value)}
+                    className="w-full px-2 py-1 border border-gray-300 rounded text-xs bg-white">
+                    <option value="">(not set)</option>
+                    <option value="open">Open — everyone</option>
+                    <option value="restricted">Restricted — a few</option>
+                  </select>
+                </td>
+                <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{destFor(r.sourceEmail)}</td>
+                {/* Two shapes, chosen by whether the row names a drive.
+                    WITH a drive the destination is decided — base field plus the drive name — so it
+                    is shown, not typed. An input here duplicated the base field above and, filled in
+                    the obvious way, pinned both drives to one folder.
+                    WITHOUT a drive nothing derives it, so combinations like Box or OneDrive still
+                    need a per-row box. */}
+                {String(r.sourceDriveName || '').trim() ? (
+                  <td className="px-3 py-1.5 font-mono text-xs text-gray-600 break-all" title={autoDest(r)}>
+                    {autoDest(r)}
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-gray-700 whitespace-nowrap">{p.destination.email}</td>
+                ) : (
                   <td className="px-2 py-1.5">
-                    <input value={ov.destinationPath || ''} onChange={(e) => wiz.setContentUserFolder(email, 'destinationPath', e.target.value)}
-                      placeholder={destDefault} className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
+                    <input value={r.destinationPath || ''} onChange={(e) => wiz.updateContentFolderRow(r.id, 'destinationPath', e.target.value)}
+                      placeholder={wiz.contentPaths.destinationPath || destDefault}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
                   </td>
-                </tr>
-              );
-            })}
+                )}
+                <td className="px-2 py-1.5 text-right">
+                  <button type="button" onClick={() => wiz.removeContentFolderRow(r.id)} title="Remove this row"
+                    className="px-2 py-0.5 rounded text-red-600 hover:bg-red-50 font-medium">×</button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
+      {/* ── What the run will actually create ───────────────────────────────────────────────
+          The single most useful thing on this step. Every field above is an ingredient; nothing
+          showed the RESULT, so two rows reading "/QA/Documents" looked correct while both drives
+          were about to merge into one folder. Rendering the final destination per row makes the
+          design self-explanatory — a reader sees the structure instead of inferring it. */}
+      <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/50 px-3 py-2.5">
+        <p className="text-xs font-semibold text-indigo-900 mb-1.5">This run will create</p>
+        <ul className="space-y-1">
+          {rows.map((r) => {
+            const drive = String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '');
+            const folder = String(wiz.contentPaths.sourceFolderName || '').trim() || 'Agent Box Data';
+            const access = r.driveAccessMode === 'open' ? 'open to everyone'
+              : (r.driveAccessMode === 'restricted' ? 'restricted to a few' : 'drive access not set');
+            return (
+              <li key={r.id} className="text-[11px] font-mono text-gray-700 break-all">
+                <span className="text-gray-900">{`${String(autoDest(r) || '/').replace(/\/+$/, '')}/${folder}`}</span>
+                <span className="ml-2 font-sans text-gray-500">
+                  {drive ? `from ${drive} · ${access}` : 'from the run default drive'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+        {(() => {
+          // Two rows resolving to one destination merge at the destination. Caught here, before the
+          // run, rather than as "extra"/"misplaced" findings in the report afterwards.
+          const dests = rows.map((r) => String(autoDest(r) || '').toLowerCase().replace(/\/+$/, ''));
+          const clash = dests.some((d, i) => d && dests.indexOf(d) !== i);
+          return clash ? (
+            <p className="mt-2 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+              Two rows resolve to the same destination — their contents would merge. Give the rows
+              different drives, or different Destination values.
+            </p>
+          ) : null;
+        })()}
+      </div>
       <p className="text-[11px] text-gray-400 mt-1.5">
-        CSV columns: <span className="font-mono">Source User, Source Folder, Destination User, Destination Path</span> (matched by source email).
+        CSV columns: <span className="font-mono">Source User, Source Folder, Destination User, Destination Path</span>.
+        For a Shared Drive source, column 2 names the <strong>drive</strong>. Several rows may name the
+        same source user — one per drive. Destination user comes from the Map Users step.
+        Give each row just its <strong>drive name</strong> — the paths come from the two fields above.
+        A row that names a drive gets <span className="font-mono">Destination drive + drive name</span>,
+        shown in its Destination column, so two drives never land in the same folder. Only rows with no
+        drive (Box, OneDrive, My Drive) get an editable Destination box, because nothing derives it there.
       </p>
     </div>
   );
@@ -727,21 +844,19 @@ function ContentOptions({ wiz }) {
         <Field label={wiz.useExistingSource ? 'Existing source folder path' : 'Source folder base name'}>
           <input value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
             placeholder={wiz.useExistingSource ? 'e.g. /NEWDATA or /Projects/Q1' : 'e.g. NEWDATA (default: Agent Box Data)'} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+          <p className="mt-1 text-[11px] text-gray-500">
+            {wiz.useExistingSource
+              ? 'The folder that already exists at the source.'
+              : 'Folder created inside each source drive. The same name in every drive, so the data is identical.'}
+          </p>
         </Field>
-        <Field label="Destination path">
+        <Field label="Destination drive">
           <input value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
             placeholder={`default ${destDefault}`} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+          <p className="mt-1 text-[11px] text-gray-500">
+            Where at the destination — site and library. One folder per source drive is created inside it.
+          </p>
         </Field>
-        <p className="sm:col-span-2 text-xs text-gray-500">
-          {wiz.useExistingSource ? (
-            <><strong>Using existing folders.</strong> The agent does NOT create data — it resolves each user row's path to the
-            existing Box folder and migrates it. Per-user paths in the table override the base path above.</>
-          ) : (
-            <><strong>Per-user mapping below.</strong> The two fields above are <strong>bulk defaults</strong> — applied to any user
-            row left blank. The agent seeds one dataset per mapped user and migrates each under its Destination path as its own
-            sub-folder. If a name already exists it appends “ 1”. Leave a Destination blank for the cloud default ({destDefault}).</>
-          )}
-        </p>
         <PerUserFolderTable wiz={wiz} destDefault={destDefault} />
       </div>
     </div>
@@ -851,16 +966,27 @@ export function StepSummary({ wiz, onRun, running }) {
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead className="bg-gray-50 text-gray-500">
-                  <tr><th className="text-left px-4 py-2 font-semibold">Source user</th><th className="text-left px-2 py-2 font-semibold">Source folder</th><th className="text-left px-2 py-2 font-semibold">Destination path</th></tr>
+                  <tr><th className="text-left px-4 py-2 font-semibold">Source user</th><th className="text-left px-2 py-2 font-semibold">Source drive</th><th className="text-left px-2 py-2 font-semibold">Source folder</th><th className="text-left px-2 py-2 font-semibold">Destination drive</th></tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {pairs.map((p, i) => {
-                    const ov = wiz.contentUserFolders[(p.source.email || '').toLowerCase()] || {};
+                  {/* One line per ROW, not per user — two rows may name the same user, one per drive.
+                      Source folder is the shared base for every row: identical data in each drive. */}
+                  {wiz.effectiveFolderRows().map((r) => {
+                    const drive = String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '');
+                    // baseDest falls back to the literal "(cloud default)" for display, which must
+                    // never be concatenated into a path — read the real field instead. A row's own
+                    // destination acts as that row's base, matching buildPayload.
+                    const typed = String(r.destinationPath || '').trim()
+                      || String(wiz.contentPaths.destinationPath || '').trim();
+                    const base = typed.replace(/\/+$/, '');
                     return (
-                      <tr key={i}>
-                        <td className="px-4 py-1.5 font-mono text-gray-700">{p.source.email}</td>
-                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.sourceFolderName || baseFolder}</td>
-                        <td className="px-2 py-1.5 font-mono text-gray-600">{ov.destinationPath || baseDest}</td>
+                      <tr key={r.id}>
+                        <td className="px-4 py-1.5 font-mono text-gray-700">{r.sourceEmail}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{drive || '(run default)'}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">{baseFolder}</td>
+                        <td className="px-2 py-1.5 font-mono text-gray-600">
+                          {drive && base ? `${base}/${drive}` : (typed || baseDest)}
+                        </td>
                       </tr>
                     );
                   })}

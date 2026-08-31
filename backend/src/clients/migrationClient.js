@@ -3,6 +3,7 @@ const axios = require('axios');
 const env = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
+const { normalizeDriveName } = require('../utils/driveNames');
 
 // JWT from POST /mail/register — scoped only for /mail/reports polling
 let bearerToken = null;
@@ -1089,7 +1090,7 @@ async function triggerMigration(context) {
     const isSharedDrive = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''));
     const sharedDriveRootId = isSharedDrive ? (context.sourceDriveId || null) : null;
     const sharedDriveName = isSharedDrive
-      ? String(context.sourceDriveName || env.GOOGLE_SHARED_DRIVE_NAME || '').trim()
+      ? normalizeDriveName(context.sourceDriveName || env.GOOGLE_SHARED_DRIVE_NAME)
       : '';
     if (sharedDriveRootId) {
       logger.info(`CloudFuze content: Shared Drive source — migrating the drive itself `
@@ -1098,17 +1099,40 @@ async function triggerMigration(context) {
 
     let units;
     if (Array.isArray(context.userFolderMappings) && context.userFolderMappings.length > 0 && !pathOverride) {
-      units = context.userFolderMappings.map((u) => ({
-        sourceEmail: u.sourceEmail || context.sourceEmail,
-        destinationEmail: u.destinationEmail || context.destinationEmail,
-        // For a Shared Drive both fields describe the DRIVE; otherwise keep the caller's folder.
-        sourcePath: (sharedDriveRootId && sharedDriveName) ? `/${sharedDriveName}` : (u.sourcePath || '/'),
-        fromRootId: sharedDriveRootId || u.sourceRootId || u.sourcePath || '/',
-        folderRootId: sharedDriveRootId || u.sourceRootId || null,
-        // Kept for the report so the QA output still names the folder the run seeded.
-        seededFolderPath: u.sourcePath || null,
-        destinationPath: resolveDestPath(u.destinationPath),
-      }));
+      units = context.userFolderMappings.map((u) => {
+        // Per-row drive wins over the run-wide one. The run-wide pair used to be applied to every
+        // row unconditionally, so a run naming two Shared Drives read BOTH rows from whichever
+        // drive was resolved first — the second drive was silently never scanned. A row that
+        // carries no drive of its own still falls back to the run-wide pair, so existing
+        // single-drive runs are unchanged.
+        //
+        // Still gated on isSharedDrive — that flag tests the registered CLOUD TYPE
+        // (`sourceCloudName` contains SHARED_DRIVE), not where the bytes happen to sit. Dropping
+        // the gate silently broke googledrive→sharepoint: GOOGLE_SHARED_DRIVE_NAME is set, so the
+        // Drive seeder resolves a Shared Drive and now reports its id back, which made a My Drive
+        // cloud send "/QA_Team1" as its source path. The cloud registration decides the shape of
+        // the request; the row only decides WHICH drive within that shape.
+        const rowDriveId = isSharedDrive ? (u.sourceDriveId || sharedDriveRootId || null) : null;
+        const rowDriveName = isSharedDrive
+          ? (normalizeDriveName(u.sourceDriveName) || sharedDriveName || '')
+          : '';
+        const isRowSharedDrive = Boolean(rowDriveId && rowDriveName);
+        return {
+          sourceEmail: u.sourceEmail || context.sourceEmail,
+          destinationEmail: u.destinationEmail || context.destinationEmail,
+          // For a Shared Drive both fields describe the DRIVE; otherwise keep the caller's folder.
+          // The id and the path must describe the same object — naming a subfolder here while
+          // passing the drive id as the root scans nothing (see the job comparison above).
+          sourcePath: isRowSharedDrive ? `/${rowDriveName}` : (u.sourcePath || '/'),
+          fromRootId: rowDriveId || u.sourceRootId || u.sourcePath || '/',
+          folderRootId: rowDriveId || u.sourceRootId || null,
+          // Kept for the report so the QA output still names the folder the run seeded.
+          seededFolderPath: u.sourcePath || null,
+          sourceDriveName: rowDriveName || null,
+          sourceDriveId: rowDriveId || null,
+          destinationPath: resolveDestPath(u.destinationPath),
+        };
+      });
     } else {
       const sourcePath = pathOverride || context.sourceTestDataPath || context.sourcePath || '/';
       units = [{
@@ -1717,6 +1741,13 @@ ${pathCsv}`);
         sourcePath: u.seededFolderPath || u.sourcePath,
         // The path actually sent to CloudFuze, kept for diagnosis.
         requestedSourcePath: u.sourcePath,
+        // WHICH Shared Drive this unit came from. resolveUnits() prefers migratedUsers over
+        // userFolderMappings, so omitting these here left validation with no drive per unit: it fell
+        // back to the run-wide drive for EVERY unit and compared unit 2's destination against unit
+        // 1's source tree. Two drives holding the same folder name made that look plausible —
+        // run f6290828 reported 88 permission mismatches that were entirely this, not the migration.
+        sourceDriveName: u.sourceDriveName || null,
+        sourceDriveId: u.sourceDriveId || null,
         destinationPath: u.destinationPath,
         attributed: Boolean(u.attributed),
       })),

@@ -8,6 +8,9 @@ const executionService = require('../services/executionService');
 const neutaraClient = require('../clients/neutaraClient');
 const { resolve: resolveAgents, list: listCombinations } = require('./agentRegistry');
 const devemailClient = require('../clients/devemailClient');
+const { normalizeDriveName } = require('../utils/driveNames');
+const sharepointClient = require('../clients/sharepointClient');
+const deepContentCore = require('../validation/shared/deepContentCore');
 
 /**
  * Resolve the test-data + validation agent classes for a context's combination.
@@ -446,6 +449,15 @@ class AgentOrchestrator {
         // Align Step 1's single seed to entry[0]: its folder name AND its As-User target.
         if ((cufEntries[0].sourceFolderName || '').trim()) context.sourceFolderName = cufEntries[0].sourceFolderName.trim();
         if (cufEntries[0]._boxUserId) context.boxTargetUserId = cufEntries[0]._boxUserId;
+        // …and its Shared Drive. Step 1 seeds entry[0]'s dataset, so it has to target entry[0]'s
+        // drive; without this every row seeded into GOOGLE_SHARED_DRIVE_NAME, which is why a run
+        // could only ever exercise one drive.
+        const entry0Drive = normalizeDriveName(cufEntries[0].sourceDriveName);
+        if (entry0Drive) context.sourceSharedDriveName = entry0Drive;
+        // …and its drive-level access mode (feature 4.10): "open" grants the everyone-group at the
+        // drive root, "restricted" grants only the named few. Absent = no drive-level seeding, which
+        // is the pre-existing behaviour.
+        if (cufEntries[0].driveAccessMode) context.driveAccessMode = cufEntries[0].driveAccessMode;
       }
 
       // ── Use-existing-folder mode: skip seeding, resolve each user's EXISTING folder ──────
@@ -494,20 +506,29 @@ class AgentOrchestrator {
         const isSharedDrive = useExistingProvider === 'googleshareddrive';
         context.userFolderMappings = [];
         for (const e of cufEntries) {
-          const folderName = (e.sourceFolderName || context.sourceFolderName || '').trim().replace(/^\/+/, '');
+          // Trailing slashes matter as much as leading ones: a CSV column reads "/QA_Team1/" just
+          // as often as "/QA_Team1", and the old leading-only strip left "QA_Team1/" behind, which
+          // matched nothing.
+          const folderName = normalizeDriveName(e.sourceFolderName || context.sourceFolderName);
           if (!folderName) {
             log.warn(`Content useExistingSource: no source folder named for ${e.sourceEmail} — skipping`);
             continue;
           }
           try {
             let driveId = null;
+            let driveName = '';
             if (isSharedDrive) {
-              const drive = await driveClient.resolveSharedDriveByName(env.GOOGLE_SHARED_DRIVE_NAME, e.sourceEmail);
+              // Each row may name its own drive; GOOGLE_SHARED_DRIVE_NAME is only the fallback.
+              // Reading the env value alone meant a two-drive run resolved both rows against one
+              // drive here, so the second row's folder was looked for in the wrong place.
+              driveName = normalizeDriveName(e.sourceDriveName) || normalizeDriveName(env.GOOGLE_SHARED_DRIVE_NAME);
+              const drive = await driveClient.resolveSharedDriveByName(driveName, e.sourceEmail);
               if (!drive) {
-                log.warn(`Content useExistingSource: Shared Drive "${env.GOOGLE_SHARED_DRIVE_NAME}" not visible to ${e.sourceEmail} — skipping`);
+                log.warn(`Content useExistingSource: Shared Drive "${driveName}" not visible to ${e.sourceEmail} — skipping`);
                 continue;
               }
               driveId = drive.id;
+              driveName = drive.name;
             }
             const hits = (await driveClient.findFoldersByName(folderName, e.sourceEmail))
               .filter((h) => (driveId ? h.driveId === driveId : true));
@@ -523,9 +544,13 @@ class AgentOrchestrator {
               destinationEmail: e.destinationEmail,
               sourcePath: `/${folderName}`,
               sourceRootId: String(hits[0].id),
+              sourceDriveName: driveName || null,
+              sourceDriveId: driveId || null,
               destinationPath: e.destinationPath || context.destinationPath || '',
             });
-            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "/${folderName}" (id=${hits[0].id}${driveId ? `, drive=${driveId}` : ''})`);
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "/${folderName}" `
+              + `(id=${hits[0].id}${driveId ? `, drive="${driveName}" ${driveId}` : ''})`);
+            // Kept for single-drive compatibility; the per-row fields above are authoritative.
             if (driveId) context.sourceDriveId = driveId;
           } catch (resErr) {
             log.warn(`Content useExistingSource: resolve "${folderName}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
@@ -581,24 +606,53 @@ class AgentOrchestrator {
               destinationEmail: cufEntries[0].destinationEmail,
               sourcePath: context.sourceTestDataPath,
               sourceRootId: context.sourceRootId,
+              // Step 1 seeded into entry[0]'s drive (aligned above), so record what it actually
+              // used rather than the run-wide name — they differ as soon as rows name drives.
+              sourceDriveName: normalizeDriveName(cufEntries[0].sourceDriveName) || normalizeDriveName(sourceData.sharedDriveName) || null,
+              sourceDriveId: sourceData.sharedDriveId || context.sourceDriveId || null,
+              // What was actually granted at the drive root, for the feature 4.10 comparison.
+              driveAccess: sourceData.driveAccess || null,
               destinationPath: cufEntries[0].destinationPath || context.destinationPath || '',
             }];
             for (let i = 1; i < cufEntries.length; i++) {
               const entry = cufEntries[i];
               const localPart = String(entry.sourceEmail || `user${i + 1}`).split('@')[0];
-              const folderName = (entry.sourceFolderName || '').trim() || `${baseName} ${localPart}`;
+              // Each row may name its OWN Shared Drive. Rows that name none stay on the run-wide
+              // drive, so single-drive runs are unaffected. Two rows naming different drives get
+              // one seeding pass each, which is what makes "N drives in one run" real.
+              const rowDrive = normalizeDriveName(entry.sourceDriveName) || normalizeDriveName(context.sourceSharedDriveName) || '';
+              const step1Drive = normalizeDriveName(context.sourceSharedDriveName);
+              // The "<base> <user>" suffix exists because multi-USER rows all seed into ONE account,
+              // where identically named folders would collide. Rows separated by DRIVE have no such
+              // collision — and the whole point of a multi-drive run is that each drive holds the
+              // SAME tree, so suffixing would make the two sides non-comparable. Keep the base name
+              // whenever this row targets a different drive than Step 1 did.
+              const separatedByDrive = Boolean(rowDrive) && rowDrive !== step1Drive;
+              const folderName = (entry.sourceFolderName || '').trim()
+                || (separatedByDrive ? baseName : `${baseName} ${localPart}`);
               try {
                 const extraAgent = new TestDataAgent();
                 // Seed As-User into THIS user's own Box account (null → connected account fallback).
-                const data = await extraAgent.run({ ...context, sourceFolderName: folderName, boxTargetUserId: entry._boxUserId || null });
+                const data = await extraAgent.run({
+                  ...context,
+                  sourceFolderName: folderName,
+                  boxTargetUserId: entry._boxUserId || null,
+                  sourceSharedDriveName: rowDrive || undefined,
+                  // Each drive declares its own access mode — that difference IS the test.
+                  driveAccessMode: entry.driveAccessMode || undefined,
+                });
                 context.userFolderMappings.push({
                   sourceEmail: entry.sourceEmail,
                   destinationEmail: entry.destinationEmail,
                   sourcePath: `/${data.rootFolderName}`,
                   sourceRootId: String(data.rootFolderId),
+                  sourceDriveName: normalizeDriveName(data.sharedDriveName) || rowDrive || null,
+                  sourceDriveId: data.sharedDriveId || null,
+                  driveAccess: data.driveAccess || null,
                   destinationPath: entry.destinationPath || context.destinationPath || '',
                 });
-                log.info(`Content multi-user: seeded for ${entry.sourceEmail} → /${data.rootFolderName} (id=${data.rootFolderId})`);
+                log.info(`Content multi-user: seeded for ${entry.sourceEmail} → /${data.rootFolderName} (id=${data.rootFolderId})`
+                  + `${data.sharedDriveName ? ` in Shared Drive "${data.sharedDriveName}"` : ''}`);
               } catch (seedErr) {
                 log.warn(`Content multi-user: seeding for ${entry.sourceEmail} failed (${seedErr.message}) — skipping this user`);
               }
@@ -619,6 +673,87 @@ class AgentOrchestrator {
 
       if (executionService.isCancelled(context.executionId)) {
         throw new Error('Execution cancelled by user');
+      }
+
+      // ── Guard: a Shared Drive migrates WHOLE, so its root must hold only QA data ─────────────
+      // CloudFuze scans a Shared Drive as the drive, never as a folder inside it: the source path
+      // and fromRootId must describe the same object, and a subfolder id scans nothing (see
+      // docs/content-migration-path-mapping-findings.md). So everything in the drive root migrates,
+      // not just the folder this run seeded.
+      //
+      // That was an operational rule someone had to remember, and it has already been broken once —
+      // a leftover "ZZ Seeding Fix Check" folder was migrated because of it. Checking it here turns
+      // the rule into a visible warning on the run instead of a surprise in the report.
+      //
+      // A warning rather than a failure: extra data in the drive makes the report noisier, but the
+      // run is still valid for the folder under test, and stopping someone's run over a stray folder
+      // would be worse than telling them about it.
+      if (isContentMode && /shared_?drive/i.test(String(context.sourceProvider || ''))) {
+        try {
+          const driveClient = require('../clients/driveClient');
+          const seeded = new Set(
+            (context.userFolderMappings || [])
+              .map((u) => normalizeDriveName(u.sourcePath))
+              .filter(Boolean)
+              .map((n) => n.toLowerCase())
+          );
+          const checkedDrives = new Map();
+          for (const u of context.userFolderMappings || []) {
+            if (!u.sourceDriveId || checkedDrives.has(u.sourceDriveId)) continue;
+            checkedDrives.set(u.sourceDriveId, true);
+            const rootKids = await driveClient.listChildren(u.sourceDriveId, u.sourceEmail || context.sourceEmail);
+            const strays = rootKids.filter((k) => !seeded.has(String(k.name || '').trim().toLowerCase()));
+            const label = u.sourceDriveName || u.sourceDriveId;
+            if (strays.length === 0) {
+              log.info(`Source drive "${label}": root holds only the seeded folder — nothing extra will migrate`);
+            } else {
+              log.warn(`Source drive "${label}": ${strays.length} item(s) in the drive root are NOT part of this `
+                + `run and WILL be migrated because a Shared Drive migrates whole — `
+                + `${strays.map((k) => `"${k.name}"`).join(', ')}. `
+                + 'Remove them from the drive to keep the report clean.');
+              context.sourceDriveStrays = [
+                ...(context.sourceDriveStrays || []),
+                { drive: label, items: strays.map((k) => k.name) },
+              ];
+            }
+          }
+        } catch (guardErr) {
+          log.warn(`Source drive contents check failed (non-blocking): ${guardErr.message}`);
+        }
+      }
+
+      // ── Pre-create each row's destination folder ────────────────────────────────────────────
+      // A multi-drive run gives each source drive its own destination sub-folder so the two trees
+      // do not merge. Nothing creates those folders: CloudFuze is handed a destination path, and
+      // whether it creates a missing segment has never been established on this server. So create
+      // them here, before the migration is triggered — a folder that turns out to be unnecessary
+      // is harmless, whereas a missing one risks the job resolving to the library root and the two
+      // drives writing over each other (an earlier run reported 70 extra / 260 misplaced from
+      // exactly that kind of merge).
+      //
+      // Non-blocking on purpose: if Graph cannot reach the destination the migration itself will
+      // fail with a clearer message than anything this step could raise.
+      if (isContentMode && /sharepoint/i.test(String(context.destinationProvider || ''))) {
+        const wanted = [...new Set(
+          (context.userFolderMappings || [])
+            .map((u) => deepContentCore.inDrivePath(u.destinationPath))
+            .filter((p) => p && p !== '/')
+        )];
+        if (wanted.length > 0) {
+          try {
+            const site = await sharepointClient.getSite(
+              context.sharepointHostname || env.SHAREPOINT_HOSTNAME,
+              context.sharepointSitePath || env.SHAREPOINT_SITE_PATH,
+              context.destinationEmail
+            );
+            for (const p of wanted) {
+              const made = await sharepointClient.ensureFolderPath(site.id, p, context.destinationEmail);
+              log.info(`Content destination: "${p}" ready${made.length ? ` (created ${made.join(', ')})` : ' (already existed)'}`);
+            }
+          } catch (destErr) {
+            log.warn(`Content destination pre-create failed (non-blocking): ${destErr.message}`);
+          }
+        }
       }
 
       // Step 2: Trigger and monitor migration

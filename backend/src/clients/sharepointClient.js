@@ -56,6 +56,59 @@ async function graphGet(url, email) {
  * @param {string} email   destination account (selects the tenant)
  * @returns {Promise<boolean>} true when deleted, false when the path did not exist
  */
+/**
+ * Create every missing segment of a folder path inside the site's default document library.
+ *
+ * Exists so a multi-drive run can put each source drive in its own destination folder without
+ * anyone pre-creating them by hand: the requester supplies one base path ("/QA/Documents") and each
+ * row's drive name becomes a sub-folder under it.
+ *
+ * The alternative was CloudFuze's `migrateFolderName` job field, but that has never been sent
+ * non-blank against this server, and whether CloudFuze creates a missing destination path segment
+ * is equally unproven. Creating it ourselves is verifiable before the migration starts, and is
+ * symmetric with deleteItemByPath, which cleanup already uses.
+ *
+ * Idempotent — an existing segment is left alone. Returns the paths actually created.
+ */
+async function ensureFolderPath(siteId, folderPath, email) {
+  const segs = String(folderPath || '').split('/').map((s) => s.trim()).filter(Boolean);
+  if (segs.length === 0) return [];
+
+  const tenant = getMsTenant(email || '');
+  const created = [];
+  let current = '';
+  for (const seg of segs) {
+    const parent = current;
+    current = `${current}/${seg}`;
+    // A GET first keeps this idempotent and keeps the log honest about what was actually created.
+    if (await getFolderItem(siteId, current, email)) continue;
+
+    const token = await getAppAccessToken(tenant || '1');
+    const url = driveItemUrl(siteId, parent, '/children');
+    logger.info(`[SharePoint] CREATE FOLDER ${current}`);
+    try {
+      await retryWithBackoff(
+        () => axios.post(
+          url,
+          { name: seg, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 60000 }
+        ),
+        { label: `SharePoint CREATE ${current}`, maxRetries: 2 }
+      );
+      created.push(current);
+    } catch (err) {
+      // 409 means it appeared between the GET and the POST — a concurrent run, or a retry landing
+      // twice. Either way the folder now exists, which is all the caller needs.
+      if (err?.response?.status === 409) {
+        logger.info(`[SharePoint] ${current} already exists`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return created;
+}
+
 async function deleteItemByPath(siteId, path, email) {
   const clean = `/${String(path || '').replace(/^\/+/, '')}`;
   if (clean === '/') throw new Error('deleteItemByPath: refusing to delete the library root');
@@ -409,5 +462,6 @@ module.exports = {
   getItemMetadata,
   downloadItemContent,
   resolveTenantHostname,
+  ensureFolderPath,
   deleteItemByPath,
 };
