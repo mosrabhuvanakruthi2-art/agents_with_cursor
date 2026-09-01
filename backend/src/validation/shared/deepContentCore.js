@@ -22,6 +22,9 @@
 const { sha256Hex } = require('../../utils/mailMigrationComparator');
 const { intEnv, boolEnv } = require('./deepMailCore');
 const roleMap = require('../contentRoleMap');
+// Destination name/path rules live in validation/destinations/, one file per destination, so
+// supporting a new one is an added file rather than an edit to this shared module.
+const destinations = require('../destinations');
 
 /* ── Names ──────────────────────────────────────────────────────────────────
  * SharePoint Online / OneDrive reject `" * : < > ? / \ |` outright, disallow leading and trailing
@@ -37,55 +40,39 @@ const roleMap = require('../contentRoleMap');
  * `lastIndex` between `.test()` calls, so a shared instance makes results depend on call order.
  */
 /**
- * Characters SharePoint Online actually rejects in a file or folder name:  " * : < > ? /  |
+ * Destination rules used when a caller names no destination.
  *
- * The set used to also include ~ # % & { }. Those have been permitted since the 2017 special-character
- * update, and treating them as invalid made the validator predict a destination name that never occurs.
- * Observed on run 6a8d53d2: source "Special !@#$%^&*()-_+=[] Folder" arrived as
- * "Special !@#$%^&-()-_+=[] Folder" — # % & all preserved, only * replaced — while the validator
- * expected "Special !@_$_^__()-_+=[] Folder" and so reported the folder missing, its real name extra,
- * and every child misplaced. One wrong character class, four wrong findings.
- *
- * A leading ~ is handled by isReservedName(), not here, because only its position is a problem.
+ * SharePoint, because that is what every existing combination migrates into — so this module keeps
+ * exactly the behaviour it had while the rules themselves now live in validation/destinations/.
+ * A combination migrating elsewhere passes its own rules (see compareTrees / expectedDestName).
  */
+const DEST = destinations.DEFAULT;
+
+/** Characters the default destination rejects. Fresh regex per call — see the rules module. */
 function spInvalidChars() {
-  return /["*:<>?/\\|]/g;
+  return DEST.invalidChars();
 }
 
-/** Names SharePoint refuses regardless of characters. */
-const SP_RESERVED_NAMES = new Set([
-  '.lock', 'con', 'prn', 'aux', 'nul', 'desktop.ini', 'forms',
-  ...Array.from({ length: 10 }, (_, i) => `com${i}`),
-  ...Array.from({ length: 10 }, (_, i) => `lpt${i}`),
-]);
-
-/** Longest name SharePoint keeps intact; beyond this the destination may truncate. */
-const TRUNCATION_MATCH_MIN = 60;
-
-/**
- * The name SharePoint should end up with: unsupported characters replaced, surrounding spaces trimmed.
- * Case is preserved. `replacement` is '_' or '-' (feature 7.1 allows either).
- */
-function sanitizeForSharePoint(name, replacement = '_') {
-  return String(name || '').replace(spInvalidChars(), replacement).trim();
-}
-
-/** True when the name is reserved by SharePoint and cannot be created as-is. */
+/** True when the name is reserved by the destination and cannot be created as-is. */
 function isReservedName(name) {
-  const n = String(name || '').trim().toLowerCase();
-  if (!n) return false;
-  if (SP_RESERVED_NAMES.has(n)) return true;
-  if (n.startsWith('~$')) return true;
-  if (n.includes('_vti_')) return true;
-  // Leading "゛" / "ဧ" are rejected as the first character of a folder name.
-  return /^[゛ဗ]/.test(n);
+  return DEST.isReservedName(name);
 }
 
-/** True when the name carries characters or spacing SharePoint will not accept unchanged. */
-function needsSanitizing(name) {
-  const raw = String(name || '');
-  return spInvalidChars().test(raw) || raw !== raw.trim();
+/** The name the destination should end up with: unsupported characters replaced, spaces trimmed. */
+function sanitizeForSharePoint(name, replacement = '_') {
+  return DEST.sanitizeName(name, replacement);
 }
+
+/** True when the name carries characters or spacing the destination will not accept unchanged. */
+function needsSanitizing(name) {
+  return DEST.needsSanitizing(name);
+}
+
+/** Shortest prefix that still counts as the truncated form of a longer name. */
+const TRUNCATION_MATCH_MIN = DEST.truncationMatchMin;
+
+/** Re-exported unchanged so this module's public surface is exactly what it was. */
+const SP_RESERVED_NAMES = DEST.reservedNames;
 
 /** Normalised key for matching — case and surrounding whitespace only. */
 function normKey(name) {
@@ -126,8 +113,8 @@ function namesMatch(sourceName, destName) {
  * must not be reported missing.
  * ───────────────────────────────────────────────────────────────────────────*/
 
-const PATH_LENGTH_LIMIT = 400;
-const SEGMENT_LENGTH_LIMIT = 255;
+const PATH_LENGTH_LIMIT = DEST.pathLengthLimit;
+const SEGMENT_LENGTH_LIMIT = DEST.segmentLengthLimit;
 
 function segmentsOf(path) {
   return String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
@@ -306,8 +293,10 @@ function convertName(name, mimeType) {
 }
 
 /** The full name this item should carry in SharePoint: converted, then sanitized. */
-function expectedDestName(name, mimeType, replacement = '_') {
-  return sanitizeForSharePoint(convertName(name, mimeType), replacement);
+function expectedDestName(name, mimeType, replacement = '_', rules = DEST) {
+  // `rules` is how a combination migrating somewhere other than SharePoint opts out of SharePoint's
+  // name rules. Defaulted, so every existing caller behaves exactly as before.
+  return (rules || DEST).sanitizeName(convertName(name, mimeType), replacement);
 }
 
 /** True when the item was converted, so its destination bytes legitimately differ from the source. */
@@ -376,7 +365,16 @@ function destNameCandidatesFor(item) {
 }
 
 function compareTrees(sourceItems, destItems, opts = {}) {
-  const { destPrefix = '', pathLimit = PATH_LENGTH_LIMIT, segmentLimit = SEGMENT_LENGTH_LIMIT } = opts;
+  // opts.rules selects the DESTINATION's name and path rules. Omitted, it is SharePoint — which is
+  // what every caller does today, so their results are unchanged. A Google destination passes its
+  // own rules and thereby escapes SharePoint's forbidden characters, reserved names and the
+  // 400-character path limit, none of which apply there.
+  const rules = opts.rules || DEST;
+  const {
+    destPrefix = '',
+    pathLimit = rules.pathLengthLimit,
+    segmentLimit = rules.segmentLengthLimit,
+  } = opts;
   const source = Array.isArray(sourceItems) ? sourceItems : [];
   const dest = Array.isArray(destItems) ? destItems : [];
 
@@ -401,8 +399,8 @@ function compareTrees(sourceItems, destItems, opts = {}) {
     const segs = segmentsOf(parentOf(p));
     return [...new Set([
       segs.map((seg) => normKey(seg)).join('/'),
-      segs.map((seg) => normKey(sanitizeForSharePoint(seg, '_'))).join('/'),
-      segs.map((seg) => normKey(sanitizeForSharePoint(seg, '-'))).join('/'),
+      segs.map((seg) => normKey(rules.sanitizeName(seg, '_'))).join('/'),
+      segs.map((seg) => normKey(rules.sanitizeName(seg, '-'))).join('/'),
     ])];
   };
 
@@ -673,9 +671,11 @@ async function tierBHashes(pairs, downloadSource, downloadDest, opts = {}) {
  * @param {Array} sourcePerms  [{ email, role, type: 'user'|'group' }]
  * @param {Array} destPerms    [{ email, roles: [], principalType }]
  * @param {(email) => string} mapEmail
+ * @param {object} [opts]  { groupFallbackFrom?: (destGroup) => boolean } — which destination
+ *                        groups may satisfy a USER's grant through membership.
  * @returns {{ checked, matches, mismatches, escalations, viaGroup }}
  */
-function comparePermissions(sourcePerms, destPerms, mapEmail) {
+function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
   const dest = Array.isArray(destPerms) ? destPerms : [];
   const matches = [];
   const mismatches = [];
@@ -686,8 +686,21 @@ function comparePermissions(sourcePerms, destPerms, mapEmail) {
   let checked = 0;
 
   // Group grants on the destination, for the membership fallback below.
+  //
+  // opts.groupFallbackFrom lets a combination decide WHICH destination groups may stand in for a
+  // user's own grant. SharePoint adds built-in site groups (Owners / Members / Visitors, and the
+  // @*.onmicrosoft.com principals) to effectively every item, and those carry full control — so
+  // without a filter they satisfied every user grant automatically and the whole per-user
+  // permission check silently passed regardless of what had migrated.
+  //
+  // Default: accept any group, which is the behaviour box→sharepoint relies on. Only a combination
+  // that knows its destination adds blanket groups should narrow it.
+  const groupFallbackFrom = typeof opts.groupFallbackFrom === 'function'
+    ? opts.groupFallbackFrom
+    : () => true;
   const destGroupRoles = dest
     .filter((d) => String(d.principalType || '') === 'group')
+    .filter((d) => groupFallbackFrom(d))
     .flatMap((d) => d.roles || []);
 
   /**

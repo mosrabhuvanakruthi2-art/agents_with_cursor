@@ -239,6 +239,40 @@ function ensureSpace(doc, needed) {
   if (doc.y + needed > pageBottom(doc)) doc.addPage();
 }
 
+/**
+ * Draw one line of text that MUST fit a fixed column, shrinking the font until it does.
+ *
+ * `lineBreak: false` tells PDFKit not to wrap, and PDFKit then happily draws past the width it was
+ * given — so a long value ran straight over whatever sat to its right. That is the overlapping text
+ * in the header meta band ("googleshareddrive -> SharePoint" needed 110pt in an 74pt column) and in
+ * the CloudFuze status pill ("Processed" needed 40pt in 34pt).
+ *
+ * Shrinking beats truncating here: these are short labels a reviewer needs whole, and one point of
+ * size costs nothing. Only if the floor is reached does it fall back to an ellipsis, which is still
+ * better than silently painting over the neighbouring column.
+ *
+ * Restores the caller's font size, so it can be dropped in anywhere without side effects.
+ */
+function drawFitted(doc, text, x, y, width, opts = {}) {
+  const str = String(text == null ? '' : text);
+  if (!str) return;
+  const startSize = doc._fontSize;
+  const minSize = opts.minSize || 5.5;
+  let size = startSize;
+  while (size > minSize && doc.fontSize(size).widthOfString(str) > width) {
+    size -= 0.25;
+  }
+  const fits = doc.fontSize(size).widthOfString(str) <= width;
+  doc.text(str, x, y, {
+    width,
+    align: opts.align,
+    lineBreak: false,
+    // At the floor and still too wide: clip rather than overlap the next column.
+    ...(fits ? {} : { ellipsis: true, height: size * 1.35 }),
+  });
+  doc.fontSize(startSize);
+}
+
 function hRule(doc, y, color = C.border) {
   doc.save().strokeColor(color).lineWidth(0.75)
     .moveTo(MARGIN, y).lineTo(MARGIN + CONTENT_W, y).stroke().restore();
@@ -310,7 +344,7 @@ function drawPageHeader(doc, execution, validation, context, result) {
   const metaColW = leftW / metaItems.length;
   doc.fontSize(7.5).font(F_REGULAR).fillColor(C.darkAlt);
   metaItems.forEach((item, i) => {
-    doc.text(item, MARGIN + i * metaColW, 100, { width: metaColW - 6, lineBreak: false });
+    drawFitted(doc, item, MARGIN + i * metaColW, 100, metaColW - 6);
   });
   doc.text(`Initiated: ${initiated}`, MARGIN + leftW, 100, { width: initW, align: 'right', lineBreak: false });
 
@@ -389,7 +423,7 @@ function drawBulkMigrationStatus(doc, executions) {
   doc.save().fillColor('#f1f5f9').rect(MARGIN, y, TABLE_W, HDR_H).fill().restore();
   let hx = MARGIN;
   doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
-  COLS.forEach((c) => { doc.text(c.label, hx + 5, y + 6, { width: c.w - 10, lineBreak: false }); hx += c.w; });
+  COLS.forEach((c) => { drawFitted(doc, c.label, hx + 5, y + 6, c.w - 10); hx += c.w; });
   doc.save().strokeColor('#94a3b8').lineWidth(0.5)
     .moveTo(MARGIN, y + HDR_H).lineTo(MARGIN + TABLE_W, y + HDR_H).stroke().restore();
   y += HDR_H;
@@ -415,12 +449,13 @@ function drawBulkMigrationStatus(doc, executions) {
     cells.forEach((cell) => {
       if (!cell.badge) {
         doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text)
-          .text(cell.text, rx + 5, y + 8, { width: cell.w - 10, lineBreak: false });
+;
+        drawFitted(doc, cell.text, rx + 5, y + 8, cell.w - 10);
       } else {
         const tagW = cell.w - 10;
         doc.save().fillColor(badge.bg).roundedRect(rx + 5, y + 6, tagW, 15, 3).fill().restore();
-        doc.fontSize(7).font(F_BOLD).fillColor(badge.fg)
-          .text(badge.label, rx + 5, y + 10, { width: tagW, align: 'center', lineBreak: false });
+        doc.fontSize(7).font(F_BOLD).fillColor(badge.fg);
+        drawFitted(doc, badge.label, rx + 5, y + 10, tagW, { align: 'center' });
       }
       rx += cell.w;
     });
@@ -451,7 +486,7 @@ function drawPairOverviewGrid(doc, executions) {
   let hx = MARGIN;
   doc.fontSize(8).font(F_BOLD).fillColor('#92B5CC');
   COLS.forEach((c) => {
-    doc.text(c.label, hx + 5, y + 7, { width: c.w - 10, lineBreak: false });
+    drawFitted(doc, c.label, hx + 5, y + 7, c.w - 10);
     hx += c.w;
   });
   y += HDR_H;
@@ -639,7 +674,8 @@ function drawPairDividerBand(doc, pairIndex, totalPairs, execution, status) {
   const tagX   = PAGE_WIDTH - MARGIN - tagW;
   doc.save().fillColor(isFail ? C.failBg : C.passBg).roundedRect(tagX, 6, tagW, 16, 3).fill().restore();
   doc.fontSize(8).font(F_BOLD).fillColor(isFail ? C.fail : C.pass)
-    .text(status, tagX, 9, { width: tagW, align: 'center', lineBreak: false });
+    .fillColor(isFail ? C.fail : C.pass);
+  drawFitted(doc, status, tagX, 9, tagW, { align: 'center' });
 
   doc.y = bandH + 6;
 }
@@ -771,7 +807,7 @@ function drawMigrationJobSection(doc, context, result) {
   let hx = MARGIN;
   doc.fontSize(8).font(F_BOLD).fillColor(C.darkAlt);
   COLS.forEach((c) => {
-    doc.text(c.label, hx + 5, y + 6, { width: c.w - 10, lineBreak: false });
+    drawFitted(doc, c.label, hx + 5, y + 6, c.w - 10);
     hx += c.w;
   });
   doc.save().strokeColor('#94a3b8').lineWidth(0.5)
@@ -823,13 +859,14 @@ function drawMigrationJobSection(doc, context, result) {
   cells.forEach((cell, i) => {
     if (i < cells.length - 1) {
       doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text)
-        .text(cell.text, rx + 5, y + 9, { width: cell.w - 10, lineBreak: false });
+;
+      drawFitted(doc, cell.text, rx + 5, y + 9, cell.w - 10);
     } else {
       // Status badge — full width of remaining column
       const tagW = cell.w - 10;
       doc.save().fillColor(statusBg).roundedRect(rx + 5, y + 7, tagW, 16, 3).fill().restore();
-      doc.fontSize(7.5).font(F_BOLD).fillColor(statusFg)
-        .text(cfStatusLabel, rx + 5, y + 11, { width: tagW, align: 'center', lineBreak: false });
+      doc.fontSize(7.5).font(F_BOLD).fillColor(statusFg);
+      drawFitted(doc, cfStatusLabel, rx + 5, y + 11, tagW, { align: 'center' });
     }
     rx += cell.w;
   });
@@ -1086,15 +1123,28 @@ function drawFunctionalityChecklist(doc, validation, context) {
   // Flat list of feature rows — no family sub-headers (they duplicated feature names and added noise).
   const features = checklist.families.flatMap((fam) => fam.features);
   for (const feat of features) {
-    ensureSpace(doc, 15);
+    // Evidence WRAPS, up to three lines. It used to be clipped to a single line with an ellipsis,
+    // which cut off exactly the sentence a reviewer needs — the reason a feature failed. Three lines
+    // holds the explanations this report actually produces without letting one row run a page.
+    const evidence = String(feat.evidence || '');
+    const EV_LINE = 9.5;
+    const EV_MAX_H = EV_LINE * 3;
+    const evH = evidence
+      ? Math.min(doc.fontSize(7.5).font(F_REGULAR).heightOfString(evidence, { width: EVID_W }), EV_MAX_H)
+      : 0;
+    const rowH = Math.max(12.5, evH + 3);
+    ensureSpace(doc, rowH + 2);
     const ry = doc.y;
     drawStatusIcon(feat.status, MARGIN + 3, ry);
-    // ellipsis:true + one-line height → single clipped line (PDFKit 0.18 ignores lineBreak:false alone).
+    // The NAME stays one clipped line — feature names are short and a wrapped name would misalign
+    // the icon. (PDFKit 0.18 ignores lineBreak:false alone, so height + ellipsis does the clipping.)
     doc.fontSize(8).font(F_REGULAR).fillColor(feat.status === 'na' ? C.subtle : C.text)
       .text(feat.name, MARGIN + ICON_W, ry, { width: NAME_W - 4, height: 10, ellipsis: true, lineBreak: false });
-    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
-      .text(feat.evidence || '', MARGIN + ICON_W + NAME_W, ry, { width: EVID_W, height: 10, ellipsis: true, lineBreak: false });
-    doc.y = ry + 12.5;
+    if (evidence) {
+      doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
+        .text(evidence, MARGIN + ICON_W + NAME_W, ry, { width: EVID_W, height: EV_MAX_H, ellipsis: true });
+    }
+    doc.y = ry + rowH;
   }
   doc.moveDown(0.4);
 }
@@ -2534,10 +2584,23 @@ function drawContentItemTree(doc, items, opts = {}) {
     }
     if (it.contentHash) extras.push(`content hash ${it.contentHash.ok ? 'identical ✓' : 'DIFFERS ✗'}`);
     if (extras.length) {
-      ensureSpace(doc, 10);
+      // Advance by the MEASURED height, not a flat 9pt.
+      //
+      // This line carries every link on the item, so a folder deep in the tree produced six or more
+      // wrapped lines while doc.y moved down only one — and the next item's name was then drawn on
+      // top of the remainder. That is the overlapping text through the per-item pages of the report:
+      // "Level 8" printed inside the previous item's trailing "anonymous/view, anonymous/view...".
+      //
+      // ensureSpace also has to reserve the real height, or a tall line starting near the page
+      // bottom splits with its first line on one page and the rest on the next.
+      const extrasText = `↳ ${extras.join('  ·  ')}`;
+      const extrasW = CONTENT_W - indent - 14;
+      doc.fontSize(6.8).font(F_REGULAR);
+      const extrasH = doc.heightOfString(extrasText, { width: extrasW });
+      ensureSpace(doc, extrasH + 3);
       const ey = doc.y;
-      doc.fontSize(6.8).font(F_REGULAR).fillColor(C.subtle).text(`↳ ${extras.join('  ·  ')}`, x + 14, ey, { width: CONTENT_W - indent - 14 });
-      doc.y = ey + 9;
+      doc.fillColor(C.subtle).text(extrasText, x + 14, ey, { width: extrasW });
+      doc.y = ey + Math.max(9, extrasH + 1);
     }
   }
   if (items.length > MAX) {
@@ -2578,15 +2641,24 @@ function drawContentFeatureChecklist(doc, checklist, summary) {
       doc.moveDown(0.15);
     }
     const st = STATE[row.status] || STATE.na;
-    ensureSpace(doc, 20);
-    const y = doc.y;
+    // Measure the row BEFORE reserving space. A flat 20pt was reserved while the title and detail
+    // below wrap freely, so a long detail starting near the page bottom drew its status tag on one
+    // page and its text on the next — the overlap seen in the report.
     const tagW = 30;
+    const textW0 = CONTENT_W - tagW - 6;
+    const titleH = doc.fontSize(8).font(F_BOLD)
+      .heightOfString(`${row.id}  ${row.feature}`, { width: textW0 });
+    const detailH = row.detail
+      ? doc.fontSize(7).font(F_REGULAR).heightOfString(String(row.detail), { width: textW0 })
+      : 0;
+    ensureSpace(doc, titleH + detailH + 8);
+    const y = doc.y;
     doc.save().fillColor(st.bg).roundedRect(MARGIN, y + 1, tagW, 11, 2).fill().restore();
     doc.fontSize(6.5).font(F_BOLD).fillColor(st.fg)
       .text(st.txt, MARGIN, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
 
     const textX = MARGIN + tagW + 6;
-    const textW = CONTENT_W - tagW - 6;
+    const textW = textW0;
     doc.fontSize(8).font(F_BOLD).fillColor(C.text)
       .text(`${row.id}  ${row.feature}`, textX, y, { width: textW });
     if (row.detail) {

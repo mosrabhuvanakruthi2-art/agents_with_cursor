@@ -280,6 +280,29 @@ class SharePointValidationAgent extends ContentReportValidationAgent {
       .catch(() => ({ permissions: [], links: [] }));
   }
 
+  /** Items directly in one folder. Never throws — an unreadable folder reads as empty. */
+  async listChildren(siteId, folderPath, email) {
+    return sharepointClient.listFolderChildren(siteId, folderPath, email).catch(() => []);
+  }
+
+  /**
+   * One destination file, split into non-empty lines.
+   *
+   * Used for the CSV reports CloudFuze writes into the library root (features 5.16 / 6.2). Those
+   * were long reported as "no API for the CSV" — there is no special API, they are ordinary items
+   * and read like any other file. Never throws: an unreadable report reads as empty, which the
+   * caller reports rather than mistaking for a pass.
+   */
+  async readTextLines(siteId, itemPath, email) {
+    try {
+      const buf = await sharepointClient.downloadItemContent(siteId, itemPath, email);
+      return buf.toString('utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
+    } catch (err) {
+      logger.warn(`[SharePointValidationAgent] could not read ${itemPath}: ${err.message}`);
+      return [];
+    }
+  }
+
   /** Version count for one item. Never throws. */
   async readVersionCount(siteId, itemPath, email) {
     const res = await sharepointClient.getItemVersions(siteId, itemPath, email)

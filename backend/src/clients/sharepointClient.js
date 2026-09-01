@@ -435,13 +435,25 @@ async function downloadItemContent(siteId, itemPath, email) {
   const item = await getFolderItem(siteId, itemPath, email);
   if (!item?.id) throw new Error(`SharePoint item not found: ${itemPath}`);
 
-  const metaUrl = `${GRAPH_BASE}/sites/${siteId}/drive/items/${item.id}?$select=@microsoft.graph.downloadUrl,size`;
-  const meta = await graphGet(metaUrl, email);
-  const downloadUrl = meta?.['@microsoft.graph.downloadUrl'];
-  if (!downloadUrl) throw new Error(`no download URL for ${itemPath} (a folder, or content unavailable)`);
-
+  // Read the bytes through /content rather than resolving @microsoft.graph.downloadUrl first.
+  //
+  // Graph does NOT return that annotation when it is named in $select: the response comes back with
+  // only @odata.context, @odata.etag and size, so the download URL was always undefined and every
+  // call threw "no download URL (a folder, or content unavailable)" — for ordinary files that
+  // download perfectly well. Verified against the live tenant: with $select the annotation is
+  // absent, without it present, and /content returns the bytes directly.
+  //
+  // Latent until now only because Tier B file hashing is off by default; switching
+  // CONTENT_DEEP_VALIDATE_FILE_HASH on would have failed the hash of every single file.
+  // /content also costs one request instead of two.
+  const contentUrl = `${GRAPH_BASE}/sites/${siteId}/drive/items/${item.id}/content`;
+  const token = await getAppAccessToken(getMsTenant(email || '') || '1');
   const res = await retryWithBackoff(
-    () => axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 120000 }),
+    () => axios.get(contentUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+      timeout: 120000,
+    }),
     { label: `SharePoint download ${itemPath}`, maxRetries: 2 }
   );
   return Buffer.from(res.data);

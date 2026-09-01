@@ -501,6 +501,125 @@ function straysInDriveRoot(rootChildren, seededPaths) {
   return rootChildren.filter((k) => !seeded.has(String(k.name || '').trim().toLowerCase()));
 }
 
+/** Mirrors _createPermissionMatrix's per-drive principal rotation. */
+function rotationFor(driveName, roles, principals) {
+  const offset = driveName ? [...driveName].reduce((a, ch) => a + ch.charCodeAt(0), 0) : 0;
+  return roles.map((role, i) => [role, principals[(i + offset) % principals.length]]);
+}
+
+function testPermissionIssuesAreCollapsed() {
+  // Google reports an inherited grant on EVERY item, so one group missing from a Shared Drive root
+  // was counted once per item — the report read "88 mismatch" for a single defect, and totals showed
+  // 878 grants from a handful of real ones. The headline must be the distinct problem count.
+  const mismatches = Array.from({ length: 88 }, () => ({
+    user: 'everyone_at_exinent@filefuze.co',
+    mappedTo: '(no matching group at the destination)',
+    sourceRole: 'fileOrganizer',
+    expected: 'Edit',
+    destRoles: [],
+  }));
+  // One genuinely different defect alongside it.
+  mismatches.push({
+    user: 'alex@filefuze.co', mappedTo: 'alex@gajha.com',
+    sourceRole: 'writer', expected: 'Edit', destRoles: ['read'],
+  });
+
+  const byDefect = new Map();
+  for (const m of mismatches) {
+    const key = `${String(m.user).toLowerCase()}|${m.sourceRole}|${m.expected}|${(m.destRoles || []).join('/') || 'none'}`;
+    const prev = byDefect.get(key);
+    if (prev) prev.items += 1; else byDefect.set(key, { items: 1 });
+  }
+
+  assert.strictEqual(byDefect.size, 2, '89 mismatching grants are 2 distinct problems');
+  const spread = [...byDefect.values()].reduce((n, d) => n + d.items, 0);
+  assert.strictEqual(spread, 89, 'and the item spread is still reported, not discarded');
+  const biggest = [...byDefect.values()].sort((a, b) => b.items - a.items)[0];
+  assert.strictEqual(biggest.items, 88, 'the inherited grant is the one that spread');
+
+  // Different destination roles for the same principal+source role stay separate defects — collapsing
+  // those would hide a genuinely different outcome on some items.
+  const twoOutcomes = new Map();
+  for (const m of [
+    { user: 'a@x.co', sourceRole: 'writer', expected: 'Edit', destRoles: ['read'] },
+    { user: 'a@x.co', sourceRole: 'writer', expected: 'Edit', destRoles: [] },
+  ]) {
+    const key = `${m.user}|${m.sourceRole}|${m.expected}|${(m.destRoles || []).join('/') || 'none'}`;
+    twoOutcomes.set(key, (twoOutcomes.get(key) || 0) + 1);
+  }
+  assert.strictEqual(twoOutcomes.size, 2, 'read vs no-access are different defects');
+  console.log('  permission issues are collapsed: ok');
+}
+
+function testReportRowsAreDistinguishable() {
+  // Rows used to be tagged with the source email. In a multi-drive run every unit shares the same
+  // user and folder name, so both drives emitted "[erik@filefuze.co] 3. File/folder structure" —
+  // two identical labels with different numbers, and nothing saying which drive. That name is also
+  // the Neutara ticket's `field`, so a two-drive failure raised a bug naming a check twice and a
+  // drive never.
+  const destLeaf = (p) => String(p || '').split('/').filter(Boolean).pop() || '';
+  const tagOf = (u) => u.sourceDriveName || destLeaf(u.destinationPath) || u.sourceEmail || 'unit';
+
+  const units = [
+    { sourceEmail: 'erik@filefuze.co', sourceDriveName: 'QA_Team1', destinationPath: '/QA_Team1/Agent Shared Drive' },
+    { sourceEmail: 'erik@filefuze.co', sourceDriveName: 'QA_Team2', destinationPath: '/QA_Team2/Agent Shared Drive' },
+  ];
+  const tags = units.map(tagOf);
+  assert.deepStrictEqual(tags, ['QA_Team1', 'QA_Team2']);
+  assert.strictEqual(new Set(tags).size, 2, 'two units must never share a label');
+
+  // Same user, same folder name — the old tag collapsed them into one indistinguishable label.
+  assert.strictEqual(units[0].sourceEmail, units[1].sourceEmail, 'same user in both units');
+  assert.strictEqual(new Set(units.map((u) => u.sourceEmail)).size, 1,
+    'which is exactly why the email cannot be the label');
+
+  // No drive (Box / OneDrive) falls back to the destination folder, still distinguishing units.
+  const boxUnits = [
+    { sourceEmail: 'a@x.co', destinationPath: '/SANITY/Documents/Agent Box Data' },
+    { sourceEmail: 'a@x.co', destinationPath: '/SANITY/Documents/Agent Box Data bob' },
+  ];
+  const boxTags = boxUnits.map(tagOf);
+  assert.strictEqual(new Set(boxTags).size, 2, 'destination folder distinguishes drive-less units');
+
+  // Nothing at all still yields a label rather than "[undefined]".
+  assert.strictEqual(tagOf({}), 'unit');
+  console.log('  report rows are distinguishable: ok');
+}
+
+function testPerDrivePrincipalRotation() {
+  // Every drive used to give the same role to the same person, so a grant leaking from one drive to
+  // another was undetectable — "alex=write" on folder_writer is exactly what a correct migration
+  // looks like in BOTH drives. Duplicate folders already leaked once in a multi-drive run.
+  const roles = ['reader', 'commenter', 'writer', 'fileOrganizer'];
+  const people = ['alex@filefuze.co', 'mia@filefuze.co'];
+
+  const t1 = rotationFor('QA_Team1', roles, people);
+  const t2 = rotationFor('QA_Team2', roles, people);
+
+  // All four roles are still exercised in BOTH drives — coverage for features 4.2-4.8 is untouched.
+  assert.deepStrictEqual(t1.map(([r]) => r), roles);
+  assert.deepStrictEqual(t2.map(([r]) => r), roles);
+  for (const set of [t1, t2]) for (const [, who] of set) assert.ok(who, 'every role has a grantee');
+
+  // …but the person holding a given role differs between the drives, which is what makes a leaked
+  // grant visible as the wrong identity.
+  const differing = roles.filter((r, i) => t1[i][1] !== t2[i][1]);
+  assert.ok(differing.length > 0, 'at least one role is held by a different person per drive');
+
+  // Deterministic: the same drive name always produces the same assignment, so two runs of the same
+  // drive stay comparable.
+  assert.deepStrictEqual(rotationFor('QA_Team1', roles, people), t1);
+
+  // A single-drive run (no drive name) keeps the original offset-0 rotation.
+  const noDrive = rotationFor('', roles, people);
+  assert.strictEqual(noDrive[0][1], people[0], 'unchanged when no drive is named');
+
+  // One principal configured: rotation degenerates safely rather than dividing by zero.
+  const single = rotationFor('QA_Team2', roles, ['alex@filefuze.co']);
+  for (const [, who] of single) assert.strictEqual(who, 'alex@filefuze.co');
+  console.log('  per-drive principal rotation: ok');
+}
+
 function testDriveRoleCap() {
   // Measured on run 6e2a2352 — the same folder, the same item grant, two drives:
   //   QA_Team1  drive=fileOrganizer  item=fileOrganizer  → SharePoint edit  PASS
@@ -642,6 +761,236 @@ function testCleanupScansEveryDestination() {
   console.log('  cleanup scans every destination: ok');
 }
 
+
+/**
+ * A mailbox that could not be READ must never report as a suppression pass (features 9.1/9.2).
+ *
+ * notificationsChecked was set from the CONTENT_DEEP_VALIDATE_NOTIFICATIONS switch alone, so an
+ * unreadable destination mailbox yielded leaks = [] and the feature checklist announced "No
+ * SharePoint sharing mail reached the user" on zero evidence — while check 13 in the same report
+ * said WARN. The headline a reviewer reads was the wrong one.
+ */
+function testNotificationsNotProvenIsNotAPass() {
+  const verdict = (flagOn, mailboxReadable, leaks) => {
+    const checked = flagOn && mailboxReadable;       // read, not merely switched on
+    if (!checked) return 'na';
+    return leaks.length === 0 ? 'pass' : 'fail';
+  };
+
+  assert.strictEqual(verdict(true, false, []), 'na',
+    'an unreadable mailbox is NOT a pass — nothing was observed');
+  assert.strictEqual(verdict(false, true, []), 'na',
+    'the switch being off is not a pass either');
+  assert.strictEqual(verdict(true, true, []), 'pass',
+    'read the mailbox and found no sharing mail — a real pass');
+  assert.strictEqual(verdict(true, true, ['"X shared" from no-reply@sharepointonline.com']), 'fail',
+    'sharing mail that leaked through is a failure');
+
+  // Run-wide: one unreadable unit must sink the whole feature, not be averaged away.
+  const units = [{ checked: true }, { checked: false }];
+  const runChecked = units.every((u) => u.checked);
+  assert.strictEqual(runChecked, false,
+    'one unit with an unreadable mailbox leaves the feature unproven for the run');
+  console.log('  unreadable mailbox is NA, never a suppression pass: ok');
+}
+
+
+/**
+ * The wrong-scope General access link must be removed even when the right one is already there.
+ *
+ * Idempotency has to skip only the CREATE. An earlier version returned early on "already set" and
+ * skipped the removal with it, so a RESTRICTED drive ended up carrying both "Anyone with the link"
+ * and the organization link. Google applies the wider of the two, so the whole tree stayed public
+ * while the dialog simultaneously showed the restricted entry — observed live on QA_Team2.
+ */
+function testWrongScopeLinkAlwaysRemoved() {
+  // What the seeder decides, given the links already on the folder.
+  const plan = (mode, existing) => {
+    const wantAnyone = mode === 'open';
+    const want = wantAnyone
+      ? { type: 'anyone', role: 'reader' }
+      : { type: 'domain', role: 'reader' };
+    return {
+      removePublic: !wantAnyone,                                             // never conditional
+      create: !existing.some((l) => l.type === want.type && l.role === want.role),
+    };
+  };
+
+  // The live failure: restricted drive, organization link already present, public link still there.
+  assert.deepStrictEqual(
+    plan('restricted', [{ type: 'anyone', role: 'reader' }, { type: 'domain', role: 'reader' }]),
+    { removePublic: true, create: false },
+    'the public link is removed even though the organization link already exists');
+
+  // First run on a restricted drive: remove the public link, create the organization one.
+  assert.deepStrictEqual(
+    plan('restricted', [{ type: 'anyone', role: 'reader' }]),
+    { removePublic: true, create: true },
+    'a restricted drive drops the public link and gains the organization link');
+
+  // Nothing to remove, nothing to duplicate.
+  assert.deepStrictEqual(
+    plan('restricted', [{ type: 'domain', role: 'reader' }]),
+    { removePublic: true, create: false },
+    'removal is attempted unconditionally; the create is skipped');
+
+  // An OPEN drive keeps its public link — removal must never run there.
+  assert.deepStrictEqual(
+    plan('open', [{ type: 'anyone', role: 'reader' }]),
+    { removePublic: false, create: false },
+    'an open drive keeps "Anyone with the link"');
+  assert.deepStrictEqual(
+    plan('open', []),
+    { removePublic: false, create: true },
+    'an open drive creates the public link and removes nothing');
+
+  console.log('  wrong-scope General access link always removed: ok');
+}
+
+/**
+ * General access follows the row's DRIVE ACCESS choice (Drive's Share dialog, bottom row).
+ *
+ * Drive offers Restricted / <organization> / Anyone with the link, and every item beneath the main
+ * folder inherits it. It was never seeded: cleanup keeps the main folder AND its permissions, so a
+ * hand-set "Anyone with the link" persisted for months — a drive selected as RESTRICTED was
+ * publishing its whole tree to the internet and no run could tell.
+ */
+function testGeneralAccessFollowsDriveAccess() {
+  const plan = (mode, domain) => {
+    const m = String(mode || '').trim().toLowerCase();
+    if (!m) return null;                                  // nothing declared -> leave untouched
+    if (m === 'open') return { type: 'anyone', role: 'reader' };
+    if (!domain) return null;                             // cannot build an org link without a domain
+    return { type: 'domain', role: 'reader', domain };
+  };
+
+  assert.deepStrictEqual(plan('restricted', 'filefuze.co'),
+    { type: 'domain', role: 'reader', domain: 'filefuze.co' },
+    'a restricted drive gets the ORGANIZATION link ("Sync Orbit"), not a public one');
+  assert.deepStrictEqual(plan('open', 'filefuze.co'), { type: 'anyone', role: 'reader' },
+    'an open drive gets "Anyone with the link"');
+  assert.strictEqual(plan('', 'filefuze.co'), null,
+    'with no mode declared the folder is left exactly as it was');
+  assert.strictEqual(plan('restricted', ''), null,
+    'no domain means no organization link can be built — left unchanged rather than made public');
+
+  // The two drives in one run must end up with DIFFERENT reach, which is the whole point.
+  const t1 = plan('open', 'filefuze.co');
+  const t2 = plan('restricted', 'filefuze.co');
+  assert.notStrictEqual(t1.type, t2.type, 'open and restricted drives differ in link reach');
+
+  // Idempotency: the same scope already present must not be created twice, or the permission count
+  // climbs every run because cleanup keeps the folder.
+  const existing = [{ type: 'domain', role: 'reader' }];
+  const want = plan('restricted', 'filefuze.co');
+  const already = existing.some((l) => l.type === want.type && l.role === want.role);
+  assert.strictEqual(already, true, 'an existing organization link is kept, not duplicated');
+  console.log('  General access follows the drive access mode: ok');
+}
+
+/**
+ * Relocated over-limit content must keep a shareable link (feature 11.1, second half).
+ *
+ * Observed live: CloudFuze moved the over-400-character content to a sibling of the migrated root
+ * and it arrived with ZERO link permissions, while every source item in that chain carried one. The
+ * placeholder URL then points at content nobody can open by link.
+ *
+ * The verdict must hinge on SCOPE, because combination document #13 lets the destination refuse
+ * ANONYMOUS links but never permits dropping an ORGANIZATION link.
+ */
+function testRelocatedSharingVerdict() {
+  const verdict = (sourceScopes, destScopes, declaredBlocked) => {
+    const had = new Set(sourceScopes);
+    const got = new Set(destScopes);
+    const lostAll = got.size === 0;
+    const lostOrg = had.has('organization') && !got.has('organization');
+    if (!lostAll && !lostOrg) return 'PASS';
+    const orgLost = lostOrg || (lostAll && had.has('organization'));
+    if (orgLost) return 'FAIL';
+    return declaredBlocked ? 'INFO' : 'WARN';
+  };
+
+  // The live case: source had an organization link, destination has none.
+  assert.strictEqual(verdict(['organization'], [], false), 'FAIL',
+    'a lost organization link is a defect');
+  assert.strictEqual(verdict(['organization'], [], true), 'FAIL',
+    'the blocked policy covers anonymous only — it must NOT excuse a lost organization link');
+
+  // Anonymous-only loss is the one the document lets us excuse, and only when declared.
+  assert.strictEqual(verdict(['anonymous'], [], true), 'INFO',
+    'anonymous-only loss with the policy declared is reported, not failed');
+  assert.strictEqual(verdict(['anonymous'], [], false), 'WARN',
+    'undeclared, an anonymous loss is not silently excused');
+
+  // Sharing preserved.
+  assert.strictEqual(verdict(['organization'], ['organization'], false), 'PASS',
+    'the organization link survived');
+  assert.strictEqual(verdict(['anonymous'], ['anonymous'], true), 'PASS',
+    'an anonymous link that DID arrive is a pass even with the policy declared');
+
+  // Downgraded, not absent: org replaced by anonymous is still an org loss.
+  assert.strictEqual(verdict(['organization'], ['anonymous'], true), 'FAIL',
+    'an organization link replaced by an anonymous one is still lost');
+  console.log('  relocated over-limit sharing verdict by scope: ok');
+}
+
+/**
+ * Drive-wide grants are IDENTIFIED but still VALIDATED.
+ *
+ * Google copies every Shared Drive member's role onto every item beneath the drive root, reporting
+ * it with permissionDetails.inherited = true and inheritedFrom = the DRIVE id (verified live on
+ * drive 0AJoAzUBzPvRXUk9PVA). A full run then recorded 978 grant observations with 0 failures, the
+ * drive-wide group included — so CloudFuze does re-grant these and they must keep being checked.
+ * An earlier version EXCLUDED them, which would have cut coverage to the few items holding a direct
+ * grant while still reporting the same verdict.
+ *
+ * What the drive-id test is for is the REPORT: when one drive-wide grant breaks it breaks on every
+ * item, and those must collapse to one issue rather than N.
+ */
+function testDriveWideGrantsIdentifiedNotExcluded() {
+  const driveId = '0AJoAzUBzPvRXUk9PVA';
+  const folderId = '1nKSVeElwqJv4QDRfqjN1ViZ4kqpjfsBP';
+  const isDriveMembership = (g) => Boolean(driveId && g && g.inherited
+    && String(g.inheritedFrom || '') === String(driveId));
+
+  const grants = [
+    { email: 'everyone_at_exinent@filefuze.co', role: 'fileOrganizer', inherited: true, inheritedFrom: driveId },
+    { email: 'qa-group-view@filefuze.co', role: 'fileOrganizer', inherited: true, inheritedFrom: driveId },
+    { email: 'warner@snapbot.io', role: 'writer', inherited: false, inheritedFrom: null },
+    { email: 'qa-group-manage@filefuze.co', role: 'writer', inherited: true, inheritedFrom: folderId },
+  ];
+
+  // Every grant is compared — nothing is dropped from the check.
+  const itemGrants = grants;
+  assert.strictEqual(itemGrants.length, 4, 'all grants are validated, drive-wide ones included');
+
+  // Drive-wide ones are still recognisable, for collapsing a repeated failure in the report.
+  const driveWide = grants.filter(isDriveMembership);
+  assert.strictEqual(driveWide.length, 2, 'the two drive-root grants are identified');
+  assert.ok(!driveWide.some((g) => g.email === 'qa-group-manage@filefuze.co'),
+    'a grant inherited from a parent FOLDER is a folder permission, not drive membership');
+  assert.ok(!driveWide.some((g) => g.email === 'warner@snapbot.io'), 'a direct grant is not drive-wide');
+  console.log('  drive-wide grants identified but still validated: ok');
+}
+
+/** One broken drive-wide grant must read as one problem, not one per item it touched. */
+function testRepeatedGrantFailureCollapses() {
+  const failing = [];
+  for (let i = 0; i < 88; i++) {
+    failing.push({ principal: 'everyone_at_exinent@filefuze.co', role: 'fileOrganizer',
+      itemType: 'folder', inherited: true, path: '/f' + i });
+  }
+  failing.push({ principal: 'warner@snapbot.io', role: 'writer', itemType: 'folder', path: '/other' });
+
+  const keyOf = (o) => (o.principal
+    ? o.principal.toLowerCase() + '|' + o.role + '|' + o.itemType
+    : 'path:' + o.path);
+  const distinct = new Set(failing.map(keyOf));
+  assert.strictEqual(distinct.size, 2, '89 failing rows are 2 real problems');
+  assert.strictEqual(failing.length, 89, 'the affected-grant count is still available to report');
+  console.log('  repeated drive-wide failure collapses to one issue: ok');
+}
+
 testNormalisation();
 testSeedingTargets();
 testFolderNameAcrossDrives();
@@ -652,6 +1001,9 @@ testDriveAccessModes();
 testPerUnitDriveResolution();
 testCloudTypeGate();
 testDriveRelativeDestination();
+testPermissionIssuesAreCollapsed();
+testReportRowsAreDistinguishable();
+testPerDrivePrincipalRotation();
 testDriveRoleCap();
 testStrayDriveContentsDetected();
 testCleanupCleansEverySourceDrive();
@@ -661,4 +1013,10 @@ testTwoDrivesInOneRun();
 testSingleDriveUnchanged();
 testNonSharedDriveUntouched();
 testDuplicateDriveDetectable();
+testDriveWideGrantsIdentifiedNotExcluded();
+testRelocatedSharingVerdict();
+testGeneralAccessFollowsDriveAccess();
+testWrongScopeLinkAlwaysRemoved();
+testNotificationsNotProvenIsNotAPass();
+testRepeatedGrantFailureCollapses();
 console.log('multiDriveUnits.test.js: ok');

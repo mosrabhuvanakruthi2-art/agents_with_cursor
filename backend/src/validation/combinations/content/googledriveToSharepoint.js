@@ -16,6 +16,7 @@
  */
 
 const SharePointValidationAgent = require('../../../agents/sharepoint/SharePointValidationAgent');
+const docxLinks = require('../../../utils/docxLinks');
 const driveClient = require('../../../clients/driveClient');
 const core = require('../../shared/deepContentCore');
 const {
@@ -24,6 +25,30 @@ const {
 } = require('../../shared/contentFunctionalityChecklist');
 const tolerance = require('../../../utils/contentTolerance');
 const roleMap = require('../../contentRoleMap');
+
+/** Alphanumeric key for matching a principal across tenants (local part or display name). */
+function normPrincipalKey(v) {
+  const s = String(v || '').toLowerCase().trim();
+  if (!s) return '';
+  return (s.includes('@') ? s.split('@')[0] : s).replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * SharePoint's OWN site groups, which appear on every item and are not migrated permissions.
+ *
+ * A site always carries "<Site> Owners / Members / Visitors" plus the Microsoft 365 group behind it
+ * (…@*.onmicrosoft.com). Counting these as migrated grants both padded the totals and — worse — fed
+ * the user-permission group fallback: "QA Members" holds write on the whole library, so every user
+ * whose direct grant was missing was recorded as a match.
+ */
+function isBuiltinSiteGroup(principal) {
+  if (String(principal?.principalType || '').toLowerCase() !== 'group') return false;
+  const name = String(principal.displayName || principal.name || '').toLowerCase().trim();
+  const email = String(principal.email || '').toLowerCase().trim();
+  if (/\b(owners|members|visitors)$/.test(name)) return true;
+  if (/@[^@]*\.onmicrosoft\.com$/.test(email)) return true;
+  return false;
+}
 const env = require('../../../config/env');
 const logger = require('../../../utils/logger');
 
@@ -110,7 +135,7 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
         gPush(sharedDrive ? 'PASS' : 'FAIL', 'Source Shared Drive resolved',
           sharedDrive ? `"${sharedDrive.name}" (${sharedDrive.id})` : `No Shared Drive named "${driveName}" is visible to ${context.sourceEmail}`);
       } catch (err) {
-        gPush('FAIL', 'Source Shared Drive resolved', err.message);
+        gPush('FAIL', 'Source Shared Drive resolved', driveClient.explainAuthError(err, context.sourceEmail));
       }
     } else if (/SHARED_DRIVE/i.test(String(context.sourceCloudName || ''))) {
       // Nothing in the run names the Shared Drive: the wizard has no field for it and the env var is
@@ -134,6 +159,7 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
       notMigratable: [], notComparable: [],
       conversionMismatches: [], permissionObservations: [], linkObservations: [], externalShares: [],
       fileTypes: [], specialChars: { total: 0, arrived: 0 }, notificationLeaks: [],
+      relocatedSharingLost: [],
       notificationsChecked: env.CONTENT_DEEP_VALIDATE_NOTIFICATIONS,
       hashChecked: env.CONTENT_DEEP_VALIDATE_FILE_HASH,
       metadataChecked: env.CONTENT_DEEP_VALIDATE_METADATA,
@@ -200,8 +226,130 @@ class GoogledriveToSharepointValidationAgent extends SharePointValidationAgent {
       }
     }
 
+    // Features 5.16 / 6.2 — the CSV reports CloudFuze writes into the destination library.
+    //
+    // Both were reported "not automated — no API for the CSV". There is no special API, but the
+    // files are ordinary items in the library root and read like any other file, so the reports can
+    // be checked directly. Found live: "<user> shared links.csv" with 3,184 rows carrying source and
+    // destination link columns, and "<user>-EmbeddedLinks.csv" at 0 bytes.
+    //
+    // Matched by SUFFIX because the name carries the source user's display name.
+    await this.checkCloudFuzeCsvReports(siteId, units, gPush).catch((err) => {
+      gPush('WARN', 'CloudFuze CSV reports', `Could not read the library root: ${err.message}`);
+    });
+
+    if (this.csvReports) totals.csvReports = this.csvReports;
     return buildResult(globalChecks, perUser, totals);
   }
+
+  /**
+   * Read the two CSV reports CloudFuze leaves in the destination library root.
+   *
+   * Shared links CSV (feature 5.16) — one row per shared item, with the source link and the
+   * destination link side by side. Its job is to let a customer see what was shared, so what matters
+   * is that it exists and covers the items that actually carry links.
+   *
+   * Embedded links CSV (feature 6.2) — one row per document containing a link to another file.
+   * An EMPTY file is only correct when nothing in the source had an embedded link; with such a
+   * document seeded, empty means the scan found nothing and the report is not doing its job.
+   */
+  /**
+   * Columns each CloudFuze CSV report must carry, from the reference exports the team works to.
+   *
+   * Row count alone does not make a report usable: a customer asking "what was shared, and where
+   * did it end up?" needs the source path, the destination path and the destination link on the
+   * same row. A report that lost a column is still full of rows and still useless.
+   *
+   * Matched on a NORMALISED header — punctuation and spaces stripped — because the index column is
+   * written variously as "No", "S.No" and "Sl.No" across exports, and an exact-string check would
+   * fail on a report that is perfectly correct.
+   */
+  static get CSV_REQUIRED_COLUMNS() {
+    return {
+      sharedLinks: ['file/folder name', 'source path', 'destination path', 'destination shared link'],
+      embeddedLinks: ['original file name', 'original file path', 'link file name',
+        'linked file path', 'source url', 'destination path'],
+    };
+  }
+
+  /**
+   * Which required columns a report's header is missing.
+   * @returns {string[]} empty when every column is present
+   */
+  static missingCsvColumns(headerLine, required) {
+    const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9/]+/g, ' ').trim();
+    const present = String(headerLine || '').split(',').map(norm).filter(Boolean);
+    return (required || []).filter((want) => {
+      const w = norm(want);
+      return !present.some((got) => got === w || got.includes(w) || w.includes(got));
+    });
+  }
+
+  async checkCloudFuzeCsvReports(siteId, units, gPush) {
+    const email = units[0]?.destinationEmail;
+    if (!email) return;
+    // `this` IS a SharePointValidationAgent — the class extends it.
+    const root = await this.listChildren(siteId, '/', email);
+    const files = (root || []).filter((k) => !k.folder && !k.isFolder);
+    const bySuffix = (suffix) => files.find((k) => String(k.name || '').toLowerCase().endsWith(suffix));
+
+    const sharedCsv = bySuffix('shared links.csv');
+    if (!sharedCsv) {
+      gPush('WARN', '15. Shared Links CSV (feature 5.16) — not found',
+        'No "<user> shared links.csv" is present in the destination library root. The source had '
+        + 'shared items, so CloudFuze should have written this report.');
+    } else {
+      const rows = await this.readTextLines(siteId, `/${sharedCsv.name}`, email);
+      const dataRows = rows.length > 1 ? rows.length - 1 : 0;
+      const Cls = GoogledriveToSharepointValidationAgent;
+      const missing = Cls.missingCsvColumns(rows[0], Cls.CSV_REQUIRED_COLUMNS.sharedLinks);
+      const status = dataRows === 0 ? 'FAIL' : (missing.length > 0 ? 'FAIL' : 'PASS');
+      gPush(status,
+        `15. Shared Links CSV (feature 5.16) — ${dataRows} row(s)`,
+        dataRows === 0
+          ? `"${sharedCsv.name}" is present but has no data rows, so nothing shared was reported`
+          : (missing.length > 0
+            ? `"${sharedCsv.name}" lists ${dataRows} row(s) but is missing required column(s): `
+              + `${missing.join(', ')}. Header: ${String(rows[0]).slice(0, 140)}`
+            : `"${sharedCsv.name}" lists ${dataRows} shared item(s); every required column present `
+              + `(${Cls.CSV_REQUIRED_COLUMNS.sharedLinks.join(', ')})`));
+      this.csvReports = {
+        ...(this.csvReports || {}),
+        sharedLinks: { name: sharedCsv.name, rows: dataRows, missingColumns: missing },
+      };
+    }
+
+    const embeddedCsv = bySuffix('embeddedlinks.csv');
+    if (!embeddedCsv) {
+      gPush('INFO', '16. Embedded Links CSV (feature 6.2) — not found',
+        'No "<user>-EmbeddedLinks.csv" is present in the destination library root.');
+    } else {
+      const rows = await this.readTextLines(siteId, `/${embeddedCsv.name}`, email);
+      const dataRows = rows.length > 1 ? rows.length - 1 : 0;
+      // Empty is a finding only because a document WITH an embedded link is now seeded.
+      gPush(dataRows > 0 ? 'PASS' : 'WARN',
+        `16. Embedded Links CSV (feature 6.2) — ${dataRows} row(s)`,
+        dataRows > 0
+          ? `"${embeddedCsv.name}" lists ${dataRows} document(s) containing embedded links`
+          : `"${embeddedCsv.name}" is empty (${embeddedCsv.size ?? 0} bytes). Empty is correct only `
+            + 'if no source document linked to another file; when one does (see feature 6.1) an empty '
+            + 'report means the scan recorded nothing. Compare against check 14.');
+      const Cls2 = GoogledriveToSharepointValidationAgent;
+      const missing2 = dataRows > 0
+        ? Cls2.missingCsvColumns(rows[0], Cls2.CSV_REQUIRED_COLUMNS.embeddedLinks)
+        : [];
+      if (missing2.length > 0) {
+        gPush('FAIL', `16b. Embedded Links CSV — missing column(s) (${missing2.length})`,
+          `"${embeddedCsv.name}" has ${dataRows} row(s) but is missing: ${missing2.join(', ')}. `
+          + `Header: ${String(rows[0]).slice(0, 140)}`);
+      }
+      this.csvReports = {
+        ...(this.csvReports || {}),
+        embeddedLinks: { name: embeddedCsv.name, rows: dataRows, missingColumns: missing2 },
+      };
+    }
+  }
+
 }
 
 /**
@@ -313,7 +461,7 @@ async function validateUnit(unit, deps) {
       });
     }
   } catch (err) {
-    push('WARN', 'Drive source tree', `Could not read the Drive source: ${err.message}`);
+    push('WARN', 'Drive source tree', `Could not read the Drive source: ${driveClient.explainAuthError(err, unit.sourceEmail)}`);
   }
 
   let destTree = [];
@@ -331,7 +479,8 @@ async function validateUnit(unit, deps) {
   if (sourceTree.length === 0) {
     push('FAIL', 'Source items scanned',
       'No source items were read — nothing was validated. Check the Shared Drive name, the source path, and Drive access.');
-    return finishUnit(unit, checks, found, itemDetails, spRootPath, destBase, sourceFolderName, spRootItem);
+
+  return finishUnit(unit, checks, found, itemDetails, spRootPath, destBase, sourceFolderName, spRootItem);
   }
   push('PASS', 'Source items scanned', `${sourceTree.length} item(s) read from the source`);
 
@@ -374,6 +523,115 @@ async function validateUnit(unit, deps) {
       cmp.placeholderLinks.slice(0, 10)
         .map((p) => `${p.path} (${p.encodedLength} encoded chars)`).join(' | ')
         + ' — a Folder/File Path Link URL is the documented outcome above 400 characters');
+  }
+
+  // Feature 11.1, second half — the RELOCATED copy must keep its sharing.
+  //
+  // Above we accept the placeholder as the documented outcome. What nothing checked is whether the
+  // content CloudFuze moved to a shorter path is still reachable. Observed live: the real file was
+  // relocated to a sibling of the migrated root and arrived with ZERO link permissions, while every
+  // item in the source chain carried one. So the placeholder URL points at content nobody can open
+  // by link — reported as "the long folder does not open by link".
+  //
+  // An ORGANIZATION-scope source link is the falsifiable case: combination document #13 lets the
+  // destination refuse ANONYMOUS links, so their absence proves nothing, but it never permits
+  // dropping an organization link. A lost organization link therefore fails; anything else is
+  // reported, and an anonymous-only loss is INFO when the blocked policy is declared.
+  if (cmp.placeholderLinks.length > 0 && spRootItem) {
+    const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+    const rootLeaf = core.lastSegment(spRootPath || '');
+    const overLimitPaths = cmp.placeholderLinks.map((x) => x.path);
+    const inOverLimit = (path) => overLimitPaths.some((op) => path === op || String(path).startsWith(op + '/'));
+
+    // Source link scopes on the over-limit chain. Read from Drive because tree items carry no
+    // permissions; capped at 3 items, which is enough to learn the scopes that should have arrived.
+    const sourceScopes = new Set();
+    for (const item of sourceTree.filter((i) => inOverLimit(i.path)).slice(0, 3)) {
+      try {
+        const sp2 = await driveClient.listPermissions(item.id, unit.sourceEmail);
+        for (const l of (sp2.links || [])) sourceScopes.add(l.type === 'domain' ? 'organization' : 'anonymous');
+      } catch { /* an unreadable source item simply contributes no scope */ }
+    }
+
+    if (sourceScopes.size === 0) {
+      push('INFO', '11b. Relocated over-limit content — no source link to preserve',
+        'The over-limit items carried no shareable link in the source, so there is nothing to check '
+        + 'at the destination.');
+    } else {
+      let siblings = null;
+      try {
+        const oneDeep = await agent.readTree(siteId, destBase, unit.destinationEmail, 1);
+        // DIRECT children only. readTree returns the whole subtree it walked, not one level, so
+        // filtering on the leaf name alone also picked up the 11 folders INSIDE the migrated root
+        // and reported each as an unreadable relocation candidate.
+        siblings = (oneDeep || []).filter((k) => k.type === 'folder'
+          && String(k.path || '').split('/').filter(Boolean).length === 1
+          && !sameName(core.lastSegment(k.path), rootLeaf));
+      } catch (err) {
+        push('WARN', '11b. Relocated over-limit content — not checked',
+          `Could not list ${destBase} to find the relocated copy (${err.message}), so whether it kept `
+          + 'its sharing is unverified.');
+      }
+      if (Array.isArray(siblings) && siblings.length === 0) {
+        push('INFO', '11b. Relocated over-limit content — no relocation folder found',
+          `Nothing besides "${rootLeaf}" sits at ${destBase}, so the over-limit content was not `
+          + 'relocated to a sibling folder on this run.');
+      } else if (Array.isArray(siblings)) {
+        const lost = [];
+        const unreadable = [];
+        for (const r of siblings) {
+          const leaf = core.lastSegment(r.path);
+          const full = `${destBase === '/' ? '' : destBase}/${leaf}`;
+          const rp = await agent.readPermissions(siteId, full, unit.destinationEmail);
+          const perms = rp.permissions || [];
+          const links = perms.filter((x) => x.isLink);
+          const scopes = new Set(links.map((x) => String(x.linkScope || '').toLowerCase()));
+          // readPermissions swallows its errors and answers with an EMPTY list, so "no permissions
+          // at all" means the item could not be read — never that sharing was stripped. A readable
+          // folder always carries the site groups at minimum (observed: 9 permissions, 0 links).
+          // Without this split an unreadable folder would be reported as a lost link.
+          if (perms.length === 0) {
+            unreadable.push(leaf);
+          } else if (links.length === 0) {
+            lost.push({ name: leaf, had: [...sourceScopes], got: 'no link at all' });
+          } else if (sourceScopes.has('organization') && !scopes.has('organization')) {
+            lost.push({ name: leaf, had: ['organization'], got: [...scopes].join('/') || 'none' });
+          }
+        }
+        const declaredBlocked = String(env.CONTENT_DEST_ANONYMOUS_SHARING || '').toLowerCase() === 'blocked';
+        if (unreadable.length > 0) {
+          push('WARN', `11b. Relocated over-limit content — ${unreadable.length} not readable`,
+            `${unreadable.join(', ')} returned no permissions, so whether the relocated copy kept its `
+            + 'sharing could not be determined. Reported rather than assumed either way.');
+        }
+        if (lost.length === 0) {
+          push('PASS', '11b. Relocated over-limit content kept its sharing',
+            `${siblings.length} relocated folder(s) still carry a shareable link (source had `
+            + `${[...sourceScopes].join(' + ')})`);
+        } else {
+          const orgLost = lost.some((l) => l.had.includes('organization'));
+          const anonOnlyExcused = !orgLost && declaredBlocked;
+          // Feature 11.1 is the headline a reviewer reads. It used to pass whenever a placeholder
+          // existed, so a run could print "handled as documented" on the checklist while this very
+          // check reported FAIL two lines above. Carry the loss up so the two agree.
+          found.relocatedSharingLost = (found.relocatedSharingLost || []).concat(
+            lost.map((l) => ({ ...l, orgLost, excused: anonOnlyExcused })));
+          push(orgLost ? 'FAIL' : (anonOnlyExcused ? 'INFO' : 'WARN'),
+            `11b. Relocated over-limit content lost its sharing (${lost.length})`,
+            lost.map((l) => `${l.name}: source had ${l.had.join('+')} link, destination has ${l.got}`).join(' | ')
+            + '. CloudFuze moved this content to a shorter path to clear the 400-character limit, but '
+            + 'the link did not travel with it, so the placeholder URL points at content that cannot '
+            + 'be opened by link.'
+            + (orgLost
+              ? ' An ORGANIZATION link was lost, and combination document #13 permits refusing '
+                + 'anonymous links only — so this is a defect, not a destination policy.'
+              : (anonOnlyExcused
+                ? ' Only an anonymous link is missing and CONTENT_DEST_ANONYMOUS_SHARING=blocked is '
+                  + 'declared, so this is reported rather than failed.'
+                : '')));
+        }
+      }
+    }
   }
 
   // ── Feature 2.1: every source file type arrived
@@ -557,6 +815,17 @@ async function validateUnit(unit, deps) {
     const unmappedPrincipals = [];
     const permMismatches = [];
     const escalations = [];
+    // The same permission DEFECT collapsed across items, so one missing grant reads as one problem.
+    const distinctPermIssues = new Map();
+    // Shared Drive MEMBERSHIP grants (held on the drive, inherited onto every item) — reported on
+    // their own row because feature 4.1 covers folder and file permissions, not drive membership.
+    const driveMembershipGrants = new Map();
+    // Users whose effective access is raised above their own grant by a group on the same item.
+    const effectiveOverGrants = new Map();
+    // Every principal the SOURCE grants anywhere in this unit, plus its mapped destination form.
+    const unitSourceKeys = new Set();
+    // Non-builtin principals seen at the destination, filtered against unitSourceKeys after the loop.
+    const destCandidates = [];
     const linkMismatches = [];
 
     for (const target of targets) {
@@ -571,8 +840,41 @@ async function validateUnit(unit, deps) {
       // Cap each grant at the principal's DRIVE-level role before comparing (see driveRoleCap).
       const sourcePerms = { ...rawSourcePerms, grants: capGrantsToDriveRole(rawSourcePerms.grants) };
 
-      const hasGrants = sourcePerms.grants.length > 0;
+      // ── Shared Drive MEMBERSHIP is not a folder permission ──────────────────────────────────
+      // Feature 4.1 is scoped by the combination document to "folder and file-level permissions...
+      // including root folder, root file, subfolder, and inner file permissions". A Shared Drive
+      // member holds their role on the DRIVE, and Google reports that grant on every item beneath
+      // it with permissionDetails.inherited = true and inheritedFrom = the drive id. It is
+      // membership of the drive, not a permission set on any folder, so it is outside the feature.
+      //
+      // Validating it as an item ACL was doubly wrong: it expected a Shared Drive member to appear
+      // as a per-item grant at the destination, and because Drive copies the grant onto everything,
+      // ONE such group ("everyone_at_exinent@filefuze.co", fileOrganizer on the whole drive)
+      // produced 88 identical failures that buried the item-level grants worth reading.
+      //
+      // Only the drive-root case is excluded. A grant inherited from a parent FOLDER is a real
+      // folder permission and is still compared, as is every grant set directly on the item.
+      const driveRootId = sharedDrive?.id || null;
+      const isDriveMembership = (g) => Boolean(driveRootId && g && g.inherited
+        && String(g.inheritedFrom || '') === String(driveRootId));
+      // Drive membership IS validated — measured, not assumed. A full run reported 978 grant
+      // observations with 0 failures, drive-wide group included, which proves CloudFuze re-grants
+      // these at the destination. Excluding them would have dropped coverage to the handful of
+      // items carrying a direct grant while claiming the same verdict.
+      //
+      // They are still identified, because when one drive-wide grant DOES break, Drive reports it
+      // on every item beneath the root: the checklist collapses those into "1 distinct issue across
+      // N grants" instead of "N grants wrong", which is what made an earlier report unreadable.
+      const itemGrants = sourcePerms.grants || [];
+      for (const g of itemGrants.filter(isDriveMembership)) {
+        driveMembershipGrants.set(`${g.email}|${g.role}`, { email: g.email, role: g.role });
+      }
+
+      const hasGrants = itemGrants.length > 0;
       const hasLinks = sourcePerms.links.length > 0;
+      // Nothing item-level to compare and no link to check: skip before reading the destination.
+      // Most items under a Shared Drive carry only the inherited drive membership, so this also
+      // removes a destination permission read per item that could never inform a verdict.
       if (!hasGrants && !hasLinks) continue;
 
       permChecked++;
@@ -581,7 +883,37 @@ async function validateUnit(unit, deps) {
 
       // Features 4.1–4.8 — per-user access through the mapping
       if (hasGrants) {
-        const res = core.comparePermissions(sourcePerms.grants, destPerms.permissions, mapEmail);
+        // Exclude the destination SITE's own groups from the user fallback. A user with no direct
+        // grant was credited if ANY group on the item had enough access, and "QA Members" (write) /
+        // "QA Owners" (owner) sit on every item of the library — so every such user was recorded as
+        // a match on an assumption nothing checks. Groups that genuinely migrated still count, which
+        // keeps the documented "access through a group is accepted" behaviour intact.
+        const res = core.comparePermissions(itemGrants, destPerms.permissions, mapEmail, {
+          groupFallbackFrom: (d) => !isBuiltinSiteGroup(d),
+        });
+
+        // Collect what the SOURCE grants anywhere in this unit, and every non-builtin principal seen
+        // at the destination. Compared after the loop, not here: a group may carry access to a child
+        // through inheritance while being granted only on an ancestor, so a per-item check would
+        // report legitimate inherited access as an extra grant.
+        for (const g of sourcePerms.grants || []) {
+          const gk = normPrincipalKey(g.email);
+          if (gk) unitSourceKeys.add(gk);
+          const mapped = mapEmail ? mapEmail(g.email) : null;
+          const mk = normPrincipalKey(typeof mapped === 'object' ? mapped?.email : mapped);
+          if (mk) unitSourceKeys.add(mk);
+        }
+        for (const d of destPerms.permissions || []) {
+          if (isBuiltinSiteGroup(d)) continue;
+          const dKeys = [normPrincipalKey(d.email), normPrincipalKey(d.displayName || d.name)].filter(Boolean);
+          if (dKeys.length === 0) continue;
+          destCandidates.push({
+            path: target.source.path,
+            who: d.email || d.displayName || d.name,
+            roles: (d.roles || []).join(',') || 'access',
+            keys: dKeys,
+          });
+        }
         if (detail) {
           detail.permissions = [...res.matches, ...res.mismatches].map((r) => ({
             user: r.user, mappedTo: r.mappedTo, sourceRole: r.sourceRole,
@@ -602,6 +934,14 @@ async function validateUnit(unit, deps) {
             role: r.sourceRole,
             match: r.match,
             path: target.source.path,
+            // WHO the grant is for, and whether it was inherited rather than set on this item.
+            // Without the identity the feature rollup could only count rows, so one group missing
+            // from a Shared Drive root — inherited onto every item — was reported as "88/978 grants
+            // wrong" instead of one problem affecting 88 grants.
+            principal: r.user || null,
+            inherited: Boolean((sourcePerms.grants || []).find(
+              (g) => String(g.email || '').toLowerCase() === String(r.user || '').toLowerCase()
+            )?.inherited),
           });
           const granteeDomain = String(r.user || '').split('@')[1]?.toLowerCase() || '';
           if (granteeDomain && sourceDomain && granteeDomain !== sourceDomain) {
@@ -611,6 +951,46 @@ async function validateUnit(unit, deps) {
         for (const m of res.mismatches) {
           permMismatches.push(`${target.source.path} — ${m.user}${m.mappedTo !== String(m.user).toLowerCase() ? ` → ${m.mappedTo}` : ''}: `
             + `Drive "${m.sourceRole}" (expect ${m.expected}) → SharePoint ${m.destRoles.join('/') || 'no access'}`);
+          // Key the same DEFECT across items. One group missing from a Shared Drive root is one
+          // problem, but Google reports its inherited grant on every item, so it was counted once
+          // per item — "88 mismatches" that were a single grant. The distinct count is what a person
+          // needs to act on; the item count says how far it spread.
+          const key = `${String(m.user).toLowerCase()}|${m.sourceRole}|${m.expected}|${(m.destRoles || []).join('/') || 'none'}`;
+          const prev = distinctPermIssues.get(key);
+          if (prev) {
+            prev.items += 1;
+          } else {
+            distinctPermIssues.set(key, {
+              items: 1,
+              inherited: Boolean((sourcePerms.grants || []).find(
+                (g) => String(g.email || '').toLowerCase() === String(m.user).toLowerCase()
+              )?.inherited),
+              text: `${m.user}${m.mappedTo !== String(m.user).toLowerCase() ? ` → ${m.mappedTo}` : ''}: `
+                + `Drive "${m.sourceRole}" (expect ${m.expected}) → SharePoint ${m.destRoles.join('/') || 'no access'}`,
+            });
+          }
+        }
+
+        // Effective access can exceed the grant we compare. A user's own role is only part of the
+        // story: a group on the same item with a higher level raises what SharePoint actually gives
+        // them, which is why mia showed "Can edit" in Manage Access while the API said read and the
+        // report said "mapped correctly". Resolving real membership needs a Graph call per group, so
+        // this reports the CONDITION — a group outranks the user here — rather than asserting it.
+        for (const m of [...res.matches, ...res.mismatches]) {
+          if ((m.principalType || 'user') !== 'user' || m.viaGroup) continue;
+          const userLevel = roleMap.LEVEL[roleMap.spRolesLevel(m.destRoles || [])] ?? 0;
+          for (const d of destPerms.permissions || []) {
+            if (String(d.principalType || '') !== 'group' || isBuiltinSiteGroup(d)) continue;
+            const groupLevel = roleMap.LEVEL[roleMap.spRolesLevel(d.roles || [])] ?? 0;
+            if (groupLevel > userLevel) {
+              effectiveOverGrants.set(`${String(m.user).toLowerCase()}|${d.email || d.name}`, {
+                user: m.user,
+                own: (m.destRoles || []).join('/') || 'no access',
+                group: d.email || d.name,
+                groupRoles: (d.roles || []).join('/'),
+              });
+            }
+          }
         }
         for (const n of res.notComparable) {
           notComparable.push(`${target.source.path} — ${n.user}: "${n.sourceRole}" — ${n.reason}`);
@@ -649,6 +1029,46 @@ async function validateUnit(unit, deps) {
     found.permissionMismatches = permMismatches;
     found.notComparable = notComparable;
     found.unmappedPrincipals = unmappedPrincipals;
+    // Access at the destination that the source never granted, anywhere in this unit.
+    //
+    // This is the direction that matters for a customer: a confidential drive arriving readable by
+    // people who could not see it before. It was invisible until now because comparePermissions only
+    // ever walks SOURCE grants, so a destination-only principal was never looked at — which is how
+    // the restricted drive QA_Team2 arrived with everyoneatexinent@gajha.com holding write and the
+    // run still reported permissions PASS.
+    //
+    // Reported as a WARN, not a FAIL: the usual cause is a broad grant on the destination library
+    // that everything inherits, which is a destination configuration matter rather than a migration
+    // defect. The row names the principals so it can be judged instead of guessed at.
+    const destinationOnly = [...new Map(
+      destCandidates
+        .filter((c) => !c.keys.some((k) => unitSourceKeys.has(k)))
+        .map((c) => [`${c.who}|${c.roles}`, c])
+    ).values()];
+    found.destinationOnlyGrants = destinationOnly;
+
+    if (destinationOnly.length > 0) {
+      push('WARN', `8c. Access the source never granted (${destinationOnly.length})`,
+        'These principals hold access at the destination with no matching grant anywhere in the '
+        + 'source — most often inherited from the destination library, which also means the '
+        + 'migrated permissions cannot be observed in isolation: '
+        + destinationOnly.slice(0, 8).map((c) => `${c.who} (${c.roles}) at ${c.path}`).join(' | '));
+    }
+
+    // Which roles came from Shared Drive MEMBERSHIP rather than from a grant on the item itself.
+    // Informational only — these are validated exactly like every other grant. It is recorded
+    // because Drive reports a drive-wide grant on every item beneath the root, so a reader seeing
+    // one principal on hundreds of items should know it is one drive-level role, not hundreds of
+    // separate shares.
+    if (driveMembershipGrants.size > 0) {
+      const rows = [...driveMembershipGrants.values()]
+        .map((g) => `${g.email} "${g.role}"`);
+      push('INFO', `8e. Drive-wide roles, inherited by every item (${rows.length})`,
+        `${rows.slice(0, 12).join(' | ')}`
+        + '. These are members of the Shared Drive itself, so Google reports the grant on every '
+        + 'item beneath the drive root. They ARE validated like any other grant — listed here only '
+        + 'so one drive-level role is not read as many separate shares.');
+    }
 
     // Principals with no destination mapping are a configuration gap, not a migration defect:
     // CloudFuze has nobody to re-grant their access to. Reported on their own row so the
@@ -668,8 +1088,29 @@ async function validateUnit(unit, deps) {
       push('PASS', '8. Permissions (features 4.1–4.8)',
         `${permChecked} shared item(s) verified — roles mapped correctly (Viewer/Commenter → view, Contributor/Content Manager → edit)`);
     } else {
-      push('FAIL', `8. Permissions (features 4.1–4.8) — ${permMismatches.length} mismatch`,
-        permMismatches.slice(0, 20).join(' | '));
+      // Headline the DISTINCT problems, not the item count. "88 mismatch" for one group missing from
+      // a drive root told a reader there were 88 things to fix; there was one, inherited onto 88
+      // items. The spread is still stated, because it says how much data is affected.
+      const distinct = [...distinctPermIssues.values()].sort((a, b) => b.items - a.items);
+      const spread = distinct.reduce((n, d) => n + d.items, 0);
+      push('FAIL', `8. Permissions (features 4.1–4.8) — ${distinct.length} distinct issue(s)`,
+        `${distinct.length} problem(s) across ${spread} item-level grant(s). `
+        + distinct.slice(0, 12).map((d) => `${d.text}${d.items > 1
+          ? ` [${d.items} items${d.inherited ? ', inherited from the drive — one grant' : ''}]`
+          : ''}`).join(' | '));
+    }
+
+    // Effective access above the compared grant. Reported, never failed: it is usually a broad group
+    // on the destination site rather than anything the migration did, but it means the migrated roles
+    // cannot be observed in isolation — a Viewer reads as "Can edit" in Manage Access.
+    if (effectiveOverGrants.size > 0) {
+      const rows = [...effectiveOverGrants.values()];
+      const users = [...new Set(rows.map((r) => r.user))];
+      push('WARN', `8d. Effective access exceeds the migrated role (${users.length} user(s))`,
+        'A group on the same item grants more than these users\' own role, so SharePoint shows them '
+        + 'higher access than the migrated permission — the role cannot be verified from Manage '
+        + `Access while that group is present: ${rows.slice(0, 8).map((r) => `${r.user} own=${r.own} `
+          + `but ${r.group}=${r.groupRoles}`).join(' | ')}`);
     }
 
     // Over-granting is a privilege escalation, not a "close enough" pass.
@@ -864,9 +1305,28 @@ async function validateUnit(unit, deps) {
   if (env.CONTENT_DEEP_VALIDATE_NOTIFICATIONS) {
     const res = await agent.findSharingNotifications(unit.destinationEmail, context?.startTime || context?.startedAt);
     found.notificationLeaks = res.leaks;
+    // "Checked" must mean the mailbox was READ, not merely that the switch was on. It was set from
+    // the flag alone, so an unreadable mailbox produced leaks = [] and the feature checklist — the
+    // headline a reviewer reads — announced "No SharePoint sharing mail reached the user" on the
+    // strength of zero evidence. Check 13 said WARN in the same report, so the two disagreed.
+    found.notificationsChecked = res.ok;
+    found.notificationsUnavailable = res.ok ? null : (res.error || 'mailbox unreadable');
     if (!res.ok) {
       push('WARN', '13. Suppress email notifications (features 9.1/9.2)',
         `Could not read ${unit.destinationEmail}'s mailbox: ${res.error} — verify manually`);
+    } else if (!env.CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS) {
+      // Suppression was never requested, so mail is the documented outcome, not a defect. Without
+      // this gate the run failed 9.1/9.2 on 92 perfectly normal SharePoint sharing notifications.
+      found.notificationsChecked = false;
+      found.notificationsUnavailable = null;
+      found.notificationsNotRequested = true;
+      push('INFO', `13. Suppress email notifications — not requested by this run (${res.leaks.length} mail)`,
+        `${res.leaks.length} SharePoint sharing notification(s) reached ${unit.destinationEmail}. The `
+        + 'migration did not ask CloudFuze to suppress destination email, and the combination '
+        + 'document states that without suppression "users receive standard SharePoint sharing '
+        + 'notifications" — so this is expected, not a failure. Set '
+        + 'CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS=true once the job enables suppression, and '
+        + 'these features will then be judged.');
     } else if (res.leaks.length === 0) {
       push('PASS', '13. Suppress email notifications (features 9.1/9.2)',
         `No SharePoint sharing or invitation mail reached ${unit.destinationEmail} — suppression held`);
@@ -874,6 +1334,63 @@ async function validateUnit(unit, deps) {
       push('FAIL', `13. Suppress email notifications (features 9.1/9.2) — ${res.leaks.length} leaked`,
         res.leaks.slice(0, 10).join(' | '));
     }
+  }
+
+  // Feature 6.1 — links held INSIDE a migrated document must point at the destination copy.
+  //
+  // A .docx is a ZIP, so this was left unautomated. It does not need an archive library: DEFLATE is
+  // in Node's standard library, so utils/docxLinks reads word/_rels/document.xml.rels directly and
+  // returns the real hyperlink targets.
+  //
+  // Judged on the RELATIONSHIP targets, never the visible text: the seeded document deliberately
+  // prints its original Drive URL as readable text so a human can compare, and matching on the body
+  // would read that copy and report a failure on every correct migration.
+  const embeddedDoc = sourceTree.find((it) => String(it.path || '')
+  .toLowerCase().endsWith('/embedded links/embedded_link_doc.docx'));
+  if (embeddedDoc) {
+  const destPath = `${destBase === '/' ? '' : destBase}/${sourceFolderName}/Embedded Links/embedded_link_doc.docx`;
+  found.embeddedLinkDoc = { sourcePath: embeddedDoc.path, destPath };
+  let buf = null;
+  try {
+    buf = await agent.readContent(siteId, destPath, unit.destinationEmail);
+  } catch (err) {
+    push('WARN', '14. Embedded links (feature 6.1) — document not readable',
+      `Could not download ${destPath} (${err.message}), so whether its links were rewritten is `
+      + 'unverified. Reported rather than assumed either way.');
+  }
+  if (buf) {
+    const parsed = docxLinks.extractDocxLinks(buf);
+    found.embeddedLinkTargets = parsed.targets;
+    if (!parsed.ok) {
+      push('WARN', '14. Embedded links (feature 6.1) — could not be read',
+        `${destPath} downloaded but could not be parsed (${parsed.reason}). Not a pass: nothing `
+        + 'about its links was observed.');
+    } else if (parsed.targets.length === 0) {
+      push('FAIL', '14. Embedded links (feature 6.1) — the hyperlink is gone',
+        `${destPath} arrived but holds no external hyperlink at all; the source document links `
+        + 'to embedded_link_target.txt, so the link was dropped in migration.');
+    } else {
+      const isGoogle = (t) => /(drive|docs)\.google\.com|googleapis\.com/i.test(t);
+      const isDestination = (t) => /sharepoint\.com/i.test(t) || t.includes('/sites/');
+      const stale = parsed.targets.filter(isGoogle);
+      const rewritten = parsed.targets.filter(isDestination);
+      found.embeddedLinkStale = stale;
+      if (stale.length > 0) {
+        push('FAIL', `14. Embedded links (feature 6.1) — ${stale.length} link(s) still point at Google`,
+          `${destPath} still links to ${stale.slice(0, 3).join(' | ')}. The document migrated but `
+          + 'the link inside it was not rewritten, so a reader is sent back to the source system '
+          + 'instead of the SharePoint copy.');
+      } else if (rewritten.length > 0) {
+        push('PASS', '14. Embedded links (feature 6.1)',
+          `${rewritten.length} link(s) inside ${destPath} were rewritten to the destination: `
+          + `${rewritten.slice(0, 2).join(' | ')}`);
+      } else {
+        push('WARN', '14. Embedded links (feature 6.1) — target unrecognised',
+          `${destPath} holds ${parsed.targets.length} link(s) pointing at neither Google nor `
+          + `SharePoint: ${parsed.targets.slice(0, 3).join(' | ')}. Reported for a human to judge.`);
+      }
+    }
+  }
   }
 
   return finishUnit(unit, checks, found, itemDetails, spRootPath, destBase, sourceFolderName,
@@ -893,6 +1410,10 @@ function finishUnit(unit, checks, found, itemDetails, spRootPath, destBase, sour
     sourceEmail: unit.sourceEmail,
     destinationEmail: unit.destinationEmail,
     sourcePath: unit.sourcePath,
+    // Which Shared Drive this unit came from. Carried so the report can label a row by the thing
+    // that actually distinguishes two units of a multi-drive run: both have the same source user
+    // and the same folder name, so an email or a path tells them apart from nothing.
+    sourceDriveName: unit.sourceDriveName || null,
     destinationPath: spRootPath || unit.destinationPath,
     mapping: {
       sourceEmail: unit.sourceEmail, sourceLocation: unit.sourcePath,
@@ -926,6 +1447,23 @@ function accumulate(totals, unitResult) {
   // Declared destination policy, not a per-unit measurement: if any unit saw the site refuse
   // anonymous sharing, the feature rows for anonymous links are not applicable for the run.
   if (f.anonymousBlocked) totals.anonymousBlocked = true;
+  // One unreadable mailbox makes the whole feature unproven — a per-unit pass must not be reported
+  // as a run-wide pass.
+  if (Array.isArray(f.relocatedSharingLost) && f.relocatedSharingLost.length) {
+    totals.relocatedSharingLost = (totals.relocatedSharingLost || []).concat(f.relocatedSharingLost);
+  }
+  if (f.embeddedLinkDoc && !totals.embeddedLinkDoc) totals.embeddedLinkDoc = f.embeddedLinkDoc;
+  if (Array.isArray(f.embeddedLinkStale) && f.embeddedLinkStale.length) {
+    totals.embeddedLinkStale = (totals.embeddedLinkStale || []).concat(f.embeddedLinkStale);
+  }
+  if (Array.isArray(f.embeddedLinkTargets) && !totals.embeddedLinkTargets) {
+    totals.embeddedLinkTargets = f.embeddedLinkTargets;
+  }
+  if (f.notificationsNotRequested) totals.notificationsNotRequested = true;
+  if (f.notificationsChecked === false) {
+    totals.notificationsChecked = false;
+    totals.notificationsUnavailable = f.notificationsUnavailable || 'mailbox unreadable';
+  }
 }
 
 /**
@@ -1000,8 +1538,20 @@ async function discoverSharedDrive(units) {
 
 function buildResult(globalChecks, perUser, totals) {
   const flat = [...globalChecks];
+  // Label each unit's rows by what actually distinguishes it.
+  //
+  // The tag used to be the source email. In a multi-drive run every unit has the SAME source user
+  // and the SAME seeded folder name, so both drives produced rows reading
+  // "[erik@filefuze.co] 3. File/folder structure" — two identical labels carrying different numbers,
+  // with nothing to say which drive each belonged to. That ambiguity travelled into the PDF and into
+  // the Neutara ticket, whose `field` is this name, so a two-drive failure raised a bug naming a
+  // check twice and a drive never.
+  //
+  // The drive name is the distinguishing fact, so it wins; the destination folder is the fallback
+  // for combinations without drives (Box, OneDrive), and the email only when neither exists.
+  const destLeaf = (p) => String(p || '').split('/').filter(Boolean).pop() || '';
   for (const u of perUser) {
-    const tag = u.sourceEmail || u.sourcePath || 'user';
+    const tag = u.sourceDriveName || destLeaf(u.destinationPath) || u.sourceEmail || 'unit';
     for (const c of u.checks) flat.push({ ...c, name: `[${tag}] ${c.name}` });
   }
   const hasFail = flat.some((c) => c.status === 'FAIL');

@@ -503,6 +503,14 @@ module.exports = {
   CONTENT_DEEP_VALIDATE_LINKS: (process.env.CONTENT_DEEP_VALIDATE_LINKS || '').trim().toLowerCase() !== 'false',
   CONTENT_DEEP_VALIDATE_FILE_HASH: (process.env.CONTENT_DEEP_VALIDATE_FILE_HASH || '').trim().toLowerCase() === 'true',
   CONTENT_DEEP_VALIDATE_NOTIFICATIONS: (process.env.CONTENT_DEEP_VALIDATE_NOTIFICATIONS || '').trim().toLowerCase() === 'true',
+  // Did the MIGRATION JOB ask CloudFuze to suppress destination email? Features 9.1/9.2 compare
+  // the destination mailbox, and the combination document is explicit that without suppression
+  // "users receive standard SharePoint sharing notifications" — so mail is the CORRECT outcome
+  // then, and failing on it reports a defect against normal Microsoft 365 behaviour. Nothing in
+  // this repo requests suppression today, so the default is false and the features report as not
+  // exercised. Declared explicitly, never inferred from "we found no mail".
+  CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS:
+    (process.env.CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS || '').trim().toLowerCase() === 'true',
   DEEP_CONTENT_MAX_FILES: (() => {
     const n = parseInt(process.env.DEEP_CONTENT_MAX_FILES ?? '', 10);
     return Number.isFinite(n) && n > 0 ? n : 500;

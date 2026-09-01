@@ -57,6 +57,16 @@ const SEEDED_CONTENT_NAMES = [
   'Agent Files', 'Agent Native Files', 'Agent Permissions', 'Agent Versions',
   'Agent Shared Links', 'Permission Matrix', 'Shared Link Matrix', 'File Formats',
   'Long Folder Path', 'Over Limit Path', 'root_readme.txt',
+  // DESTINATION-ONLY, and created by CloudFuze rather than migrated from the source: when a path
+  // exceeds SharePoint's 400-character limit the content is relocated into "Long File Names" beside
+  // the migrated root, and a .url placeholder is left behind. It is our own run's output, so it has
+  // to be cleaned like the rest — left in place it survived every run, the next migration relocated
+  // into it again, and the copies stacked up as "… 1", "… 2".
+  //
+  // It never exists in the SOURCE (verified: both Shared Drive roots hold only the seeded root),
+  // so source cleanup cannot match it by accident. Destination cleanup only ever scans the library
+  // root and each row's own destination folder, so the blast radius is this run's own test area.
+  'Long File Names',
 ];
 
 /** True when `name` is a seeded item, or a counter/duplicate copy of one. */

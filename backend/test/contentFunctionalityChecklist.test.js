@@ -185,11 +185,97 @@ function testSwitchedOffTiers() {
 
 function testUnautomatedFeaturesCarryManualSteps() {
   const rows = byId(computeContentFunctionalityChecklist(healthy()));
-  for (const id of ['5.16', '6.1', '6.2']) {
-    assert.strictEqual(rows[id].status, 'na', `${id} is not automated`);
-    assert.ok(/Not automated/.test(rows[id].detail), `${id} says so plainly`);
-    assert.ok(/Manual:/.test(rows[id].detail), `${id} tells a human what to do instead`);
-  }
+  // 6.1 (embedded links INSIDE a document) genuinely is not automated: reading a .docx needs an
+  // archive library this project does not use. It must still tell a human exactly what to open.
+  assert.strictEqual(rows['6.1'].status, 'na', '6.1 is not automated');
+  assert.ok(/Not automated|Not exercised/.test(rows['6.1'].detail), '6.1 says so plainly');
+  assert.ok(/Manual:|no document/.test(rows['6.1'].detail), '6.1 tells a human what to do instead');
+}
+
+
+/**
+ * The CSV reports must carry the columns the team's reference exports carry.
+ *
+ * Row count alone does not make a report usable: without the destination path and link on the same
+ * row, a customer cannot answer "what was shared, and where did it end up?" — the report is full of
+ * rows and still useless. The index column is written as "No", "S.No" and "Sl.No" across real
+ * exports, so matching is on a normalised header and must not fail a correct report over that.
+ */
+function testCsvColumnContract() {
+  const V = require('../src/validation/combinations/content/googledriveToSharepoint');
+  const req = V.CSV_REQUIRED_COLUMNS;
+
+  // Both real headers seen in the field pass — the reference export and our own.
+  assert.deepStrictEqual(
+    V.missingCsvColumns('No,File/Folder Name,Source Path,Destination Path,Destination shared link',
+      req.sharedLinks), [],
+    'the reference shared-links export satisfies the contract');
+  assert.deepStrictEqual(
+    V.missingCsvColumns(
+      'S.No,File/Folder Name,Source Path,Source shared link,Destination Path,Destination shared link',
+      req.sharedLinks), [],
+    '"S.No" instead of "No" must not fail a correct report');
+  assert.deepStrictEqual(
+    V.missingCsvColumns(
+      'Sl.No,Original File Name,Original File Path,Link File Name,Link Text Name,'
+      + 'Linked File Path,Source url,Destination url,Destination Path',
+      req.embeddedLinks), [],
+    'the reference embedded-links export satisfies the contract');
+
+  // A report that lost a column is caught, and named.
+  assert.deepStrictEqual(
+    V.missingCsvColumns('S.No,File/Folder Name,Source Path', req.sharedLinks),
+    ['destination path', 'destination shared link'],
+    'the missing columns are named, not just counted');
+
+  // And the checklist fails on it rather than passing on the row count.
+  const rows = byId(computeContentFunctionalityChecklist(healthy({
+    csvReports: { sharedLinks: { name: 'x shared links.csv', rows: 3277, missingColumns: ['destination shared link'] } },
+  })));
+  assert.strictEqual(rows['5.16'].status, 'fail',
+    'a report full of rows but missing a column is not a pass');
+  console.log('  CSV column contract enforced against the reference exports: ok');
+}
+
+/**
+ * The two CSV reports ARE checkable, and used to claim otherwise.
+ *
+ * Both rows read "no API for the CSV". There is no special API — CloudFuze writes the reports as
+ * ordinary files into the destination library root, where they read like any other file (found live:
+ * a shared-links report with 3,183 rows, and an embedded-links report at 0 bytes). A feature marked
+ * un-testable never gets tested, so the wrong label costs real coverage.
+ */
+function testCsvReportsAreMeasured() {
+  // Report present with rows -> a real pass.
+  const ok = byId(computeContentFunctionalityChecklist(healthy({
+    csvReports: {
+      sharedLinks: { name: 'Erik E shared links.csv', rows: 3183 },
+      embeddedLinks: { name: 'Erik E-EmbeddedLinks.csv', rows: 4 },
+    },
+  })));
+  assert.strictEqual(ok['5.16'].status, 'pass', 'a populated shared-links report passes');
+  assert.ok(/3183/.test(ok['5.16'].detail), 'the row count is stated as evidence');
+  assert.strictEqual(ok['6.2'].status, 'pass', 'a populated embedded-links report passes');
+
+  // Generated but EMPTY: the shared-links report failing is the point — the customer gets nothing.
+  const empty = byId(computeContentFunctionalityChecklist(healthy({
+    csvReports: {
+      sharedLinks: { name: 'Erik E shared links.csv', rows: 0 },
+      embeddedLinks: { name: 'Erik E-EmbeddedLinks.csv', rows: 0 },
+    },
+  })));
+  assert.strictEqual(empty['5.16'].status, 'fail',
+    'a shared-links report with no rows is a failure, not a pass');
+  // An empty embedded-links report is only wrong when a document actually held a link, which this
+  // row cannot know on its own — so it reports rather than fails.
+  assert.strictEqual(empty['6.2'].status, 'info',
+    'an empty embedded-links report is reported, not failed');
+
+  // Absent altogether: never a pass.
+  const missing = byId(computeContentFunctionalityChecklist(healthy()));
+  assert.strictEqual(missing['5.16'].status, 'na', 'no report found means nothing was proven');
+  assert.strictEqual(missing['6.2'].status, 'na', 'no report found means nothing was proven');
+  console.log('  CSV reports measured, empty report not a pass: ok');
 }
 
 function testStructureAndNotificationFailures() {
@@ -287,6 +373,8 @@ function run() {
   testDeltaAwareness();
   testSwitchedOffTiers();
   testUnautomatedFeaturesCarryManualSteps();
+testCsvReportsAreMeasured();
+testCsvColumnContract();
   testStructureAndNotificationFailures();
   testCoverageReporting();
   testSummary();

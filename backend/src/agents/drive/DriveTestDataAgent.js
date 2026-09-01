@@ -261,9 +261,20 @@ class DriveTestDataAgent extends BaseAgent {
     // files; nothing granted on the DRIVE itself, so "is this drive open to everyone or restricted
     // to a few" was never seeded and never testable. Runs only when the row declares a mode.
     await this._applyDriveAccessMode(sharedDrive, sourceEmail, context);
+    // General access on the MAIN folder — the "Anyone with the link / <organization>" row in
+    // Drive's Share dialog. It was never seeded: the folder survives cleanup (only its children are
+    // removed), so whatever anyone last set by hand persisted run after run. Both drives were
+    // carrying a manual "Anyone with the link → Viewer", which every item beneath inherited.
+    //
+    // Organization scope is what this combination should exercise: anonymous is the one link scope
+    // the destination can legitimately refuse (combination document #13), so a suite resting on it
+    // cannot tell a migration failure from a destination policy. Organization links are always
+    // validated, and a real customer restricts to their company rather than the public internet.
+    await this._setMainFolderGeneralAccess(rootFolder.id, sourceEmail, context);
     await this._createLinkMatrix(rootFolder.id, sourceEmail, sharedDrive);
     await this._createLegacyOfficeFiles(rootFolder.id, sourceEmail);
     await this._createOverLimitPath(rootFolder.id, sourceEmail);
+    await this._createEmbeddedLinks(rootFolder.id, sourceEmail);
 
     // Inventory of what was actually created, mirroring how the mail agent reports its counters.
     // Printed to the log AND returned, so the execution record answers "what data exists in the
@@ -500,6 +511,76 @@ class DriveTestDataAgent extends BaseAgent {
    *
    * A no-op without a Shared Drive or without an access mode, so existing runs are unchanged.
    */
+  /**
+   * Set the main folder's General access — the row at the bottom of Drive's Share dialog offering
+   * "Restricted" / "<organization>" / "Anyone with the link".
+   *
+   * DRIVEN BY THE ROW'S DRIVE ACCESS, so the wizard choice decides link reach as well as membership:
+   *   restricted -> the ORGANIZATION ("Sync Orbit"): only people inside the company can open it
+   *   open       -> "Anyone with the link": anybody on the internet can open it
+   * With no mode declared the folder is left exactly as it was, so existing runs do not change.
+   *
+   * Why it must be seeded at all: cleanup empties this folder but KEEPS it, permissions included, so
+   * whatever was last set by hand persisted run after run. Both drives were carrying a manual
+   * "Anyone with the link -> Viewer" that every item beneath inherited, which meant a restricted
+   * drive was publishing its whole tree to the internet and no run could tell.
+   *
+   * The scope matters to validation too: combination document #13 lets the destination refuse
+   * ANONYMOUS links, so a suite resting on them cannot separate a migration failure from a
+   * destination policy. An organization link is always validated.
+   *
+   * Non-fatal: a Workspace policy may forbid one of the scopes, and that must not fail seeding. The
+   * link matrix still exercises both scopes explicitly on its own folders.
+   */
+  async _setMainFolderGeneralAccess(rootId, ownerEmail, context) {
+    const mode = String(context?.driveAccessMode || '').trim().toLowerCase();
+    if (!mode) {
+      logger.info('[DriveTestDataAgent] General access: no drive access mode on this row — left unchanged');
+      return;
+    }
+    const domain = String(ownerEmail || '').split('@')[1] || '';
+    const wantAnyone = mode === 'open';
+    if (!wantAnyone && !domain) {
+      logger.warn('[DriveTestDataAgent] General access: no domain on the owner email — left unchanged');
+      return;
+    }
+    const want = wantAnyone
+      ? { type: 'anyone', role: 'reader' }
+      : { type: 'domain', role: 'reader', domain };
+    const label = wantAnyone ? 'Anyone with the link' : `organization "${domain}"`;
+    try {
+      const existing = await driveClient.listPermissions(rootId, ownerEmail);
+      const links = existing.links || [];
+
+      // Remove the WRONG scope first, and do it whether or not the wanted one is already present.
+      //
+      // Idempotency must skip only the CREATE, never this. An earlier version returned early on
+      // "already set" and so skipped the removal too, which left a restricted drive carrying BOTH
+      // "Anyone with the link" and the organization link — and Google applies the wider one, so the
+      // whole tree stayed public while the dialog also showed the restricted entry.
+      if (!wantAnyone) {
+        const removed = await driveClient.removePublicLink(rootId, ownerEmail);
+        if (removed) {
+          logger.info('[DriveTestDataAgent] General access: removed "Anyone with the link" — this row is restricted');
+        }
+      }
+
+      // Now the create can be skipped safely: cleanup keeps this folder's permissions, so an
+      // unconditional create would stack a second identical link on every run.
+      if (links.some((l) => l.type === want.type && l.role === want.role)) {
+        this.results.mainFolderGeneralAccess = { ...want, mode, preexisting: true };
+        logger.info(`[DriveTestDataAgent] General access: ${label} (Viewer) already set for "${mode}" — kept`);
+        return;
+      }
+      await driveClient.createLinkPermission(rootId, want, ownerEmail);
+      this.results.mainFolderGeneralAccess = { ...want, mode };
+      logger.info(`[DriveTestDataAgent] General access: main folder set to ${label} (Viewer) for "${mode}" drive`);
+    } catch (err) {
+      logger.warn(`[DriveTestDataAgent] General access: could not set ${label} (${err.message}) — left as it was`);
+      this.errors.push({ scenario: 'generalAccess', error: err.message });
+    }
+  }
+
   async _applyDriveAccessMode(sharedDrive, ownerEmail, context) {
     const mode = String(context.driveAccessMode || '').trim().toLowerCase();
     if (!sharedDrive || !mode) {
@@ -591,9 +672,31 @@ class DriveTestDataAgent extends BaseAgent {
     }
     if (!externalEmail) logger.info('[DriveTestDataAgent]   No external email configured — external shares not seeded');
 
+    // Per-drive offset, so the same ROLE is held by a DIFFERENT principal in each drive.
+    //
+    // Every drive used to get the same grantee for the same role — alex on folder_writer in both
+    // QA_Team1 and QA_Team2. Role coverage was fine, but it made mixing between drives undetectable:
+    // if one drive's grants leaked onto another, "alex=write" is exactly what a correct migration
+    // looks like there too. Duplicate folders already leaked once in a multi-drive run, so this is a
+    // real gap, not a theoretical one.
+    //
+    // Offsetting by the drive name keeps all four roles exercised in every drive while making the
+    // identity holding each role drive-specific, so a leaked grant shows up as the wrong person.
+    // Deterministic (a character sum, not randomness) so a re-run of the same drive seeds the same
+    // people and the report stays comparable between runs.
+    const driveKey = String(sharedDrive?.name || '');
+    const driveOffset = driveKey
+      ? [...driveKey].reduce((a, ch) => a + ch.charCodeAt(0), 0)
+      : 0;
+    if (driveKey && grantees.length > 1) {
+      logger.info(`[DriveTestDataAgent]   principal rotation offset ${driveOffset % grantees.length} `
+        + `for drive "${driveKey}" — each drive assigns a different person to the same role`);
+    }
+
     for (const [roleIndex, role] of roles.entries()) {
-      // Indexed on the role so the same role always gets the same grantee across runs.
-      const grantee = grantees[roleIndex % grantees.length];
+      // Indexed on the role AND the drive, so the same role always gets the same grantee for a given
+      // drive across runs, but a different one in a different drive.
+      const grantee = grantees[(roleIndex + driveOffset) % grantees.length];
       // A folder at this role
       try {
         const folder = await driveClient.createFolder(`folder_${role}`, container.id, ownerEmail);
@@ -633,8 +736,10 @@ class DriveTestDataAgent extends BaseAgent {
         }
 
         // Same role, granted to a group — the dimension most of the QA suite exercises.
+        // Offset by the drive too, for the same reason as the user grants above: an identical group
+        // on the same role in every drive cannot reveal a grant that leaked from another drive.
         const roleGroup = groupEmails.length > 0
-          ? groupEmails[roleIndex % groupEmails.length]
+          ? groupEmails[(roleIndex + driveOffset) % groupEmails.length]
           : null;
         if (roleGroup) {
           try {
@@ -791,6 +896,81 @@ class DriveTestDataAgent extends BaseAgent {
    * can be validated. The limit counts the URL-ENCODED path, and each segment is capped at 255, so
    * this uses several long-but-legal segments rather than one enormous name.
    */
+  /**
+   * Feature 6.1 — Embedded Links: a document that LINKS to another Drive file.
+   *
+   * CloudFuze is documented to rewrite links held inside migrated documents so they point at the
+   * SharePoint copy instead of the original Drive file. Nothing seeded such a document, so the
+   * feature was never exercised — while the checklist told a human to \"open a file containing a
+   * link to another Drive file\", which did not exist. The instruction could not be followed and
+   * the row sat unverified.
+   *
+   * A real .docx with a real hyperlink is used, not a .txt with a URL in it: the combination
+   * document scopes rewriting to \"supported file types where link rewriting is technically
+   * feasible\", and a plain-text URL is not one — failing on it would report a defect against
+   * behaviour that was never promised.
+   *
+   * The link TARGET is a file seeded earlier in this same run, so the expected rewrite is knowable:
+   * the target migrates too, and its destination copy is what the link should end up pointing at.
+   */
+  async _createEmbeddedLinks(rootId, email) {
+    logger.info('[DriveTestDataAgent] Embedded links (feature 6.1)');
+    try {
+      const container = await driveClient.createFolder('Embedded Links', rootId, email);
+      this.results.embeddedLinksFolderId = container.id;
+
+      // The link target: a plain file in the same tree, so it migrates alongside the document.
+      const target = await driveClient.uploadFile(
+        'embedded_link_target.txt', 'text/plain',
+        Buffer.from('This file is the target of a link embedded in embedded_link_doc.docx.'),
+        container.id, email
+      );
+      const targetUrl = `https://drive.google.com/file/d/${target.id}/view`;
+
+      const { Document, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
+      const doc = new Document({
+        sections: [{
+          children: [
+            new Paragraph({ children: [new TextRun('Embedded link test document (feature 6.1).')] }),
+            new Paragraph({ children: [new TextRun('')] }),
+            new Paragraph({
+              children: [
+                new TextRun('Open the target file here: '),
+                new ExternalHyperlink({
+                  children: [new TextRun({ text: 'embedded_link_target.txt', style: 'Hyperlink' })],
+                  link: targetUrl,
+                }),
+              ],
+            }),
+            new Paragraph({ children: [new TextRun('')] }),
+            new Paragraph({ children: [new TextRun(`Source link: ${targetUrl}`)] }),
+          ],
+        }],
+      });
+      const buffer = await Packer.toBuffer(doc);
+      const file = await driveClient.uploadFile(
+        'embedded_link_doc.docx',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        buffer, container.id, email
+      );
+
+      // Recorded so the report can name the exact file to open and the exact URL to look for,
+      // instead of a generic \"check an embedded link\" instruction nobody can act on.
+      this.results.embeddedLinks = {
+        documentId: file.id,
+        documentName: 'embedded_link_doc.docx',
+        documentPath: 'Embedded Links/embedded_link_doc.docx',
+        targetId: target.id,
+        targetName: 'embedded_link_target.txt',
+        sourceUrl: targetUrl,
+      };
+      logger.info(`[DriveTestDataAgent]   embedded_link_doc.docx links to ${targetUrl}`);
+    } catch (err) {
+      logger.warn(`[DriveTestDataAgent]   Embedded links failed: ${err.message}`);
+      this.errors.push({ scenario: 'embeddedLinks', error: err.message });
+    }
+  }
+
   async _createOverLimitPath(rootId, email) {
     logger.info('[DriveTestDataAgent] Over-limit path (feature 11.1)');
     const container = await driveClient.createFolder('Over Limit Path', rootId, email);

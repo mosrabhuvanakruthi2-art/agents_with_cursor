@@ -105,4 +105,35 @@ for (const bad of [undefined, null, '', 0, false]) {
     'the allowlist must never contain a wildcard or empty entry');
 }
 
+
+/**
+ * The over-limit relocation folder is OUR output and must be cleaned — but only it.
+ *
+ * When a path exceeds SharePoint's 400-character limit CloudFuze relocates the content into
+ * "Long File Names" beside the migrated root. Left out of the allowlist it survived every run, the
+ * next migration relocated into it again, and the copies stacked up as "… 1", "… 2".
+ *
+ * The risk of adding a plain-English name is deleting someone else's folder, so the negative cases
+ * below matter more than the positive one: matching is exact (plus the "… N" duplicate suffix the
+ * existing rule strips), never a prefix or substring.
+ */
+function testLongFileNamesRelocationFolder() {
+  const roots = ['Agent Shared Drive'];
+
+  assert.strictEqual(isSeededContentName('Long File Names', roots), true,
+    'the relocation folder is our own run output and must be cleaned');
+  assert.strictEqual(isSeededContentName('Long File Names 1', roots), true,
+    'a duplicate left by an earlier run is cleaned too');
+
+  assert.strictEqual(isSeededContentName('Long File Names Backup', roots), false,
+    'a longer name is a DIFFERENT folder and must never be deleted');
+  assert.strictEqual(isSeededContentName('My Long File Names', roots), false,
+    'a prefix must not match — matching is exact, not substring');
+  assert.strictEqual(isSeededContentName('Finance Reports', roots), false,
+    'unrelated content is never touched');
+
+  console.log('  Long File Names relocation folder cleaned, lookalikes spared: ok');
+}
+
+testLongFileNamesRelocationFolder();
 console.log('cleanupContentNames.test.js: ok');

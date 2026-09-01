@@ -153,7 +153,200 @@ async function run() {
   const noSummary = await render({ executionId: 'e', status: 'FAILED', context: baseContext, result: {} });
   assert.ok(noSummary.length > 800, 'missing-summary PDF still renders');
 
+  await testNoColumnOverflow();
+  await testNoVerticalOverlap();
   console.log('contentPdfReport.test.js: ok');
+}
+
+
+/**
+ * No text may be drawn wider than the column it was given.
+ *
+ * PDFKit's `lineBreak: false` means "do not wrap" — it does NOT mean "clip". A value longer than its
+ * width is drawn straight over whatever sits to its right, which is the overlapping text seen in the
+ * report. Two real cases: the header meta band drew "googleshareddrive -> SharePoint" (110pt) into a
+ * 74pt column, and a status table drew its own header label "Processed" (40pt) into 34pt.
+ *
+ * Detection hooks PDFKit itself rather than parsing the output, so it catches every draw site,
+ * including ones this fixture does not exercise today. The fix (drawFitted) shrinks the font until it
+ * fits and only falls back to an ellipsis at the floor.
+ */
+async function testNoColumnOverflow() {
+  const PDFDocument = require('pdfkit');
+  const origText = PDFDocument.prototype.text;
+  const overflows = [];
+  PDFDocument.prototype.text = function patched(txt, x, y, opts) {
+    const o = (typeof x === 'object' && x !== null)
+      ? x
+      : (typeof y === 'object' && y !== null ? y : opts);
+    const str = String(txt == null ? '' : txt);
+    // Only unwrapped, un-clipped text can overlap: wrapping text reflows, ellipsis text is cut.
+    if (o && o.lineBreak === false && typeof o.width === 'number' && str && !o.ellipsis) {
+      let w = 0;
+      try { w = this.widthOfString(str); } catch { w = 0; }
+      if (w > o.width + 0.5) {
+        overflows.push(`"${str.slice(0, 40)}" needs ${Math.round(w)}pt in ${Math.round(o.width)}pt`);
+      }
+    }
+    return origText.apply(this, arguments);
+  };
+
+  try {
+    // Long details and long labels, which is when the bug shows.
+    const long = 'Long File Names: source had organization link, destination has no link at all. '
+      + 'CloudFuze moved this content to a shorter path to clear the 400-character limit, but the '
+      + 'link did not travel with it, so the placeholder points at unreachable content.';
+    const rows = [];
+    for (let i = 0; i < 24; i++) {
+      rows.push({
+        id: `${i + 1}.1`,
+        category: i % 2 ? 'Permissions' : 'Long Folder/File path',
+        feature: `Feature ${i + 1} with a fairly long descriptive name that keeps going`,
+        status: ['fail', 'pass', 'na', 'info'][i % 4],
+        detail: long,
+      });
+    }
+    const checks = [{ name: '11b. Relocated over-limit content lost its sharing (1)', status: 'FAIL', detail: long }];
+    await render({
+      executionId: 'pdf-overflow-guard',
+      status: 'COMPLETED',
+      context: {
+        sourceProvider: 'googleshareddrive',
+        destinationProvider: 'sharepoint',
+        sourceEmail: 'erik@filefuze.co',
+        destinationEmail: 'granger@gajha.com',
+      },
+      result: {
+        validationSummary: {
+          status: 'FAIL',
+          overallStatus: 'FAIL',
+          combination: 'googleshareddrive -> sharepoint',
+          featureChecklist: rows,
+          checks,
+          perUser: [{ destinationPath: '/QA_Team1/Agent Shared Drive', status: 'FAIL', checks }],
+          deepContentValidation: { enabled: true },
+          mismatches: [],
+          summary: {},
+        },
+      },
+    });
+  } finally {
+    PDFDocument.prototype.text = origText;
+  }
+
+  assert.deepStrictEqual(overflows, [],
+    'text drawn wider than its column (would overlap the next one): ' + overflows.join(' | '));
+  console.log('  no text overflows its column: ok');
+}
+
+
+/**
+ * No text may be drawn into vertical space another draw already occupies.
+ *
+ * Separate bug from the column-overflow guard above, and the one that actually wrecked the report:
+ * the per-item "extras" line carries every shared link on an item, so a folder deep in the tree
+ * wrapped to six or more lines while doc.y advanced a flat 9pt. The next item's name was then
+ * printed on top of the remainder — "Level 8" sitting inside the previous item's trailing
+ * "anonymous/view, anonymous/view...". Measured 27 collisions before the fix, 0 after.
+ *
+ * Detection hooks PDFKit and compares each wrapping draw against the boxes already placed on that
+ * page, so it covers every renderer rather than the one this fixture happens to exercise.
+ */
+async function testNoVerticalOverlap() {
+  const PDFDocument = require('pdfkit');
+  const origText = PDFDocument.prototype.text;
+  const origAddPage = PDFDocument.prototype.addPage;
+  let page = 0;
+  let boxes = [];
+  const collisions = [];
+
+  PDFDocument.prototype.addPage = function patchedAddPage() {
+    page += 1;
+    boxes = [];               // a new page starts with clear space
+    return origAddPage.apply(this, arguments);
+  };
+  PDFDocument.prototype.text = function patchedText(txt, x, y, opts) {
+    const o = (typeof x === 'object' && x !== null)
+      ? x
+      : (typeof y === 'object' && y !== null ? y : opts);
+    const str = String(txt == null ? '' : txt);
+    const xx = typeof x === 'number' ? x : this.x;
+    const yy = typeof y === 'number' ? y : this.y;
+    const w = (o && typeof o.width === 'number') ? o.width : null;
+    // Only WRAPPING text can grow taller than its caller expects.
+    if (str && w && typeof yy === 'number' && !(o && o.lineBreak === false)) {
+      let h = 0;
+      try { h = this.heightOfString(str, { width: w }); } catch { h = 0; }
+      const box = { x0: xx, x1: xx + w, y0: yy, y1: yy + h, s: str.slice(0, 30) };
+      for (const b of boxes) {
+        const xHit = box.x0 < b.x1 - 1 && b.x0 < box.x1 - 1;
+        const yHit = box.y0 < b.y1 - 1.5 && b.y0 < box.y1 - 1.5;   // 1.5pt slack for rounding
+        if (xHit && yHit) {
+          collisions.push(`"${box.s}" over "${b.s}" on page ${page}`);
+          break;
+        }
+      }
+      boxes.push(box);
+    }
+    return origText.apply(this, arguments);
+  };
+
+  try {
+    // Deep items whose link list grows — the shape that overlapped in the real report.
+    const items = [];
+    for (let i = 0; i < 24; i++) {
+      const links = [];
+      for (let k = 0; k <= i % 12; k++) {
+        links.push({ sourceType: 'anyone', sourceRole: 'reader', actual: 'anonymous/view', match: true });
+      }
+      items.push({
+        name: `Level ${i + 1}`, type: 'folder', depth: Math.min(i, 8), found: true,
+        permissions: [
+          { user: 'mia@filefuze.co', mappedTo: 'mia@gajha.com', sourceRole: 'reader', destRoles: ['read'], match: true },
+          { user: 'erik@filefuze.co', mappedTo: 'granger@gajha.com', sourceRole: 'organizer', destRoles: [], match: true },
+        ],
+        sharedLinks: links,
+        timestamps: { match: true },
+      });
+    }
+    const long = 'Long File Names: source had anonymous+organization link, destination has no link at '
+      + 'all. CloudFuze moved this content to a shorter path to clear the 400-character limit, but the '
+      + 'link did not travel with it, so the placeholder points at unreachable content.';
+    await render({
+      executionId: 'pdf-vertical-overlap-guard',
+      status: 'COMPLETED',
+      context: {
+        sourceProvider: 'googleshareddrive', destinationProvider: 'sharepoint',
+        sourceEmail: 'erik@filefuze.co', destinationEmail: 'granger@gajha.com',
+      },
+      result: {
+        validationSummary: {
+          status: 'FAIL', overallStatus: 'FAIL',
+          combination: 'googleshareddrive -> sharepoint',
+          featureChecklist: Array.from({ length: 38 }, (_, i) => ({
+            id: `${i + 1}.1`, category: i % 3 ? 'Permissions' : 'Long Folder/File path',
+            feature: `Feature ${i + 1} with a fairly long descriptive name`,
+            status: ['pass', 'fail', 'na', 'info'][i % 4], detail: long,
+          })),
+          checks: [{ name: 'CloudFuze migration status', status: 'PASS', detail: 'PROCESSED' }],
+          perUser: [{
+            sourceEmail: 'erik@filefuze.co',
+            destinationPath: '/QA_Team1/Agent Shared Drive', status: 'FAIL',
+            checks: [{ name: '11b. Relocated over-limit content lost its sharing (1)', status: 'FAIL', detail: long }],
+            items,
+          }],
+          deepContentValidation: { enabled: true }, mismatches: [], summary: {},
+        },
+      },
+    });
+  } finally {
+    PDFDocument.prototype.text = origText;
+    PDFDocument.prototype.addPage = origAddPage;
+  }
+
+  assert.deepStrictEqual(collisions, [],
+    'text drawn on top of earlier text: ' + collisions.slice(0, 6).join(' | '));
+  console.log('  no text overlaps earlier text: ok');
 }
 
 run().catch((err) => {

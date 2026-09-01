@@ -52,7 +52,45 @@ function evalPermissionRole(observations, itemType, role) {
   const context = describeCoverage(seen);
   return bad.length === 0
     ? pass(`${seen.length} ${itemType}(s) — access preserved${context}`)
-    : fail(`${bad.length}/${seen.length} ${itemType}(s) wrong${context}: ${bad.slice(0, 5).map((o) => o.path).join(', ')}`);
+    : fail(`${describeDefects(bad, `${itemType}(s)`)} of ${seen.length} checked${context}`);
+}
+
+/**
+ * Distinct DEFECTS among failing observations, and how far each spread.
+ *
+ * Google reports an inherited grant on every item it reaches, so one group missing from a Shared
+ * Drive root produced a failing observation per item — reported as "88/978 grant(s) wrong", which
+ * reads as 88 things to fix when there is one. Keying on the principal and role collapses the copies
+ * while still saying how many grants were affected.
+ *
+ * Falls back to the path when observations carry no principal (older records, other combinations),
+ * so the count degrades to the previous per-item behaviour rather than collapsing unrelated rows.
+ */
+function distinctDefects(failing) {
+  const byDefect = new Map();
+  for (const o of failing) {
+    const key = o.principal
+      ? `${norm(o.principal)}|${norm(o.role)}|${norm(o.itemType)}`
+      : `path:${o.path}`;
+    const prev = byDefect.get(key);
+    if (prev) prev.items += 1;
+    else byDefect.set(key, { items: 1, principal: o.principal, role: o.role, inherited: Boolean(o.inherited), path: o.path });
+  }
+  return [...byDefect.values()].sort((a, b) => b.items - a.items);
+}
+
+/** "2 distinct issue(s) across 88 grant(s)" plus the worst offenders, for a failing row. */
+function describeDefects(failing, unit) {
+  const defects = distinctDefects(failing);
+  const lead = `${defects.length} distinct issue(s) across ${failing.length} ${unit}`;
+  const worst = defects.slice(0, 4).map((d) => {
+    const who = d.principal || d.path || 'unknown';
+    const spread = d.items > 1
+      ? ` [${d.items} ${unit}${d.inherited ? ', inherited — one grant' : ''}]`
+      : '';
+    return `${who}${d.role ? ` "${d.role}"` : ''}${spread}`;
+  }).join(', ');
+  return worst ? `${lead}: ${worst}` : lead;
 }
 
 /** " [users + groups; root folder, sub folder]" — what the observations actually covered. */
@@ -167,15 +205,27 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
   const verdicts = {};
 
   // ── 1. Migration
+  //
+  // "Did the migration deliver the source?" — which is only about items that FAILED TO ARRIVE.
+  // Extra items at the destination are reported by 3.1 (structure) instead: an extra folder is
+  // either leftover data from a previous run or a rename artefact, and neither means the migration
+  // dropped anything. Counting extras here made 1.1 restate 3.1 word for word and fail a delivery
+  // that was actually complete.
+  const deliveryNote = extra.length > 0
+    ? ` (${extra.length} unexpected item(s) at the destination — see structure)`
+    : '';
   verdicts['1.1'] = isDelta
     ? na('This run was a delta migration')
-    : (structureClean
-      ? pass(`${scanned} source item(s) migrated and verified`)
-      : fail(`${missing.length} missing, ${extra.length} extra, ${misplaced.length} misplaced`));
+    : (missing.length === 0 && misplaced.length === 0
+      ? pass(`All ${scanned} source item(s) arrived${deliveryNote}`)
+      : fail(`${missing.length} source item(s) did not arrive`
+        + `${misplaced.length ? `, ${misplaced.length} arrived in the wrong place` : ''}`
+        + `: ${missing.slice(0, 5).map((m) => m.path || m).join(', ')}`));
   verdicts['1.2'] = isDelta
-    ? (structureClean
-      ? pass('Incremental changes migrated and verified')
-      : fail(`${missing.length} missing, ${extra.length} extra, ${misplaced.length} misplaced`))
+    ? (missing.length === 0 && misplaced.length === 0
+      ? pass(`Incremental changes migrated and verified${deliveryNote}`)
+      : fail(`${missing.length} changed item(s) did not arrive`
+        + `${misplaced.length ? `, ${misplaced.length} arrived in the wrong place` : ''}`))
     : na('This run was a one-time migration, not a delta');
 
   // ── 2. Files & folders
@@ -189,7 +239,9 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
   // ── 3. Structure
   verdicts['3.1'] = structureClean
     ? pass(`Hierarchy identical — ${d.pairedCount || 0}/${scanned} items paired`)
-    : fail(`missing ${missing.length}, extra ${extra.length}, misplaced ${misplaced.length}`);
+    : fail(`${d.pairedCount || 0}/${scanned} paired; ${missing.length} missing, `
+      + `${extra.length} extra, ${misplaced.length} misplaced`
+      + `${extra.length ? `. Extra: ${extra.slice(0, 4).map((x) => x.path || x).join(', ')}` : ''}`);
 
   // ── 4. Permissions
   if (!d.metadataChecked) {
@@ -202,7 +254,7 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
       ? na('No shared items in the source — permissions were not exercised')
       : (permBad.length === 0
         ? pass(`${permObs.length} grant(s) mapped correctly${describeCoverage(permObs)}`)
-        : fail(`${permBad.length}/${permObs.length} grant(s) wrong${describeCoverage(permObs)}`));
+        : fail(`${describeDefects(permBad, 'grant(s)')} of ${permObs.length} checked${describeCoverage(permObs)}`));
     verdicts['4.2'] = evalPermissionRole(permObs, 'folder', 'reader');
     verdicts['4.3'] = evalPermissionRole(permObs, 'folder', 'commenter');
     verdicts['4.4'] = evalPermissionRole(permObs, 'folder', 'writer');
@@ -256,12 +308,59 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
 
   // CloudFuze generates these CSVs on its own server. No API for retrieving them is wired up in this
   // repo, so they are honestly reported as not assessed with the manual step, rather than assumed.
-  verdicts['5.16'] = na('Not automated — no API for the Shared Links CSV. Manual: download the Shared Links CSV from the migration job and confirm it lists every shared source item');
-  verdicts['6.2'] = na('Not automated — no API for the Embedded Links CSV. Manual: download the Embedded Links CSV from the migration job and confirm it lists the embedded references');
+  // 5.16 / 6.2 are MEASURED now. They were declared "no API for the CSV" — there is no special
+  // API, the reports are ordinary files in the destination library root and read like any other
+  // file. Found live: a shared-links report with 3,183 rows, and an embedded-links report at 0 bytes.
+  const csv = d.csvReports || {};
+  // Row count alone does not make the report usable: without the destination path and link on the
+  // same row a customer cannot answer "what was shared, and where did it end up?". Columns are
+  // checked against the reference exports the team works to.
+  const sharedMissing = (csv.sharedLinks && csv.sharedLinks.missingColumns) || [];
+  verdicts['5.16'] = csv.sharedLinks
+    ? (csv.sharedLinks.rows === 0
+      ? fail(`"${csv.sharedLinks.name}" was generated but holds no rows, so nothing shared was `
+        + 'reported to the customer')
+      : (sharedMissing.length > 0
+        ? fail(`"${csv.sharedLinks.name}" lists ${csv.sharedLinks.rows} row(s) but is missing `
+          + `required column(s): ${sharedMissing.join(', ')} — the report cannot be used to trace `
+          + 'what was shared')
+        : pass(`"${csv.sharedLinks.name}" lists ${csv.sharedLinks.rows} shared item(s), with a `
+          + 'source and a destination link on each row')))
+    : na('Shared Links CSV not found in the destination library root — nothing to check. Manual: '
+      + 'download it from the migration job and confirm it lists every shared source item');
+  verdicts['6.2'] = csv.embeddedLinks
+    ? (csv.embeddedLinks.rows > 0
+      ? pass(`"${csv.embeddedLinks.name}" lists ${csv.embeddedLinks.rows} document(s) containing `
+        + 'embedded links')
+      : info(`"${csv.embeddedLinks.name}" was generated but is empty. Correct only if no source `
+        + 'document linked to another file; when one does (feature 6.1) an empty report means the '
+        + 'scan recorded nothing'))
+    : na('Embedded Links CSV not found in the destination library root — nothing to check');
 
-  // ── 6.1 Embedded links: requires parsing document contents for Drive URLs and confirming the
-  // rewrite. Not implemented — reported as not assessed rather than assumed to work.
-  verdicts['6.1'] = na('Not automated — needs document-content parsing to find Drive URLs and confirm the SharePoint rewrite. Manual: open a file containing a link to another Drive file and confirm the link points at SharePoint');
+  // ── 6.1 Embedded links inside documents.
+  //
+  // MEASURED now. This read "not implemented — needs an archive library", but a .docx is a ZIP and
+  // DEFLATE ships with Node, so utils/docxLinks reads the hyperlink targets straight out of
+  // word/_rels/document.xml.rels. Judged on those targets, never the visible text: the seeded
+  // document prints its original Drive URL as readable text on purpose, and matching the body would
+  // fail every correct migration.
+  const staleLinks = d.embeddedLinkStale || [];
+  const linkTargets = d.embeddedLinkTargets || null;
+  verdicts['6.1'] = !d.embeddedLinkDoc
+    ? na('Not exercised — no document with an embedded link was seeded, so nothing tests whether '
+      + 'links inside documents are rewritten')
+    : (staleLinks.length > 0
+      ? fail(`${staleLinks.length} link(s) inside the migrated document still point at Google: `
+        + `${staleLinks.slice(0, 3).join(' | ')}. The document arrived but the link inside it was `
+        + 'not rewritten, so a reader is sent back to the source system')
+      : (linkTargets && linkTargets.length > 0
+        ? pass(`${linkTargets.length} link(s) inside the migrated document were rewritten away from `
+          + 'Google to the destination')
+        : (linkTargets
+          ? fail('The migrated document holds no external hyperlink at all, but the source document '
+            + 'links to another file — the link was dropped in migration')
+          : na(`Not proven — ${d.embeddedLinkDoc.destPath} could not be downloaded or parsed, so its `
+            + 'links were never observed'))));
 
   // ── 7. Special characters
   verdicts['7.1'] = specialChars.total === 0
@@ -288,7 +387,17 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
 
   // ── 9. Suppress email notifications
   if (!d.notificationsChecked) {
-    const detail = 'Not checked (CONTENT_DEEP_VALIDATE_NOTIFICATIONS=false). Manual: confirm the destination user received no SharePoint sharing or invitation mail';
+    // Two different reasons, and they must not read alike: the switch was off, or the switch was on
+    // but the mailbox could not be read. Both are 'na' — never a pass — because no mail was seen.
+    const detail = d.notificationsNotRequested
+      ? 'Not exercised — this migration did not request email suppression, so SharePoint sharing '
+        + 'notifications are the documented outcome and cannot show whether suppression works. '
+        + 'Re-run with suppression enabled in the job to test it'
+      : d.notificationsUnavailable
+      ? `Not proven — the destination mailbox could not be read (${d.notificationsUnavailable}). `
+        + 'Manual: confirm the destination user received no SharePoint sharing or invitation mail'
+      : 'Not checked (CONTENT_DEEP_VALIDATE_NOTIFICATIONS=false). Manual: confirm the destination '
+        + 'user received no SharePoint sharing or invitation mail';
     verdicts['9.1'] = na(detail);
     verdicts['9.2'] = na(detail);
   } else {
@@ -311,9 +420,27 @@ function computeContentFunctionalityChecklist(dcv, opts = {}) {
       : info(`${drift.length} file(s) outside the timestamp tolerance — metadata preservation depends on destination library settings`));
 
   // ── 11. Long paths
+  // The placeholder existing is only half the feature. The content it points at was RELOCATED to
+  // a shorter path, and if its shared link did not travel the placeholder opens something nobody
+  // can reach — the reported symptom "the long folder does not open by link". This row used to
+  // pass on the placeholder alone, so it announced "handled as documented" in the same report
+  // where check 11b said FAIL.
+  const relocLost = d.relocatedSharingLost || [];
+  const relocOrgLost = relocLost.filter((r) => r.orgLost);
   verdicts['11.1'] = placeholders.length === 0
     ? na('No source path exceeded the SharePoint limit — not exercised')
-    : pass(`${placeholders.length} over-limit item(s) handled as placeholder links, as documented`);
+    : (relocOrgLost.length > 0
+      ? fail(`${placeholders.length} over-limit item(s) became placeholder links as documented, but `
+        + `the relocated content lost its shared link: `
+        + `${relocOrgLost.slice(0, 4).map((r) => `${r.name} (source had ${r.had.join('+')}, destination has ${r.got})`).join(' | ')}`
+        + '. An organization link cannot be refused by the destination, so the placeholder now '
+        + 'points at content that cannot be opened by link')
+      : (relocLost.length > 0
+        ? info(`${placeholders.length} over-limit item(s) handled as placeholder links, as documented. `
+          + `The relocated copy carries no link (${relocLost.slice(0, 3).map((r) => r.name).join(', ')}); `
+          + 'the source link was anonymous, which the destination may refuse, so this is reported '
+          + 'rather than failed')
+        : pass(`${placeholders.length} over-limit item(s) handled as placeholder links, as documented`)));
 
   // ── 12. File conversion
   const convMismatches = d.conversionMismatches || [];

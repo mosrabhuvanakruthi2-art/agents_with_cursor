@@ -56,6 +56,7 @@ export default function ConnectClouds() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [googleFor, setGoogleFor] = useState(null); // cloud awaiting a DWD admin email
+  const [dwdBlocked, setDwdBlocked] = useState(null); // why DWD failed, so the modal can offer OAuth
   const [googleEmail, setGoogleEmail] = useState('');
   const [expanded, setExpanded] = useState(null);
 
@@ -113,7 +114,7 @@ export default function ConnectClouds() {
       if (cloud.key === 'googlechat') { runPopupFlow(() => getGoogleOAuthUrl('popup', '1', 'message'), cloud.name); return; }
       showToast(`${cloud.name} is not implemented yet`, 'error'); return;
     }
-    if (cloud.account === 'google') { setGoogleFor(cloud); setGoogleEmail(''); return; }
+    if (cloud.account === 'google') { setGoogleFor(cloud); setGoogleEmail(''); setDwdBlocked(null); return; }
     if (cloud.account === 'microsoft') { runPopupFlow(() => getMicrosoftAdminConsentUrl(), cloud.name); return; }
     if (cloud.account === 'box') { runPopupFlow(() => getBoxOAuthUrl('popup'), cloud.name); return; }
     showToast(`${cloud.name} is not implemented yet`, 'error');
@@ -128,8 +129,28 @@ export default function ConnectClouds() {
       showToast(`${googleFor.name} connected (${e})`);
       setGoogleFor(null); setGoogleEmail('');
       await loadAccounts(); setView('manage');
-    } catch (err) { showToast(err.response?.data?.error || err.message, 'error'); }
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || '';
+      // Not every Google domain has Domain-Wide Delegation authorized for our service account, and
+      // this modal used to be the ONLY way to connect a Google content cloud — so such a domain was
+      // simply unconnectable through the UI, even though the OAuth route below works fine for it.
+      // Offer sign-in instead of a dead end.
+      if (/unauthorized_client|not authorized|Domain-Wide Delegation/i.test(msg)) {
+        setDwdBlocked(msg);
+        showToast('Domain-Wide Delegation is not available for this domain — sign in with Google instead', 'error');
+      } else {
+        showToast(msg, 'error');
+      }
+    }
     finally { setBusy(false); }
+  }
+
+  /** OAuth sign-in for a Google content cloud — the alternative when DWD is not authorized. */
+  function signInWithGoogle() {
+    const label = googleFor?.name || 'Google';
+    const agent = domainTab === 'message' ? 'message' : domainTab === 'content' ? 'content' : 'mail';
+    setGoogleFor(null); setDwdBlocked(null);
+    runPopupFlow(() => getGoogleOAuthUrl('popup', '1', agent), label);
   }
 
   async function disconnect(acct) {
@@ -249,16 +270,33 @@ export default function ConnectClouds() {
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setGoogleFor(null)}>
           <div className="bg-white rounded-xl p-6 w-full max-w-md space-y-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-gray-900">Connect {googleFor.name}</h3>
-            <p className="text-xs text-gray-500">Domain-Wide Delegation — enter a Google Workspace admin email. No sign-in needed.</p>
+            <p className="text-xs text-gray-500">
+              Two ways to connect. <strong>Domain-Wide Delegation</strong> needs no sign-in, but only works
+              if this service account is authorized for that domain. Otherwise use <strong>Sign in with
+              Google</strong>.
+            </p>
+            {dwdBlocked && (
+              <div className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 space-y-1">
+                <p className="font-semibold">Domain-Wide Delegation is not available for this domain.</p>
+                <p>Use “Sign in with Google” below — it works today. To enable DWD instead, an admin must
+                grant the service-account client id the Drive scope in the Google Admin console.</p>
+              </div>
+            )}
             <input type="email" value={googleEmail} autoFocus onChange={(e) => setGoogleEmail(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && submitGoogle()} placeholder="admin@yourdomain.com"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 outline-none" />
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setGoogleFor(null)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
-              <button type="button" disabled={busy || !googleEmail.trim()} onClick={submitGoogle}
-                className="px-4 py-2 text-sm font-semibold text-white bg-teal-600 rounded-lg hover:bg-teal-700 disabled:opacity-50">
-                {busy ? 'Connecting…' : 'Connect'}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <button type="button" disabled={busy} onClick={signInWithGoogle}
+                className="px-3 py-2 text-sm font-medium text-teal-700 border border-teal-300 rounded-lg hover:bg-teal-50 disabled:opacity-50">
+                Sign in with Google
               </button>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setGoogleFor(null)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+                <button type="button" disabled={busy || !googleEmail.trim()} onClick={submitGoogle}
+                  className="px-4 py-2 text-sm font-semibold text-white bg-teal-600 rounded-lg hover:bg-teal-700 disabled:opacity-50">
+                  {busy ? 'Connecting…' : 'Use DWD'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

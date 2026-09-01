@@ -100,6 +100,8 @@ function getAuthForToken(refreshToken, email) {
  *      GOOGLE_SERVICE_ACCOUNT_KEY — so a DWD account on a tenant-1 domain silently fell through to
  *      an OAuth path it has no refresh token for.
  */
+const dwdFallbackWarned = new Set();
+
 async function getAuth(email) {
   const normalized = String(email || '').toLowerCase().trim();
   const stored = tokenStore.getGoogleToken(normalized);
@@ -114,10 +116,16 @@ async function getAuth(email) {
       await jwt.authorize();
       return jwt;
     } catch (err) {
-      logger.warn(
-        `[Drive] service account cannot impersonate ${normalized} (${err.message}) — `
-        + 'falling back to the stored OAuth token. Grant Domain-Wide Delegation to use DWD instead.'
-      );
+      // Once per account, not once per API call. getAuth runs on EVERY Drive request, so a domain
+      // without Domain-Wide Delegation logged this identical line hundreds of times in a single
+      // run — enough to bury the warnings that matter.
+      if (!dwdFallbackWarned.has(normalized)) {
+        dwdFallbackWarned.add(normalized);
+        logger.warn(
+          `[Drive] service account cannot impersonate ${normalized} (${err.message}) — `
+          + 'falling back to the stored OAuth token. Grant Domain-Wide Delegation to use DWD instead.'
+        );
+      }
     }
   }
 
@@ -153,8 +161,43 @@ async function verifyDwd(email) {
     await getServiceAccountAuth(normalized).authorize();
     return { ok: true, reason: null };
   } catch (err) {
-    return { ok: false, reason: err.message };
+    return { ok: false, reason: explainAuthError(err, normalized) };
   }
+}
+
+/**
+ * Turn a raw Google auth failure into something a QA engineer can act on.
+ *
+ * Google answers a dead refresh token with the bare string "invalid_grant", which reached our report
+ * verbatim — "Source Shared Drive resolved :: invalid_grant" — and says nothing about the cause or
+ * the fix. The usual cause here is not a code fault at all: an OAuth consent screen still in
+ * "Testing" publishing status expires every refresh token it issues after 7 days, so a suite that
+ * passed last week fails with no code change. Worth naming explicitly, because the failure looks
+ * like a regression and is not one.
+ *
+ * Returns the original message unchanged when it is not an auth failure, so real errors are never
+ * masked by a guess.
+ */
+function explainAuthError(err, email) {
+  const raw = String(err?.response?.data?.error || err?.message || err || '');
+  const desc = String(err?.response?.data?.error_description || '');
+  const who = email ? ` for ${email}` : '';
+  if (/invalid_grant/i.test(raw)) {
+    return `Google rejected the saved credential${who} (invalid_grant: ${desc || 'token expired or revoked'}). `
+      + 'Reconnect the Google account to get a new token. Refresh tokens last only 7 days while the '
+      + 'OAuth consent screen is in "Testing" — publish it, or grant Domain-Wide Delegation to the '
+      + 'service account for this domain, so the credential stops expiring.';
+  }
+  if (/unauthorized_client/i.test(raw)) {
+    return `The service account is not authorized to impersonate${who} (unauthorized_client). `
+      + 'Grant Domain-Wide Delegation to the service-account client id for this domain in the Google '
+      + 'Admin console, with the Drive scopes.';
+  }
+  if (/invalid_client/i.test(raw)) {
+    return `Google rejected the OAuth client credentials${who} (invalid_client) — check `
+      + 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.';
+  }
+  return err?.message || raw || 'unknown error';
 }
 
 /** Get an authenticated Drive API client for a given email. */
@@ -663,7 +706,13 @@ async function listPermissions(fileId, email) {
     const res = await retryWithBackoff(
       () => drive.permissions.list({
         fileId,
-        fields: 'nextPageToken, permissions(id,type,role,emailAddress,domain,allowFileDiscovery,deleted)',
+        // permissionDetails says whether a grant is set ON this item or INHERITED from an ancestor
+        // (a Shared Drive root, or a folder above). Without it every drive-level grant looked like a
+        // separate per-item grant: one group on a Shared Drive root was counted once per item, which
+        // is how a single missing group was reported as "88 mismatches" and totals read 878 grants
+        // from a handful of real ones. Shared-drive items only — My Drive omits the field, so the
+        // absence is treated as "direct" rather than assumed inherited.
+        fields: 'nextPageToken, permissions(id,type,role,emailAddress,domain,allowFileDiscovery,deleted,permissionDetails)',
         pageSize: 100,
         pageToken,
         supportsAllDrives: true,
@@ -678,7 +727,19 @@ async function listPermissions(fileId, email) {
   return {
     grants: live
       .filter((p) => p.type === 'user' || p.type === 'group')
-      .map((p) => ({ email: (p.emailAddress || '').toLowerCase(), role: p.role, type: p.type })),
+      .map((p) => {
+        // A grant is inherited when permissionDetails says so. Google reports the ancestor it came
+        // from, which is what lets a drive-level grant be reported once instead of per item.
+        const det = Array.isArray(p.permissionDetails) ? p.permissionDetails : [];
+        const inheritedDetail = det.find((d) => d && d.inherited);
+        return {
+          email: (p.emailAddress || '').toLowerCase(),
+          role: p.role,
+          type: p.type,
+          inherited: Boolean(inheritedDetail),
+          inheritedFrom: inheritedDetail?.inheritedFrom || null,
+        };
+      }),
     links: live
       .filter((p) => p.type === 'anyone' || p.type === 'domain')
       .map((p) => ({
@@ -721,6 +782,7 @@ async function listRevisions(fileId, email) {
 
 module.exports = {
   getAuth,
+  explainAuthError,
   verifyDwd,
   getDriveClient,
   createFolder,
