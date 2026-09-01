@@ -455,6 +455,42 @@ module.exports = {
   BOX_CLIENT_ID: (process.env.BOX_CLIENT_ID || '').trim(),
   BOX_CLIENT_SECRET: (process.env.BOX_CLIENT_SECRET || '').trim(),
   /**
+   * Dropbox (Business) app credentials, for the Dropbox → Google combinations.
+   *
+   * Prefer the refresh-token trio: Dropbox access tokens are short-lived (4 hours), which is shorter
+   * than a full content validation run, so a run configured with only DROPBOX_ACCESS_TOKEN can fail
+   * partway through with a 401 that looks like a permissions problem.
+   *
+   * The app needs these scopes: files.metadata.read, files.content.read, files.content.write,
+   * sharing.read, sharing.write — plus team_data.member, team_info.read and members.read for a
+   * Business team (listing members, groups and team folders).
+   */
+  DROPBOX_APP_KEY: (process.env.DROPBOX_APP_KEY || '').trim(),
+  DROPBOX_APP_SECRET: (process.env.DROPBOX_APP_SECRET || '').trim(),
+  DROPBOX_REFRESH_TOKEN: (process.env.DROPBOX_REFRESH_TOKEN || '').trim(),
+  /** Short-lived fallback token. Used only when the refresh trio above is absent. */
+  DROPBOX_ACCESS_TOKEN: (process.env.DROPBOX_ACCESS_TOKEN || '').trim(),
+  /**
+   * Root path the QA flow seeds into and validates from, e.g. "/QA-Automation".
+   * Kept configurable so a seeding run can never touch the rest of a shared QA Dropbox.
+   */
+  DROPBOX_TEST_ROOT: (process.env.DROPBOX_TEST_ROOT || '/QA-Automation').trim(),
+  /**
+   * Principals the seeding agent grants access to (scope 2.1–2.5).
+   *
+   * Dropbox rejects a grant to an address it cannot resolve, so these must be real. Each is
+   * optional: an unset value SKIPS that class of grant with a warning rather than failing the run,
+   * because a missing QA account is a configuration gap, not a product defect.
+   *
+   * DROPBOX_TEST_INTERNAL_USER — a second account inside the Dropbox team (user grants)
+   * DROPBOX_TEST_EXTERNAL_USER — an address OUTSIDE the team (external shares, feature 2.5)
+   * DROPBOX_TEST_GROUP         — the display name of an existing Dropbox team group. Looked up by
+   *                              name; never created, because seeding must not alter team config.
+   */
+  DROPBOX_TEST_INTERNAL_USER: (process.env.DROPBOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
+  DROPBOX_TEST_EXTERNAL_USER: (process.env.DROPBOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
+  DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),
+  /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.
    * CONTENT_MIGRATION_SERVER_URL  — e.g. https://qarelease.cloudfuze.com/
