@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * Deep validation for content: Dropbox → Google My Drive.
+ * Deep validation for content: Dropbox → Google (My Drive AND Shared Drive).
  *
- * Edit ONLY this file to change Dropbox → My Drive behaviour. Provider-agnostic comparison logic
+ * Edit ONLY this file to change Dropbox → Google behaviour (both destinations). Provider-agnostic comparison logic
  * lives in validation/shared/deepContentCore.js; the numbers live in utils/contentTolerance/; the
  * Google destination's name/path rules live in validation/destinations/googledrive.js; the
  * Dropbox→Google role and link tables live in validation/roleMaps/dropbox_to_google.js.
@@ -39,7 +39,18 @@ const tolerance = require('../../../utils/contentTolerance');
 const env = require('../../../config/env');
 const logger = require('../../../utils/logger');
 
+/**
+ * Default combination key. The run's destination provider decides the real one — see
+ * `_combinationKey` — because this validator serves BOTH Google destinations.
+ *
+ * One file, two combinations, exactly as `googledriveToSharepoint.js` serves both `googledrive` and
+ * `googleshareddrive`: the scope document is written for My Drive and Shared Drive together ("Covers
+ * both combinations"), and the source half — Dropbox roles, Paper, link audiences — is identical.
+ * The structural rule is still satisfied, because each combination has its own registration file
+ * under orchestrator/combinations/content/.
+ */
 const COMBINATION = 'dropbox_to_googledrive';
+const COMBINATION_SHARED = 'dropbox_to_googleshareddrive';
 
 /** Terminal CloudFuze statuses that mean the migration itself finished. */
 const CF_OK = ['PROCESSED', 'PROCESS', 'VERSION_PROCESSED'];
@@ -133,10 +144,28 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     super('DropboxToGoogledriveValidationAgent');
   }
 
+  /**
+   * Which combination this run actually is.
+   *
+   * `googleshareddrive` and `googledrive` are different destinations with different tolerance files
+   * and different reported names, even though they share this validator. Deriving the key per run
+   * rather than hardcoding it is what keeps a Shared Drive run from being measured against My
+   * Drive's bands and reported under My Drive's name.
+   */
+  _combinationKey(context) {
+    return String(context?.destinationProvider || '').toLowerCase() === 'googleshareddrive'
+      ? COMBINATION_SHARED
+      : COMBINATION;
+  }
+
   async execute(context) {
-    const bands = tolerance.forCombination(COMBINATION) || {};
-    const rules = destinations.forDestination('googledrive');
-    const roleMap = roleMaps.forCombination(COMBINATION);
+    const combination = this._combinationKey(context);
+    // The destination rules are shared by both: googledrive.js registers `googleshareddrive` as an
+    // alias, because a Shared Drive is the same storage with a different ownership model and the
+    // name/path rules are identical.
+    const rules = destinations.forDestination(context?.destinationProvider || 'googledrive');
+    const bands = tolerance.forCombination(combination) || {};
+    const roleMap = roleMaps.forCombination(combination);
     const globalChecks = [];
     const gPush = (status, name, detail) => globalChecks.push({ name, status, detail });
 
@@ -149,7 +178,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
     if (!roleMap) {
       throw new Error(
-        `validation/roleMaps has no map covering "${COMBINATION}". Refusing to fall back to the `
+        `validation/roleMaps has no map covering "${combination}". Refusing to fall back to the `
         + 'SharePoint role table, which has no Dropbox roles in it and would mistranslate every grant.'
       );
     }
@@ -177,25 +206,37 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       return hit || key;
     };
     const units = core.resolveUnits(context);
-    logger.info(`[${COMBINATION} validation] validating ${units.length} user unit(s)`);
-
-    // ── Destination root (the destination-side agent owns how Google is read).
-    let destRoot;
-    try {
-      destRoot = await this.resolveDestinationRoot(context);
-      gPush('PASS', 'Destination location', `${destRoot.label} resolved for ${context.destinationEmail}`);
-    } catch (err) {
-      gPush('FAIL', 'Destination location', err.message);
-      return this._buildResult(globalChecks, [], { enabled: true, scannedSourceItems: 0 }, context);
-    }
+    logger.info(`[${combination} validation] validating ${units.length} user unit(s)`);
 
     const totals = this._emptyTotals(context);
     const perUser = [];
 
+    // ── Destination root, resolved PER UNIT (the destination-side agent owns how Google is read).
+    //
+    // Per unit rather than once, because this repo already migrates N source drives in one run, each
+    // to its own destination. Resolving one root for the whole run would validate every unit against
+    // the first unit's drive and report the rest as entirely missing.
+    //
+    // A drive that cannot be resolved fails only ITS unit. The others still produce results, so one
+    // misconfigured row does not discard the evidence for the whole run.
     for (const unit of units) {
+      let destRoot;
+      try {
+        destRoot = await this.resolveDestinationRoot(context, unit);
+      } catch (err) {
+        gPush('FAIL', `Destination location [${unit.destinationPath || unit.sourceEmail || 'unit'}]`,
+          err.message);
+        continue;
+      }
       perUser.push(
         await this._validateUnit({ unit, context, destRoot, rules, roleMap, bands, mapEmail, totals })
       );
+    }
+
+    if (perUser.length === 0 && units.length > 0) {
+      gPush('FAIL', 'Destination location',
+        `No destination root could be resolved for any of the ${units.length} unit(s) — nothing was `
+        + 'validated.');
     }
 
     return this._buildResult(globalChecks, perUser, totals, context);
@@ -227,7 +268,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
   _emptyTotals(context) {
     return {
       enabled: true,
-      combination: COMBINATION,
+      combination: this._combinationKey(context),
       migrationType: context.migrationType || 'FULL',
       scannedSourceItems: 0,
       pairedCount: 0,
@@ -267,6 +308,8 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     const sourceEmail = unit.sourceEmail || context.sourceEmail;
     const destEmail = unit.destinationEmail || context.destinationEmail;
     const sourcePath = dropboxClient.dbxPath(unit.sourcePath || context.sourcePath || env.DROPBOX_TEST_ROOT);
+
+    push('PASS', 'Destination location', `${destRoot.label} resolved for ${destEmail}`);
 
     // ── Source: the Dropbox tree.
     const asMemberId = await dropboxClient.resolveTeamMemberId(sourceEmail).catch(() => null);
@@ -357,7 +400,8 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     return {
       sourceEmail,
       destinationPath: unit.destinationPath,
-      sourceDriveName: null,
+      sourceDriveName: unit.sourceDriveName || null,
+      destinationDriveName: destRoot.driveName || null,
       checks,
       itemDetails,
     };
@@ -850,7 +894,10 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     const flat = [...globalChecks];
     const destLeaf = (p) => String(p || '').split('/').filter(Boolean).pop() || '';
     for (const u of perUser) {
-      const tag = u.sourceDriveName || destLeaf(u.destinationPath) || u.sourceEmail || 'unit';
+      // The DESTINATION drive distinguishes units here: Dropbox has no drives, so a multi-unit run
+      // differs by where it landed. Falls back to the destination folder, then the source email.
+      const tag = u.destinationDriveName || u.sourceDriveName || destLeaf(u.destinationPath)
+        || u.sourceEmail || 'unit';
       for (const c of u.checks) flat.push({ ...c, name: `[${tag}] ${c.name}` });
     }
 
@@ -919,7 +966,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       domain: 'content',
       sourceProvider: 'dropbox',
       destinationProvider: context?.destinationProvider || 'googledrive',
-      combination: COMBINATION,
+      combination: this._combinationKey(context),
       checks: flat,
       perUser,
       deepContentValidation: totals,
@@ -932,3 +979,4 @@ module.exports = DropboxToGoogledriveValidationAgent;
 module.exports.DROPBOX_FEATURES = DROPBOX_FEATURES;
 module.exports.PAPER_DISPUTED = PAPER_DISPUTED;
 module.exports.COMBINATION = COMBINATION;
+module.exports.COMBINATION_SHARED = COMBINATION_SHARED;

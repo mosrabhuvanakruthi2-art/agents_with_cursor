@@ -487,6 +487,15 @@ module.exports = {
    * DROPBOX_TEST_GROUP         — the display name of an existing Dropbox team group. Looked up by
    *                              name; never created, because seeding must not alter team config.
    */
+  /**
+   * Default DESTINATION Google Shared Drive name, for combinations landing in a Shared Drive
+   * (dropbox → googleshareddrive).
+   *
+   * Deliberately separate from GOOGLE_SHARED_DRIVE_NAME, which names the SOURCE drive for the
+   * Drive→SharePoint combinations. Reusing that one would quietly validate a Dropbox migration
+   * against the drive a different combination reads from.
+   */
+  GOOGLE_DEST_SHARED_DRIVE_NAME: (process.env.GOOGLE_DEST_SHARED_DRIVE_NAME || '').trim(),
   DROPBOX_TEST_INTERNAL_USER: (process.env.DROPBOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
   DROPBOX_TEST_EXTERNAL_USER: (process.env.DROPBOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
   DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),

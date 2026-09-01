@@ -1,0 +1,23 @@
+{
+  "_setup_note": "Configure each server below. Install the official MCP package for each service, then replace placeholder values. Env vars reference your backend/.env file.",
+  "mcpServers": {
+    "jira": {
+      "_note": "Official Jira MCP server — configure command from the official MCP registry. This app reads the Xray test repository via jiraXrayClient.js (Basic auth: JIRA_USER:JIRA_API_TOKEN). Bug creation goes to Neutara, not Jira.",
+      "command": "CONFIGURE-FROM-OFFICIAL-MCP-REGISTRY",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "JIRA_BASE_URL": "${JIRA_BASE_URL}",
+        "JIRA_USER": "${JIRA_USER}",
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+      }
+    },
+    "mongodb": {
+      "_note": "Official MongoDB Atlas MCP server. Connects to the migration_qa database (MONGODB_DB_NAME). Collections: test_repository, test_expanded_details, connected_accounts, test_repository_local_folders, test_repository_local_tests. Note: executions are stored on disk in backend/data/executions.json (not MongoDB).",
+      "command": "npx",
+      "args": ["-y", "@mongodb-js/mongodb-mcp-server", "--readOnly"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "${MONGODB_URI}"
+      }
+    }
+  }
+}

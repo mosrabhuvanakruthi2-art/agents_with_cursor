@@ -37,6 +37,7 @@
 const ContentReportValidationAgent = require('../content/ContentReportValidationAgent');
 const driveClient = require('../../clients/driveClient');
 const core = require('../../validation/shared/deepContentCore');
+const env = require('../../config/env');
 const logger = require('../../utils/logger');
 
 /** How many "name N" / "name (N)" dedup variants to probe when CloudFuze appends a counter. */
@@ -59,43 +60,83 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
   }
 
   /**
+   * The destination Shared Drive name for one unit, by explicit precedence.
+   *
+   * Resolution order, most specific first — stated as a list because a silent wrong choice here is
+   * the most expensive kind of error in this file: pointing the comparison at the wrong drive reports
+   * every item missing, which reads as a total migration failure but is a configuration mistake.
+   *
+   *   1. `unit.destinationDriveName` — per-unit. The repo already migrates N drives in one run, each
+   *      to its own destination, so a single run can legitimately span several destination drives.
+   *   2. the FIRST SEGMENT of `unit.destinationPath` — destination paths arrive drive-style
+   *      ("/QA_Team1/Folder"), the same shape `siteSegmentOf` reads a SharePoint site from.
+   *   3. `context.destinationSharedDriveName` — run-level, symmetric with `sourceSharedDriveName`.
+   *   4. `env.GOOGLE_DEST_SHARED_DRIVE_NAME` — the configured default.
+   *
+   * `GOOGLE_SHARED_DRIVE_NAME` is deliberately NOT in that list. It names the SOURCE drive for the
+   * Drive→SharePoint combinations, so falling back to it would quietly validate a Dropbox migration
+   * against the Google drive some other combination reads from.
+   */
+  destinationDriveNameFor(context, unit = null) {
+    const firstSegment = (p) => String(p || '').split('/').filter(Boolean)[0] || '';
+    return String(
+      unit?.destinationDriveName
+      || firstSegment(unit?.destinationPath)
+      || context?.destinationSharedDriveName
+      || env.GOOGLE_DEST_SHARED_DRIVE_NAME
+      || ''
+    ).trim();
+  }
+
+  /**
    * Resolve where the migration landed on the Google side.
    *
    * `destinationProvider` decides the shape:
    *   - `googledrive`       → My Drive, rootId 'root', no driveId
    *   - `googleshareddrive` → a Shared Drive resolved BY NAME, rootId = driveId = the drive's id
    *
-   * Returns `{ rootId, driveId, label }`. Throws when a named Shared Drive cannot be found, because
-   * validating against the wrong root would compare the source with an unrelated tree and report
-   * every item missing — a failure that looks like a migration defect but is a configuration error.
+   * Returns `{ rootId, driveId, label, driveName }`. Throws when a named Shared Drive cannot be
+   * found: validating against the wrong root would compare the source with an unrelated tree and
+   * report every item missing — a failure that looks like a migration defect but is configuration.
+   *
+   * @param {object} context
+   * @param {object|null} unit  the per-unit row, so a multi-drive run resolves each unit's own drive
    */
-  async resolveDestinationRoot(context) {
+  async resolveDestinationRoot(context, unit = null) {
     const email = context.destinationEmail;
     const provider = String(context.destinationProvider || 'googledrive').toLowerCase();
 
-    if (provider === 'googleshareddrive') {
-      const name = String(
-        context.destinationSharedDriveName || context.destinationFolderName || ''
-      ).trim();
-      if (!name) {
-        throw new Error(
-          'Destination is a Google Shared Drive but no drive name was supplied. Set the run\'s '
-          + 'destination folder/drive name — a Shared Drive cannot be resolved without it.'
-        );
-      }
-      const drive = await driveClient.resolveSharedDriveByName(name, email);
-      if (!drive) {
-        const available = await driveClient.listSharedDrives(email).catch(() => []);
-        throw new Error(
-          `Google Shared Drive "${name}" not found for ${email}. Available: `
-          + (available.map((d) => d.name).join(', ') || '(none)')
-        );
-      }
-      // A Shared Drive's id doubles as its root folder id.
-      return { rootId: drive.id, driveId: drive.id, label: `Shared Drive "${drive.name}"` };
+    if (provider !== 'googleshareddrive') {
+      return { rootId: 'root', driveId: null, label: 'My Drive', driveName: null };
     }
 
-    return { rootId: 'root', driveId: null, label: 'My Drive' };
+    const name = this.destinationDriveNameFor(context, unit);
+    if (!name) {
+      throw new Error(
+        'Destination is a Google Shared Drive but no drive name could be resolved. Supply one of: '
+        + 'the unit\'s destinationDriveName, a drive-style destination path ("/DriveName/Folder"), '
+        + 'context.destinationSharedDriveName, or GOOGLE_DEST_SHARED_DRIVE_NAME. A Shared Drive '
+        + 'cannot be addressed without its name — its id doubles as its root folder id.'
+      );
+    }
+
+    const drive = await driveClient.resolveSharedDriveByName(name, email);
+    if (!drive) {
+      const available = await driveClient.listSharedDrives(email).catch(() => []);
+      throw new Error(
+        `Google Shared Drive "${name}" is not visible to ${email}. Available: `
+        + (available.map((d) => d.name).join(', ') || '(none)')
+        + '. Note that drives.list only returns drives this account is a MEMBER of, so a drive that '
+        + 'exists but has not been shared with the account will not appear here.'
+      );
+    }
+    // A Shared Drive's id doubles as its root folder id.
+    return {
+      rootId: drive.id,
+      driveId: drive.id,
+      label: `Shared Drive "${drive.name}"`,
+      driveName: drive.name,
+    };
   }
 
   /**

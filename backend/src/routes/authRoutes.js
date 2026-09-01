@@ -92,6 +92,7 @@ router.get('/status', (_req, res) => {
     google: tokenStore.getGoogleStatus(),
     microsoft: tokenStore.getMicrosoftStatus(),
     box: tokenStore.getBoxStatus(),
+    dropbox: tokenStore.getDropboxStatus(),
     sharepoint: tokenStore.getSharePointStatus(),
   });
 });
@@ -544,6 +545,102 @@ router.post('/box/signout', (req, res) => {
   if (email) {
     tokenStore.removeBoxToken(email);
     logger.info(`[auth] Box account disconnected: ${email}`);
+  }
+  res.json({ success: true });
+});
+
+// ─── Dropbox OAuth ────────────────────────────────────────────────────────────
+//
+// Mirrors the Box flow above, with two Dropbox-specific requirements:
+//
+//   1. `token_access_type=offline` is MANDATORY. Without it Dropbox returns only a 4-hour access
+//      token and no refresh token — shorter than a content validation run, so the account would die
+//      mid-run with a 401 that reads like a permissions problem.
+//   2. Dropbox has no "email" on the token response. The account is identified by a second call to
+//      users/get_current_account, the same shape as Box's users/me.
+
+const DROPBOX_AUTH_URL = 'https://www.dropbox.com/oauth2/authorize';
+const DROPBOX_TOKEN_URL = 'https://api.dropbox.com/oauth2/token';
+const DROPBOX_API_ME = 'https://api.dropboxapi.com/2/users/get_current_account';
+
+router.get('/dropbox/url', (req, res) => {
+  const clientId = process.env.DROPBOX_APP_KEY;
+  if (!clientId) return res.status(400).json({ error: 'DROPBOX_APP_KEY not configured' });
+  const isPopup = req.query.source === 'popup';
+  const state = isPopup ? 'popup' : 'default';
+  const redirectUri = `${BACKEND_BASE}/api/auth/dropbox/callback`;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    // Offline access is what yields the refresh token. See note above — this is not optional.
+    token_access_type: 'offline',
+    state,
+  });
+  res.json({ url: `${DROPBOX_AUTH_URL}?${params}` });
+});
+
+router.get('/dropbox/callback', async (req, res) => {
+  const { code, error, state } = req.query;
+  const isPopup = state === 'popup';
+  const base = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+
+  if (error) {
+    logger.warn(`[auth] Dropbox OAuth error: ${error}`);
+    return res.redirect(`${base}?error=dropbox&message=${encodeURIComponent(error)}`);
+  }
+  if (!code) return res.status(400).send('Missing code');
+
+  try {
+    const redirectUri = `${BACKEND_BASE}/api/auth/dropbox/callback`;
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+    });
+    // Dropbox takes the app key/secret as HTTP Basic auth on this endpoint, not as body fields.
+    const tokenRes = await axios.post(DROPBOX_TOKEN_URL, params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      auth: { username: process.env.DROPBOX_APP_KEY, password: process.env.DROPBOX_APP_SECRET },
+    });
+    const { access_token, refresh_token, expires_in, account_id } = tokenRes.data;
+
+    if (!refresh_token) {
+      // Worth failing loudly: a connection without a refresh token looks fine for four hours and
+      // then breaks in the middle of a run.
+      logger.warn('[auth] Dropbox returned no refresh_token — token_access_type=offline missing?');
+    }
+
+    // users/get_current_account takes a literal null body, not an empty object.
+    const meRes = await axios.post(DROPBOX_API_ME, null, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+    const email = String(meRes.data?.email || '').toLowerCase();
+    if (!email) throw new Error('Dropbox account has no email address');
+
+    tokenStore.setDropboxToken({
+      email,
+      accessToken: access_token,
+      refreshToken: refresh_token || null,
+      expiresAt: Date.now() + Number(expires_in || 14400) * 1000,
+      teamMemberId: meRes.data?.team_member_id || null,
+      accountId: account_id || meRes.data?.account_id || null,
+    });
+    logger.info(`[auth] Dropbox account connected: ${email}`);
+
+    res.redirect(`${base}?connected=dropbox&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    const detail = err.response?.data?.error_summary || err.message;
+    logger.error(`[auth] Dropbox callback error: ${detail}`);
+    res.redirect(`${base}?error=dropbox&message=${encodeURIComponent(detail)}`);
+  }
+});
+
+router.post('/dropbox/signout', (req, res) => {
+  const { email } = req.body;
+  if (email) {
+    tokenStore.removeDropboxToken(email);
+    logger.info(`[auth] Dropbox account disconnected: ${email}`);
   }
   res.json({ success: true });
 });

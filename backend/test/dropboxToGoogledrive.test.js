@@ -281,6 +281,166 @@ function testSeedingRefusesAccountRoot() {
   console.log('  seeding agent guards + Paper manual steps: ok');
 }
 
+/** Both Google destinations are registered, and each is measured against its OWN bands. */
+function testSharedDriveCombination() {
+  const shared = registry.resolve('content', 'dropbox', 'googleshareddrive');
+  assert.ok(shared, 'content:dropbox:googleshareddrive is registered');
+  // One validator serves both, the same way googledriveToSharepoint serves googleshareddrive.
+  assert.strictEqual(shared.ValidationAgent, ValidationAgent, 'both destinations share the validator');
+  assert.strictEqual(shared.TestDataAgent, DropboxTestDataAgent);
+
+  const agent = new ValidationAgent();
+  assert.strictEqual(agent._combinationKey({ destinationProvider: 'googleshareddrive' }),
+    'dropbox_to_googleshareddrive');
+  assert.strictEqual(agent._combinationKey({ destinationProvider: 'googledrive' }),
+    'dropbox_to_googledrive');
+  assert.strictEqual(agent._combinationKey({}), 'dropbox_to_googledrive', 'My Drive is the default');
+
+  // Separate bands file, so a Shared Drive finding can be tuned without moving My Drive's numbers.
+  const sharedBands = tolerance.forCombination('dropbox_to_googleshareddrive');
+  const myDriveBands = tolerance.forCombination('dropbox_to_googledrive');
+  assert.ok(sharedBands, 'shared drive bands auto-load from their own file');
+  assert.notStrictEqual(sharedBands, myDriveBands, 'the two are separate objects, not an alias');
+  assert.strictEqual(sharedBands.countDelta, 0);
+  assert.strictEqual(sharedBands.pathLengthLimit, Infinity);
+  assert.ok(sharedBands.treeDepth > 20);
+
+  // One role map covers both pairs — the scope document is written for the two together.
+  assert.strictEqual(
+    roleMaps.forCombination('dropbox_to_googleshareddrive'),
+    roleMaps.forCombination('dropbox_to_googledrive'),
+    'one Dropbox→Google role map serves both destinations'
+  );
+  console.log('  shared drive combination registered + own bands: ok');
+}
+
+/**
+ * Destination drive resolution precedence.
+ *
+ * The wrong drive is the most expensive error in this area: it reports every item missing, which
+ * reads as a total migration failure but is a configuration mistake. So the order is asserted, and
+ * so is the one fallback that must NOT exist.
+ */
+function testDestinationDriveResolution() {
+  const agent = new ValidationAgent();
+
+  // 1. per-unit name wins — a run may land N source drives in N destination drives
+  assert.strictEqual(
+    agent.destinationDriveNameFor(
+      { destinationSharedDriveName: 'FromContext' },
+      { destinationDriveName: 'FromUnit', destinationPath: '/FromPath/Sub' }
+    ),
+    'FromUnit'
+  );
+  // 2. then the first segment of a drive-style destination path
+  assert.strictEqual(
+    agent.destinationDriveNameFor({ destinationSharedDriveName: 'FromContext' },
+      { destinationPath: '/FromPath/Sub' }),
+    'FromPath'
+  );
+  // 3. then the run-level name
+  assert.strictEqual(
+    agent.destinationDriveNameFor({ destinationSharedDriveName: 'FromContext' }, {}),
+    'FromContext'
+  );
+  // 4. nothing configured resolves to empty, which callers must treat as an error, not as My Drive
+  assert.strictEqual(agent.destinationDriveNameFor({}, {}), '');
+
+  // GOOGLE_SHARED_DRIVE_NAME names the SOURCE drive for the Drive→SharePoint combinations. If it
+  // leaked in here, a Dropbox run would validate against another combination's drive.
+  const saved = process.env.GOOGLE_SHARED_DRIVE_NAME;
+  process.env.GOOGLE_SHARED_DRIVE_NAME = 'SourceDriveOfAnotherCombination';
+  try {
+    assert.strictEqual(agent.destinationDriveNameFor({}, {}), '',
+      'the SOURCE drive env var must never be used as a destination fallback');
+  } finally {
+    if (saved === undefined) delete process.env.GOOGLE_SHARED_DRIVE_NAME;
+    else process.env.GOOGLE_SHARED_DRIVE_NAME = saved;
+  }
+  console.log('  destination drive resolution precedence: ok');
+}
+
+/** My Drive resolves without network; an unnamed Shared Drive fails before any API call. */
+async function testResolveDestinationRoot() {
+  const agent = new ValidationAgent();
+
+  const my = await agent.resolveDestinationRoot({
+    destinationProvider: 'googledrive', destinationEmail: 'x@example.com',
+  });
+  assert.strictEqual(my.rootId, 'root', "My Drive's root id is the literal string 'root'");
+  assert.strictEqual(my.driveId, null, 'My Drive has no driveId to scope queries by');
+  assert.strictEqual(my.driveName, null);
+
+  // A Shared Drive with no resolvable name must fail loudly rather than silently fall back to My
+  // Drive — that fallback would compare a Shared Drive migration against an empty My Drive.
+  await assert.rejects(
+    () => agent.resolveDestinationRoot({
+      destinationProvider: 'googleshareddrive', destinationEmail: 'x@example.com',
+    }),
+    /no drive name could be resolved/i,
+    'an unnamed Shared Drive is an error, never a silent My Drive fallback'
+  );
+  console.log('  destination root resolution: ok');
+}
+
+/**
+ * The Dropbox account store, exercised against a temp file rather than the real token store.
+ *
+ * The refresh token is the only durable Dropbox credential (access tokens last 4 hours), so the rule
+ * that a re-authorization must not wipe it is asserted directly — losing it silently downgrades an
+ * account to something that dies partway through a run.
+ */
+function testDropboxTokenStore() {
+  // Exercised through the real store against a throwaway address, then removed in `finally`. The
+  // store has no injectable path, and asserting the merge rule matters more than isolating the file.
+  const store = require('../src/clients/oauthTokenStore');
+  const email = `dbx-unit-test-${process.pid}@example.invalid`;
+
+  const before = store.getDropboxToken(email);
+  assert.strictEqual(before, null, 'an unknown account reads as null, not undefined');
+
+  try {
+    store.setDropboxToken({
+      email,
+      accessToken: 'at-1',
+      refreshToken: 'rt-1',
+      expiresAt: Date.now() + 3600_000,
+      teamMemberId: 'dbmid:abc',
+    });
+    let e = store.getDropboxToken(email);
+    assert.strictEqual(e.refreshToken, 'rt-1');
+    assert.strictEqual(e.teamMemberId, 'dbmid:abc', 'the member context is stored');
+    assert.ok(e.connectedAt, 'connectedAt is stamped');
+    const firstConnectedAt = e.connectedAt;
+
+    // A re-auth WITHOUT a refresh token must keep the stored one. Dropbox only issues it on the
+    // first authorization, so overwriting with null is how an account silently degrades.
+    store.setDropboxToken({ email, accessToken: 'at-2', refreshToken: null, expiresAt: Date.now() + 3600_000 });
+    e = store.getDropboxToken(email);
+    assert.strictEqual(e.accessToken, 'at-2', 'the access token is refreshed');
+    assert.strictEqual(e.refreshToken, 'rt-1', 'the refresh token SURVIVES a re-auth that omits it');
+    assert.strictEqual(e.teamMemberId, 'dbmid:abc', 'the member context survives too');
+    assert.strictEqual(e.connectedAt, firstConnectedAt, 'connectedAt is not reset on re-auth');
+
+    // Case-insensitive, like every other provider in this store.
+    assert.ok(store.getDropboxToken(email.toUpperCase()), 'lookup is case-insensitive');
+
+    // It shows up in the combined account list the UI reads.
+    assert.ok(
+      store.getAllConnectedAccounts().some((a) => a.provider === 'dropbox' && a.email === email),
+      'the account appears in getAllConnectedAccounts for the Connect Clouds page'
+    );
+    assert.strictEqual(store.getDropboxStatus().connected, true);
+  } finally {
+    store.removeDropboxToken(email);
+  }
+  assert.strictEqual(store.getDropboxToken(email), null, 'disconnect removes the account');
+  console.log('  dropbox account store: ok');
+}
+
+testSharedDriveCombination();
+testDestinationDriveResolution();
+testDropboxTokenStore();
 testPathNormalisation();
 testApiArgIsAscii();
 testItemShape();
@@ -294,4 +454,8 @@ testFeatureChecklistCoverage();
 testEmptyRunNeverPasses();
 testSeedingRefusesAccountRoot();
 
-console.log('dropboxToGoogledrive.test.js: ok');
+// The one async group runs last, so a rejection surfaces after the synchronous assertions rather
+// than racing them. A failure inside it must still exit non-zero, or npm test would report ok.
+testResolveDestinationRoot()
+  .then(() => console.log('dropboxToGoogledrive.test.js: ok'))
+  .catch((err) => { console.error(err); process.exit(1); });

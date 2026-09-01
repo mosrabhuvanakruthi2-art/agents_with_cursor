@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   getConnectedAccounts, addDwdAccount, getMicrosoftAdminConsentUrl, getBoxOAuthUrl,
   signOutGoogle, signOutMicrosoft, signOutBox,
+  getDropboxOAuthUrl, signOutDropbox,
   getMicrosoftOAuthUrl, getGoogleOAuthUrl, getSlackOAuthUrl, signOutSlack,
 } from '../services/api';
 
@@ -16,7 +17,7 @@ const CATALOG = {
   ],
   content: [
     { key: 'box', name: 'Box', account: 'box' },
-    { key: 'dropbox', name: 'Dropbox' },                 // connector pending
+    { key: 'dropbox', name: 'Dropbox', account: 'dropbox' },
     { key: 'egnyte', name: 'Egnyte' },                   // connector pending
     { key: 'citrix', name: 'Citrix ShareFile' },         // connector pending
     { key: 'googledrive', name: 'Google Drive', account: 'google' },
@@ -40,7 +41,7 @@ const DOMAIN_TABS = [
   { key: 'message', label: 'Message' },
 ];
 
-const ACCOUNT_NAME = { google: 'Google', microsoft: 'Microsoft', box: 'Box', slack: 'Slack' };
+const ACCOUNT_NAME = { google: 'Google', microsoft: 'Microsoft', box: 'Box', slack: 'Slack', dropbox: 'Dropbox' };
 
 function openPopup(url) {
   const w = 520, h = 680;
@@ -117,6 +118,7 @@ export default function ConnectClouds() {
     if (cloud.account === 'google') { setGoogleFor(cloud); setGoogleEmail(''); setDwdBlocked(null); return; }
     if (cloud.account === 'microsoft') { runPopupFlow(() => getMicrosoftAdminConsentUrl(), cloud.name); return; }
     if (cloud.account === 'box') { runPopupFlow(() => getBoxOAuthUrl('popup'), cloud.name); return; }
+    if (cloud.account === 'dropbox') { runPopupFlow(() => getDropboxOAuthUrl('popup'), cloud.name); return; }
     showToast(`${cloud.name} is not implemented yet`, 'error');
   }
 
@@ -158,6 +160,7 @@ export default function ConnectClouds() {
     try {
       if (acct.provider === 'google') await signOutGoogle(acct.email);
       else if (acct.provider === 'box') await signOutBox(acct.email);
+      else if (acct.provider === 'dropbox') await signOutDropbox(acct.email);
       else if (acct.provider === 'slack') await signOutSlack(acct.email);
       else await signOutMicrosoft(acct.email);
       showToast(`${acct.email} disconnected`);

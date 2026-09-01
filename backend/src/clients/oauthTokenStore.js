@@ -50,6 +50,8 @@ function migrateIfNeeded(data) {
   if (!data.sharepoint.accounts) data.sharepoint.accounts = {};
   if (!data.slack) data.slack = { accounts: {} };
   if (!data.slack.accounts) data.slack.accounts = {};
+  if (!data.dropbox) data.dropbox = { accounts: {} };
+  if (!data.dropbox.accounts) data.dropbox.accounts = {};
   return data;
 }
 
@@ -126,6 +128,15 @@ async function loadFromMongo() {
         data.sharepoint.accounts[email.toLowerCase()] = {
           accessToken: rest.accessToken, refreshToken: rest.refreshToken,
           expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+        };
+        loaded++;
+      } else if (provider === 'dropbox') {
+        // teamMemberId is carried through deliberately: without it a restored Business account
+        // reads the ADMIN's own Dropbox instead of the intended member, silently.
+        data.dropbox.accounts[email.toLowerCase()] = {
+          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
+          expiresAt: rest.expiresAt, teamMemberId: rest.teamMemberId || null,
+          accountId: rest.accountId || null, connectedAt: rest.connectedAt,
         };
         loaded++;
       }
@@ -338,6 +349,54 @@ function getBoxStatus() {
   return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
 }
 
+// ─── Dropbox ─────────────────────────────────────────────────────────────────
+//
+// Dropbox differs from Box in one way that matters here: its access tokens are short-lived (4
+// hours), shorter than a full content validation run. So the REFRESH token is the durable credential
+// and must always be stored — a Dropbox entry with only an access token will stop working mid-run.
+//
+// `teamMemberId` is kept alongside it because every content call needs a member context on a
+// Business team; without it an admin token silently reads the admin's own Dropbox.
+
+function getDropboxToken(email) {
+  if (!email) return null;
+  const data = read();
+  return data.dropbox.accounts[String(email).toLowerCase()] || null;
+}
+
+function setDropboxToken({ email, accessToken, refreshToken, expiresAt, teamMemberId, accountId }) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  const existing = data.dropbox.accounts[key];
+  const entry = {
+    accessToken,
+    // Dropbox only returns a refresh token on the FIRST authorization. A re-auth that omits it must
+    // not wipe the stored one, or the account silently degrades to 4-hour access.
+    refreshToken: refreshToken || existing?.refreshToken || null,
+    expiresAt,
+    teamMemberId: teamMemberId || existing?.teamMemberId || null,
+    accountId: accountId || existing?.accountId || null,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
+  data.dropbox.accounts[key] = entry;
+  write(data);
+  syncToMongo('dropbox', key, { email: key, ...entry });
+}
+
+function removeDropboxToken(email) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  delete data.dropbox.accounts[key];
+  write(data);
+  removeFromMongo('dropbox', key);
+}
+
+function getDropboxStatus() {
+  const data = read();
+  const emails = Object.keys(data.dropbox.accounts);
+  return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
+}
+
 // ─── SharePoint Online ────────────────────────────────────────────────────────
 
 function getSharePointToken(email) {
@@ -383,6 +442,9 @@ function getAllConnectedAccounts() {
   }
   for (const [email, entry] of Object.entries(data.box.accounts)) {
     accounts.push({ provider: 'box', email, connectedAt: entry.connectedAt });
+  }
+  for (const [email, entry] of Object.entries(data.dropbox.accounts)) {
+    accounts.push({ provider: 'dropbox', email, connectedAt: entry.connectedAt });
   }
   for (const [email, entry] of Object.entries(data.sharepoint.accounts)) {
     accounts.push({ provider: 'sharepoint', email, connectedAt: entry.connectedAt });
@@ -451,6 +513,11 @@ module.exports = {
   setBoxToken,
   removeBoxToken,
   getBoxStatus,
+  // Dropbox
+  getDropboxToken,
+  setDropboxToken,
+  removeDropboxToken,
+  getDropboxStatus,
   // SharePoint
   getSharePointToken,
   setSharePointToken,

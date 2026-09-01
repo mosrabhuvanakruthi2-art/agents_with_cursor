@@ -126,28 +126,60 @@ async function withWriteRetry(fn, label, attempts = 3) {
 /**
  * Obtain a usable access token.
  *
- * Two supported shapes, in order:
- *   - DROPBOX_REFRESH_TOKEN + APP_KEY/APP_SECRET — the durable one. Dropbox short-lived tokens last
- *     four hours, which is shorter than some validation runs, so this is the only form that survives
- *     a long run without a mid-flight 401.
- *   - DROPBOX_ACCESS_TOKEN — a manually generated token, fine for a quick check. Used as-is and
- *     never refreshed, so it will expire mid-run if it is a short-lived one.
+ * Sources, in priority order:
+ *   1. The account connected in the UI (Connect Clouds → Dropbox), when `email` names one. This is
+ *      the normal path and the only one that supports more than one Dropbox account.
+ *   2. DROPBOX_REFRESH_TOKEN + APP_KEY/APP_SECRET — the env equivalent, durable the same way.
+ *   3. DROPBOX_ACCESS_TOKEN — a manually generated token, fine for a quick connectivity check. Used
+ *      as-is and never refreshed, so it expires mid-run if it is a short-lived one.
+ *
+ * Dropbox access tokens last four hours, which is shorter than some validation runs, so anything
+ * without a refresh token behind it will fail partway through a long run.
+ *
+ * @param {string|null} email  the connected Dropbox account to act as
  */
-async function getAccessToken() {
-  const refreshToken = env.DROPBOX_REFRESH_TOKEN;
+async function getAccessToken(email = null) {
   const appKey = env.DROPBOX_APP_KEY;
   const appSecret = env.DROPBOX_APP_SECRET;
+
+  // An account connected through the UI (Connect Clouds → Dropbox) wins over the env credentials.
+  // Required so the app is usable without editing .env, and so several Dropbox accounts can be
+  // connected at once — which env vars cannot express.
+  //
+  // Required lazily: oauthTokenStore pulls in db/mongo, and a top-level require here would make this
+  // client unloadable in a unit test that has no Mongo.
+  let refreshToken = env.DROPBOX_REFRESH_TOKEN;
+  if (email) {
+    try {
+      const stored = require('./oauthTokenStore').getDropboxToken(email);
+      if (stored?.refreshToken) {
+        refreshToken = stored.refreshToken;
+      } else if (stored?.accessToken && stored.expiresAt > Date.now() + 60000) {
+        // Connected without offline access. Usable now, but it will expire mid-run — say so once
+        // rather than letting a 401 surface later looking like a permissions failure.
+        logger.warn(
+          `[dropbox] ${email} has no refresh token (connected without offline access); its access `
+          + 'token expires within hours and a long run may fail partway. Reconnect the account.'
+        );
+        return stored.accessToken;
+      }
+    } catch (err) {
+      logger.warn(`[dropbox] token store unavailable, falling back to env: ${err.message}`);
+    }
+  }
 
   if (!refreshToken || !appKey || !appSecret) {
     if (env.DROPBOX_ACCESS_TOKEN) return env.DROPBOX_ACCESS_TOKEN;
     throw new Error(
-      'Dropbox is not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET '
-      + '(preferred — survives a long run), or DROPBOX_ACCESS_TOKEN for a short check. '
-      + 'See .env.example.'
+      'Dropbox is not configured. Connect a Dropbox account in the UI (Connect Clouds → Dropbox), '
+      + 'or set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY + DROPBOX_APP_SECRET in the root .env '
+      + '(DROPBOX_ACCESS_TOKEN works for a short check but expires in 4 hours). See .env.example.'
     );
   }
 
-  const cacheKey = `refresh:${appKey}`;
+  // Keyed by the refresh token, not just the app key: two connected accounts share an app key and
+  // would otherwise hand each other's access token back out of the cache.
+  const cacheKey = `refresh:${appKey}:${refreshToken.slice(-12)}`;
   const cached = tokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 120000) return cached.token;
 
@@ -203,8 +235,8 @@ function rpcHeaders(token, asMemberId, extra = {}) {
 
 /** POST to an RPC endpoint. `null` body is sent as literal null, which several endpoints require. */
 async function rpc(endpoint, body, opts = {}) {
-  const { asMemberId = null, label = endpoint, root = null } = opts;
-  const token = await getAccessToken();
+  const { asMemberId = null, label = endpoint, root = null, email = null } = opts;
+  const token = await getAccessToken(email);
   const extra = {};
   // Team-space root selection. Needed to reach a TEAM FOLDER: a member-scoped call sees only the
   // member folder, so team folders appear to be missing entirely.
@@ -602,8 +634,8 @@ async function listRevisions(path, opts = {}) {
 
 /** Download a file's bytes as a Buffer. Backs Tier B hashing. */
 async function downloadFile(path, opts = {}) {
-  const { asMemberId = null, root = null } = opts;
-  const token = await getAccessToken();
+  const { asMemberId = null, root = null, email = null } = opts;
+  const token = await getAccessToken(email);
   const headers = {
     Authorization: `Bearer ${token}`,
     'Dropbox-API-Arg': apiArg({ path: dbxPath(path) }),
@@ -632,8 +664,8 @@ async function downloadFile(path, opts = {}) {
  * export. Needed for any content comparison of scope §10, where the destination is a Google Doc.
  */
 async function exportPaper(path, format = 'markdown', opts = {}) {
-  const { asMemberId = null, root = null } = opts;
-  const token = await getAccessToken();
+  const { asMemberId = null, root = null, email = null } = opts;
+  const token = await getAccessToken(email);
   const headers = {
     Authorization: `Bearer ${token}`,
     'Dropbox-API-Arg': apiArg({ path: dbxPath(path), export_format: format }),
@@ -687,8 +719,8 @@ async function createFolder(path, opts = {}) {
  * repeatedly against the same path.
  */
 async function uploadFile(path, buffer, opts = {}) {
-  const { asMemberId = null, root = null, mode = 'overwrite', clientModified = null } = opts;
-  const token = await getAccessToken();
+  const { asMemberId = null, root = null, mode = 'overwrite', clientModified = null, email = null } = opts;
+  const token = await getAccessToken(email);
   const arg = { path: dbxPath(path), mode, autorename: false, mute: true };
   // `mute: true` suppresses the member's own notification for this write — unrelated to scope 6.1,
   // which is about the DESTINATION's collaboration mail, but it keeps a seeding run from spamming
@@ -842,11 +874,19 @@ async function deletePath(path, opts = {}) {
  * Lets callers report "not configured" as a skip with instructions rather than throwing a stack
  * trace out of a run — the same courtesy `verifyDwd` gives the Drive flow.
  */
-function isConfigured() {
-  return Boolean(
-    (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY && env.DROPBOX_APP_SECRET)
-    || env.DROPBOX_ACCESS_TOKEN
-  );
+function isConfigured(email = null) {
+  if (env.DROPBOX_ACCESS_TOKEN) return true;
+  if (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY && env.DROPBOX_APP_SECRET) return true;
+  // A UI-connected account counts as configured — it carries its own refresh token, and the app
+  // key/secret needed to spend it come from env.
+  if (!env.DROPBOX_APP_KEY || !env.DROPBOX_APP_SECRET) return false;
+  try {
+    const store = require('./oauthTokenStore');
+    if (email) return Boolean(store.getDropboxToken(email));
+    return store.getDropboxStatus().connected;
+  } catch {
+    return false;
+  }
 }
 
 module.exports = {
