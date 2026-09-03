@@ -357,6 +357,9 @@ const USER_LISTING_PROVIDER = {
   googledrive: 'google', googleshareddrive: 'google', gmail: 'google', // (googleshareddrive kept)
   onedrive: 'microsoft', outlook: 'microsoft',
   sharepoint: 'sharepoint', box: 'box',
+  // Dropbox lists its own team members (dropboxClient.listTeamMembers) rather than mapping to a
+  // Google/Graph account — same arrangement as Box.
+  dropbox: 'dropbox',
 };
 
 async function getSourceUsers(req, res) {
@@ -425,6 +428,29 @@ async function getSourceUsers(req, res) {
         const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
         return res.json({ adminEmail, users, source: 'box-graph-fallback' });
       }
+    }
+
+    // Dropbox — the team's own members. No Graph/Gmail fallback: a Dropbox team has no counterpart
+    // in either, so falling back would list people who cannot be a Dropbox source at all.
+    if (provider === 'dropbox') {
+      const dropboxClient = require('../clients/dropboxClient');
+      logger.info(`getSourceUsers: fetching Dropbox team members (admin: ${adminEmail})`);
+      const members = await dropboxClient.listTeamMembers();
+      // Invited-but-inactive members cannot receive a share, so a grant to one fails at seeding
+      // time with an error that names the address rather than the reason. Filtered out here.
+      const users = members
+        .filter((m) => !m.status || m.status === 'active')
+        .map((m) => {
+          const name = m.displayName || m.email;
+          return {
+            id: m.teamMemberId || m.email,
+            email: m.email,
+            displayName: name,
+            firstName: name.split(' ')[0] || '',
+            lastName: name.split(' ').slice(1).join(' ') || '',
+          };
+        });
+      return res.json({ adminEmail, users, source: 'dropbox' });
     }
 
     if (provider === 'sharepoint') {

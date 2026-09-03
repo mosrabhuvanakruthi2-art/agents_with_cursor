@@ -41,7 +41,13 @@ function agentsFor(context) {
   return set;
 }
 
-const CONTENT_PROVIDERS = ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'];
+// `googleshareddrive` was missing. Every live combination survived that by accident —
+// googleshareddrive→sharepoint matches on its DESTINATION, dropbox→googleshareddrive on its
+// SOURCE — so a Shared-Drive-to-Shared-Drive or Shared-Drive-to-Drive pair would be the first to
+// fall out, and `hasDeepValidation` was the only thing keeping the omission invisible.
+const CONTENT_PROVIDERS = [
+  'box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive', 'googleshareddrive',
+];
 
 /** True when this run is a content (files/folders) migration rather than mail. */
 function isContentModeFor(context) {
@@ -498,6 +504,53 @@ class AgentOrchestrator {
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
+        // Dropbox equivalent of the Box branch above.
+        //
+        // Without this branch a Dropbox source fell through every case and left userFolderMappings
+        // empty, which the note above records as migrating "/" — the WHOLE Dropbox account, not the
+        // QA folder. Silently, with a normal-looking run.
+        //
+        // Dropbox needs a member context: a Business admin token with no member selected reads the
+        // admin's own Dropbox, so the folder would resolve in the wrong account.
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing Dropbox folder(s)`);
+        const dropboxClient = require('../clients/dropboxClient');
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          const folderPath = dropboxClient.dbxPath(
+            e.sourceFolderName || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+          );
+          if (!folderPath) {
+            log.warn(`Content useExistingSource: refusing the Dropbox account root for ${e.sourceEmail} — skipping`);
+            continue;
+          }
+          try {
+            const asMemberId = await dropboxClient.resolveTeamMemberId(e.sourceEmail).catch(() => null);
+            const found = await dropboxClient.getMetadata(folderPath, { asMemberId });
+            if (!found || !found.id) {
+              log.warn(`Content useExistingSource: Dropbox folder "${folderPath}" not found for ${e.sourceEmail} — skipping`);
+              continue;
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              // path_lower, not path_display — CloudFuze matches the canonical lower-case form and
+              // rejects a mixed-case Dropbox path as "wrong CSV paths". See the note in
+              // DropboxTestDataAgent where the same choice is made for a freshly seeded root.
+              sourcePath: found.pathLower || (found.path || folderPath).toLowerCase(),
+              sourceRootId: String(found.id),
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "${found.path || folderPath}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderPath}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing Dropbox folder(s) ready to migrate`);
       } else if (isContentMode && context.useExistingSource && useExistingIsDrive && cufEntries.length > 0) {
         // Drive / Shared Drive equivalent of the Box branch above. A Shared Drive folder is resolved
         // within its drive, so the drive id is carried too — CloudFuze needs it as the scan root.
@@ -780,9 +833,12 @@ class AgentOrchestrator {
       // CloudFuze reported NOT_PROCESSED / conflict — because the validator checks the actual
       // destination state. This gives content the same UX as mail: a downloadable report is always
       // produced after the run. Skip only when no deep validator is registered for the combination.
+      // Use the shared constant rather than re-listing the providers. Two literals lived here and
+      // both had already drifted from it (neither carried `googleshareddrive`), which is exactly
+      // how the omission stayed invisible.
       const isContentProviders =
-        ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
-        ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
+        CONTENT_PROVIDERS.includes(context.sourceProvider) ||
+        CONTENT_PROVIDERS.includes(context.destinationProvider);
       const ValidationAgentClass = agentsFor(context)?.ValidationAgent;
       const hasDeepValidation = Boolean(ValidationAgentClass?.supportsDeepValidation);
       const skipValidation = hasDeepValidation
@@ -943,3 +999,8 @@ class AgentOrchestrator {
 }
 
 module.exports = new AgentOrchestrator();
+// Exported so a test can assert every registered content provider is listed. The list gates
+// content-mode detection, and a missing provider is invisible for any pair whose OTHER side is
+// listed — which is why `googleshareddrive` went unnoticed.
+module.exports.CONTENT_PROVIDERS = CONTENT_PROVIDERS;
+module.exports.isContentProvidersFor = isContentProvidersFor;

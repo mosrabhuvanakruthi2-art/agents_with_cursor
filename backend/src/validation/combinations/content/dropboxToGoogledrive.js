@@ -41,6 +41,16 @@ const logger = require('../../../utils/logger');
 
 const COMBINATION = 'dropbox_to_googledrive';
 
+/**
+ * How long to wait for CloudFuze's permission phase before calling a grant missing.
+ *
+ * Only used when the source has grants and the destination reports none — see the note in
+ * _validateItem. Two attempts at 8s keeps the worst case bounded (16s per affected item) while
+ * covering the delay actually observed.
+ */
+const PERMISSION_SETTLE_ATTEMPTS = 2;
+const PERMISSION_SETTLE_MS = 8000;
+
 /** Terminal CloudFuze statuses that mean the migration itself finished. */
 const CF_OK = ['PROCESSED', 'PROCESS', 'VERSION_PROCESSED'];
 const CF_CONFLICTS = ['PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS'];
@@ -243,6 +253,9 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       hashMismatches: [],
       permissionMismatches: [],
       permissionObservations: [],
+      // Items whose grants CloudFuze had not applied yet when validation ran. Initialised here so
+      // the roll-up can compare it against permissionMismatches without an undefined check.
+      permissionsPending: 0,
       sharedLinkMismatches: [],
       linkObservations: [],
       conversionMismatches: [],
@@ -283,7 +296,39 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         ...dbxOpts,
         maxDepth: bands.treeDepth || 25,
       });
-      sourceTree = core.relativize(sourceTree, sourcePath);
+      // Relativize against the root's DISPLAY path, not the path we asked for.
+      //
+      // Dropbox is case-insensitive on lookup but returns `path_display` in the tree, so asking for
+      // "/qa-automation" (which is what the seeding agent reports, deliberately lower-cased) yields
+      // items at "/QA-Automation/…". core.relativize strips a case-SENSITIVE prefix, so it stripped
+      // nothing: every source path kept its "/QA-Automation" prefix while the destination tree was
+      // relative to the migrated root, and the comparison read
+      //   source 67, dest 68, matched 0, missing 0, extra 1, misplaced 67
+      // on a migration where all 67 items had in fact arrived. Everything keyed on item paths went
+      // with it — permissions reported "no comparable source permissions" against grants that were
+      // demonstrably present, and the long-path check reported "0 encoded chars".
+      //
+      // Fixed here rather than in core.relativize: that helper is shared by every content
+      // combination, and a case-insensitive strip there would change Box→SharePoint and
+      // Drive→SharePoint behaviour too. Dropbox is the only source whose reported path case can
+      // differ from its tree.
+      const rootMeta = await dropboxClient.getMetadata(sourcePath, dbxOpts).catch(() => null);
+      const rootPath = (rootMeta && rootMeta.path) || sourcePath;
+      if (rootPath !== sourcePath) {
+        logger.info(`[dropbox_to_googledrive validation] source root "${sourcePath}" has display `
+          + `path "${rootPath}" — relativizing against the display form`);
+      }
+      // Keep each item's ABSOLUTE Dropbox path before relativizing.
+      //
+      // Relativizing rewrites `path` to "/01-Root-Folder-Permissions", which is what the tree
+      // comparison needs — but the per-item source lookups (listItemMembers, listSharedLinks) hand
+      // that same string back to Dropbox, where it does not exist. Both calls end `.catch(() => [])`,
+      // so the failure surfaced as "No comparable source permissions were found" and "No source
+      // shared links were found" against a source that demonstrably had 9 grants and 2 links.
+      //
+      // relativize spreads the item (`{ ...i, path }`), so this field survives it.
+      for (const item of sourceTree) item.dbxPath = item.path;
+      sourceTree = core.relativize(sourceTree, rootPath);
     } catch (err) {
       push('FAIL', 'Source items scanned', `Could not read Dropbox ${sourcePath}: ${err.message}`);
       return { sourceEmail, destinationPath: unit.destinationPath, checks, itemDetails: [] };
@@ -324,27 +369,81 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
     totals.pairedCount += cmp.matchedCount;
     totals.missing.push(...cmp.missing.map((i) => ({ path: i.path, type: i.type, name: i.name })));
-    totals.extra.push(...cmp.extra.map((i) => ({ path: i.path, type: i.type, name: i.name })));
+    // CloudFuze's own CSV reports are filtered out below before the 1.1 verdict; keep them out of
+    // the run totals too, or the failure index and the check detail disagree about the same run.
+    totals.extra.push(...cmp.extra
+      .filter((i) => !(/\.csv$/i.test(String(i.name || i.path || ''))
+        && Object.values(CSV_REPORT_PATTERNS).some((re) => re.test(String(i.name || i.path || '')))))
+      .map((i) => ({ path: i.path, type: i.type, name: i.name })));
     totals.misplaced.push(...(cmp.misplaced || []));
     totals.placeholderLinks.push(...(cmp.placeholderLinks || []));
     totals.notMigratable.push(...(cmp.notMigratable || []));
 
+    // CloudFuze's own CSV reports are not "extra" content.
+    //
+    // The migration writes its Shared Links and Embedded Links CSVs into the destination root.
+    // Features 3.1 and 8.1 read those files as PROOF the feature worked — 8.1 passes on
+    // "Erik E-EmbeddedLinks.csv present" — while the structure comparison counted the very same
+    // files as unexpected items and failed 1.1 on them. A run where all 67 items arrived
+    // correctly read "extra 2 … FAIL", and 1.2 inherited it. One report cannot call the same file
+    // evidence of success and evidence of failure.
+    //
+    // Matched by the same patterns the CSV check uses, so the two can never disagree about what
+    // counts as a CloudFuze report. Anything else extra at the destination is still a finding.
+    const isCloudFuzeReport = (name) => {
+      const n = String(name || '');
+      if (!/\.csv$/i.test(n)) return false;
+      return Object.values(CSV_REPORT_PATTERNS).some((re) => re.test(n));
+    };
+    const unexpectedExtra = (cmp.extra || []).filter((i) => !isCloudFuzeReport(i.name || i.path));
+    const reportExtras = (cmp.extra || []).length - unexpectedExtra.length;
+
     const structureDetail =
       `source ${cmp.totalSource}, dest ${cmp.totalDest}, matched ${cmp.matchedCount}, `
-      + `missing ${cmp.missing.length}, extra ${cmp.extra.length}, misplaced ${(cmp.misplaced || []).length}`;
-    push(cmp.status === 'PASS' ? 'PASS' : 'FAIL', '1.1 Data Migration (structure)', structureDetail);
+      + `missing ${cmp.missing.length}, extra ${unexpectedExtra.length}, `
+      + `misplaced ${(cmp.misplaced || []).length}`
+      + (reportExtras > 0 ? ` (+${reportExtras} CloudFuze CSV report(s), not counted)` : '');
+
+    // Re-derive the verdict from what is actually wrong, rather than reusing cmp.status, which
+    // was computed before the reports were excluded.
+    const structureOk = cmp.missing.length === 0
+      && unexpectedExtra.length === 0
+      && (cmp.misplaced || []).length === 0;
+    push(structureOk ? 'PASS' : 'FAIL', '1.1 Data Migration (structure)', structureDetail);
 
     // ── Per-item Tier C: permissions, links, timestamps, versions; Tier B hashes.
     const itemDetails = [];
     const paired = [...cmp.matched.entries()];
 
-    for (const [srcPath, destItem] of paired) {
-      const srcItem = sourceTree.find((s) => s.path === srcPath);
-      if (!srcItem) continue;
+    // `cmp.matched` maps source path → { source, dest }, NOT → the destination item.
+    //
+    // This loop read the value as the destination item itself, so `destItem.id` and `destItem.name`
+    // were undefined for every pair. Once the relativize fix made items actually pair, that turned
+    // into "67 of 67 paired item(s) carried no destination id" and every per-item check — Tier B
+    // hashes, permissions, versions, timestamps — was skipped on content that had migrated fine.
+    // Before the relativize fix nothing paired, so the mistake was unreachable and invisible.
+    //
+    // deepContentCore.js:452 sets the shape, and the sibling combination reads it correctly as
+    // `for (const { source, dest } of cmp.matched.values())` — matched here rather than changing the
+    // shared helper.
+    for (const [srcPath, pair] of paired) {
+      const destItem = pair && pair.dest;
+      const srcItem = (pair && pair.source) || sourceTree.find((s) => s.path === srcPath);
+      if (!srcItem || !destItem) continue;
       const row = await this._validateItem({
         srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals,
       });
       itemDetails.push(row);
+    }
+
+    // Items that could not be inspected are reported, not dropped. Without this the run would show
+    // a clean per-item table whose rows were never actually examined — the same vacuous pass the
+    // "Match" cards used to give on zero comparisons.
+    if (totals.uninspectable) {
+      push('WARN', 'Items inspected',
+        `${totals.uninspectable} of ${paired.length} paired item(s) carried no destination id, so `
+        + 'their permissions, versions and content hashes were NOT checked. They are present at the '
+        + 'destination but unverified — do not read them as passing.');
     }
 
     this._rollUpItemChecks(push, totals, itemDetails);
@@ -354,11 +453,52 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     this._checkPaper(push, sourceTree, cmp, totals);
     this._checkNotificationSuppression(push, totals);
 
+    // The per-user shape the report renderers actually read.
+    //
+    // pdfGenerator draws "Per-item validation" from `u.items` and "Folder structure validation"
+    // from `u.folderStructure`, and ResultsView.jsx reads those same two fields for its Source
+    // Items / Found / Folders Compared cards. This unit returned `itemDetails` and no
+    // folderStructure, so BOTH report surfaces silently dropped everything: the PDF had no
+    // per-item section and no tree diagram, and the UI showed 0 / 0 / 0 / 0 beside a run that had
+    // verified 67 items. The sibling combination supplies all of these (see its finishUnit), which
+    // is the whole reason its report reads end-to-end and this one looked empty.
+    //
+    // `mapping` and `status` are the same story in miniature: without them the PDF header printed
+    // "User 1 undefined ·" with "—" for both locations.
+    const folderStructure = core.compareFolders(sourceTree, destTree, {
+      rules,
+      pathLimit: bands.pathLengthLimit ?? rules.pathLengthLimit,
+      segmentLimit: bands.segmentLengthLimit ?? rules.segmentLengthLimit,
+      sourceRootName: core.lastSegment(sourcePath) || '(root)',
+      destRootName: migrated.name || '(root)',
+      sourceLabel: 'Dropbox',
+      destLabel: destRoot.driveId ? 'Google Shared Drive' : 'Google My Drive',
+    });
+
+    const passed = checks.filter((c) => c.status === 'PASS').length;
+    const failed = checks.filter((c) => c.status === 'FAIL').length;
+
     return {
       sourceEmail,
+      destinationEmail: destEmail,
+      sourcePath,
       destinationPath: unit.destinationPath,
       sourceDriveName: null,
+      mapping: {
+        sourceEmail,
+        sourceLocation: sourcePath,
+        destEmail,
+        destLocation: `${unit.destinationPath || '/'}`
+          + (migrated.path && migrated.path !== '/' ? ` → ${migrated.path}` : ''),
+      },
+      status: failed > 0 ? 'FAIL' : 'PASS',
+      summary: `${passed}/${checks.length} checks passed`,
       checks,
+      folderStructure,
+      // Both names: `items` is what the PDF and the UI read, `itemDetails` is what this file's own
+      // roll-up helpers already consume. Keeping one and renaming the other would break whichever
+      // reader was not updated.
+      items: itemDetails,
       itemDetails,
     };
   }
@@ -374,6 +514,24 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       isPaper: Boolean(srcItem.isPaper),
     };
 
+    // A paired destination item with no id cannot be inspected, and asking anyway is expensive and
+    // silent-by-default: every Drive call rejects with "Missing required parameters: fileId", which
+    // retry.js treats as retryable and re-attempts four times with 1+2+4+8s backoff. Two such calls
+    // per item is ~30s of guaranteed-doomed waiting each, on an error that can never succeed on a
+    // retry. This only became reachable once the relativize fix made items pair at all, so it was
+    // latent rather than new.
+    //
+    // Counted and surfaced, never swallowed: an item we could not inspect is not an item that
+    // passed, and this validator's whole purpose is refusing to report unexamined data as good.
+    if (!destItem.id) {
+      row.inspectionSkipped = 'destination item carries no id, so it could not be inspected';
+      totals.uninspectable = (totals.uninspectable || 0) + 1;
+      logger.warn(`[dropbox_to_googledrive validation] "${srcItem.path}" paired with a destination `
+        + 'item that has no id — skipping its permission, version and hash checks rather than '
+        + 'issuing calls that cannot succeed');
+      return row;
+    }
+
     // Paper is converted to a Google Doc: its bytes, size, timestamps and version history are all
     // products of the conversion, so none of them can be compared. Recorded and skipped.
     if (srcItem.isPaper) {
@@ -384,11 +542,41 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
 
     // ── 2.x permissions and 3.x links.
-    const [srcMembers, destPerms] = await Promise.all([
-      dropboxClient.listItemMembers(srcItem, dbxOpts).catch(() => []),
+    //
+    // `dbxPath` is the item's absolute Dropbox path, stamped before the tree was relativized.
+    // Passing the relativized `path` here looked up a path that does not exist, and the swallowing
+    // catch turned that into "no source permissions" rather than an error.
+    const srcRef = { ...srcItem, path: srcItem.dbxPath || srcItem.path };
+    let destPerms;
+    let srcMembers;
+    [srcMembers, destPerms] = await Promise.all([
+      dropboxClient.listItemMembers(srcRef, dbxOpts).catch((err) => {
+        // Logged, not silent: an unreadable source is not the same as an unshared one, and
+        // treating it as "none" is how a permission gap becomes an invisible pass.
+        logger.warn(`[dropbox_to_googledrive validation] could not read source members for `
+          + `"${srcRef.path}": ${err.message}`);
+        return [];
+      }),
       this.readPermissions(destItem.id, destEmail),
     ]);
 
+    // Wait for CloudFuze to finish applying permissions before calling a grant missing.
+    //
+    // CloudFuze copies the items first and applies sharing AFTER, so a validator that starts the
+    // moment the job reports PROCESSED races that phase. Measured on run dbx-gsd-1788417784387:
+    // 01-Root-Folder-Permissions and its four descendants all reported destRoles=[] and "5 of 6
+    // grant(s) differ", while a direct read ~25 minutes later showed every grant present and
+    // correct (ben:fileorganizer, qa_automation:reader, plus the inherited copies on the
+    // children). The item at the root, 02-root-file-viewer.txt, matched in the same run because
+    // its grant had already landed — which is why this failure came and went between runs and
+    // looked like a real defect twice.
+    //
+    // Retry only in the one situation that is suspicious: the SOURCE has comparable grants and
+    // the destination reports none at all. A destination with some grants, or a source with none,
+    // is answered immediately, so the happy path is not slowed.
+    // NOTE ON ORDER: the settle-retry sits AFTER sourcePerms is built, because it needs to know
+    // whether the source had any comparable grants at all. Placing it above the declaration threw
+    // a temporal-dead-zone ReferenceError at run time that `node --check` cannot see.
     const sourcePerms = srcMembers
       .filter((m) => roleMap.isComparableDriveRole(m.role))
       .map((m) => ({
@@ -397,6 +585,52 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         type: m.type,
         displayName: m.displayName,
       }));
+
+    // Has CloudFuze applied the item-level grants yet?
+    //
+    // The first version of this asked "does the destination have ZERO grants" — and never fired,
+    // because a Shared Drive item ALWAYS carries the drive's own grant by inheritance
+    // (erik:organizer, inherited: true). So the list was never empty even when none of the expected
+    // grants had arrived.
+    //
+    // The right question is whether any DIRECT (non-inherited) grant exists. CloudFuze re-grants
+    // per item, so a migrated item that has been processed carries at least one direct grant; one
+    // that has not carries only inherited ones.
+    const directGrants = (perms) => (perms.permissions || []).filter((x) => !x.inherited);
+
+    if (sourcePerms.length > 0 && directGrants(destPerms).length === 0) {
+      for (let attempt = 1; attempt <= PERMISSION_SETTLE_ATTEMPTS; attempt += 1) {
+        await new Promise((r) => setTimeout(r, PERMISSION_SETTLE_MS));
+        const retry = await this.readPermissions(destItem.id, destEmail);
+        if (directGrants(retry).length > 0) {
+          logger.info(`[dropbox_to_googledrive validation] "${srcItem.path}" had no direct `
+            + `destination grants on the first read; ${directGrants(retry).length} appeared after `
+            + `${attempt * (PERMISSION_SETTLE_MS / 1000)}s — CloudFuze was still applying sharing`);
+          destPerms = retry;
+          break;
+        }
+      }
+    }
+
+    // Still nothing item-specific: the sharing phase has not run for this item YET.
+    //
+    // Measured across three runs: the grants appear tens of MINUTES after the job reports
+    // PROCESSED, not seconds. Run dbx-gsd-1788417784387 reported "5 of 6 grant(s) differ" and a
+    // direct read ~25 minutes later showed every grant present and correct; run
+    // dbx-gsd-1788421910278 failed the same way and a read 5 minutes later still showed only the
+    // inherited drive grant. No inline wait can cover that.
+    //
+    // So this is marked NOT YET JUDGEABLE rather than failed. A validator that reports a defect
+    // because it measured too early is worse than one that says "I could not tell yet": it filed
+    // four Neutara tickets (QT-63, QT-67, CF-30684, CF-30695) against permissions that were
+    // correct. The roll-up turns this into a WARN naming the re-validation step.
+    if (sourcePerms.length > 0 && directGrants(destPerms).length === 0) {
+      row.permissionsNotYetApplied = true;
+      totals.permissionsPending = (totals.permissionsPending || 0) + 1;
+      logger.warn(`[dropbox_to_googledrive validation] "${srcItem.path}" still carries only `
+        + `inherited drive grants after ${PERMISSION_SETTLE_ATTEMPTS * (PERMISSION_SETTLE_MS / 1000)}s `
+        + '— CloudFuze has not applied item sharing yet. Reported as pending, NOT as a difference.');
+    }
 
     for (const m of srcMembers.filter((x) => !roleMap.isComparableDriveRole(x.role))) {
       totals.notComparable.push({
@@ -408,8 +642,34 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
 
     if (sourcePerms.length > 0) {
-      const permCmp = core.comparePermissions(sourcePerms, destPerms.permissions, mapEmail);
-      row.permissions = permCmp;
+      // Pass the DROPBOX role map. deepContentCore otherwise falls back to the Box/Drive to
+      // SharePoint tables, which classify Dropbox's 'editor' and 'viewer' as not-comparable and
+      // skip every grant — which is exactly what produced "No comparable source permissions were
+      // found" on a tree with 9 of them.
+      const permCmp = core.comparePermissions(sourcePerms, destPerms.permissions, mapEmail,
+        { roleMap });
+
+      // `row.permissions` must be the per-grant ARRAY the report renders, not the comparison
+      // object.
+      //
+      // pdfGenerator does `for (const p of (it.permissions || []))`, so handing it the
+      // comparePermissions result — { checked, matches, mismatches, … } — threw
+      //   "object is not iterable (cannot read property Symbol(Symbol.iterator))"
+      // and the whole PDF endpoint answered HTTP 500 ("Failed to download PDF"). It only
+      // surfaced once `items` started being rendered at all; before that this section was
+      // skipped and the bad shape sat there unnoticed.
+      //
+      // Field names match what the renderer reads: user, mappedTo, principalType, sourceRole,
+      // destRoles, viaGroup, match. The comparison object is kept under its own key for the
+      // roll-up helpers.
+      row.permissionComparison = permCmp;
+      row.permissions = [
+        ...(permCmp.matches || []).map((m) => ({ ...m, match: true })),
+        ...(permCmp.mismatches || []).map((m) => ({ ...m, match: false })),
+        ...(permCmp.escalations || []).map((m) => ({ ...m, match: false })),
+        ...(permCmp.viaGroup || []).map((m) => ({ ...m, match: true, viaGroup: true })),
+      ];
+      row.sourceLabel = 'Dropbox';
       totals.permissionObservations.push({
         path: srcItem.path,
         type: srcItem.type,
@@ -431,7 +691,11 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
 
     // ── 3.1 / 3.2 shared links.
-    const srcLinks = await dropboxClient.listSharedLinks(srcItem.path, dbxOpts).catch(() => []);
+    const srcLinks = await dropboxClient.listSharedLinks(srcRef.path, dbxOpts).catch((err) => {
+      logger.warn(`[dropbox_to_googledrive validation] could not read source links for `
+        + `"${srcRef.path}": ${err.message}`);
+      return [];
+    });
     if (srcLinks.length > 0) {
       for (const link of srcLinks) {
         const linkCmp = roleMap.compareSharedLink(link, destPerms.links);
@@ -453,7 +717,22 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
           });
         }
       }
-      row.sharedLinks = { source: srcLinks.length, dest: destPerms.links.length };
+      // Per-link ARRAY, not a counts object.
+      //
+      // pdfGenerator does `for (const l of (it.sharedLinks || []))` and reads sourceType /
+      // sourceRole / actual / match off each entry. A { source, dest } summary is not iterable, so
+      // it threw the same "object is not iterable" that the permissions field did and took the
+      // whole PDF down with a 500. Counts kept alongside for the roll-up.
+      row.sharedLinkCounts = { source: srcLinks.length, dest: destPerms.links.length };
+      row.sharedLinks = srcLinks.map((link) => {
+        const cmp = roleMap.compareSharedLink(link, destPerms.links);
+        return {
+          sourceType: link.type,
+          sourceRole: link.role,
+          actual: (cmp.actual || []).join(", ") || "(none)",
+          match: cmp.match,
+        };
+      });
     }
 
     if (srcItem.type === 'folder') return row;
@@ -478,7 +757,15 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // ── 9.1 / 9.2 versions. Informational: the expected destination count is a JOB SETTING
     // (scope 9.2), so a count alone cannot be judged without knowing what the job requested.
     const [srcRevs, destVersions] = await Promise.all([
-      dropboxClient.listRevisions(srcItem.path, dbxOpts).catch(() => []),
+      // Absolute path, like the permission and link reads above. Using the relativized
+      // srcItem.path meant Dropbox never found the file, srcRevs was always empty, versionInfo
+      // stayed empty and features 9.1/9.2 fell to "Not exercised by this run" on a source that
+      // had 6 version uploads seeded.
+      dropboxClient.listRevisions(srcRef.path, dbxOpts).catch((err) => {
+        logger.warn(`[dropbox_to_googledrive validation] could not read revisions for `
+          + `"${srcRef.path}": ${err.message}`);
+        return [];
+      }),
       this.readVersionCount(destItem.id, destEmail),
     ]);
     if (srcRevs.length > 1 || destVersions > 1) {
@@ -517,11 +804,27 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         + 'with DROPBOX_TEST_INTERNAL_USER / DROPBOX_TEST_GROUP / DROPBOX_TEST_EXTERNAL_USER.');
     } else if (totals.permissionMismatches.length === 0) {
       push('PASS', '2.x Permissions', `${permChecked} grant(s) compared, all matched`);
+    } else if (totals.permissionsPending > 0
+      && totals.permissionsPending >= totals.permissionMismatches.length) {
+      // Every difference sits on an item CloudFuze had not finished sharing. Not judgeable yet —
+      // and specifically NOT a failure.
+      //
+      // This is the "report NOT RUN, never as passed" rule applied to its mirror image: a result
+      // that is not yet knowable must not be reported as a defect either. Reporting it as FAIL
+      // filed four Neutara tickets against permissions that a later read showed were correct.
+      push('WARN', '2.x Permissions',
+        `Not judgeable yet: ${totals.permissionsPending} item(s) still carried only inherited drive `
+        + 'grants when validation ran. CloudFuze applies item sharing AFTER the copy completes, and '
+        + 'measurements put that tens of minutes behind the PROCESSED status — so this run measured '
+        + 'too early rather than finding a defect. Re-validate this execution once the job has '
+        + 'settled to get a real verdict on 2.1-2.5.');
     } else {
       const esc = totals.permissionMismatches.filter((m) => m.escalation).length;
+      const pending = totals.permissionsPending > 0
+        ? ` (${totals.permissionsPending} more item(s) not yet shared by CloudFuze — not counted)` : '';
       push('FAIL', '2.x Permissions',
         `${totals.permissionMismatches.length} of ${permChecked} grant(s) differ`
-        + (esc > 0 ? ` (${esc} privilege escalation(s))` : ''));
+        + (esc > 0 ? ` (${esc} privilege escalation(s))` : '') + pending);
     }
 
     if (totals.linkObservations.length === 0) {
@@ -545,10 +848,46 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         `${totals.timestampDrift.length} of ${tsCompared} file(s) drifted beyond the tolerance`);
     }
 
+    // 9.1 Version History — a real verdict, not an unjudged note.
+    //
+    // 9.1 asks whether history ARRIVED, which is answerable: a file that had multiple revisions
+    // in Dropbox should have more than one version at the destination. That is independent of
+    // 9.2, which asks whether the COUNT matches what the job requested — and the job sends
+    // versioning=true (all versions), while Google merges revisions on its side, so exact counts
+    // legitimately differ. Conflating the two is why both features read N/A while 6 seeded
+    // version uploads sat in the source unexamined.
     if (totals.versionInfo.length > 0) {
-      push('WARN', '9.1 / 9.2 Versions',
-        `${totals.versionInfo.length} file(s) carry version history. Reported, not judged: scope 9.2 `
-        + 'makes the expected count a job setting, so confirm against what the job requested.');
+      const versioned = totals.versionInfo.filter((v) => v.sourceVersions > 1);
+      const lostHistory = versioned.filter((v) => v.destVersions <= 1);
+
+      if (versioned.length === 0) {
+        push('WARN', '9.1 Version History',
+          `${totals.versionInfo.length} file(s) reported version data but none had more than one `
+          + 'source revision, so there was no history to preserve. Seed multiple uploads of the '
+          + 'same file to exercise this.');
+      } else if (lostHistory.length === 0) {
+        push('PASS', '9.1 Version History',
+          `${versioned.length} file(s) had multiple Dropbox revisions and all of them arrived with `
+          + 'version history at the destination. Exact counts are NOT compared — Google merges '
+          + `revisions, so a lower number is expected behaviour (e.g. `
+          + `${versioned.map((v) => `${core.lastSegment(v.path)} ${v.sourceVersions}→${v.destVersions}`).slice(0, 4).join(
+)}).`);
+      } else {
+        push('FAIL', '9.1 Version History',
+          `${lostHistory.length} of ${versioned.length} versioned file(s) arrived with no history at `
+          + `all: ${lostHistory.map((v) => `${v.path} (${v.sourceVersions}→${v.destVersions})`).slice(0, 5).join(' | ')}`);
+      }
+
+      // 9.2 Selective Versions — judged against what the job actually requested.
+      //
+      // The job options send versioning=true, i.e. ALL versions. So the expectation is history
+      // present on every versioned file, which is what 9.1 measured. A selective-count run (last
+      // N) would need the job to request it; until a run does, say so rather than scoring it.
+      push('INFO', '9.2 Selective Versions',
+        `This run requested ALL versions (job option versioning=true), not a selective count, so `
+        + 'there is no N to verify. ' + `${versioned.length} versioned file(s) were checked for `
+        + 'history presence under 9.1. To exercise 9.2, run with a selective version count set on '
+        + 'the job and re-check.');
     }
   }
 
@@ -560,22 +899,37 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
    * combinations.
    */
   _checkSpecialCharacters(push, sourceTree, cmp, rules, totals) {
-    // Names carrying characters SharePoint would reject — the interesting population.
-    const spRules = destinations.forDestination('sharepoint');
-    const risky = sourceTree.filter((i) => spRules && spRules.needsSanitizing(i.name));
+    // The interesting population is names carrying SPECIAL CHARACTERS — not specifically the ones
+    // SharePoint rejects.
+    //
+    // This filtered on SharePoint's needsSanitizing(), which accepts ~ ! @ # $ % ^ & ( ) + [ ] { } ;
+    // — every character in the seeded name "Special ~!@#$%^&()_+[]{};,.= chars". So `risky` was
+    // always empty, the check reported "no source names … would rewrite", and feature 5.1 sat at
+    // N/A on every run while a purpose-built special-character folder existed in the source.
+    //
+    // The scope document names the population directly: its own figure shows `!@#$%^&*()_+[]{};:,.<>?`
+    // arriving UNCHANGED at Google, and states the expected outcome for this combination is no
+    // replacement at all. So the test is: names with special characters must survive intact.
+    // Ordinary . _ - and spaces are excluded — every filename has a dot, and matching on that
+    // would make the whole tree "risky" and the check meaningless.
+    const SPECIAL_CHARS = /[!@#$%^&*()+[\]{};:<>?~"|=]/;
+    const risky = sourceTree.filter((i) => SPECIAL_CHARS.test(String(i.name || '')));
     totals.specialChars.total += risky.length;
 
     if (risky.length === 0) {
       push('WARN', '5.1 Special Characters Replacement',
-        'No source names contained characters that any destination would rewrite, so the feature was '
-        + 'not exercised. Seed a name with characters such as ~ ! # $ % & { } to cover it.');
+        'No source name carried a special character, so the feature was not exercised. Seed a name '
+        + 'containing characters such as ! @ # $ % ^ & ( ) [ ] { } ; = to cover it.');
       return;
     }
 
     const renamed = [];
     let arrived = 0;
     for (const item of risky) {
-      const dest = cmp.matched.get(item.path);
+      // cmp.matched holds { source, dest } pairs, not destination items. Reading .name straight off
+      // the pair gave undefined, so every special-character name looked "altered at the
+      // destination" and 5.1 failed with: "Special ~!@#$%^&()_+[]{};,.= chars" → "undefined".
+      const dest = (cmp.matched.get(item.path) || {}).dest;
       if (!dest) continue;
       arrived += 1;
       if (core.normKey(dest.name) !== core.normKey(item.name)) {
@@ -611,6 +965,26 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     const byLength = [...sourceTree].sort((a, b) => b.path.length - a.path.length);
     const longest = byLength[0];
     if (!longest) return;
+
+    // Nothing arrived at all: this feature cannot be judged, and guessing is worse than saying so.
+    //
+    // The inference below compares the longest path that ARRIVED against the shortest that did
+    // NOT, which is only meaningful when the migration actually delivered something. Run
+    // ade2a3d0 moved 0 items (CloudFuze returned CONFLICT / "Migration not Allowed for wrong CSV
+    // paths"), so every source item was "missing" — and the check concluded
+    //   "Items up to 0 encoded chars arrived, and the shortest MISSING item is 12 chars. That
+    //    pattern suggests a real path limit"
+    // i.e. it read a 12-character path as evidence of a length limit, and contradicted
+    // destinations/googledrive.js on the strength of a migration that never ran. A failed
+    // migration must not be able to manufacture a platform finding.
+    if (cmp.matchedCount === 0) {
+      push('WARN', '7.1 Long-File/folder path',
+        `Not judgeable: the migration delivered no items (${(cmp.missing || []).length} of `
+        + `${cmp.totalSource} source items missing), so there is no arrived-vs-missing length `
+        + 'comparison to make. Re-run once the migration completes — the open question in '
+        + 'dropbox-to-google-testdata.md needs a run that actually moved data.');
+      return;
+    }
 
     const arrivedLengths = sourceTree
       .filter((i) => cmp.matched.has(i.path))
@@ -657,9 +1031,26 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
    */
   async _checkCsvReports(push, migrated, destEmail, destRoot, totals) {
     const children = await this.listChildren(migrated.id, destEmail, destRoot.driveId);
+
+    // Match only CSV FILES, never folders.
+    //
+    // The patterns are substring matches, and the seeded tree contains folders named
+    // "04-Shared-Links" and "09-Embedded-Links" that match them exactly as well as the real reports
+    // do. `.find()` returned whichever came first in the listing — the folder — so both features
+    // reported PASS on a directory, "present with 0 row(s)", while "Erik E shared links.csv" sat
+    // beside it unread. Two documented features passing on the wrong evidence is worse than either
+    // failing honestly.
+    const csvFiles = (children || []).filter((c) => {
+      // FOLDER_MIME comes off the parent agent's exports — it is not a local binding here, and
+      // referencing it bare passed `node --check` while being a ReferenceError at run time.
+      const isFolder = String(c.mimeType || '') === GoogleDriveValidationAgent.FOLDER_MIME
+        || c.type === 'folder';
+      return !isFolder && /\.csv$/i.test(String(c.name || ''));
+    });
+
     const found = {};
     for (const [feature, pattern] of Object.entries(CSV_REPORT_PATTERNS)) {
-      const hit = (children || []).find((c) => pattern.test(String(c.name || '')));
+      const hit = csvFiles.find((c) => pattern.test(String(c.name || '')));
       if (hit) {
         const lines = await this.readTextLines({ id: hit.id, mimeType: hit.mimeType }, destEmail);
         found[feature] = { name: hit.name, rows: Math.max(0, lines.length - 1) };
@@ -807,7 +1198,10 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         '6.1': /6\.1 Suppressing/,
         '7.1': /7\.1 Long-File/,
         '8.1': /8\.1 Embedded Links CSV/,
-        '9.1': /9\.1 \/ 9\.2 Versions/, '9.2': /9\.1 \/ 9\.2 Versions/,
+        // Separate patterns now that 9.1 and 9.2 are separate checks. Sharing one pattern meant
+        // both features inherited whichever check matched first, so a real 9.1 verdict could not
+        // reach the checklist independently of 9.2's informational note.
+        '9.1': /9\.1 Version History/, '9.2': /9\.2 Selective Versions/,
       };
 
       // 1.2 and 1.3 are the SAME evidence — the structure comparison — read under the run's

@@ -85,6 +85,84 @@ function testItemShape() {
   console.log('  canonical item shape: ok');
 }
 
+/**
+ * `toItem` decides folder-vs-file solely from the `.tag` discriminator — and `.tag` is present only
+ * on the union entries `files/list_folder` returns. `files/create_folder_v2` answers with a BARE
+ * FolderMetadata that has no `.tag`, so a newly created folder came back typed as a FILE.
+ *
+ * That is not cosmetic. Callers branch on `type` to choose sharing/add_folder_member over
+ * sharing/add_file_member, so every grant on a freshly created folder went to the file endpoint and
+ * failed `access_error/is_folder` — silently losing all folder permissions in a run that otherwise
+ * looked healthy. createFolder now supplies the tag; this pins both halves of that behaviour.
+ */
+function testFolderTagRequired() {
+  const tagged = dropboxClient.toItem(
+    { '.tag': 'folder', id: 'id:f', name: 'Sub', path_display: '/QA/Sub' }, '/QA'
+  );
+  assert.strictEqual(tagged.type, 'folder', 'a tagged folder is a folder');
+  assert.strictEqual(tagged.size, null, 'folders carry no size');
+
+  // The create_folder_v2 shape — same metadata, no discriminator.
+  const untagged = dropboxClient.toItem(
+    { id: 'id:f', name: 'Sub', path_display: '/QA/Sub' }, '/QA'
+  );
+  assert.strictEqual(untagged.type, 'file',
+    'without .tag toItem cannot know it is a folder — which is why createFolder must supply it');
+
+  console.log('  folder tag drives the folder/file branch: ok');
+}
+
+/**
+ * CloudFuze resolves a Dropbox path CSV against Dropbox's CANONICAL lower-case path.
+ *
+ * Measured 2026-09-02: seven jobs sending "/QA-Automation" were rejected with
+ * "Migration not Allowed for wrong CSV paths" (CONFLICT, totalFilesAndFolders=0); the same tree
+ * sent as "/qa-automation" was accepted. `toItem` must therefore carry `path_lower`, because
+ * `path_display` preserves whatever case the folder was created with.
+ */
+function testPathLowerCarried() {
+  const item = dropboxClient.toItem({
+    '.tag': 'folder',
+    id: 'id:abc',
+    name: 'QA-Automation',
+    path_display: '/QA-Automation',
+    path_lower: '/qa-automation',
+  }, '/');
+  assert.strictEqual(item.path, '/QA-Automation', 'path keeps the display form for reporting');
+  assert.strictEqual(item.pathLower, '/qa-automation', 'pathLower carries the form CloudFuze matches');
+
+  // Dropbox always sends path_lower, but fall back rather than emit undefined — an undefined path
+  // would reach the CSV as the string "undefined" and be rejected for a different reason.
+  const noLower = dropboxClient.toItem({
+    '.tag': 'folder', name: 'Mixed Case', path_display: '/Mixed Case',
+  }, '/');
+  assert.strictEqual(noLower.pathLower, '/mixed case', 'falls back to lower-casing the path');
+
+  console.log('  path_lower carried for CloudFuze path matching: ok');
+}
+
+/**
+ * Names Dropbox refuses outright must not be in the seeding list.
+ *
+ * `desktop.ini` was, and `files/upload` answers `path/disallowed_name` — an unguarded throw that
+ * killed the whole seeding run at row 10 of 12, so nothing after it was ever created.
+ */
+function testDisallowedNamesNotSeeded() {
+  const reserved = DropboxTestDataAgent.RESERVED_STYLE_NAMES;
+  const disallowed = DropboxTestDataAgent.DROPBOX_DISALLOWED_NAMES;
+  assert.ok(Array.isArray(reserved) && reserved.length, 'the reserved-style list is exported');
+  assert.ok(Array.isArray(disallowed) && disallowed.length, 'the disallowed list is exported');
+
+  for (const name of disallowed) {
+    assert.ok(!reserved.some((r) => r.toLowerCase() === name.toLowerCase()),
+      `${name} is refused by Dropbox and must never be seeded`);
+  }
+  assert.ok(disallowed.some((n) => n.toLowerCase() === 'desktop.ini'),
+    'desktop.ini is documented as unseedable rather than silently dropped');
+
+  console.log('  Dropbox-disallowed names excluded from seeding: ok');
+}
+
 /** Paper detection gates all 19 of scope §10 — a Paper must never be byte-compared. */
 function testPaperDetection() {
   assert.ok(dropboxClient.isPaperEntry({ name: 'notes.paper' }), '.paper is Paper');
@@ -284,6 +362,9 @@ function testSeedingRefusesAccountRoot() {
 testPathNormalisation();
 testApiArgIsAscii();
 testItemShape();
+testFolderTagRequired();
+testPathLowerCarried();
+testDisallowedNamesNotSeeded();
 testPaperDetection();
 testRetryClassification();
 testGoogleDestinationRules();

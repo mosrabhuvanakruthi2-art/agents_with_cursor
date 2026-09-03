@@ -83,4 +83,45 @@ const CLOUDS = [
   assert.strictEqual(hit.id, 'sp-voohalu');
 }
 
+// ── Provider keys that share no prefix with the registered cloud name ───────
+//
+// CloudFuze registers Google My Drive as G_SUITE. 'googledrive' squashes to GOOGLEDRIVE, and
+// neither is a prefix of the other — so type-scoped matching found nothing and the cross-type
+// fallback returned whichever cloud carried the same email. On qarelease that is BOX_BUSINESS,
+// the first cloud registered to erik@filefuze.co, so a dropbox→googledrive run would have
+// migrated INTO BOX while logging only a warning.
+{
+  const googleClouds = [
+    { id: 'box-erik', cloudName: 'BOX_BUSINESS', emailId: 'erik@filefuze.co' },
+    { id: 'gsd-erik', cloudName: 'GOOGLE_SHARED_DRIVES', emailId: 'erik@filefuze.co' },
+    { id: 'gsuite-erik', cloudName: 'G_SUITE', emailId: 'erik@filefuze.co' },
+  ];
+
+  const myDrive = mc.findCloudId(googleClouds, 'erik@filefuze.co', 'googledrive');
+  assert.ok(myDrive, 'a My Drive hint must resolve');
+  assert.strictEqual(myDrive.id, 'gsuite-erik',
+    'googledrive must resolve to G_SUITE, never to Box by email fallback');
+
+  // The two Google types must stay apart in BOTH directions: resolving My Drive to a Shared Drive
+  // would migrate to the wrong root, and vice versa.
+  const shared = mc.findCloudId(googleClouds, 'erik@filefuze.co', 'googleshareddrive');
+  assert.strictEqual(shared.id, 'gsd-erik',
+    'googleshareddrive must still resolve to GOOGLE_SHARED_DRIVES');
+
+  // Box is unchanged by the alias table.
+  const box = mc.findCloudId(googleClouds, 'erik@filefuze.co', 'box');
+  assert.strictEqual(box.id, 'box-erik', 'box resolution is unaffected');
+
+  // With no G_SUITE registered, a My Drive hint must NOT silently take Box or Shared Drive.
+  const noMyDrive = mc.findCloudId(
+    googleClouds.filter((c) => c.cloudName !== 'G_SUITE'),
+    'erik@filefuze.co',
+    'googledrive'
+  );
+  assert.ok(!noMyDrive || noMyDrive.id !== 'box-erik',
+    'an unregistered My Drive must never fall back to Box — that is the silent wrong-cloud bug');
+}
+
+console.log('  provider-key aliases resolve the right cloud: ok');
+
 console.log('findCloudIdSafety.test.js: ok');

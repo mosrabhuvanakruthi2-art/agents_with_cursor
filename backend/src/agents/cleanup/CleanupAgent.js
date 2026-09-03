@@ -67,6 +67,17 @@ const SEEDED_CONTENT_NAMES = [
   // so source cleanup cannot match it by accident. Destination cleanup only ever scans the library
   // root and each row's own destination folder, so the blast radius is this run's own test area.
   'Long File Names',
+
+  // Dropbox → Google seeded tree, from the paths DropboxTestDataAgent actually creates rather
+  // than guessed names. Without these the destination allowlist matched nothing, so a Google
+  // destination was never cleaned and every run migrated on top of the last.
+  '01-Root-Folder-Permissions', '02-root-file-editor.txt', '02-root-file-viewer.txt',
+  '03-File-Formats', '04-Shared-Links', '05-External-Shares', '06-Metadata-Timestamps',
+  '07-Special-Characters', '08-Long-Paths', '09-Embedded-Links', '10-Versions',
+  // 12-Delta is seeded only on a delta run, so a live tree does not always show it. Listed
+  // anyway: cleanup must remove whatever the agent CAN create, not just what one run happened
+  // to leave behind. Caught by the cross-check in dropboxTeamSpacePath.test.js.
+  '12-Delta',
 ];
 
 /** True when `name` is a seeded item, or a counter/duplicate copy of one. */
@@ -216,6 +227,101 @@ async function cleanContentSides(context, log, summary) {
     } catch (err) {
       summary.sourceContent.errors.push(err.message);
       log.warn(`CleanupAgent: source content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+  // Destination: Google My Drive / Shared Drive, under the same allowlist rule as SharePoint.
+  //
+  // This did not exist: `sharepoint` was the ONLY destination branch, so a googledrive or
+  // googleshareddrive destination was never cleaned. Every re-run migrated on top of the previous
+  // one, and validation then reported the leftovers as extra/misplaced against a migration that
+  // had done nothing wrong — the same failure this file's header records for the source side
+  // (70 extra, 260 misplaced on one run).
+  //
+  // The blast radius is deliberately narrow, because a Shared Drive here can be one the wider
+  // team uses: only allowlisted names are deleted, only inside the run's own destination folder,
+  // and the destination folder itself is kept — it may have pre-dated this run.
+  if (['googledrive', 'googleshareddrive'].includes(dstProvider) && context.destinationEmail) {
+    try {
+      const destPaths = [...new Set([
+        ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+          .map((u) => u && u.destinationPath),
+        context.destinationPath,
+      ].map((x) => String(x || '').trim()).filter(Boolean))];
+
+      if (destPaths.length === 0) {
+        log.info('CleanupAgent: no destination path in context — nothing to clean on the Google side');
+      }
+
+      for (const destPath of destPaths) {
+        const segments = destPath.split('/').map((x) => x.trim()).filter(Boolean);
+        if (segments.length === 0) {
+          // A drive root with no folder named. Refused rather than scanned: the destination
+          // account sees 1,000+ Shared Drives, and a whole-drive scan here would put other
+          // teams' data inside the blast radius.
+          log.warn(`CleanupAgent: destination "${destPath}" names no folder — skipped, refusing to `
+            + 'scan a drive root');
+          continue;
+        }
+
+        // Resolve the root the way GoogleDriveValidationAgent does: for a Shared Drive the FIRST
+        // path segment IS the drive, resolved by name.
+        let parentId = null;
+        let startAt = 0;
+        if (dstProvider === 'googleshareddrive') {
+          const driveName = normalizeDriveName(segments[0]);
+          let drive = null;
+          try {
+            drive = await driveClient.resolveSharedDriveByName(driveName, context.destinationEmail);
+          } catch (dErr) {
+            summary.destContent.errors.push(`resolve dest drive ${driveName}: ${dErr.message}`);
+            continue;
+          }
+          if (!drive) {
+            log.info(`CleanupAgent: destination Shared Drive "${driveName}" not visible — nothing `
+              + 'to clean there');
+            continue;
+          }
+          parentId = drive.id;
+          startAt = 1;                        // segment 0 was the drive itself
+        } else {
+          parentId = 'root';                  // My Drive
+        }
+
+        // Walk to this run's own destination folder. A segment that does not exist yet is the
+        // normal first-run case, not an error.
+        let missing = false;
+        for (let i = startAt; i < segments.length; i += 1) {
+          const kids = await driveClient.listChildren(parentId, context.destinationEmail);
+          const hit = kids.find((k) => String(k.name) === segments[i]);
+          if (!hit) {
+            log.info(`CleanupAgent: destination "${destPath}" — "${segments[i]}" does not exist `
+              + 'yet, nothing to clean');
+            missing = true;
+            break;
+          }
+          parentId = hit.id;
+        }
+        if (missing) continue;
+
+        const children = await driveClient.listChildren(parentId, context.destinationEmail);
+        const targets = children.filter((k) => isSeededContentName(k.name, folderNames));
+        log.info(`CleanupAgent: destination "${destPath}" has ${children.length} item(s); `
+          + `${targets.length} seeded item(s) to delete, ${children.length - targets.length} `
+          + 'left untouched');
+        for (const t of targets) {
+          try {
+            await driveClient.deleteFile(t.id, context.destinationEmail);
+            summary.destContent.foldersDeleted += 1;
+          } catch (err) {
+            summary.destContent.errors.push(`${destPath}/${t.name}: ${err.message}`);
+          }
+        }
+      }
+      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s) `
+        + `across ${destPaths.length} location(s)`);
+    } catch (err) {
+      summary.destContent.errors.push(err.message);
+      log.warn(`CleanupAgent: Google destination cleanup failed (non-blocking): ${err.message}`);
     }
   }
   // Destination: delete only the seeded/migrated items, by allowlist.

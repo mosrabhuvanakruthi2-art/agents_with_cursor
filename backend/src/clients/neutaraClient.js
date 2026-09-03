@@ -439,7 +439,7 @@ async function createBug(execution) {
     // called as /api/issues/CF-123/attachments). Prefer cfKey, fall back to the canonical key.
     const attachKey = res.data?.cfKey || key;
     const url = `${baseUrl()}/issues/${res.data?.cfKey || key}`;
-    logger.info(`[neutaraClient] Bug created: ${key} (${attachKey})  ${url}`);
+    logger.info(`[neutaraClient] ${type} created: ${key} (${attachKey})  ${url}`);
 
     // Attach the full validation report PDF (best-effort — never fails the ticket).
     // Returns 'upload' (real endpoint), 'embed' (data-URI fallback), or false.

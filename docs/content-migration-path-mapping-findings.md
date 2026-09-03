@@ -1161,3 +1161,98 @@ Recorded so none is retried. Each was stated as a cause and then killed by its o
 6. `mapped=false` / null `pathRootFolderId` indicates failure — killed by the Box control (`6a8d0b9e`),
    which reports the same values. Normal output of that endpoint; the warning has been downgraded to
    INFO.
+
+---
+
+## 2026-09-02 — Dropbox source never scans; entitlement and cloud-record theories DISPROVED
+
+`DROPBOX_BUSINESS` as a source is rejected on every attempt, by every route, from the API **and from
+CloudFuze's own UI**:
+
+```
+workspace status      CONFLICT
+totalFilesAndFolders  0
+errorDescription      "Migration not Allowed for wrong CSV paths"
+```
+
+Jobs: `6a97e176…`, `6a97e3a4…`, `6a97e4e1…`, `6a97ec82…`, `6a97eddb…`, `6a97f33b…`, `6a97f3ce…`
+(API), `6a97ef8d…` / `6a97f437…` (→ My Drive), and **`6a97f158…` configured entirely in the
+Team Migration wizard** — same CONFLICT, same message.
+
+### Disproved here
+
+- **Entitlement (2026-08-25 entry).** Still `subscription/all: []`, `subscription/status: false`,
+  `move/limit/active: 400`. Yet `GOOGLE_SHARED_DRIVES → SHAREPOINT` COMPLETED with **126,165 items**
+  on 2026-09-02 under this same account. Those endpoints do not gate migration.
+- **Cloud-record fields.** The working GSD cloud has `statusCode: 0` AND `cloudAddingStatus: false`;
+  Dropbox has `statusCode: 0`, `cloudAddingStatus: true`, `cloudStatus: ACTIVE`,
+  `errorDescription: null`. Dropbox looks healthier than the cloud that works.
+
+### Eliminated for the Dropbox pair
+
+| Variable | Tried |
+|---|---|
+| `fromRootId` | omitted, path `/QA-Automation`, `id:9nIlEb3a…`, bare `9nIlEb3a…` |
+| `destinationFolderName` | `''` and the string `"null"` |
+| flags | `pickInsideFolder`, `teamFoldersMigrate`, `papertoGDoc`, `sharedContent/fusionTables/drawings/unsupportedFiles` |
+| `preview` before start | HTTP 200, no change |
+| destination | Shared Drive `/QA-Automation-Dropbox-Dest`, My Drive `/` — identical failure |
+| path registration | `/QA-Automation` and `/` both register: `folderPath` echoed, `failMapping: false`, `pathException: null`, `provisionedUser: true` |
+| payload shape | byte-identical to the wizard's own `FolderChecked` |
+
+The 24 Aug rule still holds and is unchanged: `fromRootId` = the id of the folder named in
+`sourceFolderPath`. The wizard omits it and the wizard also fails, exactly as that entry warned.
+
+### Conclusion
+
+Nothing on this side is left to vary. `DROPBOX_BUSINESS` source scanning does not work on qarelease.
+This needs the CloudFuze content-service owner:
+
+> On qarelease, a `DROPBOX_BUSINESS` source is rejected with "Migration not Allowed for wrong CSV
+> paths" (`CONFLICT`, `totalFilesAndFolders=0`) for both `GOOGLE_SHARED_DRIVES` and `G_SUITE`
+> destinations, from the API and from the Team Migration wizard. The path CSV registers cleanly.
+> The same account migrates 126k items from `GOOGLE_SHARED_DRIVES`. Reference jobs
+> `6a97f15863681f3aa380e861` (wizard) and `6a97f33b63681f3aa380e873` (API).
+> Is a Dropbox source scan supported on this server, and does it require a pre-scan/index step the
+> Google clouds already have?
+
+---
+
+## 2026-09-02 (later) — "wrong CSV paths" DECODED, and Dropbox→Google DOES work
+
+Two corrections to the entry above, both important.
+
+**1. Dropbox → Google Shared Drive has migrated successfully on qarelease.** Found by listing the
+DESTINATION drives instead of trusting the job list: Shared Drive `QA` (`0AOOPj-pye3DgUk9PVA`)
+contains `DROPDATA` with 32 migrated Dropbox folders, created **2026-04-16**, plus `DROPDATA(1)`
+(04-17) and `Erik E-EmbeddedLinks.csv` (04-20). The earlier claim that "no Dropbox job has ever
+scanned" was wrong — it was based on the ~800 most recent jobs, and April is outside that window.
+Check destinations, not just job history.
+
+**2. `"Migration not Allowed for wrong CSV paths"` means CloudFuze cannot RESOLVE a path at
+validation time.** One rule explains every result:
+
+| source | destination | outcome |
+|---|---|---|
+| `/QA-Automation` (Dropbox stores `path_lower`) | existing | CONFLICT |
+| `/qa-automation` | `/QA-Automation-Dropbox-Dest` (drive root, exists) | accepted |
+| `/qa-automation` | `/QA/DROPBOX-QA-AUTOMATION` created by that same job | **CONFLICT** |
+| `/qa-automation` | `/QA/DROPBOX-QA-AUTOMATION` pre-existing by 3 min | **accepted** |
+| `/qa-automation` | `/QA/Documents` (long-standing) | accepted |
+
+So:
+
+- **Source** must be Dropbox's canonical lower-case path. `path_display` keeps the creation case and
+  is not resolvable; `toItem` now carries `pathLower` and the seeder reports it.
+- **Destination must pre-exist the job.** CloudFuze creates the destination folder during path-CSV
+  registration (measured: folder created 11:26:37, job started 11:26:49) and then still rejects it —
+  its own newly created folder is not resolvable in the same run. A folder three minutes old is.
+
+**Consequence for the tool:** create the destination folder before triggering migration, or expect
+the first run against a new destination to be rejected and the second to succeed.
+
+**Still open:** an accepted job sits `NOT_PROCESSED`/`IN_PROGRESS` with `totalFilesAndFolders=0`.
+No accepted job had ever been allowed to finish — earlier ones were cancelled at 7 min or abandoned
+by our own poller at 3 min (a guard that could not tell "queued" from "nothing to migrate"; it now
+consults the workspace `errorDescription` first). The April job took ~10 minutes, so the window
+matters. Job `6a980882b17d0e315c80d419` is the first correctly-configured run given the full 25 min.

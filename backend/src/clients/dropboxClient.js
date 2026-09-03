@@ -320,6 +320,12 @@ function toItem(entry, parentPath) {
     createdBy: null,
     modifiedBy: null,
     shortcutTargetId: null,
+    // Dropbox reports every path twice: `path_display` keeps the case the user typed, `path_lower`
+    // is the canonical form (Dropbox paths are case-INSENSITIVE). CloudFuze matches on the lower
+    // form, so a path CSV carrying "/QA-Automation" is rejected with "Migration not Allowed for
+    // wrong CSV paths" while "/qa-automation" is accepted — measured on 2026-09-02 across 7 jobs.
+    // Carried here so callers can send CloudFuze the form it resolves.
+    pathLower: entry.path_lower || String(path || '').toLowerCase(),
     // Dropbox-specific, kept for follow-up calls and for Paper detection (feature 10.x).
     rev: entry.rev || null,
     contentHash: entry.content_hash || null,
@@ -665,7 +671,14 @@ async function createFolder(path, opts = {}) {
       path: dbxPath(path),
       autorename: false,
     }, { asMemberId, root, label: 'files/create_folder_v2' });
-    return toItem(data.metadata, '/');
+    // `files/create_folder_v2` returns a bare FolderMetadata — the `.tag` discriminator is only
+    // present on the union entries that `files/list_folder` returns. Without it toItem() reads
+    // undefined !== 'folder' and labels a folder a FILE. That is not cosmetic: callers branch on
+    // `type` to choose sharing/add_folder_member over sharing/add_file_member, so every grant on a
+    // freshly created folder went to the file endpoint and came back
+    // `access_error/is_folder` — silently losing every folder permission the seeding meant to set.
+    // Supplying the tag the endpoint omits keeps that decision in one place.
+    return toItem({ ...data.metadata, '.tag': FOLDER_TAG }, '/');
   } catch (err) {
     // Idempotent by design: seeding is re-run constantly during development, and a conflict here
     // means the folder is already how we want it.
@@ -724,11 +737,29 @@ async function uploadFile(path, buffer, opts = {}) {
  */
 async function shareFolder(path, opts = {}) {
   const { asMemberId = null, root = null } = opts;
-  const data = await rpc('sharing/share_folder', {
-    path: dbxPath(path),
-    acl_update_policy: 'editors',
-    force_async: false,
-  }, { asMemberId, root, label: 'sharing/share_folder' });
+  let data;
+  try {
+    data = await rpc('sharing/share_folder', {
+      path: dbxPath(path),
+      acl_update_policy: 'editors',
+      force_async: false,
+    }, { asMemberId, root, label: 'sharing/share_folder' });
+  } catch (err) {
+    // `bad_path/already_shared` is the success case arriving as an error: the folder is already a
+    // shared folder, which is exactly the state the caller wants. It happens on the SECOND grant to
+    // any folder — the seeding ladder grants each folder to a user and then to a group — so
+    // treating it as a failure lost every second grant while the first one looked fine.
+    if (!/already_shared/.test(String(err.dropboxSummary || err.message || ''))) throw err;
+    // The id comes from the folder's own metadata: FolderMetadata carries `shared_folder_id` once
+    // the folder is shared. `sharing/list_folders` is the wrong source — it omits `path_lower` for
+    // folders that are not mounted, so matching on path there silently finds nothing.
+    // toItem() drops the field, hence the raw call.
+    const meta = await rpc('files/get_metadata', { path: dbxPath(path) },
+      { asMemberId, root, label: 'files/get_metadata (shared_folder_id)' });
+    const id = meta.shared_folder_id || (meta.sharing_info && meta.sharing_info.shared_folder_id);
+    if (id) return id;
+    throw err;
+  }
 
   if (data['.tag'] === 'complete' || data.shared_folder_id) {
     return data.shared_folder_id || data.complete?.shared_folder_id || null;

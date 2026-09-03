@@ -2553,7 +2553,26 @@ function drawContentItemTree(doc, items, opts = {}) {
     doc.fontSize(6.5).font(F_BOLD).fillColor(tag.fg).text(tag.txt, MARGIN + CONTENT_W - tagW, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
     doc.y = y + rowH;
 
-    for (const p of (it.permissions || [])) {
+    // Accept either shape for `permissions`.
+    //
+    // A combination handing over the comparePermissions RESULT — { checked, matches,
+    // mismatches, escalations, viaGroup } — instead of a per-grant array made this loop throw
+    // "object is not iterable", and the PDF endpoint answered HTTP 500 for the whole report
+    // ("Failed to download PDF: Request failed with status code 500" on run ee971325). A report
+    // renderer must not be able to lose an entire run over one unexpected field shape, and
+    // records already stored with the old shape still need to open.
+    //
+    // The object form is unfolded rather than discarded, so those runs render their real grants
+    // instead of silently showing none.
+    const permRows = Array.isArray(it.permissions) ? it.permissions
+      : (it.permissions && typeof it.permissions === 'object') ? [
+        ...(it.permissions.matches || []).map((m) => ({ ...m, match: true })),
+        ...(it.permissions.mismatches || []).map((m) => ({ ...m, match: false })),
+        ...(it.permissions.escalations || []).map((m) => ({ ...m, match: false })),
+        ...(it.permissions.viaGroup || []).map((m) => ({ ...m, match: true, viaGroup: true })),
+      ] : [];
+
+    for (const p of permRows) {
       const srcRole = p.sourceRole ?? p.boxRole;
       const dstRoles = p.destRoles ?? p.spRoles;
       const srcLabel = it.sourceLabel || (p.boxRole !== undefined ? 'Box' : 'Source');
@@ -2579,7 +2598,8 @@ function drawContentItemTree(doc, items, opts = {}) {
     if (it.author) extras.push(`modifiedBy ${it.author.spModBy || '?'} ${it.author.match ? '✓' : '✗'}`);
     if (it.comments) extras.push(`${it.comments} comment(s) (Box)`);
     if (it.sharedLink) extras.push(`shared link ${it.sharedLink.onDest ? 'present ✓' : 'not on dest ✗'}`);
-    for (const l of (it.sharedLinks || [])) {
+    // Same defensive rule as permissions above: a non-array here must not lose the whole report.
+    for (const l of (Array.isArray(it.sharedLinks) ? it.sharedLinks : [])) {
       extras.push(`link ${l.sourceType}/${l.sourceRole} → ${l.actual} ${l.match ? '✓' : '✗'}`);
     }
     if (it.contentHash) extras.push(`content hash ${it.contentHash.ok ? 'identical ✓' : 'DIFFERS ✗'}`);

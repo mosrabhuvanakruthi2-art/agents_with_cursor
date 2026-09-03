@@ -262,6 +262,17 @@ export function signOutBox(email) {
   return api.post('/auth/box/signout', { email });
 }
 
+export function getDropboxOAuthUrl(source) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  const qs = params.toString();
+  return api.get('/auth/dropbox/url' + (qs ? `?${qs}` : ''));
+}
+
+export function signOutDropbox(email) {
+  return api.post('/auth/dropbox/signout', { email });
+}
+
 export function connectSharePointAccount(email) {
   return api.post('/auth/sharepoint/connect', { email });
 }

@@ -369,6 +369,35 @@ class MigrationAgent extends BaseAgent {
     context.sourceCloudName = sourceCloud.cloudName;
     context.destCloudName   = destCloud.cloudName;
 
+    // Stop here if either cloud failed to resolve, instead of migrating with `null` ids.
+    //
+    // Run dbx-gsd-1788419245787: CloudFuze's getClouds failed twice (socket hang up, then HTTP 500),
+    // so both ids stayed null. Nothing checked, and the run carried on building requests containing
+    // the literal string "null":
+    //
+    //   .../mapping/user/path/csv?sourceCloudId=null&destCloudId=null   → HTTP 404
+    //   .../mapping/deleteAll/mapplist?sourceAdminCloudId=null&...      → HTTP 404
+    //   cache/list: 0 mapping row(s)
+    //   "ALL 1 pair(s) failed validation — nothing to migrate"
+    //
+    // It then spent 39 minutes reaching a message that blamed the user/folder PAIR for what was a
+    // failed cloud lookup two minutes in. Failing fast here turns that into an accurate error in
+    // seconds, and — more importantly — makes it impossible to report a pair as invalid when the
+    // truth is that we never identified the clouds.
+    if (!context.sourceCloudId || !context.destCloudId) {
+      const missing = [
+        !context.sourceCloudId ? `source (${context.sourceProvider || 'unknown'})` : null,
+        !context.destCloudId ? `destination (${context.destinationProvider || 'unknown'})` : null,
+      ].filter(Boolean).join(' and ');
+      throw new Error(
+        `[Step 1 getClouds] Could not resolve the ${missing} cloud on CloudFuze — the cloud list `
+        + 'came back without it. This is a CloudFuze-side lookup failure (check the log above for '
+        + 'getClouds errors such as "socket hang up" or HTTP 500), not a problem with the source '
+        + 'folder or the user mapping. Retry the run; if it repeats, confirm both clouds are still '
+        + 'registered for this CloudFuze account.'
+      );
+    }
+
     isContentMigrationServer = migrationClient.isContentServer();
 
     // Steps 2-4 drive the CloudFuze *mail* Mapping UI and live only under /email/*. A content

@@ -92,6 +92,7 @@ router.get('/status', (_req, res) => {
     google: tokenStore.getGoogleStatus(),
     microsoft: tokenStore.getMicrosoftStatus(),
     box: tokenStore.getBoxStatus(),
+    dropbox: tokenStore.getDropboxStatus(),
     sharepoint: tokenStore.getSharePointStatus(),
   });
 });
@@ -521,6 +522,131 @@ router.get('/box/callback', async (req, res) => {
     logger.error(`[auth] Box callback error: ${err.message}`);
     res.redirect(`${errorBase}?error=box&message=${encodeURIComponent(err.message)}`);
   }
+});
+
+// ─── Dropbox OAuth ────────────────────────────────────────────────────────────
+//
+// Same shape as the Box flow above. Two Dropbox-specific details, both of which produce errors
+// that point somewhere else when got wrong:
+//
+//   token_access_type=offline — without it Dropbox returns ONLY a 4-hour access token and no
+//     refresh token. Four hours is shorter than a content validation run, so the run dies part way
+//     through with a 401 that reads like a permissions problem.
+//   users/get_current_account takes no arguments, and Dropbox rejects the call outright if a
+//     Content-Type header is present. The header is stripped rather than set.
+
+const DROPBOX_AUTH_URL = 'https://www.dropbox.com/oauth2/authorize';
+const DROPBOX_TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
+const DROPBOX_API_ME = 'https://api.dropboxapi.com/2/users/get_current_account';
+// Team-scoped equivalents — a team token cannot answer users/get_current_account.
+const DROPBOX_API_TEAM_ADMIN = 'https://api.dropboxapi.com/2/team/token/get_authenticated_admin';
+const DROPBOX_API_TEAM_INFO = 'https://api.dropboxapi.com/2/team/get_info';
+
+router.get('/dropbox/url', (req, res) => {
+  const clientId = env.DROPBOX_APP_KEY;
+  if (!clientId) return res.status(400).json({ error: 'DROPBOX_APP_KEY not configured' });
+  const isPopup = req.query.source === 'popup';
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${BACKEND_BASE}/api/auth/dropbox/callback`,
+    response_type: 'code',
+    token_access_type: 'offline',
+    state: isPopup ? 'popup' : 'default',
+  });
+  res.json({ url: `${DROPBOX_AUTH_URL}?${params}` });
+});
+
+router.get('/dropbox/callback', async (req, res) => {
+  const { code, error, state } = req.query;
+  const isPopup = state === 'popup';
+  const base = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+
+  if (error) {
+    logger.warn(`[auth] Dropbox OAuth error: ${error}`);
+    return res.redirect(`${base}?error=dropbox&message=${encodeURIComponent(error)}`);
+  }
+  if (!code) return res.status(400).send('Missing code');
+
+  try {
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: env.DROPBOX_APP_KEY,
+      client_secret: env.DROPBOX_APP_SECRET,
+      redirect_uri: `${BACKEND_BASE}/api/auth/dropbox/callback`,
+    });
+    const tokenRes = await axios.post(DROPBOX_TOKEN_URL, params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+    const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = tokenRes.data;
+
+    // Who is this token for?
+    //
+    // A TEAM-scoped app (this one — it holds team_data.member/members.read, which is what makes
+    // Dropbox-API-Select-User work) gets a token for the whole team, and users/get_current_account
+    // refuses it outright: "This API function operates on a single Dropbox account, but the OAuth 2
+    // access token you provided is for an entire Dropbox Business team." The team equivalent is
+    // team/token/get_authenticated_admin, which names the admin who authorised the app.
+    //
+    // An individually-scoped app answers the other way round, so both are tried.
+    //
+    // Both calls take no arguments, and Dropbox is strict about how that is expressed. Measured
+    // against the live API: `Content-Type: application/json` with a null body is accepted; removing
+    // the header (axios re-adds its form default) and `text/plain; charset=dropbox-cors-hack` are
+    // both rejected — the first for a bad Content-Type, the second for an undecodable body.
+    const noBody = { 'Content-Type': 'application/json' };
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    let email = null;
+    let teamName = null;
+    let accountId = null;
+    try {
+      const adminRes = await axios.post(DROPBOX_API_TEAM_ADMIN, null, { headers: { ...auth, ...noBody } });
+      const profile = adminRes.data.admin_profile || {};
+      email = profile.email || null;
+      accountId = profile.team_member_id || null;
+      const infoRes = await axios.post(DROPBOX_API_TEAM_INFO, null, { headers: { ...auth, ...noBody } });
+      teamName = infoRes.data.name || null;
+    } catch {
+      const meRes = await axios.post(DROPBOX_API_ME, null, { headers: { ...auth, ...noBody } });
+      email = meRes.data.email || null;
+      accountId = meRes.data.account_id || null;
+      teamName = meRes.data.team ? meRes.data.team.name : null;
+    }
+    if (!email) throw new Error('Dropbox did not report an account email for this token');
+
+    tokenStore.setDropboxToken({
+      email,
+      accessToken,
+      refreshToken: refreshToken || null,
+      expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+      accountId,
+      teamName,
+    });
+    logger.info(`[auth] Dropbox account connected: ${email}${teamName ? ` (team ${teamName})` : ''}`);
+
+    res.redirect(`${base}?connected=dropbox&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    const detail = err.response && err.response.data;
+    const msg = typeof detail === 'string'
+      ? detail
+      : ((detail && detail.error_description) || err.message);
+    // Dropbox puts the actual reason in the response body — `error` plus `error_description`.
+    // Logging only err.message reduces every failure to "status code 400", which names nothing.
+    logger.error(
+      `[auth] Dropbox callback error: ${err.message}`
+      + (detail ? ` — ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '')
+    );
+    res.redirect(`${base}?error=dropbox&message=${encodeURIComponent(msg)}`);
+  }
+});
+
+router.post('/dropbox/signout', (req, res) => {
+  const { email } = req.body;
+  if (email) {
+    tokenStore.removeDropboxToken(email);
+    logger.info(`[auth] Dropbox account disconnected: ${email}`);
+  }
+  res.json({ success: true });
 });
 
 /** Simple email-only connect (no OAuth required — uses BOX_DEVELOPER_TOKEN from env). */

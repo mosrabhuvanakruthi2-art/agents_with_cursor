@@ -46,6 +46,8 @@ function migrateIfNeeded(data) {
   if (!data.microsoft.accounts) data.microsoft.accounts = {};
   if (!data.box) data.box = { accounts: {} };
   if (!data.box.accounts) data.box.accounts = {};
+  if (!data.dropbox) data.dropbox = { accounts: {} };
+  if (!data.dropbox.accounts) data.dropbox.accounts = {};
   if (!data.sharepoint) data.sharepoint = { accounts: {} };
   if (!data.sharepoint.accounts) data.sharepoint.accounts = {};
   if (!data.slack) data.slack = { accounts: {} };
@@ -120,6 +122,13 @@ async function loadFromMongo() {
         data.box.accounts[email.toLowerCase()] = {
           accessToken: rest.accessToken, refreshToken: rest.refreshToken,
           expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+        };
+        loaded++;
+      } else if (provider === 'dropbox') {
+        data.dropbox.accounts[email.toLowerCase()] = {
+          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
+          expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+          accountId: rest.accountId, teamName: rest.teamName,
         };
         loaded++;
       } else if (provider === 'sharepoint') {
@@ -338,6 +347,46 @@ function getBoxStatus() {
   return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
 }
 
+// ─── Dropbox ─────────────────────────────────────────────────────────────────
+//
+// Dropbox access tokens last 4 hours — shorter than a content validation run — so the refresh
+// token is the field that matters here; dropboxClient exchanges it on demand. Stored the same way
+// as Box so the account appears in the wizard alongside every other content cloud.
+
+function getDropboxToken(email) {
+  const data = read();
+  return data.dropbox.accounts[String(email || '').toLowerCase()] || null;
+}
+
+function setDropboxToken({ email, accessToken, refreshToken, expiresAt, accountId, teamName }) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  const existing = data.dropbox.accounts[key];
+  const entry = {
+    accessToken, refreshToken, expiresAt,
+    accountId: accountId || existing?.accountId || null,
+    teamName: teamName || existing?.teamName || null,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
+  data.dropbox.accounts[key] = entry;
+  write(data);
+  syncToMongo('dropbox', key, { email: key, ...entry });
+}
+
+function removeDropboxToken(email) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  delete data.dropbox.accounts[key];
+  write(data);
+  removeFromMongo('dropbox', key);
+}
+
+function getDropboxStatus() {
+  const data = read();
+  const emails = Object.keys(data.dropbox.accounts);
+  return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
+}
+
 // ─── SharePoint Online ────────────────────────────────────────────────────────
 
 function getSharePointToken(email) {
@@ -383,6 +432,9 @@ function getAllConnectedAccounts() {
   }
   for (const [email, entry] of Object.entries(data.box.accounts)) {
     accounts.push({ provider: 'box', email, connectedAt: entry.connectedAt });
+  }
+  for (const [email, entry] of Object.entries(data.dropbox.accounts)) {
+    accounts.push({ provider: 'dropbox', email, connectedAt: entry.connectedAt, teamName: entry.teamName });
   }
   for (const [email, entry] of Object.entries(data.sharepoint.accounts)) {
     accounts.push({ provider: 'sharepoint', email, connectedAt: entry.connectedAt });
@@ -451,6 +503,10 @@ module.exports = {
   setBoxToken,
   removeBoxToken,
   getBoxStatus,
+  getDropboxToken,
+  setDropboxToken,
+  removeDropboxToken,
+  getDropboxStatus,
   // SharePoint
   getSharePointToken,
   setSharePointToken,

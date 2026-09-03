@@ -13,14 +13,19 @@ router.get('/', (_req, res) => {
 
 /**
  * GET /api/scope/:combination/:type
- * type = "inscope" | "outscope"
+ * type = "inscope" | "outscope" | "testdata"   (see scopeService.SCOPE_TYPES)
  * Returns the raw Markdown document as plain text.
  */
 router.get('/:combination/:type', (req, res) => {
   try {
     const { combination, type } = req.params;
-    if (type !== 'inscope' && type !== 'outscope') {
-      return res.status(400).json({ error: 'type must be "inscope" or "outscope"' });
+    if (!scopeService.SCOPE_TYPES.includes(type)) {
+      return res.status(400).json({
+        error: `type must be one of: ${scopeService.SCOPE_TYPES.join(', ')}`,
+      });
+    }
+    if (!scopeService.isValidCombination(combination)) {
+      return res.status(400).json({ error: 'combination must be a slug: a-z, 0-9 and hyphens' });
     }
     const content = scopeService.getScope(combination, type);
     if (content === null) {
@@ -34,15 +39,20 @@ router.get('/:combination/:type', (req, res) => {
 
 /**
  * PUT /api/scope/:combination/:type
- * type = "inscope" | "outscope"
+ * type = "inscope" | "outscope" | "testdata"   (see scopeService.SCOPE_TYPES)
  * Body: plain text Markdown content (Content-Type: text/plain or text/markdown)
  * Replaces the entire document.
  */
 router.put('/:combination/:type', (req, res) => {
   try {
     const { combination, type } = req.params;
-    if (type !== 'inscope' && type !== 'outscope') {
-      return res.status(400).json({ error: 'type must be "inscope" or "outscope"' });
+    if (!scopeService.SCOPE_TYPES.includes(type)) {
+      return res.status(400).json({
+        error: `type must be one of: ${scopeService.SCOPE_TYPES.join(', ')}`,
+      });
+    }
+    if (!scopeService.isValidCombination(combination)) {
+      return res.status(400).json({ error: 'combination must be a slug: a-z, 0-9 and hyphens' });
     }
     // Accept raw text body (middleware must parse text/plain — see server.js note)
     const content = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);

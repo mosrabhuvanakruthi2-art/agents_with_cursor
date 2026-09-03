@@ -37,6 +37,7 @@
 const ContentReportValidationAgent = require('../content/ContentReportValidationAgent');
 const driveClient = require('../../clients/driveClient');
 const core = require('../../validation/shared/deepContentCore');
+const { normalizeDriveName } = require('../../utils/driveNames');
 const logger = require('../../utils/logger');
 
 /** How many "name N" / "name (N)" dedup variants to probe when CloudFuze appends a counter. */
@@ -74,9 +75,21 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
     const provider = String(context.destinationProvider || 'googledrive').toLowerCase();
 
     if (provider === 'googleshareddrive') {
-      const name = String(
-        context.destinationSharedDriveName || context.destinationFolderName || ''
-      ).trim();
+      // `destinationSharedDriveName` and `destinationFolderName` are read here but set by nothing
+      // in this repo — the source side has the full wiring (wizard row → sourceDriveName →
+      // AgentOrchestrator → context.sourceSharedDriveName), the destination side has none. Falling
+      // back to the run's destination path closes that gap without a new field: the wizard already
+      // collects destinationPath, and for a Shared Drive destination its first segment IS the
+      // drive, exactly as the source side sends `/${rowDriveName}` as sourcePath.
+      //
+      // Scoped to this branch on purpose. It cannot reach My Drive runs (a different branch), and
+      // no SharePoint combination uses this agent at all.
+      const name = normalizeDriveName(
+        context.destinationSharedDriveName
+        || context.destinationFolderName
+        || core.segmentsOf(context.destinationPath)[0]
+        || ''
+      );
       if (!name) {
         throw new Error(
           'Destination is a Google Shared Drive but no drive name was supplied. Set the run\'s '
@@ -110,8 +123,34 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
    *   real and reportable outcome.
    */
   async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email) {
-    const base = String(destBase || '').trim();
+    let base = String(destBase || '').trim();
+    // True when the destination path named nothing but the Shared Drive, i.e. the run targeted the
+    // drive root. Distinguishes that from a named subpath that genuinely does not exist.
+    let targetedDriveRoot = false;
     const opts = { rootId, driveId };
+
+    // A Shared Drive destination path names the DRIVE, not a folder inside it — "/QA-Team-Dest"
+    // IS the root, the same way SharePoint writes "<Site>/Documents/<subpath>" and the library
+    // segment is consumed rather than searched for. Resolving it verbatim under the drive looks
+    // for a folder named after the drive, finds nothing, and reports the entire migration missing:
+    //   resolveFolderByPath: "QA-Automation-Dropbox-Dest" not found under "0ABHjC_…"
+    // So the leading segment is dropped when it names this drive; whatever follows is a real
+    // subpath and is still resolved normally.
+    if (driveId) {
+      const segs = core.segmentsOf(base);
+      if (segs.length) {
+        const drive = await driveClient.getSharedDriveById(driveId, email).catch(() => null);
+        const driveName = (drive && drive.name) || '';
+        if (driveName && segs[0].toLowerCase() === driveName.trim().toLowerCase()) {
+          base = segs.slice(1).join('/');
+          targetedDriveRoot = base === '';
+          logger.info(
+            `[GoogleDriveValidationAgent] destination path names the Shared Drive itself — `
+            + `comparing from its root${base ? ` and subpath "/${base}"` : ''}`
+          );
+        }
+      }
+    }
 
     // An explicit destination path wins when it resolves.
     if (base && base !== '/') {
@@ -133,6 +172,29 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
     for (const candidate of candidates) {
       const found = await driveClient.findByName(candidate, rootId, email).catch(() => null);
       if (found) return { id: found.id, name: found.name, path: `/${found.name}` };
+    }
+
+    // No wrapper folder — which is the EXPECTED shape for this pair, not a failure.
+    //
+    // migrationClient sends `pickInsideFolder=true` for Dropbox→Google (captured from the
+    // wizard's own update call), and that tells CloudFuze to migrate the CONTENTS of the source
+    // folder rather than the folder itself. So nothing named after the source folder is ever
+    // created, and searching for it reported a completed migration as empty:
+    //   job 6a982af3b17d0e315c80eb2c moved 67/67 items, CloudFuze "Processed", and the report
+    //   read "Nothing named \"qa-automation\" exists … the migration appears to have created
+    //   nothing" while all 12 items sat at the drive root. Every one of the 36 documented
+    //   features was then skipped as "not exercised".
+    //
+    // Falling back to the drive root cannot manufacture a pass: the tree comparison still has to
+    // match every source item, so a destination that really is empty reports each one missing —
+    // the same verdict, with the detail that "created nothing" threw away.
+    if (targetedDriveRoot) {
+      logger.info(
+        `[GoogleDriveValidationAgent] no folder named "${name}" under the destination — expected `
+        + 'for a pickInsideFolder migration, which copies the contents rather than the folder. '
+        + 'Comparing from the Shared Drive root.'
+      );
+      return { id: rootId, name: '(destination root)', path: '/' };
     }
     return null;
   }
@@ -177,34 +239,45 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
     const permissions = [];
     const links = [];
 
-    for (const p of Array.isArray(raw) ? raw : []) {
-      const type = String(p.type || '').toLowerCase();
-      const role = String(p.role || '').toLowerCase();
-
-      if (LINK_PERMISSION_TYPES.has(type)) {
-        links.push({
-          // 'anonymous'/'organization' is the vocabulary the shared comparator and the
-          // dropbox_to_google role map both speak, so translate Google's wording once, here.
-          scope: type === 'anyone' ? 'anonymous' : 'organization',
-          type: role === 'writer' || role === 'organizer' || role === 'fileorganizer' ? 'edit' : 'view',
-          role,
-          // Google reports the org's display name for a domain link (e.g. "Sync Orbit"). Kept for
-          // the report only — matching is always on SCOPE, never on this string, because it differs
-          // per tenant.
-          domain: p.domain || null,
-        });
-        continue;
-      }
-
+    // driveClient.listPermissions returns { grants, links } — an OBJECT, already split and
+    // normalised. This iterated `raw` as an ARRAY, so `Array.isArray(raw)` was always false and
+    // the loop ran over []. readPermissions therefore returned { permissions: [], links: [] } for
+    // EVERY destination item, and the comparison saw a destination with no grants at all:
+    //
+    //   "6 of 6 grant(s) differ"  and  "3 of 3 link(s) differ"
+    //
+    // against a destination that had them. Verified directly on job 6a98… — the migrated
+    // 01-Root-Folder-Permissions carries ben@filefuze.co as fileOrganizer (source: editor) and
+    // the qa_automation group as reader (source: viewer), both correct. The migration was right;
+    // this reader was blind.
+    //
+    // The normalised grant shape is { email, role, type, inherited, inheritedFrom } — not the raw
+    // Google shape ({ emailAddress, ... }), which is what the old code's field names assumed.
+    for (const g of (raw && raw.grants) || []) {
       permissions.push({
-        email: String(p.emailAddress || '').toLowerCase(),
-        displayName: p.displayName || '',
-        roles: [role],
-        principalType: type === 'group' ? 'group' : 'user',
-        deleted: Boolean(p.deleted),
+        email: String(g.email || '').toLowerCase(),
+        displayName: '',
+        roles: [String(g.role || '').toLowerCase()],
+        principalType: g.type === 'group' ? 'group' : 'user',
+        deleted: false,
+        // Carried through so a drive-level grant can be reported once rather than per item —
+        // the distinction that stopped a single missing group reading as 88 mismatches.
+        inherited: Boolean(g.inherited),
+        inheritedFrom: g.inheritedFrom || null,
       });
     }
 
+    for (const l of (raw && raw.links) || []) {
+      const role = String(l.role || '').toLowerCase();
+      links.push({
+        // The scope vocabulary the shared comparator and the Dropbox role map both speak.
+        scope: l.type === 'anyone' ? 'anonymous' : 'organization',
+        type: (role === 'writer' || role === 'organizer' || role === 'fileorganizer')
+          ? 'edit' : 'view',
+        role,
+        domain: l.domain || null,
+      });
+    }
     return { permissions, links };
   }
 
@@ -221,8 +294,16 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
    * carried over. Never throws.
    */
   async readVersionCount(fileId, email) {
-    const revs = await driveClient.listRevisions(fileId, email).catch(() => []);
-    return Array.isArray(revs) ? revs.length : 0;
+    const revs = await driveClient.listRevisions(fileId, email).catch(() => null);
+    // driveClient.listRevisions returns { totalVersions, revisions } — an OBJECT. The array check
+    // was therefore always false and this returned 0 for every file, so feature 9.1 reported
+    // "32 of 32 versioned file(s) arrived with no history at all (20→0)" against a destination that
+    // did have history. Third field-shape mismatch of this kind between this agent and driveClient,
+    // after permissions ({ grants, links }) and the same for links.
+    if (!revs) return 0;
+    if (Array.isArray(revs)) return revs.length;
+    if (Number.isFinite(revs.totalVersions)) return revs.totalVersions;
+    return Array.isArray(revs.revisions) ? revs.revisions.length : 0;
   }
 
   /**

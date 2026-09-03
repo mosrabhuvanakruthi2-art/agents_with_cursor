@@ -91,6 +91,14 @@ export function StepConnect({ wiz }) {
         onDisconnect={(e) => wiz.disconnect('box', e)}
       />
     );
+    if (acct === 'dropbox') return (
+      <ConnectCard key="dropbox"
+        provider="dropbox" accounts={accountsOf('dropbox')} busy={wiz.busy} popup
+        hint="Sign in to Dropbox in the popup. Use the team admin — a Business team is needed to read members, groups and every member's files."
+        onConnect={() => wiz.connectDropbox()}
+        onDisconnect={(e) => wiz.disconnect('dropbox', e)}
+      />
+    );
     return null;
   };
 

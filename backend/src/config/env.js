@@ -572,6 +572,16 @@ module.exports = {
    */
   CONTENT_TEAM_FOLDERS_MIGRATE: (process.env.CONTENT_TEAM_FOLDERS_MIGRATE || '').trim().toLowerCase(),
   CONTENT_PICK_INSIDE_FOLDER: (process.env.CONTENT_PICK_INSIDE_FOLDER || '').trim().toLowerCase(),
+  /**
+   * CONTENT_STRIP_ROOT_ID_PREFIX — send `fromRootId` without a namespace prefix.
+   *
+   * Every CloudFuze job that ever scanned carries a bare id (Box "409671580491", Drive
+   * "1KT09kJlRe5TZbFbI5Ldw8HtLBUIL23Yb"). Dropbox's is the only one shaped "id:9nIlEb3a…", so this
+   * exists to compare the two forms rather than guess. Declared here because a flag read only as
+   * `env.X` without a line in this object is permanently undefined — the same trap that silently
+   * disabled the two flags above.
+   */
+  CONTENT_STRIP_ROOT_ID_PREFIX: (process.env.CONTENT_STRIP_ROOT_ID_PREFIX || '').trim().toLowerCase(),
   CONTENT_MIGRATE_FOLDER_NAME: (process.env.CONTENT_MIGRATE_FOLDER_NAME || '').trim(),
   /** Optional override for the job's 'migrate files up to' cutoff, 'YYYY-MM-DD HH:mm:ss'. */
   CONTENT_MIGRATION_TO_DATE: (process.env.CONTENT_MIGRATION_TO_DATE || '').trim(),

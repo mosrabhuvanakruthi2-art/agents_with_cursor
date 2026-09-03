@@ -5,6 +5,77 @@ const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const { normalizeDriveName } = require('../utils/driveNames');
 
+/**
+ * Rewrite a Dropbox Business source path into the TEAM-SPACE path CloudFuze resolves against.
+ *
+ * Dropbox Business has two namespaces. Our seeding uses `Dropbox-API-Select-User`, which is
+ * member-scoped, so it creates and reports "/QA-Automation". CloudFuze scans the TEAM space,
+ * where every member home appears under its own folder — "/Erik E/QA-Automation". Sending the
+ * member path to a team-space scanner matches nothing, and CloudFuze answers CONFLICT /
+ * "Migration not Allowed for wrong CSV paths" with totalFilesAndFolders=0.
+ *
+ * Proof this is the discriminator, not a CloudFuze limitation: nine jobs sent "/QA-Automation"
+ * or "/qa-automation" with every form of fromRootId (the prefixed "id:…", the bare id, the path,
+ * and absent) and all returned 0. Prefixing the member folder — job 6a981342b17d0e315c80d447,
+ * then 6a981849b17d0e315c80ea26 — moved 67/67 items, status PROCESSED.
+ *
+ * Case is NOT the discriminator. DropboxTestDataAgent records a measurement reading it that way
+ * ("/QA-Automation" rejected, "/qa-automation" accepted); those jobs all lacked the prefix, and
+ * both successful jobs used mixed case. So this builds from Dropbox's own `path_display` rather
+ * than lower-casing, which reproduces the two strings that are known to work.
+ *
+ * Gated by the CALLER on sourceCloudName containing DROPBOX, so no other combination reaches it.
+ * Best-effort per unit: a unit whose member folder cannot be resolved keeps its original path and
+ * says so, rather than silently migrating the wrong tree.
+ */
+async function applyDropboxTeamSpacePaths(units, log) {
+  const dropboxClient = require('./dropboxClient');
+  let members = [];
+  try {
+    members = await dropboxClient.listTeamMembers();
+  } catch (err) {
+    log.warn(`Dropbox team-space prefix: cannot list team members (${err.message}) — paths left `
+      + 'as-is; expect CONFLICT / totalFilesAndFolders=0');
+    return;
+  }
+
+  for (const u of units) {
+    const email = String(u.sourceEmail || '').toLowerCase();
+    const member = (members || []).find((m) => String(m.email || '').toLowerCase() === email);
+    if (!member || !member.displayName) {
+      log.warn(`Dropbox team-space prefix: no team member for ${u.sourceEmail} — path left as-is`);
+      continue;
+    }
+    const prefix = `/${member.displayName}`;
+
+    // Already prefixed (a CONTENT_SOURCE_SOURCE_PATH_OVERRIDE run, or a re-entry): leave it.
+    if (String(u.sourcePath || '').toLowerCase().startsWith(`${prefix.toLowerCase()}/`)) continue;
+
+    // Re-resolve through Dropbox so the segment carries its display casing, whatever case the
+    // caller passed in.
+    let memberPath = u.sourcePath;
+    try {
+      const asMemberId = await dropboxClient.resolveTeamMemberId(u.sourceEmail).catch(() => null);
+      const meta = await dropboxClient.getMetadata(u.sourcePath, { asMemberId });
+      if (meta && meta.path) memberPath = meta.path;
+    } catch (err) {
+      log.warn(`Dropbox team-space prefix: ${u.sourcePath} not re-resolvable (${err.message}) — `
+        + 'using the path as given');
+    }
+
+    const teamPath = prefix + (String(memberPath || '').startsWith('/') ? memberPath : `/${memberPath}`);
+    // fromRootId mirrors sourceFolderPath: the id and the path must describe the same object, and
+    // a Dropbox "id:…" root was one of the nine forms that scanned nothing.
+    const before = u.sourcePath;
+    u.sourcePath = teamPath;
+    u.fromRootId = teamPath;
+    u.folderRootId = null;
+    log.info(`Dropbox team-space prefix: "${before}" -> "${teamPath}" (member folder `
+      + `"${member.displayName}") — the member path is invisible to CloudFuze's team-space scan`);
+  }
+}
+
+
 // JWT from POST /mail/register — scoped only for /mail/reports polling
 let bearerToken = null;
 // JWT from MIGRATION_API_BEARER_TOKEN or POST /mail/login — for all UI-flow endpoints
@@ -739,11 +810,30 @@ function findCloudId(clouds, email, cloudNameHint) {
   // cloud name does ('GOOGLE_SHARED_DRIVES'), so a literal startsWith never matched and the Shared
   // Drive cloud was invisible to type-scoped matching.
   const squash = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  // Some provider keys share no prefix with the cloud name CloudFuze registers them under, so
+  // prefix matching alone finds nothing and the cross-type fallback below picks whatever cloud
+  // happens to carry the same email.
+  //
+  // Measured: 'googledrive' squashes to GOOGLEDRIVE, My Drive registers as G_SUITE → GSUITE.
+  // Neither is a prefix of the other, so a dropbox→googledrive run resolved its destination to
+  // BOX_BUSINESS — the first cloud registered to erik@filefuze.co — and would have migrated into
+  // Box while logging only a warning. 'googleshareddrive' needs no alias: GOOGLESHAREDDRIVE is a
+  // prefix of GOOGLESHAREDDRIVES.
+  const HINT_ALIASES = {
+    GOOGLEDRIVE: ['GSUITE', 'GOOGLEMYDRIVE'],
+    GOOGLE: ['GSUITE'],
+    GMAIL: ['GSUITE'],
+  };
   const hint = cloudNameHint ? squash(cloudNameHint) : null;
+  const hintSet = hint ? [hint, ...(HINT_ALIASES[hint] || [])] : [];
   const typedClouds = hint
     ? clouds.filter((c) => {
         const cn = squash(c.cloudName);
-        return cn === hint || cn.startsWith(hint) || hint.startsWith(cn);
+        // A Shared Drive cloud must never satisfy a My Drive hint: GOOGLESHAREDDRIVES starts with
+        // neither GSUITE nor GOOGLEDRIVE, so the prefix rules already keep them apart — but be
+        // explicit, because resolving My Drive to a Shared Drive would migrate to the wrong root.
+        return hintSet.some((h) => cn === h || cn.startsWith(h) || h.startsWith(cn));
       })
     : [];
 
@@ -760,6 +850,25 @@ function findCloudId(clouds, email, cloudNameHint) {
   // clouds of the right type present, matching a different type by email is never correct: it is how a
   // SharePoint destination silently resolved to the same user's Box registration and the whole run
   // failed downstream on a mismatched cloud id.
+  // Content provider keys name ONE cloud family each, so substituting a different family is never
+  // right — migrating into Box because My Drive is not registered is the same class of mistake as
+  // the wrong-tenant substitution described below, and it happened: 'googledrive' fell through to
+  // BOX_BUSINESS by email. Mail hints ('google'/'microsoft') are deliberately excluded — they map
+  // onto several cloud names and have always relied on this fallback.
+  const CONTENT_HINTS = new Set([
+    'BOX', 'DROPBOX', 'GOOGLEDRIVE', 'GOOGLESHAREDDRIVE', 'ONEDRIVE', 'SHAREPOINT',
+    'EGNYTE', 'CITRIX',
+  ]);
+  const anyCloudEmailKnown = clouds.some((c) => cloudEmail(c) !== '');
+  if (hint && CONTENT_HINTS.has(hint) && typedClouds.length === 0 && anyCloudEmailKnown) {
+    logger.error(`CloudFuze findCloudId: no "${cloudNameHint}" cloud registered for ${norm}, and `
+      + 'refusing to substitute a different cloud type — that would migrate into the wrong cloud. '
+      + `Registered: ${clouds.map((c) => c.cloudName).filter(Boolean).join(', ') || '(none)'}. `
+      + 'Add the cloud in CloudFuze (Manage Clouds), or pin the id with '
+      + 'CONTENT_SOURCE_CLOUD_ID / CONTENT_DEST_CLOUD_ID.');
+    return null;
+  }
+
   if (!hint || typedClouds.length === 0) {
     const exactAll = clouds.find((c) => cloudEmail(c) === norm);
     if (exactAll) {
@@ -1146,6 +1255,12 @@ async function triggerMigration(context) {
       }];
     }
 
+    // Dropbox Business sources migrate from the TEAM namespace, so the member-scoped path our
+    // seeding reports has to gain the member-folder prefix before it reaches the path CSV or the
+    // create/job pair. Gated here so only a Dropbox source can reach it.
+    if (/DROPBOX/i.test(String(context.sourceCloudName || ''))) {
+      await applyDropboxTeamSpacePaths(units, logger);
+    }
     logger.info(`CloudFuze triggerMigration (content team): ${units.length} unit(s), adminSrc=${context.sourceCloudId}, adminDst=${context.destCloudId}`);
 
     // ── Per-user sub-clouds ───────────────────────────────────────────────────
@@ -1270,6 +1385,58 @@ async function triggerMigration(context) {
         timeout: 30000,
       }));
       logger.info(`CloudFuze content: cleared stale mappings (HTTP ${delRes.status})`);
+
+      // Verify the clear actually emptied the list.
+      //
+      // HTTP 204 is not proof. Stale rows survive it, and a leftover row is not harmless: the
+      // path-CSV upload then reports "Total Saved Count :2" for a single pair, the mapping
+      // validation never becomes ready (observed stalling past poll 59 of 60, where a clean run
+      // is ready on poll 1), and the job ends CONFLICT / "Migration not Allowed for wrong CSV
+      // paths" with 0 items.
+      //
+      // Two runs died this way against payloads byte-identical to a run that had moved 67/67 —
+      // job 6a984df5 and the 03-Sep backend run — which is why this is checked rather than
+      // assumed. A second delete is attempted; if rows still remain the run continues but says
+      // so loudly, because that is the signature to look for when the job later reports
+      // "wrong CSV paths".
+      try {
+        const listUrl = `${contentOrigin}/proxyservices/v1/mapping/cache/list`
+          + `?sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}`
+          + `&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`;
+        const before = await axios.get(listUrl, migrationAxiosConfig({
+          headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
+          timeout: 30000,
+        }));
+        const rows = Array.isArray(before.data) ? before.data
+          : (before.data?.cfMappingCachesList || before.data?.content || []);
+        if (Array.isArray(rows) && rows.length > 0) {
+          logger.warn(`CloudFuze content: ${rows.length} stale mapping row(s) survived the clear `
+            + '— retrying the delete before uploading the path CSV');
+          await axios.delete(delUrl, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
+            timeout: 30000,
+          })).catch(() => null);
+          const after = await axios.get(listUrl, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
+            timeout: 30000,
+          })).catch(() => null);
+          const left = after && (Array.isArray(after.data) ? after.data
+            : (after.data?.cfMappingCachesList || after.data?.content || []));
+          if (Array.isArray(left) && left.length > 0) {
+            logger.error(`CloudFuze content: ${left.length} stale mapping row(s) STILL present. `
+              + 'Expect "Total Saved Count" above the number of pairs uploaded, a mapping '
+              + 'validation that never becomes ready, and the job ending CONFLICT / "wrong CSV '
+              + 'paths" with 0 items. Clear the mapping list for this cloud pair in the CloudFuze '
+              + 'UI before re-running.');
+          } else {
+            logger.info('CloudFuze content: stale mapping rows cleared on the second attempt');
+          }
+        }
+      } catch (verifyErr) {
+        // Verification is best-effort: failing to CHECK is not a reason to abandon the run.
+        logger.warn(`CloudFuze content: could not verify the mapping list is empty `
+          + `(${verifyErr?.response?.status || verifyErr.message}) — continuing unverified`);
+      }
     } catch (delErr) {
       logger.warn(`CloudFuze content deleteAll/mapplist failed (${delErr?.response?.status || delErr.message}) — continuing`);
     }
@@ -1520,6 +1687,33 @@ ${pathCsv}`);
     // Every content pair here comes from the path CSV, so every pair takes the isCSV route.
     // Matching the UI byte-for-byte also drops fromMailId/toMailId (the UI keeps those in a
     // separate EmailObj) and the drive-id fromRootId experiment, which was never justified.
+    // DROPBOX_BUSINESS → GOOGLE_SHARED_DRIVES sends a DIFFERENT pair shape, captured from the
+    // wizard's own localStorage `FolderChecked` on qarelease while configuring this exact pair:
+    //   {"fromCloudId":{…},"toCloudId":{…},"sourceFolderPath":"/QA-Automation",
+    //    "destFolderPath":"/QA-Automation-Dropbox-Dest","destinationFolderName":"null","isCSV":"true"}
+    // No fromRootId, and destinationFolderName is the STRING "null". Both notes below are correct
+    // for Box→SharePoint and wrong here — three agent jobs sending the Box shape
+    // (6a97e176…, 6a97e3a4…, 6a97e4e1…) all came back PARTIALLY_COMPLETED with total 0.
+    // Gated on this pair so every other combination keeps the shape its own working jobs use.
+    // `G_SUITE` is how CloudFuze registers Google My Drive, and it does not start with "GOOGLE" —
+    // the previous pattern put `_SUITE` inside the GOOGLE(...) group, so it only matched the
+    // non-existent "GOOGLE_SUITE" and My Drive fell out of this gate entirely:
+    //   GOOGLE_SHARED_DRIVES → true      G_SUITE → false
+    // That silently dropped pickInsideFolder AND papertoGDoc for dropbox → My Drive, i.e. all 19
+    // Paper features in §10 of the scope document. Same trap as the findCloudId alias: GOOGLEDRIVE
+    // and GSUITE share no prefix.
+    const isDropboxToGoogleDrive = /DROPBOX/i.test(String(context.sourceCloudName || ''))
+      && /(GOOGLE|G_SUITE)/i.test(String(context.destCloudName || ''));
+
+    // REVERTED to the standard shape. Matching the wizard's stored FolderChecked (no fromRootId,
+    // destinationFolderName "null") was tried and failed identically — and
+    // docs/content-migration-path-mapping-findings.md warns exactly against this:
+    //   "The Team-Migration wizard's generic isCSV builder omits [fromRootId] … but the wizard
+    //    fails this combination too, so the wizard is not a reliable reference for this route.
+    //    The working Box jobs are."
+    // Confirmed on 2 Sep: a UI-configured job (6a97f15863681f3aa380e861) hit the same CONFLICT /
+    // "Migration not Allowed for wrong CSV paths". So the wizard shape buys nothing, and the doc's
+    // rule — fromRootId = the id of the folder named in sourceFolderPath — stays in force.
     const workspacePairs = passedUnits.map((u) => ({
       // Per-user SUB-cloud ids (fallback to admin) so CloudFuze attributes each workspace to the
       // right source/destination user instead of the admin.
@@ -1541,7 +1735,15 @@ ${pathCsv}`);
       // Working job 6a843cf4 pairs sourceFolderPath "/LFN" with fromRootId "409671580491" — the
       // folder id. u.fromRootId prefers the Shared DRIVE id (set further up for the folder-picker
       // route), which makes the scan look at the drive root and find nothing, so prefer the folder.
-      fromRootId: u.folderRootId || u.fromRootId || null,
+      // Every job that ever scanned carries a BARE id — Box "0"/"409671580491", Drive
+      // "1KT09kJlRe5TZbFbI5Ldw8HtLBUIL23Yb". Dropbox's is the only one with a namespace prefix
+      // ("id:9nIlEb3a…"), and CloudFuze may not parse it. Opt-in so the two forms can be compared
+      // without guessing: CONTENT_STRIP_ROOT_ID_PREFIX=true sends the id without "id:".
+      fromRootId: (() => {
+        const raw = u.folderRootId || u.fromRootId || null;
+        if (!raw || env.CONTENT_STRIP_ROOT_ID_PREFIX !== 'true') return raw;
+        return String(raw).replace(/^id:/i, '');
+      })(),
       // The wizard sends the mapping row's own migrateFolderName here and omits teamFolder entirely
       // on the isCSV route (multiUserMapping.js ~16878); teamFolder appears only on the
       // DROPBOX_BUSINESS→G_SUITE variant. We were sending the literal STRING 'null' plus a
@@ -1610,7 +1812,20 @@ ${pathCsv}`);
       // Both flags were present on the job that moved data and are required together: with only one
       // of them set the scan still reports a single item. Forced on for Shared Drive sources; still
       // opt-in for Box/OneDrive/My Drive, whose working jobs carry neither.
-      ...((isSharedDrive || env.CONTENT_PICK_INSIDE_FOLDER === 'true') ? ['pickInsideFolder=true'] : []),
+      // Dropbox→Google also sends pickInsideFolder, captured from the wizard's own update call:
+      //   …&pickInsideFolder=true&papertoGDoc=true&sharedContent=false&fusionTables=false
+      //   &drawings=false&unsupportedFiles=false…
+      // and notably NOT teamFoldersMigrate, which is Shared-Drive-SOURCE only.
+      ...((isSharedDrive || isDropboxToGoogleDrive || env.CONTENT_PICK_INSIDE_FOLDER === 'true') ? ['pickInsideFolder=true'] : []),
+      // Dropbox Paper → Google Docs. Only this pair converts Paper, and §10 of the scope document
+      // is 19 Paper features — without it every one of them lands unconverted or not at all.
+      ...(isDropboxToGoogleDrive ? [
+        'papertoGDoc=true',
+        'sharedContent=false',
+        'fusionTables=false',
+        'drawings=false',
+        'unsupportedFiles=false',
+      ] : []),
       // "Team Folders" is Google's original name for Shared Drives. It is the only field in the
       // job whose meaning is specific to this source type, and it had been false on every run
       // while migrating a GOOGLE_SHARED_DRIVES cloud — the scan found the folder but never its
@@ -1644,11 +1859,69 @@ ${pathCsv}`);
 
     const updateUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/update/${jobId}?${updateParams}`;
     logger.info(`CloudFuze update job options: PUT ${updateUrl}`);
-    const updateRes = await axios.put(updateUrl, null, migrationAxiosConfig({
-      headers: { Authorization: contentAuth },
-      timeout: 30000,
-    }));
+
+    // Report WHAT CloudFuze said when this fails, and say which call failed.
+    //
+    // Run 60d5d423 died here with nothing but "[Step 5 POST initiate] HTTP 500: Request failed
+    // with status code 500". Two things were wrong with that: the label named the wrong step (the
+    // job had already been created — job 6a990687, #166 — and it was THIS options call that
+    // returned 500), and the response body was thrown away, so there was no way to tell whether
+    // CloudFuze objected to an option, the job id, or had simply crashed.
+    let updateRes;
+    try {
+      updateRes = await axios.put(updateUrl, null, migrationAxiosConfig({
+        headers: { Authorization: contentAuth },
+        timeout: 30000,
+      }));
+    } catch (updErr) {
+      const status = updErr?.response?.status;
+      const body = updErr?.response?.data;
+      const detail = body == null ? '(no response body)'
+        : String(typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 600);
+      logger.error(`CloudFuze update job options FAILED (HTTP ${status || updErr.code || '?'}) `
+        + `for job ${jobId} — CloudFuze said: ${detail}`);
+      logger.error(`CloudFuze update job options URL was: ${updateUrl}`);
+      throw new Error(`[Step 3 PUT update job options] HTTP ${status || updErr.code || '?'}: `
+        + `${detail.slice(0, 200)}`);
+    }
     logger.info(`CloudFuze update job options response: ${JSON.stringify(updateRes.data)}`);
+
+    // ── Step 3b: restriction + preview, the two calls the wizard makes and we did not ──────────
+    //
+    // Captured from the qarelease wizard configuring DROPBOX_BUSINESS → GOOGLE_SHARED_DRIVES:
+    //   POST create/job → PUT update/<id> → PUT update/restriction/<id> → GET preview/<id> → start
+    // Ours went update → start, skipping the middle two.
+    //
+    // Step 5 of that wizard IS "Preview" — the screen listing what will migrate. If the source
+    // enumeration happens when preview is requested, a job started without it has nothing to move,
+    // which is exactly what four Dropbox jobs reported: PARTIALLY_COMPLETED, totalFilesAndFolders=0,
+    // with a payload byte-identical to the wizard's own. Every Shared-Drive-source job on this
+    // server COMPLETED with 108k–126k items, so the difference is not the payload.
+    //
+    // Both are best-effort: a failure here must not stop a job that would otherwise run, and the
+    // combinations that already work never needed them.
+    // `update/restriction` is deliberately NOT called. The wizard sends it with a body we have not
+    // captured; an empty {} returns HTTP 500 every time, which is noise in the log and proves
+    // nothing. Add it back only with the real payload from a network capture.
+    for (const step of [
+      { method: 'get', url: `${contentOrigin}/proxyservices/v1/move/newmultiuser/preview/${jobId}?pageNo=1&pageSize=10`, label: 'preview' },
+    ]) {
+      try {
+        const res = step.method === 'get'
+          ? await axios.get(step.url, migrationAxiosConfig({ headers: { Authorization: contentAuth }, timeout: 60000 }))
+          : await axios.put(step.url, {}, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
+            timeout: 60000,
+          }));
+        const body = JSON.stringify(res.data ?? '');
+        logger.info(`CloudFuze ${step.label}: HTTP ${res.status} ${body.slice(0, 300)}`);
+      } catch (stepErr) {
+        const detail = stepErr.response && stepErr.response.data;
+        logger.warn(`CloudFuze ${step.label} failed (${stepErr.response?.status || stepErr.message})`
+          + (detail ? ` — ${String(typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 200)}` : '')
+          + ' — continuing to start');
+      }
+    }
 
     // ── Step 4: Start migration ───────────────────────────────────────────────
     const startUrl = `${contentOrigin}/proxyservices/v1/move/newmultiuser/create/${jobId}`;
@@ -2068,12 +2341,21 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
         );
         const ws = (Array.isArray(wsRes.data) ? wsRes.data : [])[0] || {};
         const scanned = Number(ws.totalFilesAndFolders ?? NaN);
+        // The workspace record carries CloudFuze's OWN reason on `errorDescription`, and its own
+        // status (CONFLICT) rather than the thread status this poll reads (PROCESSED). Reporting
+        // only "PROCESSED_EMPTY" discarded both: six Dropbox runs were debugged blind while the
+        // server was returning "Migration not Allowed for wrong CSV paths" the whole time.
+        // Surface the reason, and say CONFLICT when that is what the workspace says.
+        const wsStatus = String(ws.status || ws.processStatus || '').toUpperCase();
+        const wsError = String(ws.errorDescription || '').trim();
         if (Number.isFinite(scanned)) {
-          lastJobDetails = { workspaceId: moveId, totalCount: scanned, processedCount: scanned };
+          lastJobDetails = { workspaceId: moveId, totalCount: scanned, processedCount: scanned, errorDescription: wsError || null, workspaceStatus: wsStatus || null };
           if (scanned === 0) {
             logger.error(`CloudFuze content job ${moveId} reached ${status} but the workspace reports `
-              + `totalFilesAndFolders=0 — nothing migrated, treating as PROCESSED_EMPTY`);
-            return 'PROCESSED_EMPTY';
+              + `totalFilesAndFolders=0 — nothing migrated`
+              + (wsStatus ? `; workspace status ${wsStatus}` : '')
+              + (wsError ? `; CloudFuze says: "${wsError}"` : '; CloudFuze gave no errorDescription'));
+            return wsStatus === 'CONFLICT' ? 'CONFLICT' : 'PROCESSED_EMPTY';
           }
           logger.info(`CloudFuze content job ${moveId}: ${status}, workspace scanned ${scanned} item(s)`);
           return status;
@@ -2095,8 +2377,38 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
       if (!totalCount) {
         stuckPolls += 1;
         if (stuckPolls >= STUCK_LIMIT) {
-          logger.warn(`CloudFuze content poll: status ${status} with 0 files for ${stuckPolls} polls — job has nothing to migrate (check path mapping). Stopping.`);
-          return status;
+          // "Nothing to migrate" and "queued behind another job" look identical here — both are
+          // NOT_PROCESSED with 0 files. The workspace tells them apart: a REJECTED job carries an
+          // errorDescription (e.g. "Migration not Allowed for wrong CSV paths") or CONFLICT, while
+          // a queued one carries neither. Measured 2026-09-02: a legitimately accepted job sat
+          // NOT_PROCESSED behind a 126k-item run and was abandoned here after 3 minutes, which
+          // read as a failure. Ask before giving up.
+          let wsError = null;
+          let wsStatus = '';
+          try {
+            const wsRes = await axios.get(
+              `${contentOrigin}/proxyservices/v1/move/newmultiuser/get/list/${moveId}?page_nbr=1&page_size=5`,
+              migrationAxiosConfig({ headers: { Authorization: token }, timeout: 30000 })
+            );
+            const ws = (Array.isArray(wsRes.data) ? wsRes.data : [])[0] || {};
+            wsError = String(ws.errorDescription || '').trim() || null;
+            wsStatus = String(ws.status || ws.processStatus || '').toUpperCase();
+          } catch {
+            // Unreachable workspace: fall through to the original stop rather than loop forever.
+            wsError = null;
+          }
+
+          if (!wsError && wsStatus !== 'CONFLICT' && wsStatus !== 'CANCEL') {
+            stuckPolls = 0;
+            logger.info(`CloudFuze content poll: ${status} with 0 files, but the workspace reports no `
+              + `error (status ${wsStatus || 'unknown'}) — the job is queued, not rejected. Continuing to wait.`);
+          } else {
+            logger.warn(`CloudFuze content poll: status ${status} with 0 files for ${stuckPolls} polls`
+              + (wsStatus ? `; workspace status ${wsStatus}` : '')
+              + (wsError ? `; CloudFuze says: "${wsError}"` : ' and no errorDescription')
+              + '. Stopping.');
+            return wsStatus === 'CONFLICT' ? 'CONFLICT' : status;
+          }
         }
       } else {
         stuckPolls = 0; // files detected — it's progressing

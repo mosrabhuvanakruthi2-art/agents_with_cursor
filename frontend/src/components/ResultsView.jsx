@@ -1368,8 +1368,12 @@ function ContentComparison({ perUser }) {
               <p className="text-sm font-medium text-gray-700">{u.sourceEmail} → {u.destinationEmail}</p>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <MatchCard label="All items reached destination" ok={notFound.length === 0} />
-              <MatchCard label="Nothing missing" ok={structureOk !== false} />
+              {/* `compared` guards against the vacuous pass — see MatchCard. With no source items
+                  there is nothing to have matched, whatever the two booleans say. */}
+              <MatchCard label="All items reached destination" ok={notFound.length === 0}
+                compared={totalItems > 0} />
+              <MatchCard label="Nothing missing" ok={structureOk !== false}
+                compared={totalItems > 0} />
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <ResultCard label="Source Items" value={totalItems} />
@@ -1506,11 +1510,28 @@ function ContentComparison({ perUser }) {
     </div>
   );
 }
-function MatchCard({ label, ok }) {
+/**
+ * Match / Mismatch / Not compared.
+ *
+ * The third state is not cosmetic. `ok` was computed as `notFound.length === 0` and
+ * `structureOk !== false`, and BOTH are true when nothing was compared at all — so a run whose
+ * comparison never ran showed two green "Match" cards above "Source Items 0 · Found 0 · Missing 0".
+ * Execution eb9b26d5 displayed exactly that while its own PDF said FAIL and every one of the 36
+ * documented features was "not assessed".
+ *
+ * A QA tool claiming a match on zero evidence is the worst failure it can have, so an empty
+ * comparison now reads as "Not compared" and is styled as a warning, never as a pass.
+ */
+function MatchCard({ label, ok, compared = true }) {
+  const tone = !compared
+    ? { box: 'bg-amber-50 border-amber-200', text: 'text-amber-700', word: 'Not compared' }
+    : ok
+      ? { box: 'bg-green-50 border-green-200', text: 'text-green-700', word: 'Match' }
+      : { box: 'bg-red-50 border-red-200', text: 'text-red-700', word: 'Mismatch' };
   return (
-    <div className={`rounded-xl border p-4 ${ok ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+    <div className={`rounded-xl border p-4 ${tone.box}`}>
       <p className="text-xs font-medium uppercase tracking-wider opacity-75">{label}</p>
-      <p className={`text-xl font-bold mt-1 ${ok ? 'text-green-700' : 'text-red-700'}`}>{ok ? 'Match' : 'Mismatch'}</p>
+      <p className={`text-xl font-bold mt-1 ${tone.text}`}>{tone.word}</p>
     </div>
   );
 }

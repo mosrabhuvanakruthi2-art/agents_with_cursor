@@ -99,8 +99,19 @@ const VERSION_BODIES = [
  */
 const SPECIAL_CHARS_NAME = 'Special ~!@#$%^&()_+[]{};,.= chars';
 
-/** Names that are reserved on Windows/SharePoint but ordinary on Google. */
-const RESERVED_STYLE_NAMES = ['CON', 'PRN', 'AUX', 'NUL', 'desktop.ini'];
+/**
+ * Names that are reserved on Windows/SharePoint but ordinary on Google.
+ *
+ * `desktop.ini` is deliberately absent. Dropbox refuses it outright — `files/upload` returns
+ * `path/disallowed_name`, alongside `.dropbox`, `.dropbox.attr` and `icon\r`. It sat in this list
+ * and killed the whole seeding run at row 10, so nothing after it was ever created. It is reported
+ * through notSeeded for the same reason trailing dots and spaces are: the source cloud cannot hold
+ * it, which is a fact about Dropbox rather than a gap in coverage.
+ */
+const RESERVED_STYLE_NAMES = ['CON', 'PRN', 'AUX', 'NUL'];
+
+/** Names Dropbox itself rejects, so they are documented rather than attempted. */
+const DROPBOX_DISALLOWED_NAMES = ['desktop.ini', '.dropbox', '.dropbox.attr'];
 
 class DropboxTestDataAgent extends BaseAgent {
   constructor() {
@@ -138,6 +149,17 @@ class DropboxTestDataAgent extends BaseAgent {
 
     const report = {
       root,
+      // AgentOrchestrator gates its whole source-capture block on `rootFolderName`, and inside it
+      // reads `rootFolderId` to give CloudFuze a real folder id as fromRootId. Reporting neither —
+      // as this agent did — is not a cosmetic omission:
+      //   * context.sourceTestDataPath and context.sourceRootId stay unset,
+      //   * fromRootId falls back to the PATH string "/QA-Automation",
+      //   * CloudFuze scans nothing and the job ends PROCESSED_EMPTY with totalFilesAndFolders=0,
+      //   * CleanupAgent logs "no source folder name in context" and skips cleanup.
+      // The job still reports success throughout, which is exactly the silent-pass shape this
+      // repo exists to catch. Both fields are filled in once the root folder is created.
+      rootFolderName: null,
+      rootFolderId: null,
       asMemberId: asMemberId || null,
       testType: context.testType || 'E2E',
       created: { folders: 0, files: 0, versions: 0, links: 0, grants: 0 },
@@ -153,7 +175,24 @@ class DropboxTestDataAgent extends BaseAgent {
     if (context.skipCleanup !== true) {
       await this._wipeRoot(root, opts, log, report);
     }
-    await this._mk(root, opts, report);
+    const rootItem = await this._mk(root, opts, report);
+    // Dropbox ids look like "id:AbC…" and are what CloudFuze needs as fromRootId. The name is the
+    // last path segment, matching how Box and Drive report theirs (a bare name, no leading slash).
+    // Report the LOWER-CASE path, which is what CloudFuze resolves. Dropbox paths are
+    // case-insensitive and it returns both forms; the path CSV is matched against `path_lower`, so
+    // "/QA-Automation" comes back "Migration not Allowed for wrong CSV paths" (CONFLICT,
+    // totalFilesAndFolders=0) while "/qa-automation" is accepted. Measured 2026-09-02 over 7
+    // rejected jobs plus one accepted; the only run that ever got past it before used "/", which
+    // has no letters to mis-case. Prefer Dropbox's own value over lower-casing ourselves.
+    const rootPath = (rootItem && rootItem.pathLower) || root.toLowerCase();
+    report.rootFolderName = rootPath.replace(/^\/+/, '');
+    report.rootFolderId = (rootItem && rootItem.id) || null;
+    if (!report.rootFolderId) {
+      log.warn(
+        `Dropbox root ${root} reported no folder id — CloudFuze will fall back to the path string `
+        + 'as fromRootId, which scans nothing and ends the job PROCESSED_EMPTY.'
+      );
+    }
 
     // Row 1–4, 6: the permission ladder — root folder, root file, sub-folders, inner files.
     await this._seedPermissionLadder(root, opts, grantees, log, report);
@@ -306,6 +345,39 @@ class DropboxTestDataAgent extends BaseAgent {
       report.created.grants += 1;
       return true;
     } catch (err) {
+      // Two failures here are the ACCOUNT's rules, not a defect, and both were measured rather
+      // than assumed:
+      //
+      //   access_error/no_permission on a FILE + editor — this team allows editor on a folder
+      //     member but refuses it on a file member; viewer on the same file succeeds.
+      //   cant_share_outside_team — the team policy "share folders outside the team" is off.
+      //
+      // Reporting these as errors makes a healthy run look broken every time and, worse, says
+      // nothing about the scope being untestable. They are recorded as NOT SEEDED so the validator
+      // cannot later mark the feature as passing on evidence that was never created.
+      const summary = String(err.dropboxSummary || err.message || '');
+      const fileEditorBlocked = /no_permission/.test(summary) && item.type !== 'folder' && role === 'editor';
+      const outsideTeamBlocked = /cant_share_outside_team/.test(summary);
+      if (fileEditorBlocked || outsideTeamBlocked) {
+        report.notSeeded.push({
+          feature: label,
+          reason: fileEditorBlocked
+            ? 'This Dropbox account refuses editor access on an individual file '
+              + '(sharing/add_file_member → access_error/no_permission), while viewer on the same '
+              + 'file and editor on a folder both succeed. A source-account limit, not a migration '
+              + 'defect — the editing half of this position cannot be exercised here.'
+            : 'Dropbox returned cant_share_outside_team for this grant. NOTE: this is NOT the team-wide '
+              + 'admin toggle — that was checked on 03-Sep-2026 and external sharing is fully enabled '
+              + '("External sharing: Email and link"), and the shared folder itself reports member_policy '
+              + '"anyone". The likely cause is the INVITEE: DROPBOX_TEST_EXTERNAL_USER is an address in '
+              + 'another managed Dropbox team (cloudfuze.com), and a team-to-team invite can be refused by '
+              + 'either team policy — including one we do not administer. Try an address attached to no '
+              + 'Dropbox team at all before concluding scope 2.5 is untestable.',
+          manualSteps: [],
+        });
+        logger.warn(`[dropbox-seed] ${label} unavailable on this account — reported as not seeded`);
+        return false;
+      }
       report.errors.push({ step: label, error: err.message });
       logger.warn(`[dropbox-seed] ${label} failed: ${err.message}`);
       return false;
@@ -447,6 +519,25 @@ class DropboxTestDataAgent extends BaseAgent {
           report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
         }
       } catch (err) {
+        // `settings_error/invalid_settings` on an EDITOR link is the account refusing edit links at
+        // all, not a bad request: measured on this team, viewer links succeed on both files and
+        // folders while editor links fail on both. That is a limit of the source account, so it is
+        // reported as NOT SEEDED — the same treatment as Paper and Dropbox-disallowed names.
+        // Recording it as an error instead would leave the run looking broken every single time,
+        // and would say nothing about the feature being untestable here.
+        if (t.access === 'editor' && /invalid_settings/.test(String(err.dropboxSummary || err.message))) {
+          report.notSeeded.push({
+            feature: `shared link ${t.audience}/editor (scope ${t.scope})`,
+            reason:
+              'This Dropbox account does not permit edit links — sharing/create_shared_link_with_settings '
+              + 'rejects access:"editor" with settings_error/invalid_settings on both files and folders, '
+              + 'while viewer links succeed. The editing half of this scope cannot be exercised from '
+              + 'this source account, so it must not be reported as a pass.',
+            manualSteps: [],
+          });
+          log.warn(`Shared link ${t.audience}/editor unavailable on this account — reported as not seeded`);
+          continue;
+        }
         // A team-audience link needs a Business account; on a personal Dropbox it is unavailable.
         report.errors.push({ step: `shared link ${t.audience}/${t.access} (scope ${t.scope})`, error: err.message });
         log.warn(`Shared link ${t.audience}/${t.access} failed: ${err.message}`);
@@ -506,6 +597,14 @@ class DropboxTestDataAgent extends BaseAgent {
       reason:
         'Dropbox rejects a path segment with a trailing dot or space, so these cannot be seeded from '
         + 'the source side at all. Not a gap in coverage — the source cloud cannot hold them.',
+      manualSteps: [],
+    });
+    report.notSeeded.push({
+      feature: `Dropbox-disallowed names (scope 5.1, edge): ${DROPBOX_DISALLOWED_NAMES.join(', ')}`,
+      reason:
+        'Dropbox refuses these names on upload with path/disallowed_name, so they cannot exist in '
+        + 'the source at all. Same reasoning as trailing dots and spaces — a limit of the source '
+        + 'cloud, not missing coverage.',
       manualSteps: [],
     });
     log.info('Seeded special-character and reserved-style names');
@@ -751,3 +850,7 @@ class DropboxTestDataAgent extends BaseAgent {
 }
 
 module.exports = DropboxTestDataAgent;
+// Exported so a test can assert the two lists never overlap: a Dropbox-disallowed name in the
+// seeding list throws mid-run and takes every later row with it.
+module.exports.RESERVED_STYLE_NAMES = RESERVED_STYLE_NAMES;
+module.exports.DROPBOX_DISALLOWED_NAMES = DROPBOX_DISALLOWED_NAMES;

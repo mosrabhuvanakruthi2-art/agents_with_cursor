@@ -676,6 +676,18 @@ async function tierBHashes(pairs, downloadSource, downloadDest, opts = {}) {
  * @returns {{ checked, matches, mismatches, escalations, viaGroup }}
  */
 function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
+  // Which role vocabulary to compare with.
+  //
+  // This defaulted to the module-level contentRoleMap — the Box/Drive to SharePoint tables,
+  // which know 'writer'/'reader'. Dropbox's only two collaborator roles are 'editor' and
+  // 'viewer', and contentRoleMap reports BOTH as not-comparable, so every Dropbox grant was
+  // skipped and the report read "No comparable source permissions were found" against items
+  // that demonstrably carried them (ben@filefuze.co editor on 01-Root-Folder-Permissions).
+  //
+  // The Dropbox validator already selects validation/roleMaps/dropbox_to_google and refuses to
+  // fall back; this is where that choice was being silently discarded. Defaulting to the same
+  // import keeps every existing caller byte-identical.
+  const rmap = opts.roleMap || roleMap;
   const dest = Array.isArray(destPerms) ? destPerms : [];
   const matches = [];
   const mismatches = [];
@@ -730,12 +742,12 @@ function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
     // A role with no comparable destination permission (ownership, or an unrecognised role) is
     // reported, not failed. Drive returns an `owner` grant for every My Drive file, and treating it
     // as an ordinary grant failed every My Drive run on its own owner permission.
-    if (!roleMap.isComparableDriveRole(sp.role)) {
+    if (!rmap.isComparableDriveRole(sp.role)) {
       notComparable.push({
         user: sp.email,
         principalType,
         sourceRole: sp.role,
-        reason: roleMap.nonComparableReason(sp.role),
+        reason: rmap.nonComparableReason(sp.role),
       });
       continue;
     }
@@ -756,7 +768,7 @@ function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
         && [...groupKeys(d.email, d.name)].some((k) => srcKeys.has(k)));
       checked++;
       const destRoles = hit ? (hit.roles || []) : [];
-      const cmp = roleMap.compareDriveAccess(sp.role, destRoles);
+      const cmp = rmap.compareDriveAccess(sp.role, destRoles);
       const row = {
         user: sp.email,
         principalType: 'group',
@@ -792,7 +804,7 @@ function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
     const destRoles = dest
       .filter((d) => String(d.email || '').toLowerCase() === expected)
       .flatMap((d) => d.roles || []);
-    const cmp = roleMap.compareDriveAccess(sp.role, destRoles);
+    const cmp = rmap.compareDriveAccess(sp.role, destRoles);
     const row = {
       user: sp.email,
       principalType,
@@ -806,7 +818,7 @@ function comparePermissions(sourcePerms, destPerms, mapEmail, opts = {}) {
     if (cmp.match) {
       matches.push(row);
     } else if (principalType === 'user' && destGroupRoles.length > 0
-      && roleMap.compareDriveAccess(sp.role, destGroupRoles).match) {
+      && rmap.compareDriveAccess(sp.role, destGroupRoles).match) {
       // Access is present, just carried by a group the user belongs to.
       const groupRow = {
         ...row,
