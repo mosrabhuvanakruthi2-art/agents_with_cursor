@@ -225,6 +225,41 @@ async function createFolder(name, parentId, email) {
   });
 }
 
+/**
+ * Create every missing segment of a folder path and return the final folder's id.
+ *
+ * Mirrors sharepointClient.ensureFolderPath so AgentOrchestrator's pre-create-the-destination step
+ * can use the same shape for a Google destination — CloudFuze is handed a destination path with no
+ * guarantee it creates a missing segment itself, so this makes sure it already exists before the
+ * migration is triggered.
+ *
+ * Defaults to My Drive (rootId 'root'). For a Shared Drive, pass { rootId: driveId } — createFolder
+ * already sends supportsAllDrives and findByName's query already includes items from all drives, so
+ * nothing else here is drive-specific; only the starting parent differs.
+ *
+ * @param {string} path - e.g. "/QA-Automation-Dropbox" or "Sub/Folder"
+ * @param {string} email - whose Drive to create the folders in
+ * @param {{rootId?: string}} [opts]
+ * @returns {Promise<{id: string, created: string[]}>} the deepest folder's id, and which segments were newly made
+ */
+async function ensureFolderPath(path, email, opts = {}) {
+  const rootId = opts.rootId || 'root';
+  const segments = String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
+  let parentId = rootId;
+  const created = [];
+  for (const segment of segments) {
+    const existing = await findByName(segment, parentId, email);
+    if (existing) {
+      parentId = existing.id;
+    } else {
+      const made = await createFolder(segment, parentId, email);
+      created.push(segment);
+      parentId = made.id;
+    }
+  }
+  return { id: parentId, created };
+}
+
 // ─── File upload ──────────────────────────────────────────────────────────────
 
 /**
@@ -786,6 +821,7 @@ module.exports = {
   verifyDwd,
   getDriveClient,
   createFolder,
+  ensureFolderPath,
   uploadFile,
   uploadVersion,
   createNativeFile,

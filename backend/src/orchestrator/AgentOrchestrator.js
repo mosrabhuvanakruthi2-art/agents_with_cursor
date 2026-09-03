@@ -807,6 +807,90 @@ class AgentOrchestrator {
             log.warn(`Content destination pre-create failed (non-blocking): ${destErr.message}`);
           }
         }
+      } else if (isContentMode && env.CONTENT_PRECREATE_GOOGLE_DESTINATION
+        && context.destinationProvider === 'googledrive') {
+        // My Drive only. Deliberately NOT 'googleshareddrive' here: for a Shared Drive destination
+        // the first path segment names the DRIVE (resolved by name, must already exist), not a
+        // folder to create — walking the whole path with this same call would try to create a
+        // folder for the drive's name inside the wrong tree (the destination user's My Drive) and
+        // reproduce the exact "resolves to the wrong root" failure this block exists to prevent.
+        // Shared Drive gets its own handling separately.
+        //
+        // segmentsOf, NOT deepContentCore.inDrivePath: that helper strips a segment matching
+        // /^documents$/i because CloudFuze content mappings for SharePoint are written as
+        // "<Site>/Documents/<subpath>". Google has no such library segment, so a destination folder
+        // literally named "Documents" would be silently stripped and this would pre-create the
+        // wrong folder while the migration wrote somewhere else.
+        const wanted = [...new Set(
+          (context.userFolderMappings || [])
+            .map((u) => deepContentCore.segmentsOf(u.destinationPath).join('/'))
+            .filter(Boolean)
+        )];
+        if (wanted.length > 0) {
+          try {
+            const driveClient = require('../clients/driveClient');
+            for (const p of wanted) {
+              const made = await driveClient.ensureFolderPath(p, context.destinationEmail);
+              log.info(`Content destination: "${p}" ready${made.created.length ? ` (created ${made.created.join(', ')})` : ' (already existed)'}`);
+            }
+          } catch (destErr) {
+            log.warn(`Content destination pre-create failed (non-blocking): ${destErr.message}`);
+          }
+        }
+      } else if (isContentMode && env.CONTENT_PRECREATE_GOOGLE_DESTINATION
+        && context.destinationProvider === 'googleshareddrive') {
+        // Shared Drive: the FIRST segment names the DRIVE, the rest are folders inside it.
+        //
+        // Kept separate from the My Drive branch above rather than added to its provider test,
+        // because the path means something different here. GoogleDriveValidationAgent
+        // .resolveDestinationRoot applies the same rule when it READS the destination, so the two
+        // must agree — pre-creating one tree while validation inspects another would report the
+        // whole migration as missing.
+        //
+        // The drive itself is never created. A QA run must not bring a Shared Drive into existence
+        // as a side effect, and resolveDestinationRoot already fails with the available drives
+        // listed when the name is wrong, which is a far more useful error than a silently created
+        // empty drive. So an unresolvable drive is logged and skipped here; the read side reports it.
+        const wanted = [...new Set(
+          (context.userFolderMappings || [])
+            .map((u) => deepContentCore.segmentsOf(u.destinationPath).join('/'))
+            .filter(Boolean)
+        )];
+        if (wanted.length > 0) {
+          const driveClient = require('../clients/driveClient');
+          for (const p of wanted) {
+            // Non-blocking per path, not per loop: one unresolvable drive must not stop the rest
+            // from being prepared, and the migration reports a clearer failure than this step can.
+            try {
+              const segs = deepContentCore.segmentsOf(p);
+              const driveName = normalizeDriveName(segs[0] || '');
+              if (!driveName) continue;
+
+              const drive = await driveClient.resolveSharedDriveByName(driveName, context.destinationEmail);
+              if (!drive) {
+                log.warn(`Content destination: Shared Drive "${driveName}" not found for `
+                  + `${context.destinationEmail} — skipping pre-create; the validation step reports `
+                  + 'the available drives');
+                continue;
+              }
+
+              const sub = segs.slice(1).join('/');
+              if (!sub) {
+                log.info(`Content destination: Shared Drive "${drive.name}" targets the drive root — `
+                  + 'no folder to create');
+                continue;
+              }
+
+              // A Shared Drive's id doubles as its root folder id, so it is the rootId to walk from.
+              const made = await driveClient.ensureFolderPath(sub, context.destinationEmail,
+                { rootId: drive.id });
+              log.info(`Content destination: "${sub}" ready in Shared Drive "${drive.name}"`
+                + `${made.created.length ? ` (created ${made.created.join(', ')})` : ' (already existed)'}`);
+            } catch (destErr) {
+              log.warn(`Content destination pre-create failed for "${p}" (non-blocking): ${destErr.message}`);
+            }
+          }
+        }
       }
 
       // Step 2: Trigger and monitor migration

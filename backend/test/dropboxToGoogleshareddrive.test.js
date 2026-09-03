@@ -16,11 +16,14 @@
  * the Drive API, which is exactly why that case is testable offline.
  */
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 
 const registry = require('../src/orchestrator/agentRegistry');
 const ValidationAgent = require('../src/validation/combinations/content/dropboxToGoogledrive');
 const GoogleDriveValidationAgent = require('../src/agents/googledrive/GoogleDriveValidationAgent');
 const DropboxTestDataAgent = require('../src/agents/dropbox/DropboxTestDataAgent');
+const env = require('../src/config/env');
 
 /** The pair resolves, and to the same agents the My Drive pair uses. */
 function testRegistration() {
@@ -68,6 +71,13 @@ function testMyDrivePairUnaffected() {
 async function testSharedDriveRequiresAName() {
   const agent = new GoogleDriveValidationAgent();
 
+  // Pin the configured default empty. resolveDestinationRoot now falls back to
+  // env.GOOGLE_DEST_SHARED_DRIVE_NAME, so without this the outcome would depend on whether the
+  // machine's .env happens to set it — and the test would START FAILING the moment an operator set
+  // it, which is exactly what we ask them to do. Restored below.
+  const configuredDefault = env.GOOGLE_DEST_SHARED_DRIVE_NAME;
+  env.GOOGLE_DEST_SHARED_DRIVE_NAME = '';
+
   await assert.rejects(
     () => agent.resolveDestinationRoot({
       destinationEmail: 'erik@filefuze.co',
@@ -102,6 +112,7 @@ async function testSharedDriveRequiresAName() {
     'a destination path naming no drive is refused'
   );
 
+  env.GOOGLE_DEST_SHARED_DRIVE_NAME = configuredDefault;
   console.log('  shared drive without a name is refused: ok');
 }
 
@@ -249,6 +260,100 @@ function testContentProvidersCoversRegistry() {
   console.log('  CONTENT_PROVIDERS covers every registered content provider: ok');
 }
 
+/**
+ * GOOGLE_DEST_SHARED_DRIVE_NAME is honoured, and ranks LAST behind the run's own fields.
+ *
+ * .env.example documented this variable when the Shared Drive groundwork landed, but nothing in
+ * backend/src read it — so a run that named no drive was refused while the operator had set exactly
+ * the default the file told them to set. Precedence matters as much as presence: a per-run
+ * destination must never be overridden by a global default, or one run's drive silently validates
+ * against another's.
+ *
+ * Asserted through the error message rather than a live lookup — with a name present the agent
+ * reaches the Drive API, and what matters is WHICH name it carried there.
+ */
+async function testEnvDefaultIsLastResort() {
+  const agent = new GoogleDriveValidationAgent();
+  const configuredDefault = env.GOOGLE_DEST_SHARED_DRIVE_NAME;
+
+  try {
+    env.GOOGLE_DEST_SHARED_DRIVE_NAME = 'Env-Default-Drive';
+
+    // Nothing on the context: the configured default is used instead of a refusal.
+    await assert.rejects(
+      () => agent.resolveDestinationRoot({
+        destinationEmail: 'nobody@example.invalid',
+        destinationProvider: 'googleshareddrive',
+      }),
+      (err) => {
+        assert.ok(!/no drive name was supplied/i.test(err.message),
+          'the configured default must be used, not refused');
+        if (/not found for/.test(err.message)) {
+          assert.ok(err.message.includes('"Env-Default-Drive"'),
+            `expected the env default to be the name looked up, got: ${err.message}`);
+        }
+        return true;
+      }
+    );
+
+    // The run's own destination path outranks it.
+    await assert.rejects(
+      () => agent.resolveDestinationRoot({
+        destinationEmail: 'nobody@example.invalid',
+        destinationProvider: 'googleshareddrive',
+        destinationPath: '/Explicit-Drive',
+      }),
+      (err) => {
+        if (/not found for/.test(err.message)) {
+          assert.ok(err.message.includes('"Explicit-Drive"'),
+            `the run's own path must win over the env default, got: ${err.message}`);
+          assert.ok(!err.message.includes('Env-Default-Drive'),
+            'the env default must not override a per-run destination');
+        }
+        return true;
+      }
+    );
+  } finally {
+    env.GOOGLE_DEST_SHARED_DRIVE_NAME = configuredDefault;
+  }
+
+  console.log('  configured default honoured, and ranked last: ok');
+}
+
+/**
+ * The permission settle window is configurable, and its default is unchanged.
+ *
+ * It was hardcoded at 2 attempts x 8000ms — 16 seconds against a delay measured at about 25 MINUTES
+ * on run dbx-gsd-1788417784387, where five items reported no destination grants at validation time
+ * and a direct read later showed every grant present. 16s only ever caught the fast cases, so
+ * features 2.1-2.5 reported "not judgeable yet" instead of a verdict.
+ *
+ * Asserted here because the default must NOT drift: raising it silently would add wall-clock to
+ * every run that has a genuinely unshared item, and lowering it would quietly give up sooner.
+ */
+function testSettleWindowIsConfigurable() {
+  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_ATTEMPTS, 2,
+    'the default attempt count is unchanged at 2');
+  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_MS, 8000,
+    'the default interval is unchanged at 8000ms');
+
+  // 0 must be honoured, not replaced by the default — it is how an operator turns the wait off for
+  // a fast smoke run. A `> 0` guard would silently substitute 2 and the setting would look ignored.
+  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_ATTEMPTS >= 0, true,
+    'the attempt count accepts 0 to disable waiting');
+
+  // The validator must READ the configured values rather than carry its own copy.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'validation', 'combinations',
+    'content', 'dropboxToGoogledrive.js'), 'utf8');
+  assert.ok(/const PERMISSION_SETTLE_ATTEMPTS = env.CONTENT_PERMISSION_SETTLE_ATTEMPTS;/.test(src),
+    'the attempt count comes from config, not a literal');
+  assert.ok(/const PERMISSION_SETTLE_MS = env.CONTENT_PERMISSION_SETTLE_MS;/.test(src),
+    'the interval comes from config, not a literal');
+  assert.ok(!/const PERMISSION_SETTLE_ATTEMPTS = [0-9]/.test(src),
+    'no hardcoded attempt count remains');
+  console.log('  permission settle window configurable, defaults pinned: ok');
+}
+
 (async () => {
   testContentProvidersCoversRegistry();
   testGoogleDestinationNamesMatch();
@@ -256,6 +361,8 @@ function testContentProvidersCoversRegistry() {
   testMyDrivePairUnaffected();
   await testSharedDriveRequiresAName();
   await testDriveNameFromDestinationPath();
+  await testEnvDefaultIsLastResort();
+  testSettleWindowIsConfigurable();
   await testMyDriveRootShape();
   console.log('dropboxToGoogleshareddrive.test.js: ok');
 })().catch((err) => {

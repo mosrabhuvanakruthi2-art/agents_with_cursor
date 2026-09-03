@@ -32,6 +32,7 @@
 
 const GoogleDriveValidationAgent = require('../../../agents/googledrive/GoogleDriveValidationAgent');
 const dropboxClient = require('../../../clients/dropboxClient');
+const driveClient = require('../../../clients/driveClient');
 const core = require('../../shared/deepContentCore');
 const destinations = require('../../destinations');
 const roleMaps = require('../../roleMaps');
@@ -39,7 +40,140 @@ const tolerance = require('../../../utils/contentTolerance');
 const env = require('../../../config/env');
 const logger = require('../../../utils/logger');
 
-const COMBINATION = 'dropbox_to_googledrive';
+/**
+ * Structural element counts from a Dropbox Paper markdown export.
+ *
+ * Scope §10 asks whether each Paper construct survived the conversion to a Google Doc. Comparing
+ * the documents word-for-word is meaningless — the conversion rewrites the markup entirely — but the
+ * COUNT of each construct is a fair question: three tables in, three tables out.
+ *
+ * Only constructs with an unambiguous marker on BOTH sides are counted. Anything the two exports
+ * cannot distinguish is deliberately left out rather than guessed at, because a wrong Paper verdict
+ * is exactly what the scope document warns about: on the sibling combination one guessed rule
+ * failed 92 ordinary notification emails.
+ */
+function paperMarkdownStructure(md) {
+  const text = String(md || '');
+  const lines = text.split('\n');
+  const count = (re) => (text.match(re) || []).length;
+
+  return {
+    // A markdown table is identified by its header SEPARATOR row (|---|---|), one per table —
+    // counting `|` rows would count every row of every table instead.
+    tables: lines.filter((l) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(l)).length,
+    // Bulleted and numbered are counted as BLOCKS, not items — one per run of consecutive list
+    // lines — because Google's HTML export emits one <ul>/<ol> per block however many items it
+    // holds. Counting items here would compare 3 against 1 for a three-item list and fail the
+    // feature on a perfectly migrated document.
+    // Checklist blocks are counted here too, not excluded. Google's HTML export renders a Paper
+    // checklist as an ordinary <ul>, so excluding them on the source side left the destination
+    // count permanently higher on any document holding both a bulleted list and a checklist — a
+    // guaranteed false result rather than a measurement. A checklist IS an unordered list, and
+    // `todo` below still counts its items separately for feature 10.11.
+    bulleted: countBlocks(lines, (l) => /^\s*[-*+]\s+/.test(l)),
+    numbered: countBlocks(lines, (l) => /^\s*\d+[.)]\s+/.test(l)),
+    todo: lines.filter((l) => /^\s*[-*+]\s+\[[ xX]\]/.test(l)).length,
+    // Images first: an image is a link with a leading !, so links must exclude them.
+    images: count(/!\[[^\]]*\]\([^)]*\)/g),
+    links: count(/(^|[^!])\[[^\]]*\]\([^)]*\)/g),
+    emojis: countEmoji(text),
+  };
+}
+
+/** The same counts from Google's HTML export of the converted Doc. */
+function googleDocStructure(html) {
+  const text = String(html || '');
+  const count = (re) => (text.match(re) || []).length;
+
+  return {
+    tables: count(/<table[\s>]/gi),
+    // <ul>/<ol> blocks, not <li> items: Paper's markdown export emits one line per item while
+    // Google nests them, so item counts do not correspond. Block counts do.
+    bulleted: count(/<ul[\s>]/gi),
+    numbered: count(/<ol[\s>]/gi),
+    // Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot be
+    // recognised here. Reported as null — NOT zero, which would read as "none arrived".
+    todo: null,
+    images: count(/<img[\s>]/gi),
+    links: count(/<a\s[^>]*href=/gi),
+    emojis: countEmoji(stripTags(text)),
+  };
+}
+
+/**
+ * Runs of consecutive matching lines, counted once each.
+ *
+ * A blank line or any non-matching line ends the run, which is how markdown delimits one list from
+ * the next.
+ */
+function countBlocks(lines, matches) {
+  let blocks = 0;
+  let inBlock = false;
+  for (const line of lines) {
+    if (matches(line)) {
+      if (!inBlock) blocks += 1;
+      inBlock = true;
+    } else if (String(line).trim() !== '' || inBlock) {
+      inBlock = false;
+    }
+  }
+  return blocks;
+}
+
+/** Drop tags and decode the few entities Google's exporter emits, so text-level counts are fair. */
+function stripTags(html) {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/**
+ * Emoji count, treating a ZWJ sequence as ONE emoji.
+ *
+ * Two decisions here, both learned the hard way:
+ *
+ * Matching the pictographic ranges rather than \p{Emoji}, because that property also matches
+ * ordinary digits, '#' and '*' — a document with page numbers would report dozens of emojis and
+ * feature 10.16 would fail on every run.
+ *
+ * And consuming a whole ZWJ sequence as one match rather than stripping the joiners. Stripping
+ * them does not merge anything: it leaves the parts behind, so a family emoji counted as three.
+ * Sequence-aware counting is also strictly more useful — if the conversion SPLITS a family emoji
+ * into its members, the source reads 1 against the destination 3 and the difference is caught,
+ * where part-counting would read 3 against 3 and miss it.
+ */
+const EMOJI_CORE = '[\\u{1F300}-\\u{1FAFF}\\u{1F000}-\\u{1F2FF}\\u{2600}-\\u{27BF}]'
+  + '(?:[\\u{1F3FB}-\\u{1F3FF}])?(?:\\u{FE0F})?';
+const EMOJI_SEQUENCE = new RegExp(`${EMOJI_CORE}(?:\\u{200D}${EMOJI_CORE})*`, 'gu');
+
+function countEmoji(s) {
+  return (String(s || '').match(EMOJI_SEQUENCE) || []).length;
+}
+
+const DEFAULT_COMBINATION = 'dropbox_to_googledrive';
+
+/**
+ * The tolerance/role-map lookup key for this run — NOT a constant.
+ *
+ * orchestrator/combinations/content/dropboxToGoogleshareddrive.js reuses this whole file verbatim
+ * (same client, same tree-reading code; only GoogleDriveValidationAgent's destination read branches
+ * on destinationProvider). A hardcoded 'dropbox_to_googledrive' here meant every Shared Drive run
+ * silently read My Drive's tolerance bands and reported the My Drive combination label, and left
+ * utils/contentTolerance/dropboxToGoogleshareddrive.js unreachable — registered but never looked up.
+ * roleMaps/dropbox_to_google.js already lists both combinations, so only this lookup needed to
+ * become dynamic.
+ */
+function combinationFor(context) {
+  const provider = String(context?.destinationProvider || 'googledrive').toLowerCase();
+  return provider === 'googleshareddrive' ? 'dropbox_to_googleshareddrive' : DEFAULT_COMBINATION;
+}
 
 /**
  * How long to wait for CloudFuze's permission phase before calling a grant missing.
@@ -48,8 +182,10 @@ const COMBINATION = 'dropbox_to_googledrive';
  * _validateItem. Two attempts at 8s keeps the worst case bounded (16s per affected item) while
  * covering the delay actually observed.
  */
-const PERMISSION_SETTLE_ATTEMPTS = 2;
-const PERMISSION_SETTLE_MS = 8000;
+// Tunable per run — see CONTENT_PERMISSION_SETTLE_* in config/env.js for why the old hardcoded
+// 2 x 8s was two orders of magnitude short of the delay measured on a real run.
+const PERMISSION_SETTLE_ATTEMPTS = env.CONTENT_PERMISSION_SETTLE_ATTEMPTS;
+const PERMISSION_SETTLE_MS = env.CONTENT_PERMISSION_SETTLE_MS;
 
 /** Terminal CloudFuze statuses that mean the migration itself finished. */
 const CF_OK = ['PROCESSED', 'PROCESS', 'VERSION_PROCESSED'];
@@ -144,6 +280,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
   }
 
   async execute(context) {
+    const COMBINATION = combinationFor(context);
     const bands = tolerance.forCombination(COMBINATION) || {};
     const rules = destinations.forDestination('googledrive');
     const roleMap = roleMaps.forCombination(COMBINATION);
@@ -237,7 +374,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
   _emptyTotals(context) {
     return {
       enabled: true,
-      combination: COMBINATION,
+      combination: combinationFor(context),
       migrationType: context.migrationType || 'FULL',
       scannedSourceItems: 0,
       pairedCount: 0,
@@ -255,7 +392,12 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       permissionObservations: [],
       // Items whose grants CloudFuze had not applied yet when validation ran. Initialised here so
       // the roll-up can compare it against permissionMismatches without an undefined check.
-      permissionsPending: 0,
+      // The PATHS of the items whose grants CloudFuze had not applied yet when validation ran —
+      // not just how many. The per-feature roll-up has to know WHICH feature a pending item
+      // belongs to, and a bare count could only ever be applied to all of them at once. Use
+      // .length where a count is wanted; a separate counter alongside this went write-only the
+      // moment the roll-up stopped reading it.
+      permissionsPendingPaths: [],
       sharedLinkMismatches: [],
       linkObservations: [],
       conversionMismatches: [],
@@ -275,6 +417,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
   /** Validate one source→destination unit. */
   async _validateUnit({ unit, context, destRoot, rules, roleMap, bands, mapEmail, totals }) {
+    const combination = combinationFor(context);
     const checks = [];
     const push = (status, name, detail) => checks.push({ name, status, detail });
     const sourceEmail = unit.sourceEmail || context.sourceEmail;
@@ -315,7 +458,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const rootMeta = await dropboxClient.getMetadata(sourcePath, dbxOpts).catch(() => null);
       const rootPath = (rootMeta && rootMeta.path) || sourcePath;
       if (rootPath !== sourcePath) {
-        logger.info(`[dropbox_to_googledrive validation] source root "${sourcePath}" has display `
+        logger.info(`[${combination} validation] source root "${sourcePath}" has display `
           + `path "${rootPath}" — relativizing against the display form`);
       }
       // Keep each item's ABSOLUTE Dropbox path before relativizing.
@@ -431,7 +574,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const srcItem = (pair && pair.source) || sourceTree.find((s) => s.path === srcPath);
       if (!srcItem || !destItem) continue;
       const row = await this._validateItem({
-        srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals,
+        srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals, combination,
       });
       itemDetails.push(row);
     }
@@ -504,7 +647,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
   }
 
   /** Tier C + Tier B for one paired item. */
-  async _validateItem({ srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals }) {
+  async _validateItem({ srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals, combination }) {
     const row = {
       path: srcItem.path,
       name: srcItem.name,
@@ -526,7 +669,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     if (!destItem.id) {
       row.inspectionSkipped = 'destination item carries no id, so it could not be inspected';
       totals.uninspectable = (totals.uninspectable || 0) + 1;
-      logger.warn(`[dropbox_to_googledrive validation] "${srcItem.path}" paired with a destination `
+      logger.warn(`[${combination} validation] "${srcItem.path}" paired with a destination `
         + 'item that has no id — skipping its permission, version and hash checks rather than '
         + 'issuing calls that cannot succeed');
       return row;
@@ -535,7 +678,17 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // Paper is converted to a Google Doc: its bytes, size, timestamps and version history are all
     // products of the conversion, so none of them can be compared. Recorded and skipped.
     if (srcItem.isPaper) {
-      totals.paperItems.push({ path: srcItem.path, destPath: destItem.path, destName: destItem.name });
+      // Compare the CONTENT, which nothing did before this.
+      //
+      // The report used to say all 18 of features 10.2-10.19 "require the document to be opened"
+      // and must be checked by hand. That was never true of the structure: dropboxClient.exportPaper
+      // and driveClient.exportNativeFile both already existed — exportPaper's own comment says it is
+      // "needed for any content comparison of scope §10" — and neither was ever called. So every
+      // Paper feature sat at N/A on every run while the means to answer several of them went unused.
+      const content = await this._comparePaperContent(srcItem, destItem, destEmail, dbxOpts);
+      totals.paperItems.push({
+        path: srcItem.path, destPath: destItem.path, destName: destItem.name, content,
+      });
       row.note = 'Dropbox Paper — converted to a Google Doc; bytes, size, timestamps and version '
         + 'history are conversion products and are not comparable (scope 10.1, 10.19)';
       return row;
@@ -553,7 +706,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       dropboxClient.listItemMembers(srcRef, dbxOpts).catch((err) => {
         // Logged, not silent: an unreadable source is not the same as an unshared one, and
         // treating it as "none" is how a permission gap becomes an invisible pass.
-        logger.warn(`[dropbox_to_googledrive validation] could not read source members for `
+        logger.warn(`[${combination} validation] could not read source members for `
           + `"${srcRef.path}": ${err.message}`);
         return [];
       }),
@@ -603,7 +756,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         await new Promise((r) => setTimeout(r, PERMISSION_SETTLE_MS));
         const retry = await this.readPermissions(destItem.id, destEmail);
         if (directGrants(retry).length > 0) {
-          logger.info(`[dropbox_to_googledrive validation] "${srcItem.path}" had no direct `
+          logger.info(`[${combination} validation] "${srcItem.path}" had no direct `
             + `destination grants on the first read; ${directGrants(retry).length} appeared after `
             + `${attempt * (PERMISSION_SETTLE_MS / 1000)}s — CloudFuze was still applying sharing`);
           destPerms = retry;
@@ -626,8 +779,8 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // correct. The roll-up turns this into a WARN naming the re-validation step.
     if (sourcePerms.length > 0 && directGrants(destPerms).length === 0) {
       row.permissionsNotYetApplied = true;
-      totals.permissionsPending = (totals.permissionsPending || 0) + 1;
-      logger.warn(`[dropbox_to_googledrive validation] "${srcItem.path}" still carries only `
+      totals.permissionsPendingPaths.push(srcItem.path);
+      logger.warn(`[${combination} validation] "${srcItem.path}" still carries only `
         + `inherited drive grants after ${PERMISSION_SETTLE_ATTEMPTS * (PERMISSION_SETTLE_MS / 1000)}s `
         + '— CloudFuze has not applied item sharing yet. Reported as pending, NOT as a difference.');
     }
@@ -670,10 +823,19 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         ...(permCmp.viaGroup || []).map((m) => ({ ...m, match: true, viaGroup: true })),
       ];
       row.sourceLabel = 'Dropbox';
+      // Feature 2.5 asks about a grant to someone OUTSIDE the team, which is a question about the
+      // PRINCIPAL rather than the item's position — so it is counted here, where the per-grant rows
+      // are still in scope, instead of being re-derived from the roll-up.
+      const extAddr = String(env.DROPBOX_TEST_EXTERNAL_USER || '').trim().toLowerCase();
+      const isExtRow = (r) => Boolean(extAddr) && String(r.user || '').toLowerCase() === extAddr;
+
       totals.permissionObservations.push({
         path: srcItem.path,
         type: srcItem.type,
         checked: permCmp.checked,
+        externalChecked: (permCmp.matches || []).filter(isExtRow).length
+          + (permCmp.mismatches || []).filter(isExtRow).length,
+        externalFailed: (permCmp.mismatches || []).filter(isExtRow).length,
         matches: permCmp.matches.length,
         mismatches: permCmp.mismatches.length,
         escalations: permCmp.escalations.length,
@@ -692,7 +854,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
     // ── 3.1 / 3.2 shared links.
     const srcLinks = await dropboxClient.listSharedLinks(srcRef.path, dbxOpts).catch((err) => {
-      logger.warn(`[dropbox_to_googledrive validation] could not read source links for `
+      logger.warn(`[${combination} validation] could not read source links for `
         + `"${srcRef.path}": ${err.message}`);
       return [];
     });
@@ -762,7 +924,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // stayed empty and features 9.1/9.2 fell to "Not exercised by this run" on a source that
       // had 6 version uploads seeded.
       dropboxClient.listRevisions(srcRef.path, dbxOpts).catch((err) => {
-        logger.warn(`[dropbox_to_googledrive validation] could not read revisions for `
+        logger.warn(`[${combination} validation] could not read revisions for `
           + `"${srcRef.path}": ${err.message}`);
         return [];
       }),
@@ -797,44 +959,107 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
   /** Turn per-item observations into the unit's feature checks. */
   _rollUpItemChecks(push, totals, itemDetails) {
-    const permChecked = totals.permissionObservations.reduce((n, o) => n + o.checked, 0);
-    if (permChecked === 0) {
-      push('WARN', '2.x Permissions',
-        'No comparable source permissions were found, so permissions were not validated. Seed grants '
-        + 'with DROPBOX_TEST_INTERNAL_USER / DROPBOX_TEST_GROUP / DROPBOX_TEST_EXTERNAL_USER.');
-    } else if (totals.permissionMismatches.length === 0) {
-      push('PASS', '2.x Permissions', `${permChecked} grant(s) compared, all matched`);
-    } else if (totals.permissionsPending > 0
-      && totals.permissionsPending >= totals.permissionMismatches.length) {
-      // Every difference sits on an item CloudFuze had not finished sharing. Not judgeable yet —
-      // and specifically NOT a failure.
-      //
-      // This is the "report NOT RUN, never as passed" rule applied to its mirror image: a result
-      // that is not yet knowable must not be reported as a defect either. Reporting it as FAIL
-      // filed four Neutara tickets against permissions that a later read showed were correct.
-      push('WARN', '2.x Permissions',
-        `Not judgeable yet: ${totals.permissionsPending} item(s) still carried only inherited drive `
-        + 'grants when validation ran. CloudFuze applies item sharing AFTER the copy completes, and '
-        + 'measurements put that tens of minutes behind the PROCESSED status — so this run measured '
-        + 'too early rather than finding a defect. Re-validate this execution once the job has '
-        + 'settled to get a real verdict on 2.1-2.5.');
+    // ── Permissions: 2.1-2.4 by POSITION in the tree, 2.5 by PRINCIPAL ──────────────────
+    //
+    // One lumped '2.x Permissions' check used to answer all five features — _buildChecklist mapped
+    // 2.1 through 2.5 to the same regex. So a difference on an inner file also marked Root Folder
+    // Permissions as failed, and a clean root marked Inner file permissions as passed. Both
+    // directions are wrong, and the run already holds the evidence to separate them: every
+    // observation carries the item's path and type.
+    const permAt = (atRoot, type) => totals.permissionObservations.filter((o) =>
+      (core.segmentsOf(o.path).length <= 1) === atRoot && o.type === type);
+
+    /** One permission feature's verdict, over only the items that feature covers. */
+    const permFeature = (id, label, obs, notExercised) => {
+      const checked = obs.reduce((n, o) => n + o.checked, 0);
+      if (checked === 0) {
+        push('WARN', `${id} ${label}`, notExercised);
+        return;
+      }
+      const paths = new Set(obs.map((o) => o.path));
+      const bad = totals.permissionMismatches.filter((m) => paths.has(m.path));
+      const pending = (totals.permissionsPendingPaths || []).filter((x) => paths.has(x)).length;
+
+      if (bad.length === 0) {
+        push('PASS', `${id} ${label}`,
+          `${checked} grant(s) compared across ${paths.size} item(s), all matched`);
+      } else if (pending > 0 && pending >= bad.length) {
+        // The same "not yet judgeable" rule as before, now applied per feature: a difference
+        // sitting entirely on items CloudFuze had not finished sharing is NOT a defect. Reporting
+        // it as FAIL is what filed four Neutara tickets (QT-63, QT-67, CF-30684, CF-30695)
+        // against permissions that a later read showed were correct.
+        push('WARN', `${id} ${label}`,
+          `Not judgeable yet: ${pending} item(s) still carried only inherited drive grants when `
+          + 'validation ran. CloudFuze applies item sharing AFTER the copy completes, tens of '
+          + 'minutes behind the PROCESSED status — re-validate this execution once it has settled.');
+      } else {
+        const esc = bad.filter((m) => m.escalation).length;
+        push('FAIL', `${id} ${label}`,
+          `${bad.length} of ${checked} grant(s) differ`
+          + (esc > 0 ? ` (${esc} privilege escalation(s))` : '')
+          + (pending > 0
+            ? ` (${pending} more item(s) not yet shared by CloudFuze — not counted)` : ''));
+      }
+    };
+
+    const seed = 'Seed grants with DROPBOX_TEST_INTERNAL_USER / DROPBOX_TEST_GROUP.';
+    permFeature('2.1', 'Root Folder Permissions', permAt(true, 'folder'),
+      `No folder at the source root carried a comparable grant, so this was not exercised. ${seed}`);
+    permFeature('2.2', 'Root File Permissions', permAt(true, 'file'),
+      `No file at the source root carried a comparable grant, so this was not exercised. ${seed}`);
+    permFeature('2.3', 'Sub-folder permissions', permAt(false, 'folder'),
+      `No sub-folder carried a comparable grant, so this was not exercised. ${seed}`);
+    permFeature('2.4', 'Inner file permissions', permAt(false, 'file'),
+      `No file below the root carried a comparable grant, so this was not exercised. ${seed}`);
+
+    // 2.5 is not positional — it asks whether a grant to someone OUTSIDE the team survived.
+    const extAddr = String(env.DROPBOX_TEST_EXTERNAL_USER || '').trim();
+    const extChecked = totals.permissionObservations
+      .reduce((n, o) => n + (o.externalChecked || 0), 0);
+    const extFailed = totals.permissionObservations
+      .reduce((n, o) => n + (o.externalFailed || 0), 0);
+    if (!extAddr) {
+      push('WARN', '2.5 External Shares',
+        'DROPBOX_TEST_EXTERNAL_USER is not set, so no external grant was seeded and the feature was '
+        + 'not exercised. It must be an address OUTSIDE this Dropbox team — an invitee who belongs '
+        + 'to another managed Dropbox team cannot receive the grant on this plan, which is a '
+        + 'platform limit rather than a migration defect.');
+    } else if (extChecked === 0) {
+      push('WARN', '2.5 External Shares',
+        `No grant to ${extAddr} was found on any source item, so external sharing was not `
+        + 'exercised. Seeding named the address but no item carries the grant.');
+    } else if (extFailed === 0) {
+      push('PASS', '2.5 External Shares',
+        `${extChecked} external grant(s) to ${extAddr} compared, all matched`);
     } else {
-      const esc = totals.permissionMismatches.filter((m) => m.escalation).length;
-      const pending = totals.permissionsPending > 0
-        ? ` (${totals.permissionsPending} more item(s) not yet shared by CloudFuze — not counted)` : '';
-      push('FAIL', '2.x Permissions',
-        `${totals.permissionMismatches.length} of ${permChecked} grant(s) differ`
-        + (esc > 0 ? ` (${esc} privilege escalation(s))` : '') + pending);
+      push('FAIL', '2.5 External Shares',
+        `${extFailed} of ${extChecked} external grant(s) to ${extAddr} differ`);
     }
 
-    if (totals.linkObservations.length === 0) {
-      push('WARN', '3.x Shared Links', 'No source shared links were found, so links were not validated');
-    } else if (totals.sharedLinkMismatches.length === 0) {
-      push('PASS', '3.x Shared Links', `${totals.linkObservations.length} link(s) compared, all matched`);
-    } else {
-      push('FAIL', '3.x Shared Links',
-        `${totals.sharedLinkMismatches.length} of ${totals.linkObservations.length} link(s) differ`);
-    }
+    // ── Shared links: 3.1 anyone-with-the-link, 3.2 team members ────────────────────────
+    //
+    // Split for the same reason. Dropbox reports the audience on every link ('public' vs
+    // 'team_only'), so these two documented features are separately answerable and were sharing
+    // one verdict.
+    const linkFeature = (id, label, obs, notExercised) => {
+      if (obs.length === 0) {
+        push('WARN', `${id} ${label}`, notExercised);
+        return;
+      }
+      const bad = obs.filter((o) => !o.match);
+      if (bad.length === 0) {
+        push('PASS', `${id} ${label}`, `${obs.length} link(s) compared, all matched`);
+      } else {
+        push('FAIL', `${id} ${label}`, `${bad.length} of ${obs.length} link(s) differ`);
+      }
+    };
+    const isAnyoneLink = (o) => String(o.sourceAudience || '').toLowerCase() === 'public';
+    linkFeature('3.1', 'Shared Links (Anyone with the Link)',
+      totals.linkObservations.filter(isAnyoneLink),
+      'No source link had an "anyone with the link" audience, so this was not exercised');
+    linkFeature('3.2', 'Shared Links (Team Members)',
+      totals.linkObservations.filter((o) => !isAnyoneLink(o)),
+      'No source link had a team-only audience, so this was not exercised');
 
     const tsCompared = itemDetails.filter((r) => r.timestamps).length;
     if (tsCompared === 0) {
@@ -1091,6 +1316,42 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
    * unresolved question both scope files flag. This is the honest position: it neither hides a defect
    * nor invents one.
    */
+  /**
+   * Export a Paper and its converted Google Doc, and count the structures in each.
+   *
+   * Word-for-word comparison would be meaningless — the conversion rewrites the markup — but "three
+   * tables in, three tables out" is a fair question, and it is the question scope §10 asks.
+   *
+   * Never throws. A failed export is recorded as { compared: false, reason } and reported as NOT
+   * ASSESSED, never as a content defect: an export that could not run is not evidence that the
+   * migration lost anything.
+   */
+  async _comparePaperContent(srcItem, destItem, destEmail, dbxOpts) {
+    // The absolute Dropbox path, stamped before the tree was relativized — the relative path would
+    // not resolve against the team space.
+    const srcRef = srcItem.dbxPath || srcItem.path;
+
+    let md;
+    try {
+      md = (await dropboxClient.exportPaper(srcRef, 'markdown', dbxOpts)).toString('utf8');
+    } catch (err) {
+      return { compared: false, reason: `source Paper export failed: ${err.message}` };
+    }
+
+    let html;
+    try {
+      html = (await driveClient.exportNativeFile(destItem.id, 'text/html', destEmail)).toString('utf8');
+    } catch (err) {
+      return { compared: false, reason: `destination Google Doc export failed: ${err.message}` };
+    }
+
+    return {
+      compared: true,
+      source: paperMarkdownStructure(md),
+      dest: googleDocStructure(html),
+    };
+  }
+
   _checkPaper(push, sourceTree, cmp, totals) {
     const papers = sourceTree.filter((i) => i.isPaper);
     if (papers.length === 0) {
@@ -1112,10 +1373,106 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         + missing.slice(0, 5).map((p) => p.path).join(', '));
     }
 
-    push('WARN', '10.2–10.19 Paper content fidelity',
-      `${arrived.length} Paper document(s) arrived, but their CONTENT was not compared — formatting, `
-      + 'images, tables, timelines, lists, code blocks, emojis, mentions and comments all require the '
-      + 'document to be opened. These 18 features must be confirmed manually.');
+    // ── Paper CONTENT, feature by feature, from the two exports ─────────────────────────
+    //
+    // This replaced a single WARN covering 10.2-10.19 which said the content "was not compared" and
+    // that all 18 features "must be confirmed manually". The structure never needed a human: it is
+    // counted from the Paper markdown export and Google's HTML export of the converted Doc.
+    //
+    // Only constructs with an unambiguous marker on BOTH sides get a verdict. The rest are reported
+    // NOT ASSESSED with the numbers actually measured and the reason they cannot be separated —
+    // which is far more use to a reviewer than "open the document", and does not pretend to a
+    // verdict the evidence cannot support.
+    const withContent = totals.paperItems.filter((x) => x.content);
+    const comparable = withContent.filter((x) => x.content.compared);
+    const failedExport = withContent.filter((x) => !x.content.compared);
+
+    if (comparable.length === 0) {
+      const why = failedExport.length > 0
+        ? ` Exports failed: ${failedExport.slice(0, 3).map((x) => `"${x.path}" (${x.content.reason})`).join('; ')}`
+        : '';
+      push('WARN', '10.2-10.19 Paper content fidelity',
+        `${arrived.length} Paper document(s) arrived but none could be exported, so no content `
+        + `feature was assessed.${why}`);
+    } else {
+      const sum = (rows, side, key) => rows.reduce((n, x) => n + (x.content[side][key] || 0), 0);
+
+      /**
+       * One structural feature's verdict: the same construct counted on both sides.
+       *
+       * A destination count BELOW the source is a loss and fails. ABOVE is reported too, because
+       * the conversion inventing structure is also a fidelity problem — a Paper table becoming two
+       * Google tables is not a pass.
+       */
+      const structure = (id, label, key, absentDetail) => {
+        const src = sum(comparable, 'source', key);
+        const dst = sum(comparable, 'dest', key);
+        if (src === 0 && dst === 0) {
+          push('WARN', `${id} ${label}`, absentDetail);
+          return;
+        }
+        if (src === dst) {
+          push('PASS', `${id} ${label}`,
+            `${src} in the source, ${dst} at the destination across ${comparable.length} document(s)`);
+        } else if (dst < src) {
+          push('FAIL', `${id} ${label}`,
+            `${src} in the source but only ${dst} at the destination across ${comparable.length} `
+            + `document(s) — ${src - dst} lost in the conversion`);
+        } else {
+          // More at the destination is NOT reported as a defect. Google's exporter adds anchors and
+          // wrappers of its own, so an excess can be an artefact of how the document was read
+          // rather than anything the migration did. Surfaced as a WARN so it is still visible.
+          push('WARN', `${id} ${label}`,
+            `${src} in the source but ${dst} at the destination across ${comparable.length} `
+            + `document(s) — ${dst - src} more than the source. Nothing was lost; the excess may be `
+            + `an artefact of Google's exporter rather than the migration, so this is not called a `
+            + 'defect without a human confirming it.');
+        }
+      };
+
+      structure('10.7', 'Links', 'links',
+        'No link appeared in any exported Paper, so this was not exercised');
+      structure('10.9', 'Tables', 'tables',
+        'No table appeared in any exported Paper, so this was not exercised');
+      structure('10.12', 'Bulleted List', 'bulleted',
+        'No bulleted list appeared in any exported Paper, so this was not exercised');
+      structure('10.13', 'Numbered List', 'numbered',
+        'No numbered list appeared in any exported Paper, so this was not exercised');
+      structure('10.16', 'Emojis', 'emojis',
+        'No emoji appeared in any exported Paper, so this was not exercised');
+
+      // 10.3 / 10.4 / 10.5 — all three arrive as an <img> in Google's export, so the image COUNT is
+      // measurable but its ORIGIN is not. Giving each of the three the same count would repeat the
+      // mistake the 2.x split just corrected: one piece of evidence answering several features.
+      const srcImg = sum(comparable, 'source', 'images');
+      const dstImg = sum(comparable, 'dest', 'images');
+      const imgDetail = `${srcImg} image(s) in the source, ${dstImg} at the destination. The exports `
+        + 'cannot tell an inserted image from a clipboard image or from embedded media — all three '
+        + 'become an <img> — so 10.3, 10.4 and 10.5 cannot be separated by API and need a human to '
+        + `attribute them.${srcImg !== dstImg ? ' The counts DIFFER, which is worth investigating.' : ''}`;
+      for (const [id, label] of [['10.3', 'Inserted Images'], ['10.4', 'Inserted Media'],
+        ['10.5', 'Clipboard Images']]) {
+        push('WARN', `${id} ${label}`, imgDetail);
+      }
+
+      // 10.11 — Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot
+      // be recognised at the destination. The SOURCE count is still worth reporting: it says
+      // whether the feature was even exercised, which the old blanket WARN did not.
+      const srcTodo = sum(comparable, 'source', 'todo');
+      push('WARN', '10.11 TO-DO list',
+        srcTodo === 0
+          ? 'No TO-DO item appeared in any exported Paper, so this was not exercised'
+          : `${srcTodo} TO-DO item(s) in the source. Google's HTML export renders a checklist as an `
+            + 'ordinary list, so whether the checkboxes survived cannot be read from it — this needs '
+            + 'the document opened.');
+
+      if (failedExport.length > 0) {
+        push('WARN', '10.x Paper exports that failed',
+          `${failedExport.length} of ${withContent.length} Paper document(s) could not be exported, `
+          + 'so they contributed nothing to the content features above: '
+          + failedExport.slice(0, 3).map((x) => `"${x.path}" (${x.content.reason})`).join('; '));
+      }
+    }
 
     for (const [id, wording] of Object.entries(PAPER_DISPUTED)) {
       totals.paperDisputed = totals.paperDisputed || [];
@@ -1177,6 +1534,27 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
           ? { ...f, status: v === 'fail' ? 'fail' : 'pass', detail: rows[0].detail }
           : na('No Dropbox Paper documents in the source');
       }
+      // Paper features that now carry a real check of their own. Everything else under 10.x still
+      // falls through to the blanket N/A below, which is correct: those either cannot be read from
+      // an export or are the six the scope document disputes.
+      const PAPER_CHECKED = {
+        '10.3': /^10\.3 /, '10.4': /^10\.4 /, '10.5': /^10\.5 /,
+        '10.7': /^10\.7 /, '10.9': /^10\.9 /, '10.11': /^10\.11 /,
+        '10.12': /^10\.12 /, '10.13': /^10\.13 /, '10.16': /^10\.16 /,
+      };
+      if (PAPER_CHECKED[f.id]) {
+        const rows = byName(PAPER_CHECKED[f.id]);
+        const v = worst(rows);
+        if (v) {
+          return {
+            ...f,
+            // A WARN here means "measured, but not assessable" — na, never a pass. Reporting an
+            // unexercised feature as passing is the failure mode this checklist exists to avoid.
+            status: v === 'fail' ? 'fail' : v === 'warn' ? 'na' : 'pass',
+            detail: rows[0].detail,
+          };
+        }
+      }
       if (f.id.startsWith('10.')) {
         const disputed = PAPER_DISPUTED[f.id];
         return na(
@@ -1189,10 +1567,18 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
       const map = {
         '1.1': /1\.1 Data Migration/,
-        '2.1': /2\.x Permissions/, '2.2': /2\.x Permissions/,
-        '2.3': /2\.x Permissions/, '2.4': /2\.x Permissions/, '2.5': /2\.x Permissions/,
-        '3.1': /3\.x Shared Links|3\.x Shared Link CSV/,
-        '3.2': /3\.x Shared Links|3\.x Shared Link CSV/,
+        // Each permission feature has its own check now, so each maps to its own pattern.
+        // Sharing one regex made every feature inherit the same verdict: a difference on an
+        // inner file marked Root Folder Permissions failed, and a clean root marked Inner file
+        // permissions passed. Anchored at the start so 2.1 cannot also match 2.10 later.
+        '2.1': /^2\.1 Root Folder/, '2.2': /^2\.2 Root File/,
+        '2.3': /^2\.3 Sub-folder/, '2.4': /^2\.4 Inner file/, '2.5': /^2\.5 External/,
+        // Scope sections 3.1 and 3.2 require BOTH halves: the link permissions at the
+        // destination AND the shared-links CSV report. So each feature takes the worst of its
+        // own audience check and the CSV check — a written CSV cannot excuse missing link
+        // permissions, which is exactly the live defect on this combination today.
+        '3.1': /^3\.1 Shared Links|^3\.x Shared Link CSV/,
+        '3.2': /^3\.2 Shared Links|^3\.x Shared Link CSV/,
         '4.1': /4\.1 Metadata/,
         '5.1': /5\.1 Special Characters/,
         '6.1': /6\.1 Suppressing/,
@@ -1313,7 +1699,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       domain: 'content',
       sourceProvider: 'dropbox',
       destinationProvider: context?.destinationProvider || 'googledrive',
-      combination: COMBINATION,
+      combination: combinationFor(context),
       checks: flat,
       perUser,
       deepContentValidation: totals,
@@ -1325,4 +1711,9 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 module.exports = DropboxToGoogledriveValidationAgent;
 module.exports.DROPBOX_FEATURES = DROPBOX_FEATURES;
 module.exports.PAPER_DISPUTED = PAPER_DISPUTED;
-module.exports.COMBINATION = COMBINATION;
+// Exported for the unit tests: the counting is where the subtle errors live (an emoji regex that
+// also matches digits, a table matcher that counts rows instead of tables, links that swallow
+// images), and those are worth asserting directly rather than only through a roll-up.
+module.exports.paperMarkdownStructure = paperMarkdownStructure;
+module.exports.googleDocStructure = googleDocStructure;
+module.exports.COMBINATION = DEFAULT_COMBINATION;

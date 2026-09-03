@@ -645,7 +645,7 @@ const CONTENT_PERMS = [
 // Per-user folder mapping table for multi-user content migration. One row per selected user
 // (from Map Users). Each row's source folder / destination path defaults to the shared base
 // fields; editing a row overrides just that user. CSV import matches by source email.
-function PerUserFolderTable({ wiz, destDefault }) {
+function PerUserFolderTable({ wiz, destDefault, destPlaceholder }) {
   const pairs = wiz.selectedPairs || [];
   if (pairs.length === 0) {
     return (
@@ -770,7 +770,7 @@ function PerUserFolderTable({ wiz, destDefault }) {
                 ) : (
                   <td className="px-2 py-1.5">
                     <input value={r.destinationPath || ''} onChange={(e) => wiz.updateContentFolderRow(r.id, 'destinationPath', e.target.value)}
-                      placeholder={wiz.contentPaths.destinationPath || destDefault}
+                      placeholder={wiz.contentPaths.destinationPath || destPlaceholder || destDefault}
                       className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-mono" />
                   </td>
                 )}
@@ -839,6 +839,21 @@ function ContentOptions({ wiz }) {
   // Default destination path shown to the user, based on the chosen destination service.
   const destDefault = wiz.dstProvider === 'sharepoint' ? '/SANITY DATAA/Documents'
     : (wiz.dstProvider === 'onedrive' ? '/' : (String(wiz.dstProvider).includes('drive') ? '/OSM' : '/'));
+
+  /**
+   * A Google Shared Drive destination is NOT a folder path.
+   *
+   * GoogleDriveValidationAgent.resolveDestinationRoot takes the FIRST SEGMENT of destinationPath and
+   * resolves it as a Shared Drive BY NAME. The generic hint above is reached for it too — because
+   * 'googleshareddrive'.includes('drive') is true — so the field suggested "/OSM", which reads as a
+   * folder and is consumed as a drive name. The run then either dies with 'Shared Drive "OSM" not
+   * found' or, worse, validates against the wrong root and reports the whole migrated tree missing.
+   * Either way it presents as a migration defect when it is a mistyped field.
+   *
+   * Only the display strings branch here. destDefault itself is unchanged, so My Drive and every
+   * other provider keep the hint and the autoDest preview they have today.
+   */
+  const isDestSharedDrive = wiz.dstProvider === 'googleshareddrive';
   return (
     <>
     {/* Content Mapping — which folder migrates where (the path CSV the agent uploads) */}
@@ -858,14 +873,18 @@ function ContentOptions({ wiz }) {
               : 'Folder created inside each source drive. The same name in every drive, so the data is identical.'}
           </p>
         </Field>
-        <Field label="Destination drive">
+        <Field label={isDestSharedDrive ? 'Destination Shared Drive' : 'Destination drive'}>
           <input value={wiz.contentPaths.destinationPath} onChange={(e) => wiz.setContentPath('destinationPath', e.target.value)}
-            placeholder={`default ${destDefault}`} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
+            placeholder={isDestSharedDrive ? 'e.g. /QA-Automation-Dest' : `default ${destDefault}`}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
           <p className="mt-1 text-[11px] text-gray-500">
-            Where at the destination — site and library. One folder per source drive is created inside it.
+            {isDestSharedDrive
+              ? 'The first segment names the Shared Drive and is resolved by name, so it must already exist. Anything after it is a folder inside that drive. Leave blank to use GOOGLE_DEST_SHARED_DRIVE_NAME.'
+              : 'Where at the destination — site and library. One folder per source drive is created inside it.'}
           </p>
         </Field>
-        <PerUserFolderTable wiz={wiz} destDefault={destDefault} />
+        <PerUserFolderTable wiz={wiz} destDefault={destDefault}
+          destPlaceholder={isDestSharedDrive ? 'Shared Drive name' : destDefault} />
       </div>
     </div>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">

@@ -583,6 +583,30 @@ module.exports = {
    */
   CONTENT_STRIP_ROOT_ID_PREFIX: (process.env.CONTENT_STRIP_ROOT_ID_PREFIX || '').trim().toLowerCase(),
   CONTENT_MIGRATE_FOLDER_NAME: (process.env.CONTENT_MIGRATE_FOLDER_NAME || '').trim(),
+
+  /**
+   * CONTENT_PRECREATE_GOOGLE_DESTINATION — create the destination folder for a GOOGLE destination
+   * before the migration is triggered. Default OFF, deliberately.
+   *
+   * The SharePoint pre-create has been in place for a long time and SharePoint runs pass with it.
+   * The Google branches are new, and the evidence against them is uncomfortable: on
+   * dropbox -> googleshareddrive, all FOUR runs without the step reported
+   * "PROCESSED, workspace scanned 67 item(s)", and BOTH runs with it were refused by CloudFuze at
+   * poll 2 with "Migration not Allowed for wrong CSV paths" — on a byte-identical job payload, the
+   * same 28 job options, the same path CSV, the same cached mapping row and the same destination
+   * state. A 4/4 versus 2/2 split against the only thing that changed is not something to dismiss
+   * as server-side flakiness, which is what it was called before anyone checked.
+   *
+   * No mechanism is established. The Google branches only READ (resolve the drive by name, then
+   * create folders only when the path names one), so how they would affect CloudFuze's own view of
+   * the CSV paths is genuinely unclear — it may yet be coincidence on a small sample. This flag
+   * exists to settle that by experiment rather than argument: OFF reproduces the configuration that
+   * worked, ON restores the step.
+   *
+   * Turn it ON only when a first-time destination folder is needed, and re-check the outcome.
+   */
+  CONTENT_PRECREATE_GOOGLE_DESTINATION:
+    (process.env.CONTENT_PRECREATE_GOOGLE_DESTINATION || '').trim().toLowerCase() === 'true',
   /** Optional override for the job's 'migrate files up to' cutoff, 'YYYY-MM-DD HH:mm:ss'. */
   CONTENT_MIGRATION_TO_DATE: (process.env.CONTENT_MIGRATION_TO_DATE || '').trim(),
   CONTENT_CSV_VALIDATION_POLL_MS: (() => {
@@ -595,6 +619,33 @@ module.exports = {
   })(),
 
   /**
+   * CONTENT_PERMISSION_SETTLE_* — how long the content validator waits for CloudFuze to finish
+   * applying item sharing before it calls a grant missing.
+   *
+   * CloudFuze copies the items first and applies sharing AFTER, so a validator that starts the
+   * moment the job reports PROCESSED races that phase. Measured on run dbx-gsd-1788417784387:
+   * five items reported no destination grants at validation time, and a direct read about 25
+   * MINUTES later showed every grant present and correct.
+   *
+   * The defaults (2 x 8s) only ever caught the fast cases — they are two orders of magnitude short
+   * of the delay actually observed — and they are hardcoded no longer, because the right budget is
+   * a property of the run rather than of the code: a quick smoke run wants to finish, while a run
+   * that has to produce real verdicts for features 2.1-2.5 can afford to wait. Raising this trades
+   * wall-clock for a real answer instead of "not judgeable yet".
+   *
+   * The wait applies ONLY to items where the source has grants and the destination reports none,
+   * so a fully-migrated tree is never slowed by it.
+   */
+  CONTENT_PERMISSION_SETTLE_ATTEMPTS: (() => {
+    const n = parseInt(process.env.CONTENT_PERMISSION_SETTLE_ATTEMPTS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  })(),
+  CONTENT_PERMISSION_SETTLE_MS: (() => {
+    const n = parseInt(process.env.CONTENT_PERMISSION_SETTLE_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 8000;
+  })(),
+
+  /**
    * Destination SharePoint target. These were hardcoded in the Box→SharePoint validator; the defaults
    * keep that behaviour so nothing changes for existing runs, while combinations beyond the first are
    * not pinned to one tenant.
@@ -604,6 +655,20 @@ module.exports = {
 
   /** Name of the Google Shared Drive holding the source test data (Shared Drive → SharePoint runs). */
   GOOGLE_SHARED_DRIVE_NAME: (process.env.GOOGLE_SHARED_DRIVE_NAME || '').trim(),
+
+  /**
+   * Name of the Google Shared Drive that RECEIVES the data on dropbox → googleshareddrive runs.
+   *
+   * Separate from GOOGLE_SHARED_DRIVE_NAME above on purpose: that one names the SOURCE drive for the
+   * Shared Drive → SharePoint combinations. Reusing it here would validate a Dropbox migration
+   * against the drive a different combination reads from, and the report would look consistent while
+   * comparing the wrong tree.
+   *
+   * Last resort only. The run's own destinationSharedDriveName, destinationFolderName, and the first
+   * segment of destinationPath each take precedence — see
+   * GoogleDriveValidationAgent.resolveDestinationRoot.
+   */
+  GOOGLE_DEST_SHARED_DRIVE_NAME: (process.env.GOOGLE_DEST_SHARED_DRIVE_NAME || '').trim(),
 
   /**
    * Extra grantees the content permission matrix seeds alongside the internal editor/viewer.

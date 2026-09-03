@@ -39,6 +39,7 @@ const driveClient = require('../../clients/driveClient');
 const core = require('../../validation/shared/deepContentCore');
 const { normalizeDriveName } = require('../../utils/driveNames');
 const logger = require('../../utils/logger');
+const env = require('../../config/env');
 
 /** How many "name N" / "name (N)" dedup variants to probe when CloudFuze appends a counter. */
 const DEDUP_MAX = 5;
@@ -88,12 +89,18 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
         context.destinationSharedDriveName
         || context.destinationFolderName
         || core.segmentsOf(context.destinationPath)[0]
+        // Last resort: the configured default. .env.example has documented
+        // GOOGLE_DEST_SHARED_DRIVE_NAME since the Shared Drive groundwork landed, but nothing
+        // read it — so a run that named no drive threw "no drive name was supplied" while the
+        // operator had set exactly the default the file told them to set.
+        || env.GOOGLE_DEST_SHARED_DRIVE_NAME
         || ''
       );
       if (!name) {
         throw new Error(
           'Destination is a Google Shared Drive but no drive name was supplied. Set the run\'s '
-          + 'destination folder/drive name — a Shared Drive cannot be resolved without it.'
+          + 'destination folder/drive name, or GOOGLE_DEST_SHARED_DRIVE_NAME for a default — a '
+          + 'Shared Drive cannot be resolved without one of them.'
         );
       }
       const drive = await driveClient.resolveSharedDriveByName(name, email);
