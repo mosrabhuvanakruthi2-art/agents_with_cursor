@@ -1017,6 +1017,37 @@ function compareSize(source, dest, bands) {
   const band = isConverted(source) ? bands?.convertedFileSize : bands?.fileSize;
   if (!band) return { comparable: false, status: 'INFO', note: 'no tolerance band configured' };
 
+  // A RATIO is not a meaningful measure of a small CONVERTED file.
+  //
+  // A .docx/.xlsx/.pptx is a zip of XML parts — styles, relationships, content types — and that
+  // scaffolding costs a fixed few kilobytes whatever the document says. On a large file it is
+  // noise; on a small one it IS the file. Measured on run d5381fca: a ~1 KB Google Doc exported to
+  // 14,525 bytes (14.18x), a Slides deck 3,664 to 40,271 (10.99x), a Sheet 1,024 to 13,039
+  // (12.73x). All three are correct conversions, and all three were reported as outside the band.
+  //
+  // Worse than the noise itself: the same check also held ONE genuine finding — a passthrough
+  // .docx that grew 1.77x — and the heading read "4 outside the band", so a real defect arrived
+  // looking like a quarter of the problem. Judging what cannot be judged does not just add noise,
+  // it hides signal.
+  //
+  // So below the floor the size is reported as not comparable, with the reason, instead of being
+  // scored. `minComparableBytes` on the band lets a combination tune or disable it (0 = always
+  // compare); the default applies to every combination because the arithmetic is the same
+  // everywhere.
+  const floor = Number.isFinite(band.minComparableBytes) ? band.minComparableBytes : 10240;
+  if (isConverted(source) && floor > 0 && s < floor) {
+    return {
+      comparable: false,
+      status: 'INFO',
+      ratio: d / s,
+      sourceSize: s,
+      destSize: d,
+      note: `converted from ${s} bytes — below the ${floor}-byte floor where a size RATIO is `
+        + 'meaningful, because the destination format\'s fixed overhead dominates a file this '
+        + 'small. Reported rather than scored.',
+    };
+  }
+
   const ratio = d / s;
   let status;
   if (ratio >= band.infoMin && ratio <= band.infoMax) status = 'PASS';

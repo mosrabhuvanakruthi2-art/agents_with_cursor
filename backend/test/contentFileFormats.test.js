@@ -143,13 +143,25 @@ function testToleranceBandSelection() {
   assert.strictEqual(core.compareSize(pdf, { size: 2500 }, BANDS).status, 'FAIL',
     'a pass-through format may not borrow the converted-file tolerance');
 
-  // Converted: a converter legitimately changes the size, so the wide band applies
+  // Converted: a converter legitimately changes the size, so the wide band applies.
+  //
+  // Sized ABOVE the small-converted-file floor. Below it a converted file is reported as not
+  // comparable rather than scored, because the destination format's fixed zip/XML overhead
+  // dominates a small file and the ratio stops meaning anything — a 1 KB Google Doc exporting to
+  // 14 KB is a correct conversion, not a 14x defect. This test is about BAND SELECTION, so it uses
+  // a size where the band still applies; the floor is covered by convertedSizeFloor.test.js.
+  const BASE = 100000;
   for (const fmt of FORMATS.filter((f) => f.kind === 'convert' || f.kind === 'native')) {
-    const item = asFile(fmt);
-    assert.strictEqual(core.compareSize(item, { size: 2500 }, BANDS).status, 'PASS',
+    const item = { ...asFile(fmt), size: BASE };
+    assert.strictEqual(core.compareSize(item, { size: BASE * 2.5 }, BANDS).status, 'PASS',
       `${fmt.name} is converted — a 2.5x size change is expected`);
     assert.strictEqual(core.compareSize(item, { size: 1 }, BANDS).status, 'FAIL',
       `${fmt.name} arriving near-empty is still a failure`);
+
+    // And below the floor the same ratio is reported instead of scored.
+    const small = core.compareSize({ ...asFile(fmt), size: 1000 }, { size: 2500 }, BANDS);
+    assert.strictEqual(small.comparable, false,
+      `${fmt.name} at 1 KB is below the floor where a size ratio is meaningful`);
   }
 }
 

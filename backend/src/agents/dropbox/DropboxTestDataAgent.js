@@ -1089,8 +1089,25 @@ class DropboxTestDataAgent extends BaseAgent {
     await this._mk(dir, opts, report);
     const path = `${dir}/qa-paper-full.paper`;
 
+    // Remove any previous copy FIRST. files/paper/create does not overwrite — it autorenames on
+    // collision, so a second run produced "qa-paper-full (1).paper", a third would produce "(2)",
+    // and the source would accumulate one Paper document per run under names nothing can predict.
+    // Observed on run e6bdd529, whose seeded document arrived as "qa-paper-full (1).paper".
+    //
+    // Deleting the exact target keeps the name stable across runs, which is what makes two reports
+    // comparable — and it is scoped to this one file, never the folder, so a doc a human added
+    // beside it is untouched.
+    await dropboxClient.deletePath(path, opts).catch(() => { /* absent on the first run */ });
+
     try {
       const made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(), opts);
+      if (made.path !== path) {
+        // Dropbox still renamed it, so the delete did not take effect — say so rather than let the
+        // report compare a document under a name it did not expect.
+        log.warn(`Paper document was created as "${made.path}" instead of "${path}" — Dropbox `
+          + 'autorenamed it, so a previous copy still exists. The source now holds more than one '
+          + 'Paper document and the 10.x counts aggregate across all of them.');
+      }
       report.created.files += 1;
       log.info(`Seeded Dropbox Paper document at ${made.path} (revision ${made.revision})`);
 
@@ -1099,12 +1116,23 @@ class DropboxTestDataAgent extends BaseAgent {
       // would make the destination comparison meaningless in a way nothing else would reveal.
       try {
         const back = (await dropboxClient.exportPaper(made.path, 'markdown', opts)).toString('utf8');
+        // `-+`, not `-{3,}`. Paper's export writes a table separator as `| - | - |` with a SINGLE
+        // dash; requiring three counted 1 table in a document holding 3 and logged "0 code
+        // block(s)" for a document that has one. A sanity log that under-reports is worse than
+        // none — it says Paper dropped content when Paper kept it.
+        //
+        // The authority for these counts is paperMarkdownStructure in the dropbox_to_google
+        // validator, which is what the destination comparison uses. This is a deliberate small
+        // duplicate rather than an import: the validator extends GoogleDriveValidationAgent, and
+        // importing it from a seeding agent would couple seeding to the validation graph.
         const kept = {
-          tables: (back.match(/^\s*\|?\s*:?-{3,}/gm) || []).length,
-          codeBlocks: (back.match(/```/g) || []).length / 2,
+          tables: (back.match(/^[^\S\n]*\|?[^\S\n]*:?-+:?[^\S\n]*(\|[^\S\n]*:?-+:?[^\S\n]*)+\|?[^\S\n]*$/gm) || []).length,
+          codeFences: (back.match(/```/g) || []).length,
           links: (back.match(/\[[^\]]*\]\([^)]*\)/g) || []).length,
         };
-        log.info(`Paper round trip: ${kept.tables} table(s), ${kept.codeBlocks} code block(s), `
+        // Fences reported as a raw count, not divided into "blocks": Paper may export a code block
+        // without fences at all, and halving an odd number would invent a fraction of a block.
+        log.info(`Paper round trip: ${kept.tables} table(s), ${kept.codeFences} code fence(s), `
           + `${kept.links} link(s) survived the import`);
         report.paperSeeded = { path: made.path, revision: made.revision, kept };
       } catch (exportErr) {

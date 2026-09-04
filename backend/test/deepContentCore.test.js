@@ -274,9 +274,28 @@ function testTimestampsAndSize() {
   assert.strictEqual(core.compareSize(pdf, { size: 1000 }, bands).status, 'PASS');
   assert.strictEqual(core.compareSize(pdf, { size: 1040 }, bands).status, 'WARN');
   assert.strictEqual(core.compareSize(pdf, { size: 5000 }, bands).status, 'FAIL');
-  // A converted file uses the wider band, so the same ratio is acceptable
-  const doc = { type: 'file', name: 'a.doc', size: 1000 };
-  assert.strictEqual(core.compareSize(doc, { size: 2500 }, bands).status, 'PASS');
+  // A converted file uses the wider band, so the same ratio is acceptable.
+  //
+  // Sized ABOVE the 10 KB floor on purpose. Below it a converted file is reported as not
+  // comparable rather than scored, because the destination format's fixed zip/XML overhead
+  // dominates a small file and the ratio stops meaning anything — a 1 KB Google Doc exporting to
+  // 14 KB is a correct conversion, not a 14x defect. This assertion is about BAND SELECTION, so it
+  // uses a size where the band still applies.
+  const doc = { type: 'file', name: 'a.doc', size: 100000 };
+  assert.strictEqual(core.compareSize(doc, { size: 250000 }, bands).status, 'PASS',
+    'a 2.5x growth on a large converted file is inside the converted band');
+
+  // And the floor itself: the same ratio on a small converted file is reported, not scored.
+  const smallDoc = { type: 'file', name: 'b.doc', size: 1000 };
+  const floored = core.compareSize(smallDoc, { size: 2500 }, bands);
+  assert.strictEqual(floored.comparable, false,
+    'a 1000-byte converted file is below the floor where a ratio is meaningful');
+  assert.strictEqual(floored.status, 'INFO', 'so it is reported at INFO, never scored');
+
+  // A small PASSTHROUGH file is unaffected — no converter overhead applies to it.
+  const smallPdf = { type: 'file', name: 'b.pdf', size: 1000, mimeType: 'application/pdf' };
+  assert.strictEqual(core.compareSize(smallPdf, { size: 2500 }, bands).status, 'FAIL',
+    'passthrough bytes must still match at any size');
 }
 
 function testRunShape() {

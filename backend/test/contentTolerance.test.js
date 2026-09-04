@@ -48,28 +48,43 @@ function testFileSizeEdges() {
 
 function testConvertedSizeEdges() {
   const bands = tolerance.forCombination(COMBINATION);
-  const doc = { type: 'file', name: 'legacy.doc', size: 1000 };
+
+  // ABOVE the small-converted-file floor, deliberately.
+  //
+  // Below that floor a converted file is reported as not comparable instead of scored, because the
+  // destination format's fixed zip/XML overhead dominates a small file and the ratio stops meaning
+  // anything — a 1 KB Google Doc exporting to 14 KB is a correct conversion, not a 14x defect.
+  // These assertions are about the BAND EDGES, so they use a size where the band still applies.
+  // The floor itself is asserted separately below and in convertedSizeFloor.test.js.
+  const BASE = 100000;
+  const doc = { type: 'file', name: 'legacy.doc', size: BASE };
   const native = {
-    type: 'file', name: 'Notes', size: 1000, mimeType: 'application/vnd.google-apps.document',
+    type: 'file', name: 'Notes', size: BASE, mimeType: 'application/vnd.google-apps.document',
   };
 
   // Converted files get the wide band, because a converter legitimately changes the size
-  assert.strictEqual(core.compareSize(doc, { size: 2500 }, bands).status, 'PASS');
-  assert.strictEqual(core.compareSize(native, { size: 3000 }, bands).status, 'PASS');
+  assert.strictEqual(core.compareSize(doc, { size: BASE * 2.5 }, bands).status, 'PASS');
+  assert.strictEqual(core.compareSize(native, { size: BASE * 3 }, bands).status, 'PASS');
   assert.strictEqual(
-    core.compareSize(doc, { size: 1000 * bands.convertedFileSize.infoMax }, bands).status, 'PASS'
+    core.compareSize(doc, { size: BASE * bands.convertedFileSize.infoMax }, bands).status, 'PASS'
   );
   // Even a wide band has an outside: an empty or absurd destination file still fails
   assert.strictEqual(
-    core.compareSize(doc, { size: 1000 * (bands.convertedFileSize.warnMax + 1) }, bands).status, 'FAIL'
+    core.compareSize(doc, { size: BASE * (bands.convertedFileSize.warnMax + 1) }, bands).status, 'FAIL'
   );
   assert.strictEqual(core.compareSize(doc, { size: 1 }, bands).status, 'FAIL',
     'a near-empty converted file is still a failure');
 
-  // The wide band must NOT be applied to a pass-through file
+  // The floor: the same generous ratio on a SMALL converted file is reported, not scored.
+  const smallDoc = { type: 'file', name: 'legacy.doc', size: 1000 };
+  const floored = core.compareSize(smallDoc, { size: 2500 }, bands);
+  assert.strictEqual(floored.comparable, false, 'a 1 KB converted file is below the floor');
+  assert.strictEqual(floored.status, 'INFO', 'so it is reported, never scored');
+
+  // The wide band must NOT be applied to a pass-through file — and the floor must not either.
   const pdf = { type: 'file', name: 'a.pdf', size: 1000, mimeType: 'application/pdf' };
   assert.strictEqual(core.compareSize(pdf, { size: 2500 }, bands).status, 'FAIL',
-    'a pass-through file may not borrow the converted-file tolerance');
+    'a pass-through file may not borrow the converted-file tolerance, at any size');
 }
 
 function testTimestampEdges() {
