@@ -490,6 +490,70 @@ module.exports = {
   DROPBOX_TEST_INTERNAL_USER: (process.env.DROPBOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
   DROPBOX_TEST_EXTERNAL_USER: (process.env.DROPBOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
   DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),
+
+  /**
+   * DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS — the FULL grantee sets, comma-separated.
+   *
+   * The singular vars above seed one internal user and one group, which covered about two of the
+   * eighteen combinations the scope's permission matrix asks for (internal x group x external, at
+   * edit and view, on a root folder, an inner folder and a file). Group grants alone are 3,866 of
+   * its cases.
+   *
+   * Both fall back to the singular value, so an existing .env keeps working unchanged and a single
+   * name simply parses as a one-element list.
+   *
+   * Only a principal MAPPED to a destination user produces a verdict — an unmapped one is excused
+   * as "no destination user mapped" rather than checked, so listing extra people here does nothing
+   * unless they are also mapped in the run's Map Users step.
+   */
+  DROPBOX_TEST_INTERNAL_USERS: (() => {
+    const raw = process.env.DROPBOX_TEST_INTERNAL_USERS || process.env.DROPBOX_TEST_INTERNAL_USER || '';
+    return raw.split(',').map((s2) => s2.trim().toLowerCase()).filter(Boolean);
+  })(),
+  DROPBOX_TEST_GROUPS: (() => {
+    const raw = process.env.DROPBOX_TEST_GROUPS || process.env.DROPBOX_TEST_GROUP || '';
+    return raw.split(',').map((s2) => s2.trim()).filter(Boolean);
+  })(),
+
+  /**
+   * DROPBOX_TEST_EVERYONE_GROUP — the team-wide group, for the "open" access mode.
+   *
+   * Mirrors driveAccessMode on the Drive side, which is feature 4.10 there: an "open" drive grants
+   * to the everyone-group, a "restricted" one grants only to the same named few. Both modes seed
+   * the SAME named people, so when two runs differ the everyone-group is the only variable — that
+   * is what makes the comparison mean something.
+   *
+   * In the Dropbox UI this is the "Everyone at <team>" choice in the folder-sharing dialog.
+   */
+  DROPBOX_TEST_EVERYONE_GROUP: (process.env.DROPBOX_TEST_EVERYONE_GROUP || '').trim(),
+
+  /**
+   * DROPBOX_PRESERVE_ON_WIPE — folders inside the seeding root that re-seeding must NOT delete.
+   *
+   * Exists for Dropbox Paper, which is 19 of the 36 in-scope features and cannot be seeded at all:
+   * Dropbox retired the Paper authoring API, so a Paper doc has to be authored by hand once.
+   *
+   * That created a trap with no good answer. The doc has to live INSIDE the seeding root, because
+   * the root is the migration source — anything outside it is never migrated and never validated.
+   * But _wipeRoot deleted the whole root on every run, so a hand-authored doc lasted exactly one
+   * run. The advice to "keep it outside the wiped root" produced a document that survived and was
+   * never tested, which is worse than losing it.
+   *
+   * With this set, the wipe removes the root's children individually and skips these names, so the
+   * doc is authored once, sits in the migration source, and survives every re-seed.
+   *
+   * Defaults to the Paper folder the manual steps name. Comma-separated for more than one.
+   */
+  DROPBOX_PRESERVE_ON_WIPE: (() => {
+    const raw = process.env.DROPBOX_PRESERVE_ON_WIPE ?? '11-Paper';
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  })(),
+
+  /**
+   * DROPBOX_ACCESS_MODE — 'open' or 'restricted'. Blank seeds neither and reports it as
+   * not exercised, never as a pass.
+   */
+  DROPBOX_ACCESS_MODE: (process.env.DROPBOX_ACCESS_MODE || '').trim().toLowerCase(),
   /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.
@@ -643,6 +707,30 @@ module.exports = {
   CONTENT_PERMISSION_SETTLE_MS: (() => {
     const n = parseInt(process.env.CONTENT_PERMISSION_SETTLE_MS ?? '', 10);
     return Number.isFinite(n) && n > 0 ? n : 8000;
+  })(),
+
+  /**
+   * CONTENT_VALIDATION_START_DELAY_MS — wait ONCE before validation starts, not per item.
+   *
+   * CloudFuze applies item sharing after the copy, and the delay is tens of minutes: on run
+   * dbx-gsd-1788506117829 two items still carried only inherited grants after the per-item window
+   * had waited its full 360s each.
+   *
+   * The per-item window (CONTENT_PERMISSION_SETTLE_*) is the wrong shape for a delay that long,
+   * because it COMPOUNDS: the two items above cost six minutes each and were six minutes apart in
+   * the log. Across a 72-item tree that is unusable, and it still cannot outlast the real delay.
+   *
+   * This waits once, for the whole run, before the first item is read — so a 25-minute delay costs
+   * 25 minutes total rather than 25 minutes per affected item, and every item is then checked with
+   * sharing already applied.
+   *
+   * Default 0 (no wait), so nothing changes for a run that does not ask for it. Set it when the run
+   * needs real permission verdicts rather than "not judgeable yet"; leave it at 0 for a fast smoke
+   * run that only cares about structure.
+   */
+  CONTENT_VALIDATION_START_DELAY_MS: (() => {
+    const n = parseInt(process.env.CONTENT_VALIDATION_START_DELAY_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
   })(),
 
   /**

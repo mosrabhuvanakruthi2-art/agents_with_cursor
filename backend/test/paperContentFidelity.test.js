@@ -23,6 +23,7 @@
  */
 const assert = require('assert');
 
+const core = require('../src/validation/shared/deepContentCore');
 const Agent = require('../src/validation/combinations/content/dropboxToGoogledrive');
 const { paperMarkdownStructure, googleDocStructure } = Agent;
 
@@ -39,7 +40,7 @@ const PAPER_MD = [
   '# Quarter notes',
   '',
   '| Item | Owner |',
-  '|------|-------|',
+  '| - | - |',   // Paper's OWN export format: a single dash, not |---|---|
   '| One  | Ben   |',
   '| Two  | Ada   |',
   '',
@@ -252,6 +253,96 @@ function testDisputedFeaturesAreNotRuledOn() {
   console.log('  disputed features left unruled: ok');
 }
 
+/**
+ * A Dropbox Paper doc must PAIR with the Google Doc it becomes.
+ *
+ * CloudFuze converts Paper to a Google Doc and renames .paper to .html. Measured on run 85a41244:
+ * the source held /11-Paper/qa-paper-v2.paper, the destination held qa-paper-v2.html as
+ * application/vnd.google-apps.document. Without the mapping the pairing looked for the .paper name,
+ * found nothing, and reported the document missing — cascading into THREE failures from one cause
+ * (10.1 Paper migration, 1.1 structure "missing 1", and 7.1 long paths on the same absent item)
+ * while the document had migrated correctly all along.
+ */
+function testPaperPairsAsHtml() {
+  assert.strictEqual(core.convertName('qa-paper-v2.paper', 'text/plain'), 'qa-paper-v2.html',
+    '.paper becomes .html at the destination');
+  assert.strictEqual(core.expectedDestName('qa-paper-v2.paper', 'text/plain'), 'qa-paper-v2.html',
+    'and the full expected destination name reflects it');
+  assert.strictEqual(core.expectedDestExtension('x.paper', 'text/plain'), '.html',
+    'the expected extension is .html');
+  assert.strictEqual(core.convertName('notes.papert', 'text/plain'), 'notes.html',
+    'the .papert template extension converts too');
+
+  // Every OTHER combination must be untouched — this is a shared module.
+  assert.strictEqual(core.convertName('report.doc', 'application/msword'), 'report.docx',
+    'legacy Office conversion still works');
+  assert.strictEqual(core.convertName('book.xls', 'application/vnd.ms-excel'), 'book.xlsx',
+    'and .xls');
+  for (const name of ['data.csv', 'page.html', 'photo.jpg', 'archive.zip', 'plain.txt']) {
+    assert.strictEqual(core.convertName(name, 'text/plain'), name,
+      `${name} is passed through unchanged`);
+  }
+
+  // A converted item cannot be byte-compared, and the reason must name the conversion.
+  const reason = core.conversionReason ? core.conversionReason('x.paper') : null;
+  if (reason) {
+    assert.ok(/.paper/.test(reason) && /.html/.test(reason),
+      `the reason names both extensions, got: ${reason}`);
+  }
+  console.log('  Paper pairs as .html, other formats unchanged: ok');
+}
+
+/**
+ * "No Paper in the source" and "Paper in the source that did not pair" must not read the same.
+ *
+ * On run 85a41244 the checklist said "No Dropbox Paper documents in the source" for all nineteen
+ * Paper features — while the source demonstrably held qa-paper-v2.paper and check 10.1 reported it
+ * by name. The cause was reading totals.paperItems, which holds only the docs that PAIRED; an
+ * unpaired doc left it empty and the report then denied the document existed.
+ *
+ * That is worse than an unhelpful message: it sends the reader to look for a seeding problem when
+ * the seeding was fine and the PAIRING was broken.
+ */
+function testPaperStatesAreDistinguished() {
+  const agent = new Agent();
+  const P = '[QA-Automation-Dropbox-Dest] ';
+  const mk = (srcCount, paired) => {
+    const t = agent._emptyTotals({});
+    t.scannedSourceItems = 75;
+    t.paperSourceCount = srcCount;
+    t.paperItems = paired;
+    return t;
+  };
+  const detailFor = (totals, id) => {
+    const rows = agent._buildChecklist(totals, [{ name: P + '10.7 Links', status: 'PASS', detail: 'ok' }]);
+    return String(rows.find((r) => r.id === id).detail || '');
+  };
+
+  const none = detailFor(mk(0, []), '10.3');
+  assert.ok(/No Dropbox Paper documents in the source/.test(none),
+    `with no Paper at the source, say so — got: ${none}`);
+
+  const unpaired = detailFor(mk(1, []), '10.3');
+  assert.ok(/did NOT pair/.test(unpaired),
+    `an unpaired document must be described as unpaired — got: ${unpaired}`);
+  assert.ok(!/No Dropbox Paper documents in the source/.test(unpaired),
+    'and must NEVER claim the source had none — the document exists');
+  assert.ok(/not a seeding gap/i.test(unpaired),
+    'and should say plainly where the fault is not');
+
+  const paired = detailFor(mk(1, [{ path: '/11-Paper/x.paper', content: { compared: true, source: {}, dest: {} } }]), '10.3');
+  assert.ok(/Paper arrived/.test(paired),
+    `a paired document reports that it arrived — got: ${paired}`);
+
+  // 10.1 itself must not deny the document either.
+  const one = agent._buildChecklist(mk(1, []), []).find((r) => r.id === '10.1');
+  assert.ok(!/No Dropbox Paper documents in the source/.test(String(one.detail)),
+    '10.1 must not claim the source was empty when it was not');
+  console.log('  none / unpaired / paired Paper states read differently: ok');
+}
+
+testPaperPairsAsHtml();
+testPaperStatesAreDistinguished();
 testCountersAgreeOnEquivalentDocuments();
 testChecklistIsNotABullet();
 testEmojiMatcherIgnoresDigitsAndHash();

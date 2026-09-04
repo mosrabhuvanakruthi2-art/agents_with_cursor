@@ -233,6 +233,31 @@ const GOOGLE_NATIVE_NO_EXPORT = {
 /** Legacy Office formats CloudFuze upgrades on migration. */
 const LEGACY_OFFICE_CONVERSION = { '.doc': '.docx', '.xls': '.xlsx', '.ppt': '.pptx' };
 
+/**
+ * Dropbox Paper: CloudFuze converts it to a Google Doc and renames `.paper` to `.html`.
+ *
+ * Measured, not assumed. On run 85a41244 the source held /11-Paper/qa-paper-v2.paper and the
+ * destination held qa-paper-v2.html as mimeType application/vnd.google-apps.document. Without this
+ * mapping the pairing looked for the .paper name, found nothing, and reported the document missing —
+ * which cascaded into three separate failures from one cause: 10.1 Dropbox Papers Migration failed,
+ * 1.1 Data Migration counted it as "missing 1", and 7.1 Long-File/folder path failed on the same
+ * absent item. The document had migrated correctly the whole time.
+ *
+ * Kept as its own map rather than folded into LEGACY_OFFICE_CONVERSION because Paper is not a legacy
+ * Office format and the name would mislead the next reader. Inert for any source without .paper
+ * files, so the SharePoint combinations are unaffected.
+ *
+ * This is the validator side of the known defect L2B-14181 ("Paper migrates as HTML"): the rename is
+ * CloudFuze's behaviour, and whether it SHOULD produce .html is a separate question from whether our
+ * comparison accounts for it.
+ */
+const DROPBOX_PAPER_CONVERSION = { '.paper': '.html', '.papert': '.html' };
+
+/** Every extension rewrite a migration performs, in one place. */
+function convertedExtension(ext) {
+  return LEGACY_OFFICE_CONVERSION[ext] || DROPBOX_PAPER_CONVERSION[ext] || null;
+}
+
 /** Formats migrated byte-for-byte, so Tier B applies to them. */
 const PASSTHROUGH_EXTENSIONS = new Set([
   '.xlsm', '.docm', '.pptm', '.one', '.vsdx', '.pdf', '.txt', '.csv', '.xml',
@@ -270,7 +295,7 @@ function extensionOf(name) {
 function expectedDestExtension(name, mimeType) {
   if (isGoogleNative(mimeType)) return GOOGLE_NATIVE_EXPORT[String(mimeType)] || extensionOf(name);
   const ext = extensionOf(name);
-  return LEGACY_OFFICE_CONVERSION[ext] || ext;
+  return convertedExtension(ext) || ext;
 }
 
 /**
@@ -288,7 +313,7 @@ function convertName(name, mimeType) {
     return ext && !raw.toLowerCase().endsWith(ext) ? `${raw}${ext}` : raw;
   }
   const from = extensionOf(raw);
-  const to = LEGACY_OFFICE_CONVERSION[from];
+  const to = convertedExtension(from);
   return to ? `${raw.slice(0, raw.length - from.length)}${to}` : raw;
 }
 
@@ -302,7 +327,7 @@ function expectedDestName(name, mimeType, replacement = '_', rules = DEST) {
 /** True when the item was converted, so its destination bytes legitimately differ from the source. */
 function isConverted(item) {
   if (isGoogleNative(item?.mimeType)) return true;
-  return Boolean(LEGACY_OFFICE_CONVERSION[extensionOf(item?.name)]);
+  return Boolean(convertedExtension(extensionOf(item?.name)));
 }
 
 /**
@@ -323,8 +348,8 @@ function notHashableReason(item) {
     return `Google native file exported to ${GOOGLE_NATIVE_EXPORT[String(item.mimeType)] || 'Office format'} — converted bytes cannot match`;
   }
   const ext = extensionOf(item.name);
-  if (LEGACY_OFFICE_CONVERSION[ext]) {
-    return `converted ${ext} → ${LEGACY_OFFICE_CONVERSION[ext]} — converted bytes cannot match`;
+  if (convertedExtension(ext)) {
+    return `converted ${ext} → ${convertedExtension(ext)} — converted bytes cannot match`;
   }
   return 'not hashable';
 }
@@ -1073,6 +1098,8 @@ module.exports = {
   SEGMENT_LENGTH_LIMIT,
   GOOGLE_NATIVE_EXPORT,
   LEGACY_OFFICE_CONVERSION,
+  DROPBOX_PAPER_CONVERSION,
+  convertedExtension,
   PASSTHROUGH_EXTENSIONS,
   // names
   sanitizeForSharePoint,

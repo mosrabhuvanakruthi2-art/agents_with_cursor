@@ -332,15 +332,28 @@ async function testEnvDefaultIsLastResort() {
  * every run that has a genuinely unshared item, and lowering it would quietly give up sooner.
  */
 function testSettleWindowIsConfigurable() {
-  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_ATTEMPTS, 2,
-    'the default attempt count is unchanged at 2');
-  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_MS, 8000,
-    'the default interval is unchanged at 8000ms');
+  // Read the DEFAULTS in a child process with the variables blanked, not from this process's env.
+  //
+  // Asserting env.CONTENT_PERMISSION_SETTLE_ATTEMPTS directly was wrong and broke the moment an
+  // operator set it in .env — which is exactly what we ask them to do. A test that fails when the
+  // configuration is correct is worse than no test. dotenv does not override an already-set
+  // variable, so blanking it in the child env makes parseInt('') fall through to the default.
+  const probe = 'const e=require("./src/config/env");'
+    + 'process.stdout.write(e.CONTENT_PERMISSION_SETTLE_ATTEMPTS+","+e.CONTENT_PERMISSION_SETTLE_MS);';
+  const out = require('child_process').execFileSync(process.execPath, ['-e', probe], {
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env, CONTENT_PERMISSION_SETTLE_ATTEMPTS: '', CONTENT_PERMISSION_SETTLE_MS: '' },
+    encoding: 'utf8',
+  });
+  const [attempts, ms] = out.trim().split(',').map(Number);
+  assert.strictEqual(attempts, 2, `the DEFAULT attempt count is 2, got ${attempts}`);
+  assert.strictEqual(ms, 8000, `the DEFAULT interval is 8000ms, got ${ms}`);
 
-  // 0 must be honoured, not replaced by the default — it is how an operator turns the wait off for
-  // a fast smoke run. A `> 0` guard would silently substitute 2 and the setting would look ignored.
-  assert.strictEqual(env.CONTENT_PERMISSION_SETTLE_ATTEMPTS >= 0, true,
-    'the attempt count accepts 0 to disable waiting');
+  // Whatever this machine is configured with must still be usable: a negative attempt count or a
+  // non-positive interval would make the wait meaningless.
+  assert.ok(env.CONTENT_PERMISSION_SETTLE_ATTEMPTS >= 0,
+    'the configured attempt count is 0 or more — 0 disables the wait for a fast smoke run');
+  assert.ok(env.CONTENT_PERMISSION_SETTLE_MS > 0, 'the configured interval is positive');
 
   // The validator must READ the configured values rather than carry its own copy.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'validation', 'combinations',

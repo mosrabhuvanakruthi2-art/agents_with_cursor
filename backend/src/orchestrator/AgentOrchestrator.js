@@ -940,6 +940,27 @@ class AgentOrchestrator {
           progress: `Validation skipped — ${reason}`,
         });
       } else {
+        // Let CloudFuze finish applying item sharing before anything is read.
+        //
+        // One wait for the whole run, deliberately — not one per item. CloudFuze copies first and
+        // shares afterwards, and the gap runs to tens of minutes: on dbx-gsd-1788506117829 two
+        // items still had only inherited grants after the per-item window spent its full 360s on
+        // each of them, six minutes apart in the log. Per-item waiting compounds and still loses.
+        //
+        // Default 0, so a run that does not set it behaves exactly as before.
+        if (isContentMode && env.CONTENT_VALIDATION_START_DELAY_MS > 0) {
+          const mins = (env.CONTENT_VALIDATION_START_DELAY_MS / 60000).toFixed(1);
+          log.info(`Step 3: waiting ${mins} min before validating — CloudFuze applies item sharing `
+            + 'after the copy, so reading now would report grants as missing that are simply not '
+            + 'applied yet (CONTENT_VALIDATION_START_DELAY_MS)');
+          executionService.update(context.executionId, {
+            currentAgent: 'Waiting',
+            progress: `Waiting ${mins} min for CloudFuze to finish applying permissions…`,
+          });
+          await new Promise((r) => setTimeout(r, env.CONTENT_VALIDATION_START_DELAY_MS));
+          log.info('Step 3: wait complete — validating with sharing applied');
+        }
+
         executionService.update(context.executionId, {
           currentAgent: outlookAgent.getName(),
           progress: `${outlookAgent.getName()}: comparing source vs destination…`,

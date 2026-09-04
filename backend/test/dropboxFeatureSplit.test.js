@@ -185,7 +185,104 @@ function testChecklistKeepsTheFeaturesApart() {
   console.log('  checklist keeps the features apart: ok');
 }
 
+/**
+ * 7.1 must not FAIL for an absence it has itself ruled out.
+ *
+ * The feature asks one question: did a path get too long to migrate? When items LONGER than the
+ * missing one arrived intact, the answer is no — so 7.1 has found no defect and must report
+ * not-assessed, leaving the missing item to the structure check that owns it.
+ *
+ * On run 85a41244 a single unpaired Paper document produced a 1.1 failure, a 10.1 failure AND a 7.1
+ * failure. One cause, counted three times, making the report read worse than the migration was —
+ * the same double-counting the lumped 2.x permission check used to cause.
+ *
+ * Asserted on the source because the check sits inside a method that needs a whole paired tree; the
+ * decision being protected is which STATUS the ruled-out branch pushes.
+ */
+function testLongPathNotBlamedForOtherCauses() {
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'src', 'validation', 'combinations',
+    'content', 'dropboxToGoogledrive.js'), 'utf8');
+
+  const idx = src.indexOf('path length does not explain the absence');
+  assert.ok(idx > -1, 'the ruled-out branch still exists');
+
+  // Walk back to the push that owns this message and check its STATUS.
+  const before = src.slice(Math.max(0, idx - 700), idx);
+  const lastPush = before.lastIndexOf("push('");
+  assert.ok(lastPush > -1, 'found the push for this branch');
+  const status = before.slice(lastPush + 6, before.indexOf("'", lastPush + 6));
+  assert.notStrictEqual(status, 'FAIL',
+    'when path length is ruled out, 7.1 must NOT report FAIL — it has found no path-length defect');
+  assert.strictEqual(status, 'WARN',
+    'it reports not-assessed instead, and the structure check owns the missing item');
+
+  // And the wording must point the reader at the check that does own it.
+  const block = src.slice(idx - 700, idx + 500);
+  assert.ok(/structure check/.test(block), 'the reader is sent to the structure check');
+  assert.ok(/Not assessed/i.test(block), 'and the detail says plainly that it was not assessed');
+  console.log('  7.1 not blamed for an absence it ruled out: ok');
+}
+
 testInnerFileFailureDoesNotBlameTheRootFolder();
+/**
+ * The checklist must match check names that carry the PER-UNIT PREFIX.
+ *
+ * A per-unit check is named "[QA-Automation-Dropbox-Dest] 2.1 Root Folder Permissions" — the feature
+ * id is NOT at the start of the string. Anchoring the map patterns with ^ matched nothing, so on run
+ * 85a41244 every permission and link feature reported "Not exercised by this run" in the checklist
+ * while its own check said PASS. The report contradicted itself in the worst possible direction:
+ * work that demonstrably passed was presented as untested.
+ *
+ * The fixture below uses the REAL names, prefix included. The earlier tests used bare names and so
+ * agreed with the bug instead of catching it — the same mistake as the table-separator fixture.
+ */
+function testChecklistMatchesPrefixedCheckNames() {
+  const agent = new Agent();
+  const totals = agent._emptyTotals({ migrationType: 'ONETIME' });
+  totals.scannedSourceItems = 75;
+
+  const P = '[QA-Automation-Dropbox-Dest] ';
+  const checks = [
+    { name: P + '2.1 Root Folder Permissions', status: 'PASS', detail: '3 grant(s), all matched' },
+    { name: P + '2.2 Root File Permissions', status: 'PASS', detail: '1 grant(s), all matched' },
+    { name: P + '2.3 Sub-folder permissions', status: 'PASS', detail: '3 grant(s), all matched' },
+    { name: P + '2.4 Inner file permissions', status: 'PASS', detail: '3 grant(s), all matched' },
+    { name: P + '3.1 Shared Links (Anyone with the Link)', status: 'PASS', detail: 'ok' },
+    { name: P + '3.2 Shared Links (Team Members)', status: 'PASS', detail: 'ok' },
+    { name: P + '3.x Shared Link CSV', status: 'PASS', detail: 'ok' },
+    { name: P + '1.1 Data Migration (structure)', status: 'PASS', detail: 'ok' },
+  ];
+
+  const rows = agent._buildChecklist(totals, checks);
+  const row = (id) => rows.find((r) => r.id === id);
+
+  for (const id of ['2.1', '2.2', '2.3', '2.4', '3.1', '3.2']) {
+    assert.strictEqual(row(id).status, 'pass',
+      `${id} must read PASS in the checklist when its prefixed check passed — got ${row(id).status}`);
+    assert.ok(!/not exercised/i.test(row(id).detail || ''),
+      `${id} must not claim it was unexercised when a passing check exists`);
+  }
+
+  // And a bare, unprefixed name must still match — the script runner produces those.
+  const bare = agent._buildChecklist(totals, [
+    { name: '2.1 Root Folder Permissions', status: 'PASS', detail: 'ok' },
+  ]);
+  assert.strictEqual(bare.find((r) => r.id === '2.1').status, 'pass',
+    'an unprefixed name still matches, so both callers work');
+
+  // The id must not match inside a LONGER number — the reason the anchor existed at all.
+  const wrong = agent._buildChecklist(totals, [
+    { name: P + '2.10 Something Else', status: 'FAIL', detail: 'unrelated' },
+  ]);
+  assert.notStrictEqual(wrong.find((r) => r.id === '2.1').status, 'fail',
+    '2.1 must not pick up a 2.10 check');
+  console.log('  checklist matches prefixed check names, and only the right ones: ok');
+}
+
+testLongPathNotBlamedForOtherCauses();
+testChecklistMatchesPrefixedCheckNames();
 testPositionIsDecidedByDepth();
 testPendingIsAttributedPerFeature();
 testExternalSharesReportsItsOwnPreconditions();

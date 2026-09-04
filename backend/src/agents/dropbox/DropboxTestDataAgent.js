@@ -197,6 +197,12 @@ class DropboxTestDataAgent extends BaseAgent {
     // Row 1–4, 6: the permission ladder — root folder, root file, sub-folders, inner files.
     await this._seedPermissionLadder(root, opts, grantees, log, report);
 
+    // Row 1-4 breadth: every role against every principal type, on a folder and a file.
+    await this._seedPermissionMatrix(root, opts, grantees, log, report);
+
+    // Team-wide vs restricted access — "Everyone at <team>" or only named people.
+    await this._applyAccessMode(root, opts, grantees, log, report);
+
     // Row 2: root files in every pass-through format.
     await this._seedRootFiles(root, opts, log, report);
 
@@ -218,8 +224,9 @@ class DropboxTestDataAgent extends BaseAgent {
     // Row 13–14: version history.
     await this._seedVersions(root, opts, log, report);
 
-    // Row 15: Paper — cannot be seeded; return the manual steps.
-    report.notSeeded.push(this._reportPaperManualSteps());
+    // Row 15: Paper — seeded via files/paper/create. The old paper/docs/* API is retired, but that
+    // is not the same as Paper being unseedable, which is what this step used to claim.
+    await this._seedPaper(root, opts, log, report);
 
     // Row 16: the user-mapping CSV is a MIGRATION input, not source data — noted, not created here.
     report.notSeeded.push({
@@ -270,11 +277,23 @@ class DropboxTestDataAgent extends BaseAgent {
    * first (those are real accounts the run already knows about), then env overrides.
    */
   _resolveGrantees(context, log) {
+    // SOURCE emails, not destination ones. These grants are made on DROPBOX; a destination address
+    // is the GOOGLE side of the mapping and need not exist in the Dropbox team at all. Preferring
+    // destinationEmail here meant the run's kamal.basha@cloudfuze.com mapping contributed
+    // "kamal@filefuze.co" — real on Google, absent from the Dropbox team — so Dropbox rejected the
+    // grant as cant_share_outside_team and features 2.1, 2.2 and 2.4 lost their user-editor
+    // dimension while the log said only "unavailable on this account".
     const mapped = (context.userEmailMappings || [])
-      .map((m) => String(m.destinationEmail || m.sourceEmail || '').toLowerCase())
+      .map((m) => String(m.sourceEmail || m.destinationEmail || '').toLowerCase())
       .filter(Boolean);
 
-    const internal = (env.DROPBOX_TEST_INTERNAL_USER || mapped[0] || '').toLowerCase();
+    // The plural list comes BEFORE the run's mapping. Whoever set DROPBOX_TEST_INTERNAL_USERS chose
+    // those people deliberately; falling through to mapped[0] silently ignored that choice the
+    // moment the singular var was cleared in favour of the list.
+    const internal = (env.DROPBOX_TEST_INTERNAL_USER
+      || env.DROPBOX_TEST_INTERNAL_USERS[0]
+      || mapped[0]
+      || '').toLowerCase();
     const external = (env.DROPBOX_TEST_EXTERNAL_USER || '').toLowerCase();
     const group = env.DROPBOX_TEST_GROUP || '';
 
@@ -290,14 +309,77 @@ class DropboxTestDataAgent extends BaseAgent {
     if (!group) {
       log.warn('No DROPBOX_TEST_GROUP — group grants (scope 2.1–2.4, 3,866 QA cases) will be SKIPPED.');
     }
-    return { internal, external, group };
+    // The singular keys are unchanged, so the positional ladder behaves exactly as before. The
+    // plural sets are what the breadth matrix uses, and each falls back to the singular value — a
+    // .env naming one user and one group produces one-element lists and identical behaviour.
+    //
+    // Names only, not resolved selectors: this method is synchronous and has no report to record a
+    // missing group against, so the lookup belongs in _seedPermissionMatrix.
+    const internalUsers = env.DROPBOX_TEST_INTERNAL_USERS.length
+      ? env.DROPBOX_TEST_INTERNAL_USERS
+      : (internal ? [internal] : []);
+    const groupNames = env.DROPBOX_TEST_GROUPS.length
+      ? env.DROPBOX_TEST_GROUPS
+      : (group ? [group] : []);
+    log.info(`Grantees: ${internalUsers.length} internal user(s), ${groupNames.length} group(s), `
+      + `${external ? 1 : 0} external`);
+
+    return { internal, external, group, internalUsers, groupNames };
   }
 
-  /** Delete the seeding root so a re-run starts clean. Scoped to that one path, never the account. */
+  /**
+   * Clear the seeding root so a re-run starts clean, PRESERVING the hand-authored folders.
+   *
+   * Scoped to this one path, never the account.
+   *
+   * Deleting the root wholesale is still the fast path and is used whenever nothing needs keeping.
+   * When DROPBOX_PRESERVE_ON_WIPE names something, the children are removed one by one instead and
+   * those names are skipped — which is what lets a hand-authored Dropbox Paper doc live inside the
+   * migration source and survive re-seeding. Paper cannot be seeded by API at all (Dropbox retired
+   * the authoring endpoints), so a doc that has to be re-created on every run would not get created.
+   */
   async _wipeRoot(root, opts, log, report) {
+    const preserve = (env.DROPBOX_PRESERVE_ON_WIPE || []).map((s) => s.toLowerCase());
     try {
-      await dropboxClient.deletePath(root, opts);
-      log.info(`Cleared existing ${root}`);
+      if (preserve.length === 0) {
+        await dropboxClient.deletePath(root, opts);
+        log.info(`Cleared existing ${root}`);
+        return;
+      }
+
+      // Child-by-child so the preserved names survive. An absent root simply lists empty.
+      const children = await dropboxClient.listFolder(root, opts).catch(() => []);
+      if (!children || children.length === 0) {
+        log.info(`Nothing to clear under ${root}`);
+        return;
+      }
+
+      let removed = 0;
+      const kept = [];
+      for (const child of children) {
+        const name = String(child.name || '');
+        if (preserve.includes(name.toLowerCase())) {
+          kept.push(name);
+          continue;
+        }
+        try {
+          await dropboxClient.deletePath(child.path || `${root}/${name}`, opts);
+          removed += 1;
+        } catch (delErr) {
+          log.warn(`Could not clear ${name}: ${delErr.message}`);
+        }
+      }
+      log.info(`Cleared ${removed} item(s) under ${root}`
+        + (kept.length ? `; kept ${kept.join(', ')} (hand-authored, not seedable by API)` : ''));
+      if (kept.length === 0 && preserve.length > 0) {
+        report.notSeeded.push({
+          feature: `preserved folder(s) ${preserve.join(', ')} (Dropbox Paper — 19 features)`,
+          reason: `DROPBOX_PRESERVE_ON_WIPE names ${preserve.join(', ')}, but no such folder exists `
+            + `under ${root}. Paper cannot be seeded by API, so those features stay unexercised `
+            + 'until a Paper document is authored by hand in that folder.',
+          manualSteps: [],
+        });
+      }
     } catch (err) {
       // Non-fatal: an absent root is the normal first-run case.
       log.warn(`Could not clear ${root} (continuing): ${err.message}`);
@@ -358,10 +440,22 @@ class DropboxTestDataAgent extends BaseAgent {
       const summary = String(err.dropboxSummary || err.message || '');
       const fileEditorBlocked = /no_permission/.test(summary) && item.type !== 'folder' && role === 'editor';
       const outsideTeamBlocked = /cant_share_outside_team/.test(summary);
-      if (fileEditorBlocked || outsideTeamBlocked) {
+      // Dropbox refuses to add an AUTOMATIC group (the team-wide "Everyone at <team>") as a folder
+      // member: sharing/add_folder_member returns bad_member/automatic_group. That is a platform
+      // rule, not a defect and not a configuration mistake, so it belongs with the other documented
+      // limitations rather than in report.errors where it made a healthy run look broken.
+      const automaticGroupBlocked = /automatic_group/.test(summary);
+      if (fileEditorBlocked || outsideTeamBlocked || automaticGroupBlocked) {
         report.notSeeded.push({
           feature: label,
-          reason: fileEditorBlocked
+          reason: automaticGroupBlocked
+            ? 'Dropbox refuses to add an automatic group as a folder member '
+              + '(sharing/add_folder_member → bad_member/automatic_group). The team-wide '
+              + '"Everyone at <team>" group is created and managed by Dropbox, and only '
+              + 'user-created groups can be granted access this way. To exercise team-wide access, '
+              + 'point DROPBOX_TEST_EVERYONE_GROUP at a normal group containing the whole team, or '
+              + 'use a team-scoped shared link instead.'
+            : fileEditorBlocked
             ? 'This Dropbox account refuses editor access on an individual file '
               + '(sharing/add_file_member → access_error/no_permission), while viewer on the same '
               + 'file and editor on a folder both succeed. A source-account limit, not a migration '
@@ -442,6 +536,175 @@ class DropboxTestDataAgent extends BaseAgent {
         reason: 'DROPBOX_TEST_EXTERNAL_USER not set — needs an address outside the Dropbox team',
       });
     }
+  }
+
+  /**
+   * The full permission matrix — every ROLE against every PRINCIPAL TYPE, on a folder and a file.
+   *
+   * Mirrors DriveTestDataAgent._createPermissionMatrix, which is the shape the manual QA suite is
+   * written against: a dedicated container, one folder and one file per role, and three principal
+   * types on each — internal user, GROUP, external. Group grants alone are 3,866 of its cases.
+   *
+   * The ladder above covers POSITION (root folder, root file, sub-folder, inner file), which is what
+   * features 2.1-2.4 are keyed on. This covers BREADTH at one position: with a single internal user
+   * and a single group it was about two of the eighteen combinations the scope asks for.
+   *
+   * Dropbox has only two collaborator levels, `editor` and `viewer` — there is no commenter, so the
+   * role axis is two wide rather than the Drive side's four.
+   */
+  async _seedPermissionMatrix(root, opts, grantees, log, report) {
+    const users = grantees.internalUsers || [];
+    const external = grantees.external ? { email: grantees.external } : null;
+
+    // Resolved ONCE here, not per grant: each lookup lists every team group (309 on this account),
+    // so resolving inside the loop below would repeat that call for every item and role. A name
+    // that does not exist is recorded by _resolveGroupMember and simply absent from this list —
+    // never invented, because creating a group as a side effect of seeding would change team
+    // configuration nobody asked to change.
+    const groups = [];
+    for (const name of (grantees.groupNames || [])) {
+      const member = await this._resolveGroupMember(name, log, report);
+      if (member) groups.push(member);
+    }
+
+    if (users.length === 0 && groups.length === 0 && !external) {
+      report.skipped.push({
+        step: 'permission matrix (scope 2.1-2.5)',
+        reason: 'no internal user, group or external address configured — nothing to grant. Set '
+          + 'DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS / DROPBOX_TEST_EXTERNAL_USER.',
+      });
+      return;
+    }
+
+    const container = await this._mk(`${root}/13-Permission-Matrix`, opts, report);
+    log.info(`Permission matrix: ${users.length} user(s), ${groups.length} group(s), `
+      + `${external ? 1 : 0} external — on a folder and a file at each role`);
+
+    // Deterministic rotation, so the same ROLE is held by a DIFFERENT person in a different root.
+    //
+    // Taken from the Drive side, where every drive giving the same grantee the same role made
+    // cross-drive leakage undetectable: if one tree's grants appear on another, the correct grantee
+    // is exactly what a correct migration looks like. A character sum rather than randomness, so a
+    // re-run of the same root seeds the same people and two reports stay comparable.
+    const offset = [...String(root)].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+
+    for (const [roleIndex, role] of ['editor', 'viewer'].entries()) {
+      const folder = await this._mk(`${root}/13-Permission-Matrix/folder_${role}`, opts, report);
+      const file = await this._put(
+        `${root}/13-Permission-Matrix/file_${role}.txt`, SAMPLE_TXT, opts, report
+      );
+
+      for (const target of [folder, file]) {
+        const kind = target && target.type === 'folder' ? 'folder' : 'file';
+        if (!target) continue;
+
+        // Internal: one rotated pick per role, not every user on every item — granting all of them
+        // everywhere would tell us nothing extra and multiplies the run time.
+        if (users.length > 0) {
+          const who = users[(roleIndex + offset) % users.length];
+          await this._grant(target, { email: who }, role, opts, report,
+            `matrix ${kind} ${role} → user ${who}`);
+        } else {
+          report.skipped.push({
+            step: `matrix ${kind} ${role} → internal user`,
+            reason: 'no DROPBOX_TEST_INTERNAL_USERS configured',
+          });
+        }
+
+        // EVERY group, deliberately: a company-managed and a user-managed Dropbox group migrate
+        // differently, so covering only one leaves the other type untested while looking covered.
+        for (const g of groups) {
+          await this._grant(target, g, role, opts, report,
+            `matrix ${kind} ${role} → group ${g.displayName}`);
+        }
+        if (groups.length === 0) {
+          report.skipped.push({
+            step: `matrix ${kind} ${role} → group`,
+            reason: 'no DROPBOX_TEST_GROUPS configured',
+          });
+        }
+
+        if (external) {
+          await this._grant(target, external, role, opts, report,
+            `matrix ${kind} ${role} → external ${external.email}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Team-wide access vs a named few — the Dropbox equivalent of the Drive side's driveAccessMode.
+   *
+   * In the Dropbox sharing dialog this is the choice between "Everyone at <team>" and "Only
+   * specific people". Both modes grant to the SAME named people; the only difference is whether the
+   * everyone-group is also present, so when two runs differ that group is the single variable.
+   *
+   * An unset or unrecognised mode seeds nothing and says so. A mode with no principal configured
+   * does the same — the feature must not come out green having never been exercised.
+   */
+  async _applyAccessMode(root, opts, grantees, log, report) {
+    const mode = env.DROPBOX_ACCESS_MODE;
+    if (!mode) {
+      report.skipped.push({
+        step: 'team-wide vs restricted access',
+        reason: 'DROPBOX_ACCESS_MODE not set — set it to "open" or "restricted" to exercise this',
+      });
+      return;
+    }
+    if (mode !== 'open' && mode !== 'restricted') {
+      log.warn(`Unknown DROPBOX_ACCESS_MODE "${mode}" — expected "open" or "restricted"; nothing seeded`);
+      report.skipped.push({
+        step: 'team-wide vs restricted access',
+        reason: `DROPBOX_ACCESS_MODE "${mode}" is not one of "open" / "restricted"`,
+      });
+      return;
+    }
+
+    const folder = await this._mk(`${root}/14-Access-Mode`, opts, report);
+    if (!folder) return;
+
+    if (mode === 'open') {
+      const everyone = await this._resolveGroupMember(env.DROPBOX_TEST_EVERYONE_GROUP, log, report);
+      if (!everyone) {
+        report.skipped.push({
+          step: 'team-wide access ("open")',
+          reason: 'DROPBOX_TEST_EVERYONE_GROUP is not set or names no existing group — the '
+            + '"Everyone at <team>" group in the Dropbox sharing dialog',
+        });
+        return;
+      }
+      // Check the result. This logged "granted to the team-wide group" unconditionally, so a run
+      // whose grant was REFUSED still reported it as granted — the one thing this whole validator
+      // exists to prevent.
+      const ok = await this._grant(folder, everyone, 'viewer', opts, report,
+        `access mode open → everyone group ${everyone.displayName} viewer`);
+      if (ok) {
+        log.info(`Access mode "open": granted to the team-wide group "${everyone.displayName}"`);
+      } else {
+        log.warn(`Access mode "open": the grant to "${everyone.displayName}" did NOT succeed — `
+          + 'team-wide access is not exercised by this run. See the not-seeded entry for why.');
+      }
+      return;
+    }
+
+    // restricted: the same named few, and no everyone-group.
+    const few = (grantees.internalUsers || []).slice(0, 2);
+    if (few.length === 0) {
+      report.skipped.push({
+        step: 'restricted access',
+        reason: 'no DROPBOX_TEST_INTERNAL_USERS configured, so there is no "few" to grant to',
+      });
+      return;
+    }
+    let granted = 0;
+    for (const [i, who] of few.entries()) {
+      const ok = await this._grant(folder, { email: who }, i === 0 ? 'editor' : 'viewer', opts, report,
+        `access mode restricted → ${who} ${i === 0 ? 'editor' : 'viewer'}`);
+      if (ok) granted += 1;
+    }
+    // The COUNT THAT LANDED, not the count attempted — same reason as the open branch above.
+    log.info(`Access mode "restricted": ${granted} of ${few.length} named grant(s) landed, `
+      + 'no team-wide group');
   }
 
   /**
@@ -736,7 +999,149 @@ class DropboxTestDataAgent extends BaseAgent {
   }
 
   /**
-   * Scope 10.1–10.19 — Dropbox Paper. Nineteen features, and none can be seeded by API.
+   * The Paper document content, as markdown.
+   *
+   * Every block is separated by a blank line, deliberately. Paper's markdown importer merges
+   * adjacent blocks: an earlier draft put a list straight after a table and Paper folded the list
+   * INTO the table, so the fidelity comparison would have counted a table where a list belonged.
+   * Verified by exporting the created doc back and counting the structures.
+   *
+   * The 62/63/64-column tables are the boundary the scope document names, so they are generated
+   * rather than hand-written — three tables nobody would type correctly by hand.
+   */
+  _paperMarkdown() {
+    const table = (cols) => {
+      const head = Array.from({ length: cols }, (_, i) => `c${i + 1}`);
+      return [
+        `| ${head.join(' | ')} |`,
+        `| ${head.map(() => '---').join(' | ')} |`,
+        `| ${head.map((_, i) => i + 1).join(' | ')} |`,
+      ].join('\n');
+    };
+
+    return [
+      '# QA Paper — full feature document', '',
+      'Seeded by DropboxTestDataAgent via files/paper/create. Do not edit by hand.', '',
+      '## 10.2 Text formatting', '',
+      'This paragraph carries **bold**, *italic* and ~~strikethrough~~ text.', '',
+      '### A third-level heading', '',
+      '## 10.7 Links', '',
+      'An external [hyperlink to the spec](https://example.invalid/spec) in a sentence.', '',
+      '## 10.8 Dropbox file links', '',
+      'A [link to an in-scope file](https://www.dropbox.com/home/QA-Automation/03-File-Formats)',
+      'and a [link to an out-of-scope file](https://www.dropbox.com/home/Elsewhere/other.txt).', '',
+      '## 10.9 Tables — the 62 / 63 / 64 column boundary', '',
+      table(62), '',
+      'Separator paragraph between tables.', '',
+      table(63), '',
+      'Separator paragraph between tables.', '',
+      table(64), '',
+      'Separator paragraph after the last table.', '',
+      '## 10.11 TO-DO list', '',
+      '- [x] a checked item',
+      '- [ ] an unchecked item', '',
+      'Separator paragraph.', '',
+      '## 10.12 Bulleted list', '',
+      '- alpha',
+      '- beta',
+      '- gamma', '',
+      'Separator paragraph.', '',
+      '## 10.13 Numbered list', '',
+      '1. first',
+      '2. second',
+      '3. third', '',
+      'Separator paragraph.', '',
+      '## 10.14 Section break', '',
+      '---', '',
+      'Text after the section break.', '',
+      '## 10.15 Code block', '',
+      '```',
+      'const answer = 42;',
+      'function identity(x) { return x; }',
+      '```', '',
+      '## 10.16 Emojis', '',
+      'Emoji line: 🎉 🚀 👍 — and page #4, 2 + 3 = 5, item 7* which are NOT emojis.', '',
+      '## 10.3 Inserted image', '',
+      '![a referenced image](https://www.gstatic.com/webp/gallery/1.jpg)', '',
+      'End of document.', '',
+    ].join('\n');
+  }
+
+  /**
+   * Seed the Dropbox Paper document — features 10.1 to 10.19.
+   *
+   * This used to report all nineteen as impossible and print manual authoring steps, on the grounds
+   * that "Dropbox retired the Paper authoring API". Only half true: the OLD paper/docs/* namespace is
+   * retired, but files/paper/create is its live replacement and accepts markdown. Verified against
+   * the QA account, including a files/export round trip, which only a real Paper doc can do.
+   *
+   * What markdown CANNOT author is reported honestly rather than silently omitted: an @mention, an
+   * in-line comment, a Paper timeline, a pasted clipboard image, an embedded media player and a GIF
+   * all need the Paper UI. Several of those are among the six the scope document already records as
+   * not migrating, so the loss of coverage is smaller than the count suggests.
+   *
+   * Idempotent by intent: the doc is recreated on every run so its content always matches what the
+   * comparison expects. DROPBOX_PRESERVE_ON_WIPE keeps the folder as a safety net for a
+   * hand-authored doc, but nothing depends on that any more.
+   */
+  async _seedPaper(root, opts, log, report) {
+    const dir = `${root}/11-Paper`;
+    await this._mk(dir, opts, report);
+    const path = `${dir}/qa-paper-full.paper`;
+
+    try {
+      const made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(), opts);
+      report.created.files += 1;
+      log.info(`Seeded Dropbox Paper document at ${made.path} (revision ${made.revision})`);
+
+      // Export it back and count what Paper actually kept. Paper's importer rewrites the markup, so
+      // seeding content is not the same as HAVING it — a table the importer folded into a list
+      // would make the destination comparison meaningless in a way nothing else would reveal.
+      try {
+        const back = (await dropboxClient.exportPaper(made.path, 'markdown', opts)).toString('utf8');
+        const kept = {
+          tables: (back.match(/^\s*\|?\s*:?-{3,}/gm) || []).length,
+          codeBlocks: (back.match(/```/g) || []).length / 2,
+          links: (back.match(/\[[^\]]*\]\([^)]*\)/g) || []).length,
+        };
+        log.info(`Paper round trip: ${kept.tables} table(s), ${kept.codeBlocks} code block(s), `
+          + `${kept.links} link(s) survived the import`);
+        report.paperSeeded = { path: made.path, revision: made.revision, kept };
+      } catch (exportErr) {
+        log.warn(`Paper created but could not be exported back (${exportErr.message}) — content `
+          + 'was not verified, so the destination comparison may measure something unexpected');
+      }
+    } catch (err) {
+      report.errors.push({ step: 'Dropbox Paper document', error: err.message });
+      log.warn(`Could not seed the Paper document: ${err.message}`);
+      return;
+    }
+
+    // Only the genuinely UI-only elements remain manual.
+    report.notSeeded.push({
+      feature: 'Paper elements that markdown cannot express (10.4, 10.5, 10.6, 10.10, 10.17, 10.18)',
+      reason:
+        'files/paper/create imports MARKDOWN, and markdown has no syntax for an @mention, an '
+        + 'in-line comment, a Paper timeline, a pasted clipboard image, an embedded media player or '
+        + 'a GIF. Those six need the Paper UI. Four of them (10.6 GIFs, 10.17 mentions, 10.18 '
+        + 'comments, and 10.2 highlight colours) are already recorded by the scope document as NOT '
+        + 'migrating, so the coverage actually lost is 10.4, 10.5 and 10.10.',
+      manualSteps: [
+        `Open ${path} in the Dropbox UI to add the six elements above, if those features are needed`,
+        'Everything else in the document — formatting, headings, links, the 62/63/64-column tables, '
+          + 'lists, to-do items, section break, code block, emojis and an image — is seeded '
+          + 'automatically on every run',
+      ],
+    });
+  }
+
+  /**
+   * Scope 10.1–10.19 — Dropbox Paper. SUPERSEDED by _seedPaper; kept only for reference.
+   *
+   * The claim below — that no Paper feature can be seeded by API — was wrong, and cost the
+   * combination nineteen features until 04-Sep-2026. The retired endpoints are the OLD paper/docs/*
+   * namespace; files/paper/create is the live replacement and imports markdown. Nothing calls this
+   * method any more.
    *
    * Dropbox retired the Paper authoring endpoints (`paper/docs/create` and friends). What remains is
    * export-only. Uploading bytes with a `.paper` extension creates an ordinary file, not a Paper

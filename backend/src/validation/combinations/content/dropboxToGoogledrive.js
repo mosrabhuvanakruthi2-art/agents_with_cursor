@@ -60,7 +60,23 @@ function paperMarkdownStructure(md) {
   return {
     // A markdown table is identified by its header SEPARATOR row (|---|---|), one per table —
     // counting `|` rows would count every row of every table instead.
-    tables: lines.filter((l) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(l)).length,
+    // A markdown table is identified by its header SEPARATOR row, one per table — counting `|`
+    // rows would count every row of every table instead.
+    //
+    // `-+`, not `-{3,}`: Paper's own markdown export writes the separator as `| - | - | - |` with a
+    // SINGLE dash, while hand-written markdown uses `|---|---|`. Requiring three dashes counted 0
+    // tables in a Paper document that demonstrably had one — verified by exporting a seeded doc
+    // and reading the raw bytes. The old test fixture used the hand-written form, so it agreed
+    // with the bug instead of catching it.
+    // A markdown table is identified by its header SEPARATOR row, one per table — counting `|`
+    // rows would count every row of every table instead.
+    //
+    // `-+` rather than `-{3,}`: Paper's own markdown export writes the separator with a SINGLE
+    // dash, `| - | - | - |`, while hand-written markdown uses `|---|---|`. Requiring three
+    // dashes counted ZERO tables in a Paper document that demonstrably had one — confirmed by
+    // seeding a doc and reading the raw export bytes. The test fixture used the hand-written
+    // form, so it agreed with the bug rather than catching it.
+    tables: lines.filter((l) => /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(l)).length,
     // Bulleted and numbered are counted as BLOCKS, not items — one per run of consecutive list
     // lines — because Google's HTML export emits one <ul>/<ol> per block however many items it
     // holds. Counting items here would compare 3 against 1 for a three-item list and fail the
@@ -1240,10 +1256,20 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         + 'contradicts the declared "no limit" in validation/destinations/googledrive.js — the open '
         + 'question in dropbox-to-google-testdata.md. Confirm before treating either as settled.');
     } else {
-      push('FAIL', '7.1 Long-File/folder path',
-        `${missingLengths.length} item(s) are missing but their lengths overlap items that arrived `
-        + `(longest arrived ${maxArrived}, shortest missing ${minMissing}), so path length does not `
-        + 'explain the absence — see the structure check.');
+      // NOT ASSESSED, not failed.
+      //
+      // This feature asks one question: did a path get too long to migrate? The lengths here say
+      // no — items longer than the missing one arrived intact — so 7.1 has found no path-length
+      // defect and must not report one. The absence is real, but it belongs to whatever check owns
+      // it: on run 85a41244 a single unpaired Paper document produced a 1.1 failure, a 10.1 failure
+      // AND a 7.1 failure, so one cause was counted three times and the report read worse than the
+      // migration was. Same double-counting the 2.x permission lump used to cause, in reverse.
+      push('WARN', '7.1 Long-File/folder path',
+        `Not assessed: ${missingLengths.length} item(s) are missing, but items LONGER than the `
+        + `shortest missing one arrived intact (longest arrived ${maxArrived} encoded chars, `
+        + `shortest missing ${minMissing}), so path length does not explain the absence and this `
+        + 'feature has found no defect. The missing item is reported by the structure check (1.1), '
+        + 'which owns it — see there for the cause.');
     }
   }
 
@@ -1354,6 +1380,12 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
   _checkPaper(push, sourceTree, cmp, totals) {
     const papers = sourceTree.filter((i) => i.isPaper);
+    // The SOURCE count, kept apart from totals.paperItems (which holds only the docs that PAIRED
+    // with a destination item). Conflating the two made the checklist state "No Dropbox Paper
+    // documents in the source" on a run whose source demonstrably held one — it had failed to pair
+    // because CloudFuze renames .paper to .html. A report that denies the existence of seeded data
+    // sends the reader to look for a seeding problem that is not there.
+    totals.paperSourceCount = papers.length;
     if (papers.length === 0) {
       push('WARN', '10.x Dropbox Papers',
         'No Dropbox Paper documents in the source, so 19 of the 36 in-scope features were not '
@@ -1528,19 +1560,22 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
       // Paper features: 10.1 is assertable, the rest are not.
       if (f.id === '10.1') {
-        const rows = byName(/^10\.1 Dropbox Papers Migration/);
+        const rows = byName(/(^|\] )10\.1 Dropbox Papers Migration/);
         const v = worst(rows);
         return v
           ? { ...f, status: v === 'fail' ? 'fail' : 'pass', detail: rows[0].detail }
-          : na('No Dropbox Paper documents in the source');
+          : na((totals.paperSourceCount || 0) === 0
+            ? 'No Dropbox Paper documents in the source'
+            : `${totals.paperSourceCount} Paper document(s) in the source, but the migration check `
+              + 'did not run — the roll-up produced no verdict for this feature');
       }
       // Paper features that now carry a real check of their own. Everything else under 10.x still
       // falls through to the blanket N/A below, which is correct: those either cannot be read from
       // an export or are the six the scope document disputes.
       const PAPER_CHECKED = {
-        '10.3': /^10\.3 /, '10.4': /^10\.4 /, '10.5': /^10\.5 /,
-        '10.7': /^10\.7 /, '10.9': /^10\.9 /, '10.11': /^10\.11 /,
-        '10.12': /^10\.12 /, '10.13': /^10\.13 /, '10.16': /^10\.16 /,
+        '10.3': /(^|\] )10\.3 /, '10.4': /(^|\] )10\.4 /, '10.5': /(^|\] )10\.5 /,
+        '10.7': /(^|\] )10\.7 /, '10.9': /(^|\] )10\.9 /, '10.11': /(^|\] )10\.11 /,
+        '10.12': /(^|\] )10\.12 /, '10.13': /(^|\] )10\.13 /, '10.16': /(^|\] )10\.16 /,
       };
       if (PAPER_CHECKED[f.id]) {
         const rows = byName(PAPER_CHECKED[f.id]);
@@ -1557,28 +1592,43 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       }
       if (f.id.startsWith('10.')) {
         const disputed = PAPER_DISPUTED[f.id];
-        return na(
-          (totals.paperItems.length === 0
-            ? 'No Dropbox Paper documents in the source — not exercised. '
-            : 'Paper arrived, but document content is not compared by API — manual check required. ')
-          + (disputed ? `Scope document records: "${disputed}" — owner ruling pending.` : '')
-        );
+        // Three distinct states, and they need different words. Saying "none in the source" when
+        // the source HAS one but it did not pair is not a nuance — it points the reader at the
+        // wrong half of the system.
+        const srcCount = totals.paperSourceCount || 0;
+        const pairedCount = totals.paperItems.length;
+        const state = srcCount === 0
+          ? 'No Dropbox Paper documents in the source — not exercised. '
+          : pairedCount === 0
+            ? `${srcCount} Paper document(s) exist in the source but did NOT pair with a `
+              + 'destination item, so their content could not be compared — see 10.1 for why. This '
+              + 'is not a seeding gap. '
+            : 'Paper arrived, but document content is not compared by API — manual check required. ';
+        return na(state + (disputed ? `Scope document records: "${disputed}" — owner ruling pending.` : ''));
       }
 
       const map = {
         '1.1': /1\.1 Data Migration/,
+        // `(^|\] )` rather than `^`: a per-unit check is named
+        // "[QA-Automation-Dropbox-Dest] 2.1 Root Folder Permissions", so the feature id is NOT at
+        // the start of the string. Anchoring with ^ alone matched nothing, and every one of these
+        // features reported "Not exercised by this run" while its own check said PASS — the report
+        // contradicting itself in the most misleading direction possible.
+        //
+        // The alternation keeps the original intent: the id must start the name or follow the unit
+        // prefix, so 2.1 still cannot match inside 2.10.
         // Each permission feature has its own check now, so each maps to its own pattern.
         // Sharing one regex made every feature inherit the same verdict: a difference on an
         // inner file marked Root Folder Permissions failed, and a clean root marked Inner file
         // permissions passed. Anchored at the start so 2.1 cannot also match 2.10 later.
-        '2.1': /^2\.1 Root Folder/, '2.2': /^2\.2 Root File/,
-        '2.3': /^2\.3 Sub-folder/, '2.4': /^2\.4 Inner file/, '2.5': /^2\.5 External/,
+        '2.1': /(^|\] )2\.1 Root Folder/, '2.2': /(^|\] )2\.2 Root File/,
+        '2.3': /(^|\] )2\.3 Sub-folder/, '2.4': /(^|\] )2\.4 Inner file/, '2.5': /(^|\] )2\.5 External/,
         // Scope sections 3.1 and 3.2 require BOTH halves: the link permissions at the
         // destination AND the shared-links CSV report. So each feature takes the worst of its
         // own audience check and the CSV check — a written CSV cannot excuse missing link
         // permissions, which is exactly the live defect on this combination today.
-        '3.1': /^3\.1 Shared Links|^3\.x Shared Link CSV/,
-        '3.2': /^3\.2 Shared Links|^3\.x Shared Link CSV/,
+        '3.1': /(^|\] )3\.1 Shared Links|(^|\] )3\.x Shared Link CSV/,
+        '3.2': /(^|\] )3\.2 Shared Links|(^|\] )3\.x Shared Link CSV/,
         '4.1': /4\.1 Metadata/,
         '5.1': /5\.1 Special Characters/,
         '6.1': /6\.1 Suppressing/,

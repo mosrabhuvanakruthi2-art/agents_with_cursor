@@ -637,6 +637,54 @@ async function downloadFile(path, opts = {}) {
  * Paper is not downloadable through files/download — that returns an error telling you to use
  * export. Needed for any content comparison of scope §10, where the destination is a Google Doc.
  */
+/**
+ * Create a Dropbox Paper document from markdown.
+ *
+ * The OLD Paper API (`paper/docs/create`) is retired and returns insufficient_permissions, which is
+ * why this agent long reported all 19 Paper features as impossible to seed and printed manual
+ * authoring steps instead. That was only half true: `files/paper/create` on the RPC host is the
+ * replacement and works. Verified against the QA account on 04-Sep-2026 — it returned a real Paper
+ * doc (file_id id:9nIl…, paper_revision 3) that `files/export` could then round-trip back to
+ * markdown, which only a genuine Paper document can do.
+ *
+ * Uses the RPC host, not CONTENT. content.dropboxapi.com/2/files/paper/create is a 404 (an HTML
+ * error page, not an API error) — worth knowing, because a 404 there looks like "endpoint retired"
+ * when it is only the wrong host.
+ *
+ * The parent folder must exist; a missing one fails with 409 invalid_path rather than being created.
+ *
+ * @param {string} path        destination path, ending in .paper
+ * @param {string} markdown    document content
+ * @param {object} opts        { asMemberId, root }
+ * @returns {{ fileId, path, revision, url }}
+ */
+async function createPaperDoc(path, markdown, opts = {}) {
+  const { asMemberId = null, root = null } = opts;
+  const token = await getAccessToken();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/octet-stream',
+    'Dropbox-API-Arg': apiArg({ path: dbxPath(path), import_format: 'markdown' }),
+  };
+  if (asMemberId) headers['Dropbox-API-Select-User'] = asMemberId;
+  if (root) headers['Dropbox-API-Path-Root'] = JSON.stringify(root);
+
+  try {
+    const res = await retryWithBackoff(
+      () => axios.post(`${RPC}/files/paper/create`, markdown, { headers, timeout: 120000 }),
+      { label: 'Dropbox files/paper/create' }
+    );
+    return {
+      fileId: res.data?.file_id || null,
+      path: res.data?.result_path || path,
+      revision: res.data?.paper_revision ?? null,
+      url: res.data?.url || null,
+    };
+  } catch (err) {
+    throw dbxError(err, 'files/paper/create');
+  }
+}
+
 async function exportPaper(path, format = 'markdown', opts = {}) {
   const { asMemberId = null, root = null } = opts;
   const token = await getAccessToken();
@@ -905,6 +953,7 @@ module.exports = {
   listRevisions,
   downloadFile,
   exportPaper,
+  createPaperDoc,
   // write
   createFolder,
   uploadFile,

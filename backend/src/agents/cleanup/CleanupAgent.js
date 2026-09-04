@@ -78,6 +78,17 @@ const SEEDED_CONTENT_NAMES = [
   // anyway: cleanup must remove whatever the agent CAN create, not just what one run happened
   // to leave behind. Caught by the cross-check in dropboxTeamSpacePath.test.js.
   '12-Delta',
+  // The permission matrix and the access-mode folder. Numbered 13/14 because 06 and 07 are already
+  // 06-Metadata-Timestamps and 07-Special-Characters. Both are seeded on every run, so leaving them
+  // off the allowlist meant cleanup skipped them and each run migrated on top of the last —
+  // the same defect the Google destination branch above was added to fix.
+  '13-Permission-Matrix', '14-Access-Mode',
+  // 11-Paper holds the hand-authored Dropbox Paper doc. It is PRESERVED at the SOURCE
+  // (DROPBOX_PRESERVE_ON_WIPE) because Paper cannot be re-seeded by API — but the DESTINATION copy
+  // is an ordinary migrated artefact and must be cleaned like any other. Leaving it off this list
+  // meant run 85a41244 found TWO folders named 11-Paper at the destination, one per run, which the
+  // structure check then reported as extra items.
+  '11-Paper',
 ];
 
 /** True when `name` is a seeded item, or a counter/duplicate copy of one. */
