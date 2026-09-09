@@ -687,6 +687,21 @@ module.exports = {
   })(),
 
   /**
+   * How many times AgentOrchestrator re-submits a content migration job after CloudFuze's own CSV
+   * path-validation rejects it with a CONFLICT-family stop status (e.g. "Migration not Allowed for
+   * wrong CSV paths") — confirmed intermittent: the identical request succeeds on one attempt and
+   * fails on the next with no difference in what we send. Set to 0 to disable retrying entirely.
+   */
+  CONTENT_MIGRATION_RETRY_MAX: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_MAX ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  })(),
+  CONTENT_MIGRATION_RETRY_DELAY_MS: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 10000;
+  })(),
+
+  /**
    * CONTENT_PERMISSION_SETTLE_* — how long the content validator waits for CloudFuze to finish
    * applying item sharing before it calls a grant missing.
    *
