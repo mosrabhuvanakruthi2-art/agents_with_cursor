@@ -68,10 +68,20 @@ function testItemShape() {
   assert.strictEqual(file.type, 'file');
   assert.strictEqual(file.path, '/QA/report.pdf');
   assert.strictEqual(file.size, 2048);
-  // server_modified, NOT client_modified: the client value is supplied by whatever uploaded the file
-  // and can be arbitrary, so comparing it would describe the uploader rather than the migration.
-  assert.strictEqual(file.modifiedAt, '2026-01-02T03:04:05Z',
-    'modifiedAt uses server_modified, never client_modified');
+  // client_modified, NOT server_modified. server_modified is when Dropbox received the bytes, which
+  // for seeded QA data is always the seeding moment — so every "timestamped" file reads as the same
+  // recent value and feature 4.1 cannot tell a preserved date from a `now` stamp. client_modified is
+  // the file's own mtime, is what Dropbox shows, and is the only one that can be SET when seeding.
+  assert.strictEqual(file.modifiedAt, '1999-01-01T00:00:00Z',
+    'modifiedAt uses client_modified — the only timestamp that is seedable and comparable');
+  assert.strictEqual(file.serverModifiedAt, '2026-01-02T03:04:05Z',
+    'server_modified is still reported, for when the two disagree');
+  // A file with no client_modified must still report a date rather than null.
+  assert.strictEqual(
+    dropboxClient.toItem({ '.tag': 'file', name: 'x', server_modified: '2020-05-05T05:05:05Z' }, '/').modifiedAt,
+    '2020-05-05T05:05:05Z',
+    'falls back to server_modified when the client value is absent'
+  );
   assert.strictEqual(file.createdAt, null, 'Dropbox exposes no creation time');
   assert.strictEqual(file.mimeType, null, 'Dropbox metadata carries no MIME type');
 

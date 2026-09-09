@@ -526,7 +526,19 @@ export default function useRunWizard() {
 
   // True when a source+destination are chosen but their users haven't been fetched yet
   // (or the selection changed) — drives the automatic fetch on the Map Users step.
-  const needsFetch = !!(srcEmail && dstEmail) && fetchedKey !== `${domain}|${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`;
+  //
+  // An EMPTY result is never cached as a success. `fetchedKey` alone treated "fetched, and both
+  // lists came back empty" as done, so a fetch that failed for a fixable reason — a provider the
+  // backend did not yet support, an expired token, a network blip — stuck permanently: the key
+  // matched, `needsFetch` stayed false, and the persisted empty list survived even a page reload.
+  // The only escape was Reset, which is not discoverable from a screen reading "0 source".
+  //
+  // A run needs at least one source AND one destination user to be mappable, so an empty either
+  // side means there is nothing to work with and retrying costs one request.
+  const selectionKey = `${domain}|${srcProvider}:${srcEmail}|${dstProvider}:${dstEmail}`;
+  const cachedResultIsUsable = sourceUsers.length > 0 && destUsers.length > 0;
+  const needsFetch = !!(srcEmail && dstEmail)
+    && (fetchedKey !== selectionKey || !cachedResultIsUsable);
 
   // ── Payload (step 6) ──────────────────────────────────────────────────────
   const selectedPairs = mappings.filter((_, i) => selectedIndices.has(i));
@@ -584,8 +596,8 @@ export default function useRunWizard() {
         jobName: jobOptions.jobName || undefined,
         excludeFileTypes: jobOptions.excludeFileTypes || undefined,
         replaceSpecialChar: jobOptions.replaceSpecialChar,
-        sourceFolderName: contentPaths.sourceFolderName || undefined,
-        destinationPath: contentPaths.destinationPath || undefined,
+        sourceFolderName: String(contentPaths.sourceFolderName || '').trim() || undefined,
+        destinationPath: String(contentPaths.destinationPath || '').trim() || undefined,
         useExistingSource: useExistingSource || undefined,
         // Per-row folder mapping. One entry per ROW, not per user — two rows may name the same
         // source user with different Shared Drives. Each field falls back to the shared base
@@ -606,9 +618,21 @@ export default function useRunWizard() {
           // Both CSV styles are accepted. Writing the BASE on every row ("/QA/Documents") appends
           // the drive; writing the FULL path ("/QA/Documents/QA_Team1") is left alone. The append is
           // therefore idempotent — it never produces "/QA/Documents/QA_Team1/QA_Team1".
-          const drive = String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '');
+          // The drive-name destination append exists to stop TWO Google Shared Drives from
+          // colliding into the same destination folder. Dropbox (and Box) have no "shared drive"
+          // concept, so "Source drive" there is really the Dropbox team-space name — appending it
+          // built a destination CloudFuze had never seen and had no reason to accept
+          // ("/Dropbox-QA-Dest/Erik E" instead of "/Dropbox-QA-Dest"), one keystroke away from a
+          // rejected job with no indication why. Scoped to the providers the feature was built for.
+          const driveCapable = srcProvider === 'googledrive' || srcProvider === 'googleshareddrive';
+          const drive = driveCapable ? String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '') : '';
           const rowBase = String(r.destinationPath || '').trim();
-          const chosen = rowBase || contentPaths.destinationPath || '';
+          // The base field is trimmed too. It was not, and a single leading space typed into
+          // "Destination drive" survived all the way to CloudFuze as destFolderPath "/ /Dropbox-QA-Dest"
+          // — the path mapping saved, the job started, and NOTHING was created at the destination,
+          // with no errorDescription to explain why. The row value was already trimmed, so the two
+          // inputs behaved differently depending on which one you filled in.
+          const chosen = rowBase || String(contentPaths.destinationPath || '').trim();
           const base = String(chosen).replace(/\/+$/, '');
           const endsWithDrive = Boolean(drive)
             && base.toLowerCase().endsWith(`/${drive.toLowerCase()}`);
@@ -618,10 +642,13 @@ export default function useRunWizard() {
           return {
             sourceEmail: r.sourceEmail || pair?.source?.email,
             destinationEmail: pair?.destination?.email,
-            sourceDriveName: r.sourceDriveName || undefined,
+            // Not sent for a non-drive-capable source: the validator's report tags a unit by
+            // sourceDriveName when present, so a Dropbox team-space name leaking through here
+            // relabels the report row "[Erik E]" instead of by its destination folder.
+            sourceDriveName: driveCapable ? (r.sourceDriveName || undefined) : undefined,
             driveAccessMode: r.driveAccessMode || undefined,
             // Same folder name in every drive — the data is identical, the drives differ.
-            sourceFolderName: contentPaths.sourceFolderName || undefined,
+            sourceFolderName: String(contentPaths.sourceFolderName || '').trim() || undefined,
             destinationPath: autoDest || undefined,
           };
         }),

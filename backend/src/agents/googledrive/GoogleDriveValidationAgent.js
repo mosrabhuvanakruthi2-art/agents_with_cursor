@@ -150,25 +150,72 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
    *   as an empty destination rather than throwing, because "the migration created nothing" is a
    *   real and reportable outcome.
    */
-  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email) {
-    const base = String(destBase || '').trim();
+  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email, driveName = null) {
+    let base = String(destBase || '').trim();
     const opts = { rootId, driveId };
 
-    // An explicit destination path wins when it resolves.
-    if (base && base !== '/') {
-      const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
-      if (hit) return hit;
+    // Strip the DRIVE NAME from the front of a Shared Drive destination path.
+    //
+    // Destination paths arrive drive-style — "/QA/DBX-MyDrive-lavanya-test" means the folder
+    // "DBX-MyDrive-lavanya-test" inside Shared Drive "QA". Resolving that path *within* the drive
+    // looks for a folder literally named "QA" inside drive QA, finds nothing, and falls through to
+    // probing the source folder name — which is not what the destination is called. That is how a
+    // migration of 69 items that landed correctly was reported as "the migration appears to have
+    // created nothing" (job 6a981fc5).
+    //
+    // Same idea as `core.siteSegmentOf` for SharePoint: the first segment names the container, not
+    // a folder inside it.
+    if (driveId && driveName && base) {
+      const segs = base.split('/').filter(Boolean);
+      if (segs.length && segs[0].toLowerCase() === String(driveName).toLowerCase()) {
+        base = `/${segs.slice(1).join('/')}`;
+        logger.info(
+          `[GoogleDriveValidationAgent] destination path names Shared Drive "${driveName}" — `
+          + `resolving "${base}" inside it`
+        );
+      }
     }
 
     const name = String(sourceFolderName || '').trim();
+    const candidates = name ? [name] : [];
+    for (let i = 1; i <= DEDUP_MAX; i++) {
+      if (name) candidates.push(`${name} ${i}`, `${name} (${i})`);
+    }
+
+    // An explicit destination path wins when it resolves — BUT CloudFuze does not consistently
+    // place content flat inside it. Sometimes the run's files land directly under destBase
+    // ("/Dropbox-QA-Dest/01-Root-Folder-Permissions/…"); other times CloudFuze nests everything one
+    // level deeper, inside a subfolder named after the SOURCE folder
+    // ("/Dropbox-QA-Dest/QA-MyDrive-lavanya/01-Root-Folder-Permissions/…") — same job type, same
+    // destination path, different runs. Job 6a9a9554 did the latter: returning destBase itself made
+    // every real item's parent path carry an extra "/QA-MyDrive-lavanya" segment the source tree
+    // does not have, so the comparison matched 0 of 69 and reported 68 as "misplaced" — a migration
+    // that actually succeeded read as a near-total failure.
+    //
+    // So: prefer a subfolder of destBase matching the source name when one exists (the more specific
+    // signal — CloudFuze would not coincidentally create a folder with that exact name), and only
+    // fall back to destBase itself when no such nested folder is present (the flat-placement case).
+    if (base && base !== '/') {
+      const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
+      if (hit) {
+        for (const candidate of candidates) {
+          const nested = await driveClient.findByName(candidate, hit.id, email).catch(() => null);
+          if (nested) {
+            logger.info(
+              `[GoogleDriveValidationAgent] "${base}" contains a nested "${nested.name}" matching `
+              + 'the source folder name — using it as the migrated root instead of the destination '
+              + 'path itself (CloudFuze nested this run rather than placing content flat)'
+            );
+            return { id: nested.id, name: nested.name, path: `${hit.path || base}/${nested.name}` };
+          }
+        }
+        return hit;
+      }
+    }
+
     if (!name) {
       // No name to look for: the destination root itself is the comparison root.
       return { id: rootId, name: '(destination root)', path: '/' };
-    }
-
-    const candidates = [name];
-    for (let i = 1; i <= DEDUP_MAX; i++) {
-      candidates.push(`${name} ${i}`, `${name} (${i})`);
     }
 
     for (const candidate of candidates) {
@@ -215,36 +262,40 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
       return { permissions: [], links: [] };
     }
 
-    const permissions = [];
-    const links = [];
+    // driveClient.listPermissions already splits people/group grants from link permissions and
+    // returns `{ grants, links }` — this used to expect a flat, undivided permissions array (the
+    // shape driveClient returned before that split was added) and loop over it with
+    // `Array.isArray(raw) ? raw : []`. raw is an object, not an array, so that check was always
+    // false and this silently returned `{ permissions: [], links: [] }` for every single call —
+    // every shared-link comparison "differed" and every permission grant read as absent, not
+    // because anything failed to migrate, but because this never saw real data to compare against.
+    const grants = Array.isArray(raw?.grants) ? raw.grants : [];
+    const rawLinks = Array.isArray(raw?.links) ? raw.links : [];
 
-    for (const p of Array.isArray(raw) ? raw : []) {
-      const type = String(p.type || '').toLowerCase();
-      const role = String(p.role || '').toLowerCase();
+    const permissions = grants.map((p) => ({
+      email: String(p.email || '').toLowerCase(),
+      displayName: '',
+      roles: [String(p.role || '').toLowerCase()],
+      principalType: p.type === 'group' ? 'group' : 'user',
+      deleted: false,
+      inherited: Boolean(p.inherited),
+      inheritedFrom: p.inheritedFrom || null,
+    }));
 
-      if (LINK_PERMISSION_TYPES.has(type)) {
-        links.push({
-          // 'anonymous'/'organization' is the vocabulary the shared comparator and the
-          // dropbox_to_google role map both speak, so translate Google's wording once, here.
-          scope: type === 'anyone' ? 'anonymous' : 'organization',
-          type: role === 'writer' || role === 'organizer' || role === 'fileorganizer' ? 'edit' : 'view',
-          role,
-          // Google reports the org's display name for a domain link (e.g. "Sync Orbit"). Kept for
-          // the report only — matching is always on SCOPE, never on this string, because it differs
-          // per tenant.
-          domain: p.domain || null,
-        });
-        continue;
-      }
-
-      permissions.push({
-        email: String(p.emailAddress || '').toLowerCase(),
-        displayName: p.displayName || '',
-        roles: [role],
-        principalType: type === 'group' ? 'group' : 'user',
-        deleted: Boolean(p.deleted),
-      });
-    }
+    // 'anonymous'/'organization' is the vocabulary the shared comparator and the dropbox_to_google
+    // role map both speak, so translate Google's wording once, here.
+    const links = rawLinks.map((l) => {
+      const role = String(l.role || '').toLowerCase();
+      return {
+        scope: String(l.type || '').toLowerCase() === 'anyone' ? 'anonymous' : 'organization',
+        type: role === 'writer' || role === 'organizer' || role === 'fileorganizer' ? 'edit' : 'view',
+        role,
+        // Google reports the org's display name for a domain link (e.g. "Sync Orbit"). Kept for
+        // the report only — matching is always on SCOPE, never on this string, because it differs
+        // per tenant.
+        domain: l.domain || null,
+      };
+    });
 
     return { permissions, links };
   }

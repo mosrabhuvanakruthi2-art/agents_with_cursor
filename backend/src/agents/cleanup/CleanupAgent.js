@@ -104,6 +104,7 @@ function isSeededContentName(name, roots) {
 async function cleanContentSides(context, log, summary) {
   const driveClient = require('../../clients/driveClient');
   const sharepointClient = require('../../clients/sharepointClient');
+  const boxClient = require('../../clients/boxClient');
 
   const srcProvider = String(context.sourceProvider || '').toLowerCase();
   const dstProvider = String(context.destinationProvider || '').toLowerCase();
@@ -218,28 +219,65 @@ async function cleanContentSides(context, log, summary) {
       log.warn(`CleanupAgent: source content cleanup failed (non-blocking): ${err.message}`);
     }
   }
-  // Destination: delete only the seeded/migrated items, by allowlist.
+
+  // Box as source. Same "empty the seeded root, keep the folder" contract as Google Drive above —
+  // boxClient.cleanBoxContent exists but wipes the ENTIRE account root unscoped, which is far more
+  // than this run's own test data, so it is deliberately not reused here.
+  if (srcProvider === 'box' && context.sourceEmail) {
+    try {
+      const adminEmail = context.sourceAdminEmail || env.BOX_ADMIN_EMAIL || context.sourceEmail;
+      const token = await boxClient.getValidToken(adminEmail);
+      const user = await boxClient.getBoxUserByEmail(adminEmail, context.sourceEmail);
+      const asUserId = user ? user.id : null;
+      const rootItems = await boxClient.getFolderItems('0', token, asUserId);
+      const roots = rootItems.filter((i) => i.type === 'folder' && folderNames.includes(i.name));
+      for (const root of roots) {
+        const children = await boxClient.getFolderItems(root.id, token, asUserId);
+        for (const child of children) {
+          try {
+            await boxClient.deleteBoxItem(child.type, child.id, token, asUserId);
+            summary.sourceContent.itemsDeleted += 1;
+          } catch (err) {
+            summary.sourceContent.errors.push(`${child.name}: ${err.message}`);
+          }
+        }
+        summary.sourceContent.foldersEmptied += 1;
+        log.info(`CleanupAgent: emptied source folder "${root.name}" (${root.id}) — `
+          + `${children.length} child item(s) removed, folder kept so CloudFuze keeps resolving it`);
+      }
+      if (roots.length === 0) {
+        log.info(`CleanupAgent: no Box source folder matching ${folderNames.join(' / ')} — seeding will create it`);
+      }
+    } catch (err) {
+      summary.sourceContent.errors.push(err.message);
+      log.warn(`CleanupAgent: Box source content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+
+  // Destination: delete only the seeded/migrated items, by allowlist. Shared by every destination
+  // provider below — a multi-drive/multi-unit run puts each source drive in its own destination
+  // sub-folder, so the seeded tree is not always at the library/drive root, and a single-pair run
+  // (no contentUserFolders array) carries its one destination path on context.destinationPath
+  // instead. Scanning only "/" missed that case entirely — the exact gap that let a Dropbox →
+  // Google Drive run's leftover "/Dropbox-QA-Dest" content survive untouched between runs and get
+  // counted as "matched" against a job that had actually moved nothing.
+  //
+  // Read from contentUserFolders / context.destinationPath, not userFolderMappings: cleanup runs
+  // BEFORE seeding, and the mappings do not exist yet at this point.
+  const destRoots = [...new Set([
+    '/',
+    context.destinationPath,
+    ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+      .map((u) => u && u.destinationPath),
+  ].map((p) => String(p || '').trim()).filter((p) => p && p !== '/'))];
+
   if (dstProvider === 'sharepoint' && context.destinationEmail) {
     try {
       const deepContentCore = require('../../validation/shared/deepContentCore');
       const site = await sharepointClient.getSite(env.SHAREPOINT_HOSTNAME, env.SHAREPOINT_SITE_PATH, context.destinationEmail);
+      const spRoots = ['/', ...destRoots.map((p) => deepContentCore.inDrivePath(p)).filter((p) => p && p !== '/')];
 
-      // A multi-drive run puts each source drive in its own destination sub-folder, so the seeded
-      // tree is no longer at the library root — it is at "/QA_Team1/Agent Shared Drive". Scanning
-      // only the root would leave every previous run's data in place and the next run would then
-      // migrate on top of it, which is what produced 70 extra / 260 misplaced items on an earlier
-      // run. So scan the root AND each row's destination folder.
-      //
-      // Read from contentUserFolders, not userFolderMappings: cleanup runs BEFORE seeding, and the
-      // mappings do not exist yet at this point.
-      const destRoots = [...new Set([
-        '/',
-        ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
-          .map((u) => deepContentCore.inDrivePath(u && u.destinationPath))
-          .filter((p) => p && p !== '/'),
-      ])];
-
-      for (const base of destRoots) {
+      for (const base of spRoots) {
         let children;
         try {
           children = await sharepointClient.listFolderChildren(site.id, base, context.destinationEmail);
@@ -263,7 +301,50 @@ async function cleanContentSides(context, log, summary) {
           }
         }
       }
-      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s) across ${destRoots.length} location(s)`);
+      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s) across ${spRoots.length} location(s)`);
+    } catch (err) {
+      summary.destContent.errors.push(err.message);
+      log.warn(`CleanupAgent: destination content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+
+  // Google Drive / Google Shared Drive as destination (Dropbox → Google, Box → Google, etc.).
+  // Mirrors the SharePoint branch above exactly: resolve each known destination path, delete only
+  // children on the seeded-name allowlist, leave everything else — including the wrapper folder
+  // itself — untouched. Only the My Drive root is resolved here (rootId: 'root'); a Shared Drive
+  // destination needs its drive id, which nothing in context carries yet at this point, so that
+  // case is skipped (logged, non-fatal) rather than guessed at.
+  if (['googledrive', 'googleshareddrive'].includes(dstProvider) && context.destinationEmail) {
+    try {
+      const gRoots = ['/', ...destRoots];
+      let deleted = 0;
+      for (const base of gRoots) {
+        const hit = base === '/'
+          ? { id: 'root', name: '(My Drive root)' }
+          : await driveClient.resolveFolderByPath(base, context.destinationEmail, { rootId: 'root' }).catch(() => null);
+        if (!hit) {
+          log.info(`CleanupAgent: destination "${base}" not readable in My Drive — nothing to clean there `
+            + '(a Shared Drive destination is not resolvable here and is left untouched)');
+          continue;
+        }
+        const children = await driveClient.listChildren(hit.id, context.destinationEmail).catch((err) => {
+          summary.destContent.errors.push(`list ${base}: ${err.message}`);
+          return [];
+        });
+        const targets = children.filter((k) => isSeededContentName(k.name, folderNames));
+        log.info(`CleanupAgent: destination "${base}" has ${children.length} item(s); ${targets.length} seeded `
+          + `item(s) to delete, ${children.length - targets.length} left untouched`);
+        for (const t of targets) {
+          try {
+            await driveClient.deleteFile(t.id, context.destinationEmail);
+            deleted += 1;
+            summary.destContent.foldersDeleted += 1;
+          } catch (err) {
+            summary.destContent.errors.push(`${base}/${t.name}: ${err.message}`);
+          }
+        }
+      }
+      log.info(`CleanupAgent: deleted ${deleted} destination item(s) across ${gRoots.length} My Drive location(s)`);
     } catch (err) {
       summary.destContent.errors.push(err.message);
       log.warn(`CleanupAgent: destination content cleanup failed (non-blocking): ${err.message}`);

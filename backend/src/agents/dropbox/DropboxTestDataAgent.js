@@ -99,8 +99,32 @@ const VERSION_BODIES = [
  */
 const SPECIAL_CHARS_NAME = 'Special ~!@#$%^&()_+[]{};,.= chars';
 
-/** Names that are reserved on Windows/SharePoint but ordinary on Google. */
-const RESERVED_STYLE_NAMES = ['CON', 'PRN', 'AUX', 'NUL', 'desktop.ini'];
+/**
+ * The name that actually makes feature 5.1 a test.
+ *
+ * `SPECIAL_CHARS_NAME` above contains nothing SharePoint rejects, so 5.1 reported "not exercised"
+ * even on a successful run — the check looks for names a destination WOULD rewrite, and there were
+ * none. These are the characters that separate the two destinations: SharePoint forbids
+ * `" * : < > ? |`, Google accepts them all. A folder named with them must therefore arrive
+ * UNCHANGED at Google, and that is the negative test the scope document describes.
+ *
+ * `/` and `\` are still excluded — Dropbox itself rejects those in a path segment.
+ */
+const SHAREPOINT_INVALID_NAME = 'SP-invalid " * : < > ? | chars';
+
+/**
+ * Names reserved on Windows/SharePoint but ordinary on Google.
+ *
+ * `desktop.ini` is deliberately NOT here. Dropbox maintains its own list of names it refuses to
+ * store — desktop.ini, thumbs.db, .ds_store, .dropbox — and rejects them with
+ * `path/disallowed_name`. Including it made the whole seeding run die at this step, because the
+ * source cloud cannot hold the file at all. That is a Dropbox limitation, not a gap in coverage:
+ * a name Dropbox will not store can never be migrated from Dropbox.
+ */
+const RESERVED_STYLE_NAMES = ['CON', 'PRN', 'AUX', 'NUL'];
+
+/** Names Dropbox itself refuses, recorded so the report can say why they are absent. */
+const DROPBOX_DISALLOWED_NAMES = ['desktop.ini', 'thumbs.db', '.ds_store', '.dropbox'];
 
 class DropboxTestDataAgent extends BaseAgent {
   constructor() {
@@ -123,17 +147,49 @@ class DropboxTestDataAgent extends BaseAgent {
       );
     }
 
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
-    if (!root) {
+    // Where to seed, most explicit first.
+    //
+    // `sourceFolderName` is what the RUN WIZARD sends ("Source folder base name") and it must be
+    // honoured, or the run seeds somewhere the user did not ask for. Reading only `sourcePath` meant
+    // a wizard run typing "QA-Migration-Test" silently fell back to DROPBOX_TEST_ROOT and WIPED
+    // /QA-Automation — the cleanup log said one folder while the seeding log said another.
+    const rootSource = context.sourcePath ? 'the run\'s source path'
+      : context.sourceFolderName ? 'the run\'s source folder base name (wizard)'
+        : env.DROPBOX_TEST_ROOT ? 'DROPBOX_TEST_ROOT'
+          : null;
+    const root = dropboxClient.dbxPath(
+      context.sourcePath
+      || context.sourceFolderName
+      || env.DROPBOX_TEST_ROOT
+    );
+
+    // No silent fallback. This agent DELETES its root before seeding, so a default would mean an
+    // unfilled field quietly destroys whatever lives at that default — which is exactly what
+    // happened to a teammate's /QA-Automation folder when the wizard field came through empty.
+    if (!root || !rootSource) {
       throw new Error(
-        'Refusing to seed at the Dropbox account root. Set DROPBOX_TEST_ROOT (or the run\'s source '
-        + 'path) to a dedicated folder such as /QA-Automation — seeding at "/" would mix QA data '
-        + 'into the whole account and cleanup would then have to delete everything.'
+        'Refusing to seed: no Dropbox source folder was named. This agent DELETES its root before '
+        + 'seeding, so it will not fall back to a shared default — that is how a teammate\'s test '
+        + 'folder got wiped. Set the run\'s "Source folder base name" in the wizard, or '
+        + 'DROPBOX_TEST_ROOT in the root .env, to a folder of your own (e.g. /QA-Dropbox-lavanya).'
       );
     }
+    log.info(`Seeding root resolved to ${root} (from ${rootSource})`);
 
     const asMemberId = await this._resolveMemberContext(context, log);
+
+    // Seed into the MEMBER FOLDER, not the team space.
+    //
+    // Writing at the team-space root was tried and is not permitted: create_folder_v2 there returns
+    // `path/no_write_permission` for an ordinary member, admin token or not. The member folder is
+    // the only place this agent can reliably write.
+    //
+    // That leaves a frame mismatch to solve elsewhere, not here: CloudFuze scans the TEAM SPACE,
+    // where this same folder appears under the member's home path (e.g. "/Erik E/QA-…"). The
+    // migration step translates the path when it talks to CloudFuze; `teamSpacePath` below is
+    // reported so it has the value to use, and so a reader can see both forms of the same folder.
     const opts = { asMemberId };
+    const homePath = await dropboxClient.resolveMemberHomePath(asMemberId);
     const grantees = this._resolveGrantees(context, log);
 
     const report = {
@@ -155,32 +211,43 @@ class DropboxTestDataAgent extends BaseAgent {
     }
     await this._mk(root, opts, report);
 
-    // Row 1–4, 6: the permission ladder — root folder, root file, sub-folders, inner files.
-    await this._seedPermissionLadder(root, opts, grantees, log, report);
+    // Each step is independently survivable.
+    //
+    // The steps are not dependent on each other, and losing all of them because one name upset the
+    // source cloud is the worst possible trade: the first live run died at the special-characters
+    // step on a Dropbox-disallowed name and took long paths, embedded links and versions with it,
+    // so the run produced no version or long-path data at all. A step that fails is recorded and
+    // the rest still seed.
+    const steps = [
+      // Rows 1–4, 6: the permission ladder — root folder, root file, sub-folders, inner files.
+      ['permission ladder (scope 2.1-2.5)', () => this._seedPermissionLadder(root, opts, grantees, log, report)],
+      // Row 2: root files in every pass-through format.
+      ['file formats (scope 1.1)', () => this._seedRootFiles(root, opts, log, report)],
+      // Rows 7–8: shared links, both audiences, both access levels.
+      ['shared links (scope 3.1/3.2)', () => this._seedSharedLinks(root, opts, log, report)],
+      // Row 9: distinct modified timestamps.
+      ['timestamps (scope 4.1)', () => this._seedTimestampFiles(root, opts, log, report)],
+      // Row 10: names Google accepts unchanged.
+      ['special characters (scope 5.1)', () => this._seedSpecialCharacterNames(root, opts, log, report)],
+      // Row 11: the long-path breaking point.
+      ['long paths (scope 7.1)', () => this._seedLongPath(root, opts, log, report)],
+      // Row 12: embedded links, one in scope and one out.
+      ['embedded links (scope 8.1/10.8)', () => this._seedEmbeddedLinks(root, opts, log, report)],
+      // Rows 13–14: version history.
+      ['versions (scope 9.1/9.2)', () => this._seedVersions(root, opts, log, report)],
+    ];
 
-    // Row 2: root files in every pass-through format.
-    await this._seedRootFiles(root, opts, log, report);
-
-    // Row 7–8: shared links, both audiences, both access levels.
-    await this._seedSharedLinks(root, opts, log, report);
-
-    // Row 9: distinct created/modified timestamps.
-    await this._seedTimestampFiles(root, opts, log, report);
-
-    // Row 10: names Google accepts unchanged.
-    await this._seedSpecialCharacterNames(root, opts, log, report);
-
-    // Row 11: the long-path breaking point.
-    await this._seedLongPath(root, opts, log, report);
-
-    // Row 12: embedded links, one in scope and one out.
-    await this._seedEmbeddedLinks(root, opts, log, report);
-
-    // Row 13–14: version history.
-    await this._seedVersions(root, opts, log, report);
+    for (const [label, run] of steps) {
+      try {
+        await run();
+      } catch (err) {
+        report.errors.push({ step: label, error: err.message });
+        log.warn(`Seeding step "${label}" failed (continuing): ${err.message}`);
+      }
+    }
 
     // Row 15: Paper — cannot be seeded; return the manual steps.
-    report.notSeeded.push(this._reportPaperManualSteps());
+    report.notSeeded.push(this._reportPaperManualSteps(root));
 
     // Row 16: the user-mapping CSV is a MIGRATION input, not source data — noted, not created here.
     report.notSeeded.push({
@@ -191,8 +258,29 @@ class DropboxTestDataAgent extends BaseAgent {
       manualSteps: [],
     });
 
+    // The contract the ORCHESTRATOR reads back, not just our own report.
+    //
+    // AgentOrchestrator does `context.sourceTestDataPath = '/' + sourceData.rootFolderName` and
+    // `context.sourceRootId = String(sourceData.rootFolderId)`. Without these two fields it built
+    // `sourcePath: "/undefined"` and handed CloudFuze a path that does not exist — the run looked
+    // seeded and then migrated nothing. Every other TestDataAgent in the repo returns them; this one
+    // has to as well.
+    //
+    // `rootFolderName` carries the path WITHOUT its leading slash, so a nested seeding root
+    // ("/QA/Sub") still reconstructs correctly when the orchestrator prefixes "/".
+    report.rootFolderName = root.replace(/^\/+/, '');
+    try {
+      const meta = await dropboxClient.getMetadata(root, opts);
+      report.rootFolderId = meta?.id || null;
+    } catch (err) {
+      report.rootFolderId = null;
+      report.errors.push({ step: 'resolve seeding root id', error: err.message });
+    }
+
     report.summary = this._summarize(report);
-    log.info(report.summary);
+    log.info(
+      `${report.summary} rootFolderName="${report.rootFolderName}" rootFolderId=${report.rootFolderId || 'none'}`
+    );
     return report;
   }
 
@@ -254,9 +342,26 @@ class DropboxTestDataAgent extends BaseAgent {
     return { internal, external, group };
   }
 
-  /** Delete the seeding root so a re-run starts clean. Scoped to that one path, never the account. */
+  /**
+   * Delete the seeding root so a re-run starts clean. Scoped to that one path, never the account.
+   *
+   * Says WHAT it is about to destroy before destroying it. The old one-line "Cleared existing X"
+   * appeared after the fact, so a run that had silently resolved the wrong root gave no warning
+   * until the data was already gone — the folder count is the cheapest possible tripwire.
+   */
   async _wipeRoot(root, opts, log, report) {
     try {
+      // Immediate children only. A deep walk here logged "depth cap reached" warnings for every
+      // branch and still undercounted, which made the tripwire noisier than the thing it warns
+      // about. The top-level count is enough to recognise a folder you did not mean to delete.
+      const existing = await dropboxClient.listFolder(root, opts).catch(() => []);
+      if (existing.length > 0) {
+        log.warn(
+          `About to DELETE ${root} — it holds ${existing.length} top-level item(s) and everything `
+          + 'beneath them. If that is not your own test folder, cancel now and set a source folder '
+          + 'of your own.'
+        );
+      }
       await dropboxClient.deletePath(root, opts);
       log.info(`Cleared existing ${root}`);
     } catch (err) {
@@ -497,15 +602,43 @@ class DropboxTestDataAgent extends BaseAgent {
     const special = `${dir}/${SPECIAL_CHARS_NAME}`;
     await this._mk(special, opts, report);
     await this._put(`${special}/${SPECIAL_CHARS_NAME}.txt`, SAMPLE_TXT, opts, report);
-    for (const name of RESERVED_STYLE_NAMES) {
-      await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Reserved-on-Windows name: ${name}\n`, opts, report);
+
+    // The name that carries characters SharePoint forbids and Google allows — the one that makes
+    // 5.1 assessable. Guarded separately: if Dropbox refuses any of these, we lose this folder and
+    // learn which character it was, not the whole step.
+    try {
+      const spInvalid = `${dir}/${SHAREPOINT_INVALID_NAME}`;
+      await this._mk(spInvalid, opts, report);
+      await this._put(`${spInvalid}/${SHAREPOINT_INVALID_NAME}.txt`, SAMPLE_TXT, opts, report);
+    } catch (err) {
+      report.errors.push({
+        step: `SharePoint-invalid character name "${SHAREPOINT_INVALID_NAME}" (scope 5.1)`,
+        error: err.message,
+      });
+      log.warn(`Could not seed the SharePoint-invalid name: ${err.message}`);
     }
-    // Trailing dot/space are the two Dropbox itself rejects, so they are documented, not attempted.
+
+    // Per-name, so one name Dropbox happens to refuse cannot abort the whole seeding run. This step
+    // is the most likely place to meet `path/disallowed_name`, and losing everything after it — long
+    // paths, embedded links, versions — costs far more than the one name.
+    for (const name of RESERVED_STYLE_NAMES) {
+      try {
+        await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Reserved-on-Windows name: ${name}\n`, opts, report);
+      } catch (err) {
+        report.errors.push({ step: `reserved-style name "${name}" (scope 5.1)`, error: err.message });
+        log.warn(`Could not seed reserved-style name "${name}": ${err.message}`);
+      }
+    }
+
+    // Names the SOURCE cloud refuses. Documented rather than attempted: Dropbox cannot hold them, so
+    // they can never be migrated from Dropbox, and attempting them only breaks the run.
     report.notSeeded.push({
-      feature: 'trailing dot / trailing space names (scope 5.1, edge)',
+      feature: 'Dropbox-disallowed names (scope 5.1, edge)',
       reason:
-        'Dropbox rejects a path segment with a trailing dot or space, so these cannot be seeded from '
-        + 'the source side at all. Not a gap in coverage — the source cloud cannot hold them.',
+        `Dropbox refuses to store ${DROPBOX_DISALLOWED_NAMES.join(', ')} and rejects them with `
+        + 'path/disallowed_name, and it rejects a path segment with a trailing dot or space. These '
+        + 'cannot be seeded from the source side at all — not a gap in coverage, the source cloud '
+        + 'cannot hold them.',
       manualSteps: [],
     });
     log.info('Seeded special-character and reserved-style names');
@@ -646,7 +779,8 @@ class DropboxTestDataAgent extends BaseAgent {
    * Returning explicit manual steps is the honest alternative: 19 of the 36 in-scope features are
    * over half the document, and a run must not imply they were covered.
    */
-  _reportPaperManualSteps() {
+  _reportPaperManualSteps(root = null) {
+    const at = root || '<your seeding root>';
     return {
       feature: 'Dropbox Paper (scope 10.1–10.19 — 19 of 36 in-scope features, 50 QA cases)',
       reason:
@@ -655,7 +789,7 @@ class DropboxTestDataAgent extends BaseAgent {
         + 'would exercise none of these features while looking seeded. Paper docs must be authored '
         + 'by hand once, then reused across runs.',
       manualSteps: [
-        `In the Dropbox UI, create a Paper doc at ${env.DROPBOX_TEST_ROOT}/11-Paper/qa-paper-full.paper`,
+        `In the Dropbox UI, create a Paper doc at ${at}/11-Paper/qa-paper-full.paper`,
         'Add, in one document: bold + strikethrough text, an H1 and an H2, a hyperlink (10.2, 10.7)',
         'Insert an image, a media embed, and a pasted clipboard image (10.3, 10.4, 10.5)',
         'Insert a GIF (10.6) — documented as NOT migrating; it is here to confirm that',
@@ -687,7 +821,10 @@ class DropboxTestDataAgent extends BaseAgent {
    */
   async applyDeltaChanges(context) {
     const log = logger.child({ agent: this.name, executionId: context.executionId });
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    const root = dropboxClient.dbxPath(
+      context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
+    if (!root) throw new Error('Delta pass: no Dropbox source folder named — refusing to guess one.');
     const asMemberId = await this._resolveMemberContext(context, log);
     const opts = { asMemberId };
     const changes = { renamed: [], added: [], updated: [], moved: [], unchanged: [], errors: [] };

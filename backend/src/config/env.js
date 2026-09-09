@@ -471,10 +471,17 @@ module.exports = {
   /** Short-lived fallback token. Used only when the refresh trio above is absent. */
   DROPBOX_ACCESS_TOKEN: (process.env.DROPBOX_ACCESS_TOKEN || '').trim(),
   /**
-   * Root path the QA flow seeds into and validates from, e.g. "/QA-Automation".
-   * Kept configurable so a seeding run can never touch the rest of a shared QA Dropbox.
+   * Root path the QA flow seeds into and validates from, e.g. "/QA-Dropbox-<yourname>".
+   *
+   * **NO DEFAULT, deliberately.** This used to default to "/QA-Automation", and the seeding agent
+   * DELETES its root before seeding. Two people on the same branch therefore shared one destructive
+   * default: on 2026-09-02 a run whose folder name had not been filled in fell back to it and wiped
+   * a teammate's Dropbox → Shared Drive test folder — twice, because the fallback was silent.
+   *
+   * Unset now means "refuse to seed" rather than "seed into whatever everyone shares". Give each
+   * person their own root; a wipe can then only ever destroy their own data.
    */
-  DROPBOX_TEST_ROOT: (process.env.DROPBOX_TEST_ROOT || '/QA-Automation').trim(),
+  DROPBOX_TEST_ROOT: (process.env.DROPBOX_TEST_ROOT || '').trim(),
   /**
    * Principals the seeding agent grants access to (scope 2.1–2.5).
    *
@@ -591,6 +598,21 @@ module.exports = {
   CONTENT_CSV_VALIDATION_MAX_POLLS: (() => {
     const n = parseInt(process.env.CONTENT_CSV_VALIDATION_MAX_POLLS ?? '', 10);
     return Number.isFinite(n) && n > 0 ? n : 60;
+  })(),
+
+  /**
+   * How many times AgentOrchestrator re-submits a content migration job after CloudFuze's own CSV
+   * path-validation rejects it with a CONFLICT-family stop status (e.g. "Migration not Allowed for
+   * wrong CSV paths") — confirmed intermittent: the identical request succeeds on one attempt and
+   * fails on the next with no difference in what we send. Set to 0 to disable retrying entirely.
+   */
+  CONTENT_MIGRATION_RETRY_MAX: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_MAX ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  })(),
+  CONTENT_MIGRATION_RETRY_DELAY_MS: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 10000;
   })(),
 
   /**

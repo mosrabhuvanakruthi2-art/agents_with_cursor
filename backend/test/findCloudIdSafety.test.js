@@ -83,4 +83,49 @@ const CLOUDS = [
   assert.strictEqual(hit.id, 'sp-voohalu');
 }
 
+// ── Provider key → cloud name, for the pairs whose names share no prefix ─────
+//
+// CloudFuze calls Google My Drive "G_SUITE". The wizard's provider key is `googledrive`, and
+// GOOGLEDRIVE/GSUITE share no prefix in either direction — so no cloud matched the requested type,
+// the cross-type fallback took the first cloud registered to the email, and a Dropbox → My Drive run
+// was sent to CloudFuze as Dropbox → BOX_BUSINESS. The path mapping then saved 0 rows and the job
+// polled 60 times reporting "Total Saved Count :0".
+//
+// This is the real qarelease list for erik@filefuze.co, Box first exactly as the server returns it.
+{
+  const REAL = [
+    { id: 'box-erik', cloudName: 'BOX_BUSINESS', emailId: 'erik@filefuze.co' },
+    { id: 'dbx-erik', cloudName: 'DROPBOX_BUSINESS', emailId: 'erik@filefuze.co' },
+    { id: 'egn-erik', cloudName: 'EGNYTE_ADMIN', emailId: 'erik@filefuze.co' },
+    { id: 'gsd-erik', cloudName: 'GOOGLE_SHARED_DRIVES', emailId: 'erik@filefuze.co' },
+    { id: 'gsuite-erik', cloudName: 'G_SUITE', emailId: 'erik@filefuze.co' },
+    { id: 'gsuite-other', cloudName: 'G_SUITE', emailId: 'someone@cloudfuze.com' },
+  ];
+
+  const myDrive = mc.findCloudId(REAL, 'erik@filefuze.co', 'googledrive');
+  assert.ok(myDrive, 'a My Drive destination must resolve');
+  assert.strictEqual(myDrive.cloudName, 'G_SUITE',
+    'the `googledrive` provider key must resolve to G_SUITE, never to whichever cloud is listed first');
+  assert.strictEqual(myDrive.id, 'gsuite-erik', 'and to THIS account’s G_SUITE, not another’s');
+
+  // The bug in one assertion: it must not be Box.
+  assert.notStrictEqual(myDrive.cloudName, 'BOX_BUSINESS',
+    'falling back to Box silently migrated Dropbox into the wrong cloud');
+
+  // Shared Drive already matched by prefix; prove the alias did not break it.
+  const shared = mc.findCloudId(REAL, 'erik@filefuze.co', 'googleshareddrive');
+  assert.strictEqual(shared.cloudName, 'GOOGLE_SHARED_DRIVES',
+    '`googleshareddrive` must still resolve to GOOGLE_SHARED_DRIVES, not to G_SUITE');
+
+  // Every provider that already worked must keep working — this function is shared by all
+  // content combinations, so a regression here breaks Box→SharePoint and Drive→SharePoint too.
+  assert.strictEqual(mc.findCloudId(REAL, 'erik@filefuze.co', 'dropbox').cloudName, 'DROPBOX_BUSINESS');
+  assert.strictEqual(mc.findCloudId(REAL, 'erik@filefuze.co', 'box').cloudName, 'BOX_BUSINESS');
+  assert.strictEqual(mc.findCloudId(REAL, 'erik@filefuze.co', 'egnyte').cloudName, 'EGNYTE_ADMIN');
+  assert.strictEqual(
+    mc.findCloudId(CLOUDS, 'erik@filefuze.co', 'sharepoint').cloudName,
+    'SHAREPOINT_ONLINE_BUSINESS'
+  );
+}
+
 console.log('findCloudIdSafety.test.js: ok');

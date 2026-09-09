@@ -387,7 +387,7 @@ class AgentOrchestrator {
     const { TestDataAgent, ValidationAgent } = agentsFor(context);
     // Some content combinations (e.g. Box→SharePoint) do register a TestDataAgent for seeding.
     const dataAgent = TestDataAgent ? new TestDataAgent() : null;
-    const migrationAgent = new MigrationAgent();
+    let migrationAgent = new MigrationAgent();
     const outlookAgent = new ValidationAgent();
 
     // Detect content migration mode: domain/mode content, OR no mail with calendar/contacts flags
@@ -416,11 +416,22 @@ class AgentOrchestrator {
       // Multi-user content: per-user folder entries come from the UI table
       // (context.contentUserFolders); fall back to one entry per Map-Users pair. Align the
       // base seed name to the first entry so Step 1's single seed IS entry[0]'s dataset.
-      const cufEntries = (Array.isArray(context.contentUserFolders) && context.contentUserFolders.length > 0)
+      const cufEntries = ((Array.isArray(context.contentUserFolders) && context.contentUserFolders.length > 0)
         ? context.contentUserFolders
         : (Array.isArray(context.userEmailMappings)
             ? context.userEmailMappings.map((m) => ({ sourceEmail: m.sourceEmail, destinationEmail: m.destinationEmail }))
-            : []);
+            : []))
+        // Trim the path fields. `MigrationContext` trims the run-wide sourceFolderName and
+        // destinationPath but NOT these per-row copies, so a single leading space typed into the
+        // wizard reached CloudFuze as destFolderPath "/ /Dropbox-QA-Dest": the mapping saved, the
+        // job started, and nothing was created at the destination with no errorDescription to say
+        // why. The wizard now trims too; this is the backstop for any other caller (CSV import, API).
+        .map((e) => ({
+          ...e,
+          sourceFolderName: typeof e.sourceFolderName === 'string' ? e.sourceFolderName.trim() : e.sourceFolderName,
+          destinationPath: typeof e.destinationPath === 'string' ? e.destinationPath.trim() : e.destinationPath,
+          sourceDriveName: typeof e.sourceDriveName === 'string' ? e.sourceDriveName.trim() : e.sourceDriveName,
+        }));
       if (isContentMode) log.info(`Content: useExistingSource=${context.useExistingSource} (true = skip seeding, migrate existing folder)`);
       if (isContentMode && cufEntries.length > 0) {
         // Resolve each entry's SOURCE email → Box user id so we seed As-User into that user's
@@ -470,7 +481,54 @@ class AgentOrchestrator {
       // that silently: the run looked normal and the wrong source only showed up in the path CSV.
       const useExistingProvider = String(context.sourceProvider || '').toLowerCase();
       const useExistingIsDrive = ['googledrive', 'googleshareddrive', 'google', 'drive'].includes(useExistingProvider);
-      if (isContentMode && context.useExistingSource && useExistingProvider === 'box' && cufEntries.length > 0) {
+      // Dropbox needs its own branch for the same reason Drive did: without one, ticking "Use
+      // existing source folder" fell through to the SEEDING path and did the opposite of what the
+      // checkbox says — it wiped and re-created the folder the user asked to migrate as-is.
+      if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing Dropbox folder(s)`);
+        const dropboxClient = require('../clients/dropboxClient');
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          // The wizard's "Source folder base name" arrives as sourceFolderName; a run-wide value is
+          // the fallback so a single-row run needs nothing per row.
+          const folderPath = dropboxClient.dbxPath(
+            (e.sourceFolderName || '').trim() || context.sourceFolderName || context.sourcePath
+          );
+          if (!folderPath) {
+            log.warn(`Content useExistingSource: no source folder named for ${e.sourceEmail} — skipping`);
+            continue;
+          }
+          try {
+            // A Business team token cannot read a member's Dropbox without the member context.
+            const asMemberId = await dropboxClient.resolveTeamMemberId(e.sourceEmail).catch(() => null);
+            const found = await dropboxClient.getMetadata(folderPath, { asMemberId });
+            if (!found) {
+              log.warn(`Content useExistingSource: Dropbox folder "${folderPath}" not found for ${e.sourceEmail} — skipping`);
+              continue;
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: found.path,
+              sourceRootId: found.id ? String(found.id) : null,
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "${found.path}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderPath}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        } else {
+          throw new Error(
+            'Content useExistingSource: no existing Dropbox folder could be resolved — refusing to '
+            + 'run. Migrating nothing would report as a pass against an empty destination.'
+          );
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingProvider === 'box' && cufEntries.length > 0) {
         log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing folder(s)`);
         const boxClient = require('../clients/boxClient');
         const adminEmail = context.sourceAdminEmail || context.sourceEmail;
@@ -765,6 +823,43 @@ class AgentOrchestrator {
         });
         log.info('Step 2: Running MigrationAgent');
         migrationResult = await migrationAgent.run(context);
+
+        // CloudFuze's own CSV path-validation rejects some content jobs with CONFLICT ("Migration
+        // not Allowed for wrong CSV paths") intermittently — the identical request, byte-for-byte,
+        // succeeds on one attempt and fails on the next with no observable difference on our side
+        // (confirmed by diffing every outbound request across four consecutive runs of the same
+        // pair: CSV payload, cloud ids, job-creation body, and all 20 job-option parameters were
+        // identical whether the run succeeded or failed). Retrying the SAME unchanged request is
+        // therefore a legitimate recovery, not a workaround for a bug in what we send — only for
+        // CONFLICT-family stop statuses, never NO_WORK_ATTACHED, which means the source genuinely
+        // had nothing to migrate and a retry would just waste CONTENT_MIGRATION_RETRY_MAX attempts
+        // restating that.
+        const retriableStopStatuses = [
+          'PROCESSED_EMPTY', 'CONFLICT', 'CONFLICTS',
+          'NOT_PROCESSED', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
+        ];
+        const maxContentRetries = Number(env.CONTENT_MIGRATION_RETRY_MAX ?? 2);
+        if (isContentMode && migrationResult?.migrationFailed
+          && retriableStopStatuses.includes(migrationResult?.finalStatus) && maxContentRetries > 0) {
+          for (let attempt = 1;
+            attempt <= maxContentRetries && migrationResult?.migrationFailed
+              && retriableStopStatuses.includes(migrationResult?.finalStatus);
+            attempt++) {
+            log.warn(`MigrationAgent: content migration stopped with status `
+              + `"${migrationResult.finalStatus}" — retrying (attempt ${attempt}/${maxContentRetries}); `
+              + `cause: ${migrationResult.failureReason || 'unknown'}`);
+            executionService.update(context.executionId, {
+              progress: `MigrationAgent: retrying after "${migrationResult.finalStatus}" `
+                + `(attempt ${attempt}/${maxContentRetries})…`,
+            });
+            await new Promise((r) => setTimeout(r, Number(env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? 10000)));
+            if (executionService.isCancelled(context.executionId)) {
+              throw new Error('Execution cancelled by user');
+            }
+            migrationAgent = new MigrationAgent();
+            migrationResult = await migrationAgent.run(context);
+          }
+        }
       } else {
         log.info('Step 2: Skipping MigrationAgent (already completed)');
         migrationResult = executionService.get(context.executionId)?.result?.migrationResult || null;

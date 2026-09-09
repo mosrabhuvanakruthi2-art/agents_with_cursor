@@ -298,6 +298,71 @@ async function resolveTeamMemberId(email) {
   return members.find((m) => m.email === want)?.teamMemberId || null;
 }
 
+/**
+ * The team-space path root for an account, or null when the account has no team space.
+ *
+ * **This is the difference between a migration that works and one that silently moves nothing.**
+ *
+ * A Dropbox Business team with team spaces enabled has TWO namespaces per member:
+ *   - the member folder  (`home_namespace_id`, reachable at `home_path`, e.g. "/Erik E")
+ *   - the team space     (`root_namespace_id`) — the shared root the team actually works in
+ *
+ * A call with only `Dropbox-API-Select-User` resolves paths against the MEMBER FOLDER. So seeding
+ * "/QA-MyDrive-lavanya" created it inside the member folder, whose team-space path is
+ * "/Erik E/QA-MyDrive-lavanya". CloudFuze scans the TEAM SPACE, so the path we handed it did not
+ * exist there: job 6a98085a ran to PROCESSED and reported totalFilesAndFolders=0, with no error.
+ *
+ * Confirmed by listing both roots on the `exinent` team — the team-space root holds the CloudFuze QA
+ * folders from previous runs (AutoNestedFolder, AutoDropboxEmbeddedlink4, "Every group permissions"),
+ * while the member folder holds none of them.
+ *
+ * Returns the value for the `Dropbox-API-Path-Root` header, so passing it as `opts.root` makes every
+ * path in this client team-space relative — the same frame CloudFuze uses.
+ *
+ * @returns {Promise<{'.tag':'root', root:string}|null>}
+ */
+/**
+ * The member's home path inside the team space, e.g. "/Erik E", or '' when there is no team space.
+ *
+ * This is the translation between the two frames. A file the agent creates at "/QA-X" in the member
+ * folder is addressed as "/Erik E/QA-X" from the team space — which is the frame CloudFuze scans.
+ * Seeding cannot simply move to the team space instead: its root rejects writes with
+ * `path/no_write_permission`, so the two frames have to coexist and paths get translated.
+ *
+ * @returns {Promise<string>} the home path, or '' when the account has no team space
+ */
+async function resolveMemberHomePath(asMemberId = null) {
+  try {
+    const me = await getCurrentAccount(asMemberId);
+    const info = me?.root_info || {};
+    if (!info.root_namespace_id || String(info.root_namespace_id) === String(info.home_namespace_id)) {
+      return '';
+    }
+    return String(info.home_path || '').replace(/\/+$/, '');
+  } catch (err) {
+    logger.warn(`[dropbox] could not resolve the member home path (${err.message})`);
+    return '';
+  }
+}
+
+async function resolveTeamSpaceRoot(asMemberId = null) {
+  try {
+    const me = await getCurrentAccount(asMemberId);
+    const info = me?.root_info || {};
+    const home = info.home_namespace_id;
+    const root = info.root_namespace_id;
+    if (!root || String(root) === String(home)) return null; // no team space
+    logger.info(
+      `[dropbox] team space detected (root ns ${root}, member folder ns ${home} at "${info.home_path || '?'}") `
+      + '— using the TEAM SPACE as the path root, which is the namespace CloudFuze scans'
+    );
+    return { '.tag': 'root', root: String(root) };
+  } catch (err) {
+    logger.warn(`[dropbox] could not resolve the team space root (${err.message}) — using the member folder`);
+    return null;
+  }
+}
+
 /** Team groups, as `[{ groupId, name, memberCount }]`. Scope §2 grants to groups. */
 async function listTeamGroups() {
   const out = [];
@@ -328,14 +393,29 @@ const FOLDER_TAG = 'folder';
  * deepContentCore.compareTrees consumes all three interchangeably. Fields Dropbox does not have
  * are null rather than absent, so a comparison never sees `undefined` and treats it as a difference.
  *
- * `modifiedAt` uses server_modified, NOT client_modified: client_modified is supplied by whichever
- * client uploaded the file and can be arbitrary (or in the future), while server_modified is what
- * Dropbox itself recorded. Feature 4.1 compares timestamps, so picking the wrong one produces drift
- * findings that describe the uploading client rather than the migration.
+ * `modifiedAt` uses **client_modified**, falling back to server_modified.
+ *
+ * This was the other way round, and that was wrong. `server_modified` is when Dropbox received the
+ * bytes — for QA-seeded data that is always the seeding moment, so all three "timestamped" files in
+ * a seeded tree read as the same value, minutes old. Feature 4.1 then cannot distinguish a
+ * destination that preserved the original date from one that stamped `now`: both match.
+ *
+ * `client_modified` is the file's own modification time, which is what Dropbox shows in its UI and
+ * what a migration is expected to carry across. It is also the only one that can be SET (via the
+ * upload argument), so it is the only way to seed distinct, non-recent dates at all.
+ *
+ * `serverModifiedAt` is kept alongside it so a report can still show when Dropbox actually received
+ * the file — useful when the two disagree, which is exactly the case worth seeing.
  */
 function toItem(entry, parentPath) {
   const tag = entry['.tag'];
-  const isFolder = tag === FOLDER_TAG;
+  // `.tag` is present on list_folder/get_metadata results but ABSENT from the metadata that
+  // `files/create_folder_v2` returns. Trusting it alone therefore classified every freshly created
+  // folder as a file — which sent folder permission grants down the add_file_member path and failed
+  // all of scope 2.1/2.3 with `access_error/is_folder`. A folder has no size and no rev, so those
+  // two absences identify it when the tag is missing.
+  const isFolder = tag === FOLDER_TAG
+    || (!tag && entry.size === undefined && entry.rev === undefined);
   const name = entry.name;
   const path = entry.path_display || `${parentPath === '/' ? '' : parentPath}/${name}`;
   return {
@@ -348,7 +428,8 @@ function toItem(entry, parentPath) {
     // (extensionOf/convertName) drives conversion decisions instead of a guessed type.
     mimeType: null,
     createdAt: null, // Dropbox exposes no creation time for files.
-    modifiedAt: isFolder ? null : (entry.server_modified || null),
+    modifiedAt: isFolder ? null : (entry.client_modified || entry.server_modified || null),
+    serverModifiedAt: isFolder ? null : (entry.server_modified || null),
     createdBy: null,
     modifiedBy: null,
     shortcutTargetId: null,
@@ -626,7 +707,7 @@ async function listRevisions(path, opts = {}) {
   return (data.entries || []).map((e) => ({
     rev: e.rev,
     size: e.size != null ? Number(e.size) : null,
-    modifiedAt: e.server_modified || null,
+    modifiedAt: e.client_modified || e.server_modified || null,
   }));
 }
 
@@ -756,11 +837,26 @@ async function uploadFile(path, buffer, opts = {}) {
  */
 async function shareFolder(path, opts = {}) {
   const { asMemberId = null, root = null } = opts;
-  const data = await rpc('sharing/share_folder', {
-    path: dbxPath(path),
-    acl_update_policy: 'editors',
-    force_async: false,
-  }, { asMemberId, root, label: 'sharing/share_folder' });
+  let data;
+  try {
+    data = await rpc('sharing/share_folder', {
+      path: dbxPath(path),
+      acl_update_policy: 'editors',
+      force_async: false,
+    }, { asMemberId, root, label: 'sharing/share_folder' });
+  } catch (err) {
+    // A folder that is ALREADY shared is the normal case on the second grant — seeding grants a
+    // user and then a group to the same folder, and the first call shared it. Dropbox reports
+    // `bad_path/already_shared`, which is success for our purposes: look up the id it already has.
+    // Treating it as an error silently lost every second grant on a folder.
+    if (/already_shared/.test(String(err.dropboxSummary || ''))) {
+      const meta = await rpc('files/get_metadata', { path: dbxPath(path) },
+        { asMemberId, root, label: 'files/get_metadata (already-shared folder)' }).catch(() => null);
+      const id = meta?.shared_folder_id || meta?.sharing_info?.shared_folder_id || null;
+      if (id) return id;
+    }
+    throw err;
+  }
 
   if (data['.tag'] === 'complete' || data.shared_folder_id) {
     return data.shared_folder_id || data.complete?.shared_folder_id || null;
@@ -819,26 +915,53 @@ async function addFileMember(fileIdOrPath, member, role, opts = {}) {
  */
 async function createSharedLink(path, opts = {}) {
   const { asMemberId = null, root = null, audience = 'public', access = 'viewer' } = opts;
-  try {
-    const data = await rpc('sharing/create_shared_link_with_settings', {
-      path: dbxPath(path),
-      settings: {
-        // requested_visibility is the legacy field; audience is the current one. Sending both is
-        // what the Dropbox docs show for compatibility across account types.
-        requested_visibility: audience === 'team' ? 'team_only' : 'public',
-        audience,
-        access,
-        allow_download: true,
-      },
-    }, { asMemberId, root, label: 'sharing/create_shared_link_with_settings' });
-    return { url: data.url, type: data.link_permissions?.resolved_visibility?.['.tag'] || null };
-  } catch (err) {
-    if (/shared_link_already_exists/.test(String(err.dropboxSummary || ''))) {
-      const existing = await listSharedLinks(path, opts);
-      return existing[0] || null;
+  // Three settings shapes, most specific first.
+  //
+  // `requested_visibility` is the LEGACY field and `audience`/`access` the current ones; sending
+  // both together is rejected with `settings_error/invalid_settings`, which is what silently lost
+  // every editor link on the first live seeding run. They are therefore tried separately.
+  //
+  // `access: 'editor'` additionally depends on the account's plan and on the item being in a shared
+  // folder, so a tenant that cannot issue editable links falls back to a viewer link rather than
+  // producing nothing — a viewer link that should have been an editor link is a finding the
+  // validator can report, whereas no link at all is invisible.
+  const attempts = [
+    { audience, access, allow_download: true },
+    { audience, allow_download: true },
+    { requested_visibility: audience === 'team' ? 'team_only' : 'public' },
+  ];
+
+  let lastErr = null;
+  for (const settings of attempts) {
+    try {
+      const data = await rpc('sharing/create_shared_link_with_settings', {
+        path: dbxPath(path),
+        settings,
+      }, { asMemberId, root, label: 'sharing/create_shared_link_with_settings' });
+      const got = data.link_permissions?.link_access_level?.['.tag'] || null;
+      if (access === 'editor' && got && got !== 'editor') {
+        logger.warn(
+          `[dropbox] ${path}: asked for an editor link, Dropbox issued "${got}" — the account may `
+          + 'not support editable links. Recorded as issued, not as requested.'
+        );
+      }
+      return {
+        url: data.url,
+        type: data.link_permissions?.resolved_visibility?.['.tag'] || null,
+        role: got,
+        requestedAccess: access,
+      };
+    } catch (err) {
+      if (/shared_link_already_exists/.test(String(err.dropboxSummary || ''))) {
+        const existing = await listSharedLinks(path, opts);
+        return existing[0] || null;
+      }
+      // Only an invalid-settings rejection is worth trying a simpler shape for.
+      if (!/settings_error/.test(String(err.dropboxSummary || ''))) throw err;
+      lastErr = err;
     }
-    throw err;
   }
+  throw lastErr;
 }
 
 /**
@@ -902,6 +1025,8 @@ module.exports = {
   getCurrentAccount,
   listTeamMembers,
   resolveTeamMemberId,
+  resolveTeamSpaceRoot,
+  resolveMemberHomePath,
   listTeamGroups,
   // read
   listFolder,

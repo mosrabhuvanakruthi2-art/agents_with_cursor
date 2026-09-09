@@ -561,7 +561,7 @@ module.exports = {
   createSharedLink, addComment, createCollaboration,
   createGroup, addGroupMember, createGroupCollaboration,
   getBoxContentStats, cleanBoxContent, cleanBoxFiles, cleanBoxFolders,
-  getFolderItems, buildFolderTree, resolveFolderByPath,
+  getFolderItems, buildFolderTree, resolveFolderByPath, deleteBoxItem,
   getCollaborations, getFileVersions, getItemSharing,
   getItemMetadata, listComments, getBoxUserByEmail,
 };

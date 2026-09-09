@@ -199,10 +199,20 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     this._recordCloudFuzeStatus(context, gPush);
 
     const emailMap = core.buildEmailMap(context);
+    // `mapped: false` for anyone not in the run's explicit Map Users list makes
+    // deepContentCore.comparePermissions treat the grant as "unmapped, cannot verify" rather than
+    // comparing it — correct for a whole-tenant migration where an unlisted grantee genuinely has no
+    // destination identity, wrong here: Map Users only ever lists the ONE migrating pair (erik→erik),
+    // so every OTHER grantee this combination's own test data seeds on purpose — the internal user
+    // (DROPBOX_TEST_INTERNAL_USER, ben@filefuze.co) and the group (DROPBOX_TEST_GROUP) — got silently
+    // excluded, and "2.x Permissions" reported "no comparable source permissions" even when the
+    // account plainly had some. CloudFuze's own mapping already treats a same-domain internal user as
+    // carrying over unchanged (its own log shows "ben@filefuze.co → ben@filefuze.co (same)"), which is
+    // exactly the fallback this function already computes — mapped: true just stops discarding it.
     const mapEmail = (e, opts) => {
       const key = String(e || '').toLowerCase();
       const hit = emailMap[key];
-      if (opts && opts.detail) return { email: hit || key, mapped: Boolean(hit) };
+      if (opts && opts.detail) return { email: hit || key, mapped: true };
       return hit || key;
     };
     const units = core.resolveUnits(context);
@@ -307,7 +317,9 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     const push = (status, name, detail) => checks.push({ name, status, detail });
     const sourceEmail = unit.sourceEmail || context.sourceEmail;
     const destEmail = unit.destinationEmail || context.destinationEmail;
-    const sourcePath = dropboxClient.dbxPath(unit.sourcePath || context.sourcePath || env.DROPBOX_TEST_ROOT);
+    const sourcePath = dropboxClient.dbxPath(
+      unit.sourcePath || context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
 
     push('PASS', 'Destination location', `${destRoot.label} resolved for ${destEmail}`);
 
@@ -318,6 +330,9 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         `${sourceEmail} did not resolve to a Dropbox team member — reading the token's own Dropbox. `
         + 'On a Business team that is probably the admin account, not the intended source.');
     }
+    // The MEMBER FOLDER, matching where the seeding agent writes. The team space is the frame
+    // CloudFuze scans, but its root rejects writes, so the source of truth for this comparison is
+    // the member folder — the migration step translates the path when it talks to CloudFuze.
     const dbxOpts = { asMemberId };
 
     let sourceTree = [];
@@ -329,13 +344,13 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       sourceTree = core.relativize(sourceTree, sourcePath);
     } catch (err) {
       push('FAIL', 'Source items scanned', `Could not read Dropbox ${sourcePath}: ${err.message}`);
-      return { sourceEmail, destinationPath: unit.destinationPath, checks, itemDetails: [] };
+      return { sourceEmail, destinationPath: unit.destinationPath, checks, items: [] };
     }
 
     if (sourceTree.length === 0) {
       push('FAIL', 'Source items scanned',
         `No source items were read from Dropbox ${sourcePath}. Check the path and the app's scopes.`);
-      return { sourceEmail, destinationPath: unit.destinationPath, checks, itemDetails: [] };
+      return { sourceEmail, destinationPath: unit.destinationPath, checks, items: [] };
     }
     totals.scannedSourceItems += sourceTree.length;
     push('PASS', 'Source items scanned', `${sourceTree.length} item(s) read from Dropbox ${sourcePath}`);
@@ -343,13 +358,16 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // ── Destination: where it landed, and its tree.
     const sourceFolderName = core.lastSegment(sourcePath);
     const migrated = await this.findMigratedRoot(
-      destRoot.rootId, destRoot.driveId, unit.destinationPath, sourceFolderName, destEmail
+      destRoot.rootId, destRoot.driveId, unit.destinationPath, sourceFolderName, destEmail,
+      // The drive name, so a drive-style destination path ("/QA/Folder") resolves to the folder
+      // INSIDE the drive rather than being searched for as a folder named after the drive.
+      destRoot.driveName
     );
     if (!migrated) {
       push('FAIL', 'Destination location',
         `Nothing named "${sourceFolderName}" (or a dedup variant) exists under ${destRoot.label} — `
         + 'the migration appears to have created nothing.');
-      return { sourceEmail, destinationPath: unit.destinationPath, checks, itemDetails: [] };
+      return { sourceEmail, destinationPath: unit.destinationPath, checks, items: [] };
     }
     push('PASS', 'Destination location', `Migrated content found at ${migrated.path} in ${destRoot.label}`);
 
@@ -377,23 +395,63 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       + `missing ${cmp.missing.length}, extra ${cmp.extra.length}, misplaced ${(cmp.misplaced || []).length}`;
     push(cmp.status === 'PASS' ? 'PASS' : 'FAIL', '1.1 Data Migration (structure)', structureDetail);
 
-    // ── Per-item Tier C: permissions, links, timestamps, versions; Tier B hashes.
-    const itemDetails = [];
-    const paired = [...cmp.matched.entries()];
-
-    for (const [srcPath, destItem] of paired) {
-      const srcItem = sourceTree.find((s) => s.path === srcPath);
-      if (!srcItem) continue;
-      const row = await this._validateItem({
-        srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals,
+    // ── Seed the per-item report rows from the FULL source tree, not just the matched half — the
+    // frontend's "Source vs Destination Comparison" panel and the PDF's per-item tree both key off
+    // this shape (see googledriveToSharepoint.js / boxToSharepoint.js: `items` + `folderStructure`
+    // on the unit). Building it from cmp.matched.entries() alone — as this used to — silently
+    // dropped every missing/extra item from both surfaces, so a real "1 missing, 1 extra" structure
+    // failure rendered as an empty, vacuously "Match" comparison with 0/0/0/0 counts.
+    const placeholderPaths = new Set((cmp.placeholderLinks || []).map((p) => p.path));
+    const itemsMap = new Map();
+    for (const item of sourceTree) {
+      const pair = cmp.matched.get(item.path);
+      itemsMap.set(item.path, {
+        path: item.path,
+        name: item.name,
+        type: item.type,
+        depth: core.segmentsOf(item.path).length,
+        found: Boolean(pair),
+        destName: pair?.dest?.name || null,
+        placeholder: !pair && placeholderPaths.has(item.path),
+        mimeType: item.mimeType,
       });
-      itemDetails.push(row);
     }
 
-    this._rollUpItemChecks(push, totals, itemDetails);
+    // ── Per-item Tier C: permissions, links, timestamps, versions; Tier B hashes. Only matched
+    // pairs are reachable at the destination, so this enriches the rows seeded above in place.
+    const paired = [...cmp.matched.entries()];
+
+    for (const [, pair] of paired) {
+      // cmp.matched stores { source, dest } pairs (deepContentCore.compareTrees), not the dest
+      // item directly. Destructuring the map value AS the dest item silently made destItem.id
+      // undefined for every pair, so every listPermissions/listRevisions call below failed with
+      // "Missing required parameters: fileId" and retried 5x with backoff per item — 69 items
+      // burned over an hour before this was ever noticed.
+      const { source: srcItem, dest: destItem } = pair;
+      if (!srcItem || !destItem) continue;
+      const row = await this._validateItem({
+        srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals, sourcePath,
+      });
+      itemsMap.set(srcItem.path, { ...itemsMap.get(srcItem.path), ...row });
+    }
+
+    const items = [...itemsMap.values()].sort((a, b) => a.path.localeCompare(b.path));
+
+    const folderStructure = core.compareFolders(sourceTree, destTree, {
+      destPrefix: migrated.path,
+      pathLimit: bands.pathLengthLimit ?? rules.pathLengthLimit,
+      segmentLimit: bands.segmentLengthLimit ?? rules.segmentLengthLimit,
+      sourceRootName: sourceFolderName || '(root)',
+      destRootName: migrated.name || '(root)',
+      sourceLabel: 'Dropbox',
+      destLabel: destRoot.label,
+    });
+
+    this._rollUpItemChecks(push, totals, items);
     this._checkSpecialCharacters(push, sourceTree, cmp, rules, totals);
     this._checkLongPaths(push, sourceTree, cmp, rules, totals);
     await this._checkCsvReports(push, migrated, destEmail, destRoot, totals);
+    await this._checkEmbeddedLinksContent(push, cmp, destEmail, totals);
     this._checkPaper(push, sourceTree, cmp, totals);
     this._checkNotificationSuppression(push, totals);
 
@@ -403,12 +461,22 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       sourceDriveName: unit.sourceDriveName || null,
       destinationDriveName: destRoot.driveName || null,
       checks,
-      itemDetails,
+      items,
+      folderStructure,
     };
   }
 
   /** Tier C + Tier B for one paired item. */
-  async _validateItem({ srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals }) {
+  async _validateItem({ srcItem, destItem, destEmail, dbxOpts, roleMap, bands, mapEmail, totals, sourcePath }) {
+    // srcItem.path is RELATIVE to the migrated root (deepContentCore.relativize strips sourcePath
+    // off every item so tree comparison isn't sensitive to where the root lives). That's correct
+    // for matching and for report paths, but listItemMembers/listSharedLinks/listRevisions are real
+    // Dropbox API calls that need the item's actual path in Dropbox — sent the relative form, each
+    // one silently resolved to nothing (caught by the surrounding .catch(() => [])), so every run
+    // reported "no comparable source permissions" and "no source shared links" even when the
+    // account genuinely had both. Reconstructed once here for every call that hits the Dropbox API.
+    const srcAbsPath = srcItem.path === '/' ? sourcePath : `${sourcePath}${srcItem.path}`;
+    const srcItemAbs = srcItem.path === '/' ? srcItem : { ...srcItem, path: srcAbsPath };
     const row = {
       path: srcItem.path,
       name: srcItem.name,
@@ -429,18 +497,28 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
     // ── 2.x permissions and 3.x links.
     const [srcMembers, destPerms] = await Promise.all([
-      dropboxClient.listItemMembers(srcItem, dbxOpts).catch(() => []),
+      dropboxClient.listItemMembers(srcItemAbs, dbxOpts).catch(() => []),
       this.readPermissions(destItem.id, destEmail),
     ]);
 
     const sourcePerms = srcMembers
       .filter((m) => roleMap.isComparableDriveRole(m.role))
-      .map((m) => ({
-        email: m.email,
-        role: m.role,
-        type: m.type,
-        displayName: m.displayName,
-      }));
+      .map((m) => {
+        // Dropbox gives a GROUP member no email at all — only a groupId and a display name — but
+        // deepContentCore.comparePermissions drops any entry with a falsy email before it even
+        // reaches the group-matching branch, and that branch keys off `name`, not `displayName`.
+        // Ungrouped, group grants like DROPBOX_TEST_GROUP were silently discarded before comparison
+        // ever ran. A synthetic, obviously-not-a-real-address placeholder keeps the entry alive;
+        // `name` is what actually lets it match the destination group by display name.
+        const isGroup = String(m.type || '').toLowerCase() === 'group';
+        return {
+          email: isGroup ? (m.email || `group:${m.groupId || m.displayName || 'unknown'}`) : m.email,
+          name: isGroup ? m.displayName : undefined,
+          role: m.role,
+          type: m.type,
+          displayName: m.displayName,
+        };
+      });
 
     for (const m of srcMembers.filter((x) => !roleMap.isComparableDriveRole(x.role))) {
       totals.notComparable.push({
@@ -475,7 +553,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
 
     // ── 3.1 / 3.2 shared links.
-    const srcLinks = await dropboxClient.listSharedLinks(srcItem.path, dbxOpts).catch(() => []);
+    const srcLinks = await dropboxClient.listSharedLinks(srcAbsPath, dbxOpts).catch(() => []);
     if (srcLinks.length > 0) {
       for (const link of srcLinks) {
         const linkCmp = roleMap.compareSharedLink(link, destPerms.links);
@@ -522,7 +600,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // ── 9.1 / 9.2 versions. Informational: the expected destination count is a JOB SETTING
     // (scope 9.2), so a count alone cannot be judged without knowing what the job requested.
     const [srcRevs, destVersions] = await Promise.all([
-      dropboxClient.listRevisions(srcItem.path, dbxOpts).catch(() => []),
+      dropboxClient.listRevisions(srcAbsPath, dbxOpts).catch(() => []),
       this.readVersionCount(destItem.id, destEmail),
     ]);
     if (srcRevs.length > 1 || destVersions > 1) {
@@ -616,17 +694,60 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       return;
     }
 
+    // compareTrees() only pairs a source item with a destination name that matches one of the
+    // DESTINATION's own documented sanitization candidates (googledrive.js declares none). CloudFuze
+    // has been observed replacing a single forbidden character (":") in a FILE name on a Google
+    // destination while leaving a sibling FOLDER carrying the same characters untouched — a
+    // substitution neither "no sanitization" nor SharePoint's full character set predicts, so the
+    // pair lands as one "missing" source item plus one unrelated "extra" destination item instead of
+    // a match. Left unhandled, the very rename this feature exists to catch was invisible here: the
+    // loop below only ever saw items that already paired (by definition unchanged, or renamed exactly
+    // as the destination's own rules predict), so it reported "arrived UNCHANGED" while the actually
+    // renamed file was silently skipped.
+    const skeleton = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9.]/g, '');
+    const extraByParent = new Map();
+    for (const e of cmp.extra || []) {
+      const key = core.parentOf(e.path);
+      if (!extraByParent.has(key)) extraByParent.set(key, []);
+      extraByParent.get(key).push(e);
+    }
+
     const renamed = [];
     let arrived = 0;
     for (const item of risky) {
-      const dest = cmp.matched.get(item.path);
-      if (!dest) continue;
-      arrived += 1;
-      if (core.normKey(dest.name) !== core.normKey(item.name)) {
-        renamed.push({ source: item.name, dest: dest.name, path: item.path });
+      // cmp.matched stores { source, dest } pairs (deepContentCore.compareTrees), not the dest item
+      // directly — the same wrapper the item-detail loop above had to be fixed for. Reading `.name`
+      // straight off the map value made every "renamed" row print '"real name" → "undefined"'.
+      const pair = cmp.matched.get(item.path);
+      if (pair && pair.dest) {
+        arrived += 1;
+        if (core.normKey(pair.dest.name) !== core.normKey(item.name)) {
+          renamed.push({ source: item.name, dest: pair.dest.name, path: item.path });
+        }
+        continue;
+      }
+      // Unpaired: look for a same-folder, same-type destination item whose name reduces to the same
+      // alphanumeric skeleton once every punctuation/whitespace character is stripped from both sides
+      // — true for any substitution, insertion, or removal of special characters, regardless of which
+      // replacement character CloudFuze happened to use.
+      const siblings = extraByParent.get(core.parentOf(item.path)) || [];
+      const hit = siblings.find((e) => e.type === item.type && skeleton(e.name) === skeleton(item.name));
+      if (hit) {
+        arrived += 1;
+        renamed.push({ source: item.name, dest: hit.name, path: item.path });
       }
     }
     totals.specialChars.arrived += arrived;
+
+    // A name that never arrived cannot demonstrate that it arrived unchanged. Without this the
+    // check reported PASS — "0 name(s) arrived UNCHANGED" — on a run that migrated nothing, which
+    // is the false-pass this repo exists to prevent.
+    if (arrived === 0) {
+      push('WARN', '5.1 Special Characters Replacement',
+        `Not assessable: none of the ${risky.length} name(s) carrying special characters reached the `
+        + 'destination, so whether they would have been rewritten is unknown. See the structure check.');
+      return;
+    }
 
     if (renamed.length === 0) {
       push('PASS', '5.1 Special Characters Replacement',
@@ -671,6 +792,20 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       shortestMissingEncodedLength: minMissing,
       declaredLimit: rules.pathLengthLimit === Infinity ? 'none (Infinity)' : rules.pathLengthLimit,
     });
+
+    // Nothing arrived at all: path length cannot explain an absence that applies to EVERY item.
+    //
+    // Without this the check reported "items up to 0 encoded chars arrived, shortest missing is N —
+    // that pattern suggests a real path limit", inventing a cause and pointing a reader at the
+    // unresolved breaking-point question when the real reason was that the migration moved nothing.
+    // A run that transferred zero items can only be judged by the structure check.
+    if (maxArrived === 0 && (cmp.missing || []).length > 0) {
+      push('WARN', '7.1 Long-File/folder path',
+        `Not assessable: 0 of ${cmp.totalSource} source item(s) reached the destination, so path `
+        + 'length explains nothing — every item is missing regardless of its length. See the '
+        + 'structure check for why nothing arrived.');
+      return;
+    }
 
     if (minMissing == null) {
       push('PASS', '7.1 Long-File/folder path',
@@ -729,6 +864,67 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       push('PASS', 'In-line comments CSV (out of scope)',
         `"${found.comments.name}" present with ${found.comments.rows} row(s) — the documented outcome: `
         + 'comments arrive as a CSV, not as comments on the item.');
+    }
+  }
+
+  /**
+   * Feature 8.1 content check — the CSV report above only confirms CloudFuze WROTE a mapping file;
+   * it never opens the migrated document to see whether the rewrite actually happened. This reads
+   * the migrated HTML itself. DropboxTestDataAgent seeds exactly one such document
+   * (09-Embedded-Links/document-with-embedded-links.html) with two links: one to a file inside the
+   * migration scope (expected to be rewritten away from Dropbox, scope 8.1) and one to a file
+   * deliberately seeded outside it (expected to still point at Dropbox — scope 10.8's stated limit
+   * on 8.1: transformation happens only when the referenced file is itself in scope).
+   */
+  async _checkEmbeddedLinksContent(push, cmp, destEmail, totals) {
+    const pair = [...cmp.matched.values()]
+      .find((p) => /document-with-embedded-links\.html$/i.test(p.source.path));
+    if (!pair) {
+      push('WARN', '8.1 Embedded Links (content)',
+        'The seeded embedded-links document did not reach the destination, so the actual link '
+        + 'rewrite could not be checked — see the structure check.');
+      return;
+    }
+
+    const text = (await this.readTextLines(pair.dest, destEmail)).join('\n');
+    if (!text) {
+      push('WARN', '8.1 Embedded Links (content)',
+        `Could not read "${pair.dest.name}" at the destination to check its links.`);
+      return;
+    }
+
+    // The seeded markup is `href="URL">label</a>` — the href attribute precedes its own link text.
+    const hrefBefore = (label) => {
+      const m = text.match(new RegExp(`href="([^"]+)">\\s*${label}`, 'i'));
+      return m ? m[1] : null;
+    };
+    const inScopeHref = hrefBefore('in-scope target');
+    const outOfScopeHref = hrefBefore('out-of-scope target');
+    const isDropboxUrl = (u) => /dropbox\.com/i.test(String(u || ''));
+
+    totals.embeddedLinks = { inScopeHref, outOfScopeHref };
+
+    if (!inScopeHref && !outOfScopeHref) {
+      push('WARN', '8.1 Embedded Links (content)',
+        `Neither seeded link could be found in "${pair.dest.name}" at the destination — its markup `
+        + 'may have changed on migration in a way this check does not anticipate.');
+      return;
+    }
+
+    const problems = [];
+    if (inScopeHref && isDropboxUrl(inScopeHref)) {
+      problems.push('the in-scope link still points at Dropbox — it was not rewritten');
+    }
+    if (outOfScopeHref && !isDropboxUrl(outOfScopeHref)) {
+      problems.push('the out-of-scope link was rewritten, but scope 10.8 says only in-scope targets should be');
+    }
+
+    if (problems.length === 0) {
+      push('PASS', '8.1 Embedded Links (content)',
+        'The in-scope link was rewritten away from Dropbox; the out-of-scope link correctly still '
+        + 'points at Dropbox, matching the documented scope-10.8 limit.');
+    } else {
+      push('FAIL', '8.1 Embedded Links (content)', problems.join('; '));
     }
   }
 

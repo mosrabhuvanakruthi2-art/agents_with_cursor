@@ -356,8 +356,45 @@ function mapConfigUsers(admin) {
 const USER_LISTING_PROVIDER = {
   googledrive: 'google', googleshareddrive: 'google', gmail: 'google', // (googleshareddrive kept)
   onedrive: 'microsoft', outlook: 'microsoft',
-  sharepoint: 'sharepoint', box: 'box',
+  sharepoint: 'sharepoint', box: 'box', dropbox: 'dropbox',
 };
+
+/**
+ * Dropbox team members, in this endpoint's user shape.
+ *
+ * Dropbox has no directory API in the Graph/Gmail sense — the equivalent is the team member list,
+ * which only exists on a Business team. `adminEmail` is accepted for signature symmetry and is
+ * deliberately unused: a Dropbox team token lists the whole team regardless of which member it acts
+ * as, so filtering by the admin's domain (as the Microsoft branches do) would drop the mixed-domain
+ * teams this account actually has — its members span snapbot.io, filefuze.co and cloudfuze.com.
+ *
+ * INVITED members are excluded. An invited member has not accepted and has no Dropbox to read, so
+ * offering them as a migration source produces a run that cannot succeed. The count of those skipped
+ * is logged rather than silently dropped.
+ */
+async function listDropboxTeamUsers(adminEmail) {
+  const dropboxClient = require('../clients/dropboxClient');
+  const members = await dropboxClient.listTeamMembers();
+  const active = members.filter((m) => String(m.status || '').toLowerCase() === 'active');
+  const skipped = members.length - active.length;
+  if (skipped > 0) {
+    logger.info(
+      `listDropboxTeamUsers: ${skipped} member(s) excluded as not active (invited/suspended) — `
+      + 'they have no Dropbox content to migrate'
+    );
+  }
+  return active.map((m) => {
+    const name = m.displayName || m.email || '';
+    return {
+      // The dbmid: id, which every single-account Dropbox call needs as its member context.
+      id: m.teamMemberId,
+      email: m.email,
+      displayName: name,
+      firstName: name.split(' ')[0] || '',
+      lastName: name.split(' ').slice(1).join(' ') || '',
+    };
+  });
+}
 
 async function getSourceUsers(req, res) {
   try {
@@ -396,6 +433,9 @@ async function getSourceUsers(req, res) {
         const slackClient = require('../clients/slackClient');
         logger.info(`getSourceUsers: fetching Slack workspace users (admin: ${adminEmail})`);
         liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
+      } else if (provider === 'dropbox') {
+        logger.info(`getSourceUsers: fetching Dropbox team members (admin: ${adminEmail})`);
+        liveUsers = await listDropboxTeamUsers(adminEmail);
       } else if (provider === 'google' || !provider) {
         const gmailClient = require('../clients/gmailClient');
         liveUsers = await gmailClient.listDomainUsers(adminEmail, { allDomains });
@@ -406,7 +446,7 @@ async function getSourceUsers(req, res) {
     }
 
     if (liveUsers && liveUsers.length > 0) {
-      return res.json({ adminEmail, users: liveUsers, source: provider === 'microsoft' ? 'graph' : 'gmail' });
+      return res.json({ adminEmail, users: liveUsers, source: provider === 'microsoft' ? 'graph' : provider === 'dropbox' ? 'dropbox' : 'gmail' });
     }
 
     // Box / SharePoint providers (from dev) — dedicated discovery.
@@ -442,6 +482,16 @@ async function getSourceUsers(req, res) {
       return res.json({ adminEmail, users: configUsers, source: 'config' });
     }
     if (domainHint) return res.status(400).json({ error: domainHint });
+    // Dropbox: an empty list is never normal, so say why rather than returning [] and letting the
+    // wizard show "0 source" with no explanation — which is exactly how this gap presented.
+    if (provider === 'dropbox') {
+      return res.status(400).json({
+        error: `Couldn't list Dropbox team members: ${liveErrMsg || 'no members returned'}. `
+          + 'Check that a Dropbox account is connected (Connect Clouds → Dropbox), that the app has '
+          + 'the team scopes (team_data.member, team_info.read, members.read), and that this is a '
+          + 'Dropbox Business team — a personal Dropbox has no team member list.',
+      });
+    }
     // Google: a live failure with no fallback almost always means the service account
     // isn't authorized for Domain-Wide Delegation in THIS user's Workspace domain.
     if ((provider === 'google' || !provider) && liveErrMsg) {
@@ -452,7 +502,7 @@ async function getSourceUsers(req, res) {
           + `Google Admin console (scopes: admin.directory.user.readonly, drive), then retry.`,
       });
     }
-    return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : 'gmail' });
+    return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : provider === 'dropbox' ? 'dropbox' : 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -482,6 +532,12 @@ async function getDestinationUsers(req, res) {
         const slackClient = require('../clients/slackClient');
         logger.info(`getDestinationUsers: fetching Slack workspace users (admin: ${adminEmail})`);
         liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
+      } else if (provider === 'dropbox') {
+        // No combination migrates INTO Dropbox today, but the wizard offers every content service on
+        // both sides. Handled here so selecting it lists members instead of silently showing none —
+        // the same gap that made a Dropbox SOURCE show "0 source" and block the Map Users step.
+        logger.info(`getDestinationUsers: fetching Dropbox team members (admin: ${adminEmail})`);
+        liveUsers = await listDropboxTeamUsers(adminEmail);
       } else if (provider === 'microsoft' || !provider) {
         const outlookClient = require('../clients/outlookClient');
         logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
@@ -501,7 +557,7 @@ async function getDestinationUsers(req, res) {
 
     if (liveUsers && liveUsers.length > 0) {
       logger.info(`getDestinationUsers: ${liveUsers.length} users (live)`);
-      return res.json({ adminEmail, users: liveUsers, total: liveUsers.length, source: provider === 'google' ? 'gmail' : 'graph' });
+      return res.json({ adminEmail, users: liveUsers, total: liveUsers.length, source: provider === 'google' ? 'gmail' : provider === 'dropbox' ? 'dropbox' : 'graph' });
     }
     // Box / SharePoint providers (from dev) — dedicated discovery.
     if (provider === 'box') {
@@ -539,7 +595,7 @@ async function getDestinationUsers(req, res) {
       logger.warn(`getDestinationUsers: ${domainHint}`);
       return res.status(400).json({ error: domainHint });
     }
-    return res.json({ adminEmail, users: [], total: 0, source: provider === 'google' ? 'gmail' : 'graph' });
+    return res.json({ adminEmail, users: [], total: 0, source: provider === 'google' ? 'gmail' : provider === 'dropbox' ? 'dropbox' : 'graph' });
   } catch (err) {
     logger.error(`getDestinationUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });

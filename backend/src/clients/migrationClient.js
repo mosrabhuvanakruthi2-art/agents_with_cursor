@@ -739,7 +739,29 @@ function findCloudId(clouds, email, cloudNameHint) {
   // cloud name does ('GOOGLE_SHARED_DRIVES'), so a literal startsWith never matched and the Shared
   // Drive cloud was invisible to type-scoped matching.
   const squash = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const hint = cloudNameHint ? squash(cloudNameHint) : null;
+
+  /**
+   * Provider keys whose CloudFuze cloud name shares no prefix with them.
+   *
+   * The squash-and-prefix test below covers most providers by luck of naming: `box`→BOX_BUSINESS,
+   * `dropbox`→DROPBOX_BUSINESS, `sharepoint`→SHAREPOINT_ONLINE_BUSINESS, `onedrive`→
+   * ONEDRIVE_BUSINESS_ADMIN and `googleshareddrive`→GOOGLE_SHARED_DRIVES all match as prefixes.
+   *
+   * `googledrive` does not: CloudFuze calls My Drive **G_SUITE**, and GOOGLEDRIVE/GSUITE share no
+   * prefix in either direction. So no cloud matched the type, `typedClouds` came back empty, and the
+   * cross-type fallback below picked the first cloud registered to that email — Box. A Dropbox →
+   * My Drive run was therefore sent to CloudFuze as Dropbox → BOX_BUSINESS, and the path mapping
+   * saved 0 rows while polling 60 times with "Total Saved Count :0".
+   *
+   * Only aliases are added here; every provider that already matched is untouched.
+   */
+  const PROVIDER_CLOUD_ALIAS = {
+    GOOGLEDRIVE: 'GSUITE',
+    // 'google' is the mail-side key for the same cloud; harmless here and correct if ever passed.
+    GOOGLE: 'GSUITE',
+  };
+  const rawHint = cloudNameHint ? squash(cloudNameHint) : null;
+  const hint = rawHint ? (PROVIDER_CLOUD_ALIAS[rawHint] || rawHint) : null;
   const typedClouds = hint
     ? clouds.filter((c) => {
         const cn = squash(c.cloudName);
@@ -1088,6 +1110,84 @@ async function triggerMigration(context) {
     // The seeded folder still arrives as a folder at the destination, because it is a child of the
     // drive and the tree is preserved — so the validator's expectations do not change.
     const isSharedDrive = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''));
+
+    /**
+     * Dropbox addresses folders by PATH, not by an opaque id — and so does CloudFuze's Dropbox
+     * connector. CloudFuze's own registration for the cloud proves it: every other content cloud
+     * reports a real id as its root (Box "0", a Shared Drive "0AJoAz…"), while the Dropbox cloud
+     * reports `rootFolderId: "/"`.
+     *
+     * DropboxTestDataAgent returns the Dropbox API id (`id:9nIlEb3a…`) as `rootFolderId`, which is
+     * the right thing for our own follow-up calls but the wrong NAMESPACE for CloudFuze. Sent as
+     * `fromRootId` it named nothing CloudFuze could resolve, so the scan attached no work: job
+     * 6a98039a sat at NOT_PROCESSED / total=0 with no errorDescription, exactly like the Box jobs
+     * whose fromRootId was null.
+     *
+     * The rule the comment further down already states — "the id and the path have to describe the
+     * same object" — is satisfied here by using the path as the id, because for Dropbox they ARE
+     * the same thing.
+     *
+     * Gated on the registered CLOUD TYPE, like isSharedDrive above, so no other combination sees a
+     * different request shape.
+     */
+    const isDropboxSource = /DROPBOX/i.test(String(context.sourceCloudName || ''));
+
+    /**
+     * Team-space prefix for a Dropbox source, e.g. "/Erik E".
+     *
+     * A Dropbox Business team with team spaces gives each member two namespaces. The seeding agent
+     * writes to the MEMBER FOLDER — the team-space root rejects writes with
+     * `path/no_write_permission` — so a seeded "/QA-X" lives at "/Erik E/QA-X" when viewed from the
+     * team space. CloudFuze scans the TEAM SPACE, so it must be told the prefixed form or its scan
+     * finds nothing: job 6a98085a reached PROCESSED with totalFilesAndFolders=0 for exactly this.
+     *
+     * Empty string when the team has no team space, which leaves every path untouched.
+     */
+    let dbxHomePath = '';
+    if (isDropboxSource) {
+      try {
+        const dropboxClient = require('./dropboxClient');
+        const memberId = await dropboxClient.resolveTeamMemberId(context.sourceEmail);
+        dbxHomePath = await dropboxClient.resolveMemberHomePath(memberId);
+      } catch (err) {
+        logger.warn(`CloudFuze content: could not resolve the Dropbox team-space prefix (${err.message})`);
+      }
+    }
+    /** Translate a member-folder path into the team-space path CloudFuze scans. */
+    const dbxTeamPath = (p) => {
+      const path = String(p || '/');
+      if (!dbxHomePath || path === '/' || path.startsWith(`${dbxHomePath}/`)) return path;
+      return `${dbxHomePath}${path.startsWith('/') ? '' : '/'}${path}`;
+    };
+
+    /**
+     * The id CloudFuze expects for one unit: for Dropbox a path, LOWERCASED; otherwise the id.
+     *
+     * The lowercase is not cosmetic — it is the whole difference between a job that runs and one
+     * rejected with `CONFLICT: "Migration not Allowed for wrong CSV paths"`. Proven by comparing the
+     * only Dropbox → Google job on this server that moved data against ours:
+     *
+     *   worked  6a981342…  sourceFolderPath "/Erik E/QA-Automation"
+     *                      fromRootId       "/erik e/qa-automation"        67 items, 410 files
+     *   failed  6a9817a5…  sourceFolderPath "/Erik E/QA-MyDrive-lavanya"
+     *                      fromRootId       "/Erik E/QA-MyDrive-lavanya"   CONFLICT, 0 items
+     *
+     * That is Dropbox's own `path_lower` — the canonical, case-insensitive form it stores alongside
+     * `path_display`. CloudFuze evidently matches the CSV row against the lowercase form, so display
+     * case fails the comparison. `sourceFolderPath` keeps its display case in both jobs, so only
+     * this field is lowercased.
+     */
+    const rootIdFor = (folderId, folderPath) => (
+      isDropboxSource ? dbxTeamPath(folderPath || '/').toLowerCase() : folderId
+    );
+    if (isDropboxSource) {
+      logger.info(
+        'CloudFuze content: Dropbox source — sending the folder PATH as fromRootId (CloudFuze '
+        + 'registers the Dropbox cloud with rootFolderId "/", so a Dropbox id: value resolves to '
+        + `nothing)${dbxHomePath ? `, prefixed with the team-space home path "${dbxHomePath}" so the `
+          + 'path exists in the namespace CloudFuze scans' : ''}.`
+      );
+    }
     const sharedDriveRootId = isSharedDrive ? (context.sourceDriveId || null) : null;
     const sharedDriveName = isSharedDrive
       ? normalizeDriveName(context.sourceDriveName || env.GOOGLE_SHARED_DRIVE_NAME)
@@ -1123,9 +1223,10 @@ async function triggerMigration(context) {
           // For a Shared Drive both fields describe the DRIVE; otherwise keep the caller's folder.
           // The id and the path must describe the same object — naming a subfolder here while
           // passing the drive id as the root scans nothing (see the job comparison above).
-          sourcePath: isRowSharedDrive ? `/${rowDriveName}` : (u.sourcePath || '/'),
-          fromRootId: rowDriveId || u.sourceRootId || u.sourcePath || '/',
-          folderRootId: rowDriveId || u.sourceRootId || null,
+          sourcePath: isRowSharedDrive ? `/${rowDriveName}`
+            : (isDropboxSource ? dbxTeamPath(u.sourcePath || '/') : (u.sourcePath || '/')),
+          fromRootId: rowDriveId || rootIdFor(u.sourceRootId, u.sourcePath) || u.sourcePath || '/',
+          folderRootId: rowDriveId || rootIdFor(u.sourceRootId, u.sourcePath) || null,
           // Kept for the report so the QA output still names the folder the run seeded.
           seededFolderPath: u.sourcePath || null,
           sourceDriveName: rowDriveName || null,
@@ -1138,9 +1239,12 @@ async function triggerMigration(context) {
       units = [{
         sourceEmail: context.sourceEmail,
         destinationEmail: context.destinationEmail,
-        sourcePath: (sharedDriveRootId && sharedDriveName && !pathOverride) ? `/${sharedDriveName}` : sourcePath,
-        fromRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || sourcePath,
-        folderRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || null,
+        sourcePath: (sharedDriveRootId && sharedDriveName && !pathOverride) ? `/${sharedDriveName}`
+          : (isDropboxSource ? dbxTeamPath(sourcePath) : sourcePath),
+        fromRootId: rootIdOverride || sharedDriveRootId
+          || rootIdFor(context.sourceRootId, sourcePath) || sourcePath,
+        folderRootId: rootIdOverride || sharedDriveRootId
+          || rootIdFor(context.sourceRootId, sourcePath) || null,
         seededFolderPath: sourcePath,
         destinationPath: resolveDestPath(context.destinationPath),
       }];
@@ -1636,8 +1740,16 @@ ${pathCsv}`);
       `toDate=${encodeURIComponent(toDate)}`,
       'createdTimeForFiles=false',
       `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
-      // Job Options step: "Replace special characters with" + "Exclude file types"
-      `specialCharacter=${encodeURIComponent(context.replaceSpecialChar || '-')}`,
+      // Job Options step: "Replace special characters with" + "Exclude file types".
+      // `||` treated "" ("Remove", a deliberate choice) the same as unset and silently sent "-"
+      // instead — Remove never actually removed anything. `??` keeps "" as sent.
+      // Omitting this parameter entirely was tried (a "None" option, Google needs no sanitizing at
+      // all) on the theory that CloudFuze would then leave the job's specialCharacter null. It
+      // doesn't: CloudFuze's own update endpoint defaults to "-" when the field is left out, and the
+      // actual colon-in-filename substitution CloudFuze performs on this route doesn't even match
+      // whatever this field is set to (job set to "-", destination file got "_") — so this setting
+      // does not control that behaviour at all, and the "None" option was removed as dead weight.
+      `specialCharacter=${encodeURIComponent(context.replaceSpecialChar ?? '-')}`,
       // notToMoveExtension: comma-separated extensions (no dots), e.g. mp3,mp4,psd
       ...(context.excludeFileTypes ? [`notToMoveExtension=${encodeURIComponent(context.excludeFileTypes)}`] : []),
     ].join('&');
@@ -2071,8 +2183,26 @@ async function pollContentMigration(moveId, { maxMinutes = 30, intervalMs = 3000
         if (Number.isFinite(scanned)) {
           lastJobDetails = { workspaceId: moveId, totalCount: scanned, processedCount: scanned };
           if (scanned === 0) {
-            logger.error(`CloudFuze content job ${moveId} reached ${status} but the workspace reports `
-              + `totalFilesAndFolders=0 — nothing migrated, treating as PROCESSED_EMPTY`);
+            // Say WHY, not just that nothing moved.
+            //
+            // This record carries `processStatus` and `errorDescription`, and both were being
+            // thrown away here while the log said "nothing migrated" with no reason. CloudFuze had
+            // recorded `CONFLICT: "Migration not Allowed for wrong CSV paths"` on job 6a98085a — the
+            // exact answer — and it went unread for an afternoon because the only other place that
+            // reads this field runs one second after start, before CloudFuze has validated anything.
+            const why = ws.errorDescription || ws.exceptionMessage || null;
+            lastJobDetails.errorDescription = why;
+            lastJobDetails.processStatus = ws.processStatus || null;
+            logger.error(
+              `CloudFuze content job ${moveId} reached ${status} but the workspace reports `
+              + `totalFilesAndFolders=0 — nothing migrated, treating as PROCESSED_EMPTY. `
+              + `processStatus=${ws.processStatus || 'unknown'}`
+              + (why
+                ? `. CloudFuze says: "${why}" (sourceFolderPath=${JSON.stringify(ws.sourceFolderPath)}, `
+                  + `destFolderPath=${JSON.stringify(ws.destFolderPath)}, `
+                  + `fromRootId=${JSON.stringify(ws.fromRootId)}, teamFolder=${ws.teamFolder})`
+                : '. No errorDescription on the workspace either — the scan simply matched nothing.')
+            );
             return 'PROCESSED_EMPTY';
           }
           logger.info(`CloudFuze content job ${moveId}: ${status}, workspace scanned ${scanned} item(s)`);

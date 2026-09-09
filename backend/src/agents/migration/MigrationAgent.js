@@ -786,6 +786,18 @@ class MigrationAgent extends BaseAgent {
     const isContentStopStatus = CONTENT_STOP_STATUSES.has(finalStatus);
 
     if (isContentMode && isContentStopStatus) {
+      // This job moved nothing (see CONTENT_STOP_STATUSES above), same as the zeroPairs early-exit
+      // above — but unlike that path, this one used to return without `migrationFailed`, so
+      // `result.migrationFailed` stayed false, the orchestrator's known-limitation banner never fired,
+      // and — because dropboxToGoogledrive registers a real deep validator — the orchestrator still
+      // ran full destination validation regardless (by design: "the validator checks the actual
+      // destination state"). When the destination already held a PRIOR run's content (nothing wipes a
+      // reused useExistingSource folder between runs), that validation pass found real matches there
+      // and the report read as a mostly-successful migration for a job that CloudFuze itself rejected.
+      const errorDescription = polledJobDetails.errorDescription || polledJobDetails.exceptionMessage || null;
+      const reason = errorDescription
+        ? `CloudFuze status "${finalStatus}"${polledJobDetails.processStatus ? ` (${polledJobDetails.processStatus})` : ''}: ${errorDescription}`
+        : `CloudFuze status "${finalStatus}" — the job moved 0 of ${context.migrationJobDetails.totalCount ?? '?'} item(s)`;
       log.info(`Content migration stop status "${finalStatus}" — skipping validation, returning report`);
       bump(`MigrationAgent: content migration stopped with status "${finalStatus}" — fetching report…`);
 
@@ -794,15 +806,20 @@ class MigrationAgent extends BaseAgent {
         status: finalStatus,
         totalCount: context.migrationJobDetails.totalCount,
         processedCount: context.migrationJobDetails.processedCount,
+        migrationFailed: true,
+        failureReason: reason,
         rawJobData: polledJobReport || null,
         stoppedAt: new Date().toISOString(),
       };
       context.contentMigrationReport = contentReport;
+      context.migrationFailureReason = reason;
 
       bump(`MigrationAgent: finished — content migration stopped (${finalStatus})`);
       return {
         jobId: this.jobId,
         finalStatus,
+        migrationFailed: true,
+        failureReason: reason,
         retriesUsed: this.retries,
         rawResponse: triggerResult.rawResponse,
         ownerValidation,
