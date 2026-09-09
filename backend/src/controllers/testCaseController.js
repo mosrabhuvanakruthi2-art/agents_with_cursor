@@ -88,24 +88,50 @@ const MESSAGE_CONTEXT = {
   },
 };
 
+const CONTENT_CONTEXT = {
+  default: {
+    how: `1. Files and folders exist in the source content platform
+2. A CloudFuze migration job copies them to the destination platform
+3. The destination is validated for correct structure, permissions, versions, and link fidelity`,
+    mapping: `CONTENT MIGRATION MAPPING:
+- Root Folder Permissions → folder-level ACLs preserved at destination
+- Root File Permissions → file-level ACLs preserved at destination
+- Versions → full version history migrated with metadata intact
+- Selective Versions → only specified versions (e.g. latest N) migrated
+- Embedded Links → internal hyperlinks updated to point to destination URLs
+- Shared Links → public/shared links recreated or remapped at destination
+- Inner File Permissions → permissions on files inside folders preserved
+- Sub Folder Permissions → permissions on nested sub-folders preserved
+- Special Character Replacement → file/folder names with special characters handled correctly
+- Pick Inside → selective migration of specific files/folders within a structure
+- Timestamps → created/modified timestamps preserved at destination`,
+    stepVerbs: ['Log in to source content platform', 'Trigger CloudFuze migration', 'Log in to destination platform', 'Navigate to the expected file or folder'],
+  },
+};
+
 function buildSystemPrompt(productType, combination, folder) {
   const isMessage = productType === 'Message';
+  const isContent = productType === 'Content';
   const ctx = isMessage
     ? MESSAGE_CONTEXT.default
-    : (MAIL_CONTEXT[combination] || MAIL_CONTEXT['Gmail → Outlook']);
+    : isContent
+      ? CONTENT_CONTEXT.default
+      : (MAIL_CONTEXT[combination] || MAIL_CONTEXT['Gmail → Outlook']);
 
   const folderInstruction = folder
     ? `FOLDER OVERRIDE: Every test case MUST use folder = "${folder}". Do not auto-detect or change this.`
     : isMessage
       ? `folder: AUTO-DETECT. Choose from: 'Channels', 'Direct Messages', 'Group Messages', 'Threads', 'Attachments', 'Reactions', 'Pinned Messages', 'Archived Channels', 'Negative Test Cases'.`
-      : `folder: AUTO-DETECT from scenario context. Choose from: 'Inbox', 'Sent', 'Draft', 'Spam', 'Trash', 'Labels', 'Starred', 'Attachments', 'Calendar Events', 'Contacts', 'Groups', 'Negative Test Cases', 'Delta Inbox', 'Delta Sent', 'Delta Draft', 'Delta Spam', 'Delta Trash', 'Cloud Adding'. NEVER use 'Sanity Cases' or 'Smoke Cases'.`;
+      : isContent
+        ? `folder: AUTO-DETECT from scenario context. Choose from: 'Root Folder Permissions', 'Root File Permissions', 'Versions', 'Selective Versions', 'Embedded Links', 'Shared Links', 'Inner File Permissions', 'Sub Folder Permissions', 'Special Character Replacement', 'Pick Inside', 'Timestamps', 'Negative Test Cases'. NEVER use 'Sanity Cases' or 'Smoke Cases'.`
+        : `folder: AUTO-DETECT from scenario context. Choose from: 'Inbox', 'Sent', 'Draft', 'Spam', 'Trash', 'Labels', 'Starred', 'Attachments', 'Calendar Events', 'Contacts', 'Groups', 'Negative Test Cases', 'Delta Inbox', 'Delta Sent', 'Delta Draft', 'Delta Spam', 'Delta Trash', 'Cloud Adding'. NEVER use 'Sanity Cases' or 'Smoke Cases'.`;
 
-  const subjectNote = isMessage
-    ? `subject: A short identifier starting with "QA Custom - " — describe the message type being tested`
+  const subjectNote = isMessage || isContent
+    ? `subject: A short identifier starting with "QA Custom - " — describe the content feature being tested`
     : `subject: Email subject starting with "QA Custom - " followed by a descriptive name`;
 
-  const labelNote = isMessage
-    ? `labelIds: Leave as ["INBOX"] — not applicable for messaging migration`
+  const labelNote = isMessage || isContent
+    ? `labelIds: Leave as ["INBOX"] — not applicable for ${productType.toLowerCase()} migration`
     : `labelIds: one or more Gmail label IDs from: INBOX, SENT, SPAM, TRASH, STARRED, IMPORTANT, CATEGORY_SOCIAL, CATEGORY_FORUMS, CATEGORY_PROMOTIONS, CATEGORY_UPDATES`;
 
   return `You are a QA test case generator for CloudFuze ${productType} migration (${combination}).

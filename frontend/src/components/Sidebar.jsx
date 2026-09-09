@@ -1,39 +1,62 @@
+import { useState, useRef, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
+import { getAppUser, logout } from '../services/msalOauth';
+
+/** Initials from a name ("Bhuvana Mosra" → "BM") or email, max 2 chars. */
+function initialsOf(nameOrEmail) {
+  const parts = String(nameOrEmail || '').split(/[\s@._-]+/).filter(Boolean);
+  const letters = parts.slice(0, 2).map((s) => s[0]).join('');
+  return (letters || '?').toUpperCase();
+}
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: DashboardIcon },
-  { to: '/test-case-generator', label: 'Test Case Generator', icon: SparklesIcon },
-  { to: '/agent-repo', label: 'Agent Repo', icon: AgentRepoIcon },
+  { to: '/test-case-generator', label: 'Test Cases', icon: SparklesIcon },
+  { to: '/connect', label: 'Connect Clouds', icon: ConnectIcon },
   { to: '/run', label: 'Run Agent', icon: PlayIcon },
-  { to: '/logs', label: 'Execution Logs', icon: LogsIcon },
-  { to: '/validation', label: 'Validation Results', icon: CheckIcon },
+  { to: '/logs', label: 'Reports & Logs', icon: LogsIcon },
   { to: '/test-repository', label: 'Test Repository', icon: FolderTreeIcon },
-  { to: '/clean', label: 'Outlook Clean Up', icon: TrashIcon },
-  { to: '/clean-source', label: 'Gmail Clean Up', icon: TrashIcon },
+  { to: '/clean', label: 'Clean Up', icon: TrashIcon },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
+  const user = getAppUser() || {};
+  const displayName = user.name || user.email || 'Signed in';
+  const initials = initialsOf(user.name || user.email);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  // Close the account popover on outside click / Escape.
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onDoc = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
+
   return (
     <aside
-      className={`relative flex-shrink-0 bg-gray-900 text-white flex flex-col transition-all duration-200 ${
+      className={`relative flex-shrink-0 bg-slate-700 text-white flex flex-col transition-all duration-200 ${
         collapsed ? 'w-14' : 'w-64'
       }`}
     >
-      {/* Header */}
-      <div className={`border-b border-gray-700 flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'px-6 py-5'}`}>
+      {/* Header — brand + collapse toggle (no hamburger, no edge arrow) */}
+      <div className={`border-b border-slate-600 flex items-center ${collapsed ? 'justify-center px-0 py-4' : 'justify-between pl-5 pr-3 py-4'}`}>
         {!collapsed && (
           <div className="flex-1 min-w-0">
             <h1 className="text-lg font-bold tracking-tight truncate">Migration QA</h1>
-            <p className="text-xs text-gray-400 mt-0.5">Agent System</p>
+            <p className="text-xs text-slate-300 mt-0.5">Agent System</p>
           </div>
         )}
-        {collapsed && (
-          <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
-            </svg>
-          </div>
-        )}
+        <button
+          onClick={onToggle}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-300 hover:bg-slate-600 hover:text-white transition-colors flex-shrink-0"
+        >
+          <PanelIcon className="w-5 h-5" />
+        </button>
       </div>
 
       {/* Nav items */}
@@ -52,7 +75,7 @@ export default function Sidebar({ collapsed, onToggle }) {
                 } ${
                   isActive
                     ? 'bg-indigo-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                    : 'text-slate-200 hover:bg-slate-600 hover:text-white'
                 }`
               }
             >
@@ -63,30 +86,66 @@ export default function Sidebar({ collapsed, onToggle }) {
         })}
       </nav>
 
-      {/* Footer */}
-      {!collapsed && (
-        <div className="px-6 py-4 border-t border-gray-700 text-xs text-gray-500">
-          v1.0.0
-        </div>
-      )}
-
-      {/* Toggle button — sits on the right edge of the sidebar */}
-      <button
-        onClick={onToggle}
-        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="absolute -right-3 top-[72px] z-10 w-6 h-6 rounded-full bg-indigo-600 hover:bg-indigo-500 border-2 border-gray-900 flex items-center justify-center transition-colors shadow-md"
-      >
-        <svg
-          className={`w-3 h-3 text-white transition-transform duration-200 ${collapsed ? 'rotate-0' : 'rotate-180'}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={3}
-          stroke="currentColor"
+      {/* Footer — account avatar with a Log out popover */}
+      <div ref={menuRef} className="relative border-t border-slate-600 px-3 py-3">
+        <button
+          type="button"
+          onClick={() => setMenuOpen((o) => !o)}
+          title={displayName}
+          className={`w-full flex items-center rounded-lg hover:bg-slate-600 transition-colors ${
+            collapsed ? 'justify-center p-1.5' : 'gap-3 px-2 py-2'
+          }`}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-        </svg>
-      </button>
+          <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-semibold text-white flex-shrink-0">
+            {initials}
+          </div>
+          {!collapsed && (
+            <>
+              <div className="min-w-0 flex-1 text-left">
+                <p className="text-sm font-medium text-white truncate">{displayName}</p>
+                {user.email && <p className="text-xs text-slate-400 truncate">{user.email}</p>}
+              </div>
+              <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 15 12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" />
+              </svg>
+            </>
+          )}
+        </button>
+
+        {menuOpen && (
+          <div
+            className={`absolute bottom-full mb-2 rounded-xl bg-white shadow-xl border border-gray-200 py-1 z-50 ${
+              collapsed ? 'left-2 w-56' : 'left-3 right-3'
+            }`}
+          >
+            <div className="px-4 py-3 border-b border-gray-100">
+              <p className="text-sm font-semibold text-gray-900 truncate">{displayName}</p>
+              {user.email && <p className="text-xs text-gray-500 truncate">{user.email}</p>}
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" />
+              </svg>
+              Log out
+            </button>
+          </div>
+        )}
+
+      </div>
     </aside>
+  );
+}
+
+function PanelIcon(props) {
+  return (
+    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 4.5v15" />
+    </svg>
   );
 }
 
@@ -114,13 +173,6 @@ function LogsIcon(props) {
   );
 }
 
-function CheckIcon(props) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-    </svg>
-  );
-}
 
 function TrashIcon(props) {
   return (

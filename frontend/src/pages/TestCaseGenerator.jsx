@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   generateTestCases,
   getCustomTestCases,
@@ -27,7 +27,32 @@ const PRODUCT_COMBOS = {
     'Chat → Chat',
     'Chat → Slack',
   ],
-  Content: [], // user will supply combinations later
+  Content: [
+    'Box → OneDrive',
+    'Box → SharePoint Online',
+    'Box → MyDrive',
+    'Box → Shared Drive',
+    'MyDrive → MyDrive',
+    'Shared Drive → Shared Drive',
+    'Dropbox → OneDrive',
+    'Dropbox → SharePoint Online',
+    'Dropbox → MyDrive',
+    'Dropbox → Shared Drive',
+    'OneDrive → OneDrive',
+    'SharePoint → SharePoint',
+    'MyDrive → OneDrive',
+    'Shared Drive → SharePoint Online',
+    'Egnyte → MyDrive',
+    'Egnyte → Shared Drive',
+    'Egnyte → OneDrive',
+    'Egnyte → SharePoint Online',
+    'SharePoint Online → Shared Drive',
+    'OneDrive → MyDrive',
+    'ShareFile → MyDrive',
+    'ShareFile → Shared Drive',
+    'ShareFile → OneDrive',
+    'ShareFile → SharePoint Online',
+  ],
 };
 
 const MAIL_FOLDER_OPTIONS = [
@@ -40,6 +65,14 @@ const MAIL_FOLDER_OPTIONS = [
 const MESSAGE_FOLDER_OPTIONS = [
   'Channels', 'Direct Messages', 'Group Messages', 'Threads',
   'Attachments', 'Reactions', 'Pinned Messages', 'Archived Channels',
+  'Negative Test Cases',
+];
+
+const CONTENT_FOLDER_OPTIONS = [
+  'Root Folder Permissions', 'Root File Permissions', 'Versions',
+  'Selective Versions', 'Embedded Links', 'Shared Links',
+  'Inner File Permissions', 'Sub Folder Permissions',
+  'Special Character Replacement', 'Pick Inside', 'Timestamps',
   'Negative Test Cases',
 ];
 
@@ -255,7 +288,17 @@ export default function TestCaseGenerator() {
   const [folder, setFolder]             = usePersistedState('tcg-folder', '');
   const [generatedCases, setGeneratedCases] = usePersistedState('tcg-cases', []);
   const [savingState, setSavingState]   = usePersistedState('tcg-saving', {});
-  const [selected, setSelected]         = usePersistedState('tcg-selected', new Set());
+  // Persisted as a plain array (JSON-safe) — a Set doesn't survive JSON.stringify/parse and
+  // silently comes back as {} (no .has/.size), which crashed this page on reload.
+  const [selectedList, setSelectedList] = usePersistedState('tcg-selected-list', []);
+  const selected = useMemo(() => new Set(selectedList), [selectedList]);
+  const setSelected = useCallback((update) => {
+    setSelectedList((prevList) => {
+      const prevSet = new Set(prevList);
+      const nextSet = typeof update === 'function' ? update(prevSet) : update;
+      return [...nextSet];
+    });
+  }, [setSelectedList]);
 
   const abortControllerRef = useRef(null);
 
@@ -276,8 +319,8 @@ export default function TestCaseGenerator() {
   }
 
   const combos         = PRODUCT_COMBOS[productType] || [];
-  const folderOptions  = productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
-  const isContentType  = productType === 'Content';
+  const folderOptions  = productType === 'Message' ? MESSAGE_FOLDER_OPTIONS : productType === 'Content' ? CONTENT_FOLDER_OPTIONS : MAIL_FOLDER_OPTIONS;
+  const isContentType  = combos.length === 0;
   const effectiveCombo = isContentType ? customCombo : combination;
 
   const loadSaved = useCallback(async () => {
@@ -435,13 +478,7 @@ export default function TestCaseGenerator() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Test Case Generator</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Select the product type and migration combination, then describe your scenarios to generate accurate test cases.
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">Select the product type and migration combination, then describe your scenarios to generate accurate test cases. Saved cases land in the <span className="font-medium text-gray-700">Agent Repo</span> tab.</p>
 
       {/* Input card */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">

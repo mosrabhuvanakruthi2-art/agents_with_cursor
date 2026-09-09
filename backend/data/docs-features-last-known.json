@@ -1,5 +1,5 @@
 {
-  "syncedAt": "2026-06-03T15:24:51.074Z",
+  "syncedAt": "2026-06-15T12:52:17.918Z",
   "features": {
     "Outlook to Gmail::inscope": [
       {
@@ -1074,7 +1074,9 @@
         "name": "Group Mail Migration",
         "description": "Emails sent to Google Groups are migrated and delivered to all group members in Outlook. Group will be created ay destination with destination domain name",
         "family": "Group Mail Migration",
-        "screenshots": [],
+        "screenshots": [
+          "/assets/screenshots/Mail/Gmail_to_Outlook/Group_Mail_Migration_1_1781252375260.png"
+        ],
         "order": 17,
         "createdAt": "2026-03-27T12:12:10.691Z"
       },
@@ -1820,6 +1822,19 @@
         ],
         "order": 42,
         "createdAt": "2026-05-11T16:04:35.356Z"
+      },
+      {
+        "id": "6a2ff56aafe7a8a626f16ca6",
+        "productType": "Mail",
+        "categorySlug": "Mail",
+        "scope": "inscope",
+        "combination": "Outlook to Outlook",
+        "name": "test",
+        "description": "",
+        "family": "test",
+        "screenshots": [],
+        "order": 47,
+        "createdAt": "2026-06-15T12:51:54.706Z"
       }
     ],
     "Outlook to Outlook::outscope": [

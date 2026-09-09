@@ -6,34 +6,60 @@ const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const { normalizeSubject } = require('../utils/mailMigrationComparator');
 const { generateTestFileBuffer } = require('../utils/testFileGenerator');
+const { realizePlaceholderLinks } = require('../utils/realizeLinks');
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+/**
+ * Return a shallow copy of a Graph message body with example.com placeholder hyperlink hosts
+ * rewritten to a real, reachable host (keeps scheme/path/query). No-op when there's no string body.
+ */
+function withRealizedLinks(mb) {
+  if (mb && mb.body && typeof mb.body.content === 'string') {
+    return { ...mb, body: { ...mb.body, content: realizePlaceholderLinks(mb.body.content) } };
+  }
+  return mb;
+}
 
 /** Microsoft Graph requires user principal names to be URL-encoded in /users/{segment}/ paths. */
 function graphUserPath(userId) {
   return encodeURIComponent(String(userId == null ? '' : userId).trim());
 }
 
-/** Return '2' if the email's domain belongs to the second tenant, else '1'. */
+/** Return '2' if the email's domain belongs to the second M365 tenant, else '1'. */
+/**
+ * Resolve the Azure AD tenant id (directory) for an email's domain.
+ * Priority:
+ *   1. Dynamically consented customer tenants (from the token store) — any customer
+ *      added via admin-consent in their OWN tenant, no .env change needed.
+ *   2. Configured second tenant (GRAPH_TENANT_2_DOMAINS → GRAPH_TENANT_ID_2).
+ *   3. Default tenant (GRAPH_TENANT_ID).
+ * Returns a tenant id (GUID).
+ */
 function getMsTenant(email) {
   const domain = (email || '').split('@')[1]?.toLowerCase() || '';
-  if (domain && env.GRAPH_CLIENT_ID_2 && env.GRAPH_TENANT_2_DOMAINS?.includes(domain)) return '2';
-  return '1';
+  if (domain) {
+    const dynamic = tokenStore.getMicrosoftTenantMap ? tokenStore.getMicrosoftTenantMap() : {};
+    if (dynamic[domain]) return dynamic[domain];
+    if (env.GRAPH_TENANT_2_DOMAINS?.includes(domain)) return env.GRAPH_TENANT_ID_2;
+  }
+  return env.GRAPH_TENANT_ID;
 }
 
-/** Return the right Azure AD app credentials for a given tenant key ('1' or '2'). */
+/**
+ * Return the shared multi-tenant Azure AD app credentials for a tenant.
+ * `tenant` may be a tenant id (GUID), a legacy key ('1'/'2'), or undefined.
+ * clientId + clientSecret are always the one shared app; only the tenantId differs.
+ */
 function getMsCredentials(tenant) {
-  if (tenant === '2') {
-    return {
-      clientId: env.GRAPH_CLIENT_ID_2,
-      clientSecret: env.GRAPH_CLIENT_SECRET_2,
-      tenantId: env.GRAPH_TENANT_ID_2,
-    };
-  }
+  let tenantId;
+  if (!tenant || tenant === '1') tenantId = env.GRAPH_TENANT_ID;
+  else if (tenant === '2') tenantId = env.GRAPH_TENANT_ID_2;
+  else tenantId = tenant; // already a tenant id (GUID)
   return {
     clientId: env.GRAPH_CLIENT_ID,
     clientSecret: env.GRAPH_CLIENT_SECRET,
-    tenantId: env.GRAPH_TENANT_ID,
+    tenantId,
   };
 }
 
@@ -134,14 +160,20 @@ async function getAccessToken(email) {
   return getAppAccessToken(tenant);
 }
 
-async function graphGet(url, userId = null) {
+// Timeout guard for Graph reads. Without it, a stalled connection (socket open, no data —
+// common on flaky networks) never rejects, so retryWithBackoff never retries and the whole
+// execution hangs indefinitely. A timeout turns the stall into a retryable error.
+const GRAPH_GET_TIMEOUT_MS = 60000;
+
+async function graphGet(url, userId = null, retryOpts = {}) {
   const token = await getAccessToken(userId);
   return retryWithBackoff(
     () =>
       axios.get(url, {
         headers: { Authorization: `Bearer ${token}` },
+        timeout: GRAPH_GET_TIMEOUT_MS,
       }),
-    { label: `Graph GET ${url.replace(GRAPH_BASE, '')}` }
+    { label: `Graph GET ${url.replace(GRAPH_BASE, '')}`, ...retryOpts }
   );
 }
 
@@ -151,6 +183,7 @@ async function graphGetWithHeaders(url, userId = null, extraHeaders = {}) {
     () =>
       axios.get(url, {
         headers: { Authorization: `Bearer ${token}`, ...extraHeaders },
+        timeout: GRAPH_GET_TIMEOUT_MS,
       }),
     { label: `Graph GET ${url.replace(GRAPH_BASE, '')}` }
   );
@@ -198,7 +231,8 @@ async function getAllFoldersFlat(userId) {
       all.push(f);
       let children = f.childFolders || [];
       if ((f.childFolderCount || 0) > children.length && f.id) {
-        try { children = await getChildFolders(userId, f.id); } catch (_) {}
+        try { children = await getChildFolders(userId, f.id); }
+        catch (e) { logger.warn(`getAllFoldersFlat: could not fetch children of "${f.displayName || f.id}" (childFolderCount=${f.childFolderCount}) — nested subtree omitted: ${e.message}`); }
       }
       if (children.length > 0) {
         await flatten(children);
@@ -325,9 +359,14 @@ async function getEventCount(userId, calendarId) {
 }
 
 async function getAttachments(userId, messageId) {
+  // Attachment fetch is a skippable, read-only validation call. Cap retries lower than the default 5
+  // so a transient Microsoft Graph 5xx storm degrades quickly (~7s worst case) instead of stalling
+  // deep validation for ~15s PER message across hundreds of messages. Callers already catch failures
+  // and skip the attachment comparison, so fewer retries only means faster graceful degradation.
   const res = await graphGet(
     `${GRAPH_BASE}/users/${graphUserPath(userId)}/messages/${encodeURIComponent(messageId)}/attachments`,
-    userId
+    userId,
+    { maxRetries: 3 }
   );
   return res.data.value || [];
 }
@@ -336,15 +375,39 @@ async function getAttachments(userId, messageId) {
 const MESSAGE_SELECT_DEEP =
   'internetMessageId,subject,bodyPreview,body,hasAttachments,receivedDateTime,sentDateTime,toRecipients,ccRecipients,bccRecipients,replyTo,from,parentFolderId,flag,importance,isRead,categories,conversationId';
 
+// Sensitivity (Normal/Personal/Private/Confidential) is NOT a first-class Graph message property —
+// $select=sensitivity returns HTTP 400. It lives in the MAPI extended property PidTagSensitivity
+// (tag 0x0036, Integer): 0=Normal, 1=Personal, 2=Private, 3=Confidential. Read it via $expand.
+const SENSITIVITY_EXT_PROP_ID = 'Integer 0x0036';
+const SENSITIVITY_BY_VALUE = { 0: 'normal', 1: 'personal', 2: 'private', 3: 'confidential' };
+
 /**
  * Single message by Graph id with recipient + body fields.
  */
 async function getMessageById(userId, messageId, selectOverride) {
   const uid = graphUserPath(userId);
   const select = encodeURIComponent(selectOverride || MESSAGE_SELECT_DEEP);
-  const url = `${GRAPH_BASE}/users/${uid}/messages/${encodeURIComponent(messageId)}?$select=${select}`;
-  const res = await graphGet(url, userId);
-  return res.data;
+  const base = `${GRAPH_BASE}/users/${uid}/messages/${encodeURIComponent(messageId)}?$select=${select}`;
+
+  // Read sensitivity via the PidTagSensitivity extended property ($expand). Best-effort: if the
+  // expand ever fails, fall back to the plain select fetch so message loading never breaks.
+  const expand = encodeURIComponent(`singleValueExtendedProperties($filter=id eq '${SENSITIVITY_EXT_PROP_ID}')`);
+  let data;
+  try {
+    const res = await graphGet(`${base}&$expand=${expand}`, userId);
+    data = res.data;
+  } catch (expandErr) {
+    logger.warn(`[getMessageById] sensitivity $expand failed (${expandErr.response?.status || ''}) — fetching without it`);
+    const res = await graphGet(base, userId);
+    data = res.data;
+  }
+
+  // Surface sensitivity as a plain field so comparators can use msg.sensitivity.
+  const svep = Array.isArray(data.singleValueExtendedProperties) ? data.singleValueExtendedProperties : [];
+  const sensProp = svep.find((p) => /0x0*36$/i.test(String(p.id || '')));
+  data.sensitivity = sensProp ? (SENSITIVITY_BY_VALUE[Number(sensProp.value)] || 'normal') : 'normal';
+
+  return data;
 }
 
 /**
@@ -411,6 +474,24 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
   }
 
   const inner = stripAngleBrackets(raw);
+
+  // Fast path: a prebuilt destination index (one shared mailbox scan) turns pairing from
+  // O(N sources × mailbox) into O(1) per source message. Only used when the caller supplies
+  // options.index (buildDestinationMessageIndex); every existing caller omits it and is unaffected.
+  if (options.index && options.index.byMsgId instanceof Map) {
+    const hit = options.index.byMsgId.get(inner.toLowerCase());
+    if (hit) {
+      return { matches: [{ id: hit.id, internetMessageId: hit.internetMessageId }], strategy: 'dest-index', detail: null, scannedMessages: options.index.size || 0 };
+    }
+    if (options.index.complete) {
+      // The whole destination mailbox is in the index and this Message-ID isn't in it — an
+      // authoritative miss. Skip the per-message OData/$search/live-scan; the caller's
+      // subject+time fallback takes over (reusing the same prescanned list).
+      return { matches: [], strategy: 'none', detail: 'no-match-in-dest-index', scannedMessages: options.index.size || 0 };
+    }
+    // Index incomplete (mailbox exceeded the scan cap) — fall through to the exact OData/$search paths below.
+  }
+
   /** @type {string[]} */
   const variants = [];
   const addVariant = (v) => {
@@ -458,7 +539,10 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
       };
     }
   } catch (err) {
-    logger.warn(`resolveDestinationByInternetMessageId: $search fallback failed for ${userId}: ${err.message}`);
+    // 400 = tenant doesn't support $search on /messages (no Advanced Query) — not critical, mailbox scan follows
+    if (err?.response?.status !== 400) {
+      logger.warn(`resolveDestinationByInternetMessageId: $search fallback failed for ${userId}: ${err.message}`);
+    }
   }
 
   if (skipMailboxScan) {
@@ -510,6 +594,39 @@ async function resolveDestinationByInternetMessageId(userId, sourceInternetMessa
 }
 
 /**
+ * Scan the destination mailbox ONCE and build an index for deep-validation pairing.
+ * Returned to callers as options.index for resolveDestinationByInternetMessageId (O(1) lookup)
+ * and as preScanned for findBestMessageBySubjectAndTime (subject+time fallback) — so a full
+ * validation run does a single mailbox scan instead of one (or two) per source message.
+ *
+ * @param {string} userId – destination mailbox (UPN)
+ * @param {number} [maxScan] – cap on messages to scan (defaults to DEEP_VALIDATION_SCAN_MAX or 3000)
+ * @returns {Promise<{ byMsgId: Map<string,{id:string,internetMessageId:string}>, scanned: object[], size: number, complete: boolean }>}
+ */
+async function buildDestinationMessageIndex(userId, maxScan) {
+  const cap =
+    typeof maxScan === 'number' && maxScan > 0
+      ? maxScan
+      : parseInt(process.env.DEEP_VALIDATION_SCAN_MAX, 10) || 3000;
+  const scanned = await listMessagesInFolderPaged(
+    userId,
+    null,
+    cap,
+    'id,internetMessageId,subject,receivedDateTime,sentDateTime',
+    'receivedDateTime desc'
+  );
+  const byMsgId = new Map();
+  for (const m of scanned) {
+    const key = stripAngleBrackets(m.internetMessageId).toLowerCase();
+    if (key && !byMsgId.has(key)) {
+      byMsgId.set(key, { id: m.id, internetMessageId: m.internetMessageId });
+    }
+  }
+  // complete = we reached the end of the mailbox before hitting the cap, so a miss is authoritative.
+  return { byMsgId, scanned, size: byMsgId.size, complete: scanned.length < cap };
+}
+
+/**
  * Paginate message list (folder-scoped or all mail) until maxTotal rows.
  */
 async function listMessagesInFolderPaged(userId, folderId, maxTotal = 500, selectFields, orderBy) {
@@ -543,7 +660,7 @@ async function listMessagesInFolderPaged(userId, folderId, maxTotal = 500, selec
  *
  * @returns {{ match: { id: string, internetMessageId?: string } | null, candidatesCount: number, detail: string, bestDeltaMs: number | null }}
  */
-async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchorEpochMs, windowMinutes, maxScan) {
+async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchorEpochMs, windowMinutes, maxScan, preScanned) {
   const ns = String(normalizedSubject || '').trim();
   if (!ns || !Number.isFinite(anchorEpochMs)) {
     return { match: null, candidatesCount: 0, detail: 'invalid-input', bestDeltaMs: null };
@@ -551,13 +668,17 @@ async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchor
   const wm = Number(windowMinutes);
   const windowMs = Math.max(1, Number.isFinite(wm) && wm > 0 ? wm : 30) * 60 * 1000;
   const cap = typeof maxScan === 'number' && maxScan > 0 ? maxScan : 3000;
-  const scanned = await listMessagesInFolderPaged(
-    userId,
-    null,
-    cap,
-    'id,subject,internetMessageId,receivedDateTime,sentDateTime',
-    'receivedDateTime desc'
-  );
+  // Reuse a prebuilt scan (from buildDestinationMessageIndex) when supplied, so the fallback
+  // doesn't re-scan the whole mailbox per source message. Falls back to a live scan otherwise.
+  const scanned = Array.isArray(preScanned) && preScanned.length
+    ? preScanned
+    : await listMessagesInFolderPaged(
+        userId,
+        null,
+        cap,
+        'id,subject,internetMessageId,receivedDateTime,sentDateTime',
+        'receivedDateTime desc'
+      );
   const candidates = [];
   for (const m of scanned) {
     if (normalizeSubject(m.subject) !== ns) continue;
@@ -584,22 +705,36 @@ async function findBestMessageBySubjectAndTime(userId, normalizedSubject, anchor
  */
 async function _fetchAllUsers(token) {
   const users = [];
-  let url = `${GRAPH_BASE}/users?$top=999&$select=id,displayName,mail,givenName,surname,userPrincipalName`;
+  let url = `${GRAPH_BASE}/users?$top=999&$select=id,displayName,mail,givenName,surname,userPrincipalName,userType,assignedLicenses`;
   while (url) {
     const res = await retryWithBackoff(
       () => axios.get(url, { headers: { Authorization: `Bearer ${token}` } }),
       { label: 'Graph listUsers' }
     );
     for (const u of res.data.value || []) {
-      if (u.mail) {
-        users.push({
-          id: u.id,
-          email: u.mail,
-          displayName: u.displayName || '',
-          firstName: u.givenName || u.displayName?.split(' ')[0] || '',
-          lastName: u.surname || '',
-        });
-      }
+      // Skip B2B guest accounts — their `mail` is an external address (gmail.com, etc.),
+      // they are not real mailboxes in this tenant.
+      if (u.userType === 'Guest') continue;
+
+      // Resolve the mailbox address. The Entra `mail` attribute can be blank for a
+      // licensed mailbox (e.g. recently provisioned, or never stamped), so fall back
+      // to userPrincipalName. Skip external/#EXT# UPNs — those are guests, not mailboxes.
+      const upn = u.userPrincipalName || '';
+      const email = u.mail || (upn.includes('#EXT#') ? '' : upn);
+      if (!email) continue;
+
+      // When falling back to UPN (no `mail`), only keep licensed users — an unlicensed
+      // account with no `mail` attribute almost never has a real mailbox to migrate.
+      const isLicensed = (u.assignedLicenses || []).length > 0;
+      if (!u.mail && !isLicensed) continue;
+
+      users.push({
+        id: u.id,
+        email,
+        displayName: u.displayName || '',
+        firstName: u.givenName || u.displayName?.split(' ')[0] || '',
+        lastName: u.surname || '',
+      });
     }
     url = res.data['@odata.nextLink'] || null;
   }
@@ -730,10 +865,15 @@ async function batchDelete(requests, userId = null, options = {}) {
 
     let batchRes;
     try {
-      batchRes = await axios.post(`${GRAPH_BASE}/$batch`, batchBody, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        timeout: 60000,
-      });
+      // Retry transient gateway errors (502/503/504) and timeouts with backoff before falling
+      // back to individual deletes — large mailboxes make Graph's $batch slow enough to 504.
+      batchRes = await retryWithBackoff(
+        () => axios.post(`${GRAPH_BASE}/$batch`, batchBody, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          timeout: 60000,
+        }),
+        { label: 'Graph $batch delete', maxRetries: 4, baseDelay: 2000, maxDelay: 30000 }
+      );
     } catch (err) {
       // HTTP-level failure — fall back to individual operations (no retry loop)
       for (const req of pending) {
@@ -785,10 +925,16 @@ async function batchDelete(requests, userId = null, options = {}) {
  */
 async function emptyFolderViaApi(userId, folderId) {
   const token = await getAccessToken(userId);
-  await axios.post(
-    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/emptyFolder?deleteSubFolders=false`,
-    {},
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+  // Server-side empty of a large folder is slow — give it a longer timeout and retry transient
+  // gateway timeouts (504) with backoff. Persistent failure still bubbles up so the caller can
+  // fall back to paged batch delete.
+  await retryWithBackoff(
+    () => axios.post(
+      `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/emptyFolder?deleteSubFolders=false`,
+      {},
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 120000 }
+    ),
+    { label: `Graph emptyFolder ${folderId}`, maxRetries: 3, baseDelay: 3000, maxDelay: 30000 }
   );
 }
 
@@ -876,6 +1022,20 @@ async function deleteAllMessagesInFolder(userId, folderId) {
 
 function deleteFolder(userId, folderId) {
   return graphDelete(`${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}`, userId);
+}
+
+/**
+ * Permanently delete a mail folder via the Graph permanentDelete action — removes the folder
+ * (and any remaining items) directly, WITHOUT first moving it to Deleted Items. Requires
+ * Mail.ReadWrite (the same permission the message permanentDelete already uses, mirroring
+ * batchDelete({ permanent: true })). Falls back to soft delete at the call site if unavailable.
+ */
+function permanentDeleteFolder(userId, folderId) {
+  return graphPost(
+    `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/${encodeURIComponent(folderId)}/permanentDelete`,
+    {},
+    userId
+  );
 }
 
 /**
@@ -1324,9 +1484,75 @@ async function cleanRecoverableItems(userId) {
 }
 
 /**
+ * Empty the visible Deleted Items folder — both its messages AND any soft-deleted child folders.
+ *
+ * When a custom folder is deleted (DELETE /mailFolders/{id}), Graph re-parents it under Deleted
+ * Items as a child folder; nothing else removes it, so it lingers in the mailbox UI (the QA-*
+ * folders seen under "Deleted Items"). This deletes those child folders and purges any residual
+ * messages so Deleted Items is truly empty after a full wipe.
+ *
+ * Note: deleting a folder that is ALREADY in Deleted Items removes it permanently (there is no
+ * further soft-delete target). Anything that does land in Recoverable Items is then cleared by
+ * the cleanRecoverableItems() step that runs next.
+ *
+ * @returns {Promise<{ foldersRemoved: number, messagesRemoved: number }>}
+ */
+async function emptyDeletedItems(userId) {
+  const log = require('../utils/logger');
+  let foldersRemoved = 0;
+  let lastCount = -1;
+
+  for (let iter = 0; iter < 50; iter++) {
+    let children = [];
+    try {
+      const token = await getAccessToken(userId);
+      const res = await axios.get(
+        `${GRAPH_BASE}/users/${graphUserPath(userId)}/mailFolders/deleteditems/childFolders?$top=200&$select=id,displayName`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      children = res.data.value || [];
+    } catch (err) {
+      log.warn(`[emptyDeletedItems ${userId}] Could not list Deleted Items child folders: ${err.response?.status || err.message}`);
+      break;
+    }
+    if (children.length === 0) break;
+    if (children.length === lastCount) {
+      log.warn(`[emptyDeletedItems ${userId}] No progress removing child folders (${children.length} remain) — stopping`);
+      break;
+    }
+    lastCount = children.length;
+
+    for (const child of children) {
+      try {
+        await deleteFolder(userId, child.id); // already in Deleted Items → permanent removal
+        foldersRemoved++;
+        log.info(`[emptyDeletedItems ${userId}] Removed folder "${child.displayName}" from Deleted Items`);
+      } catch (err) {
+        const status = err.response?.status || err.message;
+        if (!/404/.test(String(status))) {
+          log.warn(`[emptyDeletedItems ${userId}] Could not remove "${child.displayName}": ${err.message}`);
+        }
+      }
+    }
+  }
+
+  // Purge any messages sitting directly in Deleted Items (uses permanentDelete batch internally)
+  let messagesRemoved = 0;
+  try {
+    messagesRemoved = await deleteAllMessagesInFolder(userId, 'deleteditems');
+  } catch (err) {
+    log.warn(`[emptyDeletedItems ${userId}] Could not purge Deleted Items messages: ${err.message}`);
+  }
+
+  log.info(`[emptyDeletedItems ${userId}] Done — removed ${foldersRemoved} folder(s), ${messagesRemoved} message(s) from Deleted Items`);
+  return { foldersRemoved, messagesRemoved };
+}
+
+/**
  * Clean the entire destination mailbox:
  * 1. Delete ALL messages mailbox-wide (fast — no folder enumeration)
  * 2. Delete custom folders (now empty, so deletion is instant)
+ * 2b. Empty Deleted Items — purge the now-soft-deleted custom folders + any residual messages
  * 3. Purge recoverable items
  * 4. Delete calendar events and non-default calendars
  */
@@ -1358,9 +1584,17 @@ async function cleanMailbox(userId) {
 
   for (const folder of customFolders) {
     try {
-      await deleteFolder(userId, folder.id);
+      try {
+        // Primary: permanently delete the folder directly — it never enters Deleted Items.
+        await permanentDeleteFolder(userId, folder.id);
+        log.info(`[clean ${userId}]   Permanently deleted folder "${folder.displayName}" (no Deleted Items transit)`);
+      } catch (permErr) {
+        // permanentDelete unavailable on this tenant → soft delete; Step 2b purges it from Deleted Items.
+        if (/404/.test(String(permErr.response?.status || ''))) throw permErr; // already gone
+        await deleteFolder(userId, folder.id);
+        log.info(`[clean ${userId}]   Soft-deleted folder "${folder.displayName}" (permanentDelete fallback: ${permErr.response?.status || permErr.message})`);
+      }
       summary.foldersDeleted++;
-      log.info(`[clean ${userId}]   Deleted folder "${folder.displayName}"`);
     } catch (err) {
       const status = err.response?.status || err.message;
       if (/404/.test(String(status))) {
@@ -1374,6 +1608,18 @@ async function cleanMailbox(userId) {
     }
   }
   log.info(`[clean ${userId}] Step 2 done — ${summary.foldersDeleted} folders deleted`);
+
+  // Step 2b: Empty Deleted Items — the folders just deleted in Step 2 are soft-deleted and
+  // re-parented under Deleted Items, so remove them (and any residual messages) for a clean mailbox.
+  log.info(`[clean ${userId}] Step 2b: Emptying Deleted Items (incl. soft-deleted folders)...`);
+  try {
+    const di = await emptyDeletedItems(userId);
+    summary.foldersDeleted += di.foldersRemoved;
+    summary.messagesDeleted += di.messagesRemoved;
+  } catch (err) {
+    summary.errors.push(`Empty Deleted Items: ${err.message}`);
+    log.warn(`[clean ${userId}] Step 2b error: ${err.message}`);
+  }
 
   // Step 3: Purge recoverable items
   log.info(`[clean ${userId}] Step 3: Purging recoverable items...`);
@@ -1548,6 +1794,7 @@ function buildMimeMessage(msg) {
  * received/sent email (isDraft=false, real receivedDateTime, real SMTP headers).
  */
 async function sendMailAsUser(senderEmail, messagePayload, saveToSentItems) {
+  messagePayload = withRealizedLinks(messagePayload);
   const token = await getAppAccessToken(getMsTenant(senderEmail));
   const uid   = graphUserPath(senderEmail);
   const msg   = {
@@ -1612,6 +1859,53 @@ async function patchDeliveredInboxIsRead(recipientEmail, subject, fromEmail) {
   } catch (err) {
     logger.warn(`patchDeliveredInboxIsRead: "${subject}": ${err.message}`);
   }
+}
+
+/**
+ * Cap the number of UNREAD messages left in a mailbox's Inbox.
+ *
+ * Test-data seeding creates many messages with isRead:false, which leaves an
+ * unrealistically large unread count. This keeps the `maxUnread` most-recent unread
+ * messages and marks the rest as read (Graph PATCH isRead:true), so the seeded Inbox
+ * looks realistic while still retaining enough unread mail to validate read-state.
+ *
+ * Returns { total, unreadBefore, unreadAfter, markedRead }. Never throws.
+ */
+async function capInboxUnread(userEmail, maxUnread = 12) {
+  const cap = Math.max(0, Number(maxUnread) || 0);
+  const result = { total: 0, unreadBefore: 0, unreadAfter: 0, markedRead: 0 };
+  try {
+    const msgs = await listMessagesInFolderPaged(
+      userEmail, 'inbox', 1000, 'id,isRead,receivedDateTime', 'receivedDateTime desc'
+    );
+    result.total = msgs.length;
+    const unread = msgs.filter((m) => m.isRead === false);
+    result.unreadBefore = unread.length;
+    if (unread.length <= cap) {
+      result.unreadAfter = unread.length;
+      return result;
+    }
+    // Sorted newest-first, so slice(cap) is the older unread mail to mark read.
+    const toMarkRead = unread.slice(cap);
+    const token = await getAppAccessToken(getMsTenant(userEmail));
+    const uid   = graphUserPath(userEmail);
+    for (const m of toMarkRead) {
+      try {
+        await axios.patch(
+          `${GRAPH_BASE}/users/${uid}/messages/${m.id}`,
+          { isRead: true },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        result.markedRead++;
+      } catch (err) {
+        logger.warn(`capInboxUnread: patch ${m.id}: ${err.message}`);
+      }
+    }
+    result.unreadAfter = result.unreadBefore - result.markedRead;
+  } catch (err) {
+    logger.warn(`capInboxUnread(${userEmail}): ${err.message}`);
+  }
+  return result;
 }
 
 // ─── EWS message injection helpers ───────────────────────────────────────────
@@ -1719,6 +2013,12 @@ async function createMessageViaEws(userId, folderId, messageBody) {
   const importanceMap = { low: 'Low', normal: 'Normal', high: 'High' };
   const importance  = importanceMap[(messageBody.importance || 'normal').toLowerCase()] || 'Normal';
 
+  // Sensitivity (Normal | Personal | Private | Confidential). EWS schema order requires it
+  // right after Subject and before Body. Only emitted when non-Normal so normal mail is unaffected.
+  const sensitivityMap = { normal: 'Normal', personal: 'Personal', private: 'Private', confidential: 'Confidential' };
+  const sensitivity    = sensitivityMap[String(messageBody.sensitivity || 'normal').toLowerCase()] || 'Normal';
+  const sensitivityXml = sensitivity !== 'Normal' ? `<t:Sensitivity>${sensitivity}</t:Sensitivity>` : '';
+
   const fromXml   = messageBody.from   ? `<t:From>${ewsMailboxXml(messageBody.from)}</t:From>`                       : '';
   const senderXml = (messageBody.sender || messageBody.from)
     ? `<t:Sender>${ewsMailboxXml(messageBody.sender || messageBody.from)}</t:Sender>` : '';
@@ -1755,6 +2055,7 @@ async function createMessageViaEws(userId, folderId, messageBody) {
       <m:Items>
         <t:Message>
           <t:Subject>${xmlEsc(messageBody.subject || '')}</t:Subject>
+          ${sensitivityXml}
           ${bodyXml}
           <t:Importance>${importance}</t:Importance>
           <t:IsRead>${isRead}</t:IsRead>
@@ -1898,6 +2199,7 @@ async function getGraphIdByInternetMessageId(userId, folder, internetMessageId, 
  * Falls back to Graph POST only when EWS fails entirely (network error, auth failure).
  */
 async function createMessageInFolder(userId, folderId, messageBody) {
+  messageBody = withRealizedLinks(messageBody);
   const folderKey   = String(folderId).trim().toLowerCase();
   const isDraftFolder = folderKey === 'drafts' || folderKey === 'draft' || messageBody.isDraft === true;
 
@@ -2149,6 +2451,48 @@ async function createGroup(displayName, mailNickname, description = '', isPrivat
 }
 
 /**
+ * Add members to a group (mail-enabled M365 / distribution group).
+ * Resolves each member email to its directory object id, then POSTs to /members/$ref.
+ * Real tenant users only — external/fake addresses cannot be group members.
+ * @returns {Promise<{ added: string[], failed: string[] }>} (never throws)
+ */
+async function addGroupMembers(groupId, memberEmails, userId = null) {
+  const tenant = getMsTenant(userId || (memberEmails && memberEmails[0]) || '');
+  const token  = await getAppAccessToken(tenant);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const added = [];
+  const failed = [];
+  for (const email of memberEmails || []) {
+    const addr = String(email || '').trim();
+    if (!addr) continue;
+    try {
+      const userRes = await axios.get(
+        `${GRAPH_BASE}/users/${graphUserPath(addr)}?$select=id`,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      );
+      const memberId = userRes.data?.id;
+      if (!memberId) { failed.push(addr); continue; }
+      await retryWithBackoff(
+        () => axios.post(
+          `${GRAPH_BASE}/groups/${groupId}/members/$ref`,
+          { '@odata.id': `${GRAPH_BASE}/directoryObjects/${memberId}` },
+          { headers, timeout: 20000 }
+        ),
+        { label: `Graph POST /groups/${groupId}/members (${addr})`, maxRetries: 2 }
+      );
+      added.push(addr);
+    } catch (err) {
+      // "already exists" (400 with One or more added object references already exist) is benign.
+      const msg = String(err.response?.data?.error?.message || err.message || '');
+      if (/already exist/i.test(msg)) { added.push(addr); continue; }
+      logger.warn(`addGroupMembers: "${addr}": ${msg}`);
+      failed.push(addr);
+    }
+  }
+  return { added, failed };
+}
+
+/**
  * Count Microsoft 365 Groups in the tenant (app-only token).
  * @param {string} userId - any user in the target tenant (used to pick credentials)
  * @returns {Promise<{ count: number, available: boolean, note?: string }>}
@@ -2200,6 +2544,7 @@ async function getGroupsCount(userId = '') {
  *   and link name reflect the intended size.
  */
 async function createMessageWithLargeAttachment(userId, folderId, messageBody, fileName, sizeMB = 26) {
+  messageBody = withRealizedLinks(messageBody);
   const recipientToken = await getAppAccessToken(getMsTenant(userId));
   const fileBuffer     = generateTestFileBuffer(fileName, sizeMB);
   const sizeBytes      = fileBuffer.length;
@@ -3057,20 +3402,60 @@ async function countMessagesBySubjectPrefix(userId, prefix) {
  * then retries the upload once.  If the drive still doesn't exist the 404 propagates so
  * the caller can handle it gracefully.
  */
+/**
+ * Upload a file to the user's OneDrive under /QAMigration and return the created driveItem.
+ * Files larger than Graph's ~4 MB simple-upload limit (the 26 MB / 35 MB QA large-file cases)
+ * MUST use a resumable upload session (chunked); a single PUT is unreliable/rejected for them.
+ * Small files use a simple PUT.
+ */
+async function uploadDriveContent(uid, token, filename, buffer) {
+  const SIMPLE_MAX = 4 * 1024 * 1024; // Graph simple-PUT reliable ceiling
+  if (buffer.length <= SIMPLE_MAX) {
+    const res = await axios.put(
+      `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/content`,
+      buffer,
+      {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 180000,
+      }
+    );
+    return res.data;
+  }
+
+  // Resumable upload session — required for files > 4 MB.
+  const sessRes = await axios.post(
+    `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/createUploadSession`,
+    { item: { '@microsoft.graph.conflictBehavior': 'replace' } },
+    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+  );
+  const uploadUrl = sessRes.data.uploadUrl;
+  if (!uploadUrl) throw new Error('createUploadSession did not return an uploadUrl');
+
+  const total = buffer.length;
+  const CHUNK = 5 * 1024 * 1024; // 5 MiB — a valid multiple of 320 KiB, as Graph requires
+  let start = 0;
+  let last = null;
+  while (start < total) {
+    const end = Math.min(start + CHUNK, total);
+    const chunk = buffer.subarray(start, end);
+    // The session uploadUrl is pre-authenticated — do NOT send the bearer token to it.
+    last = await axios.put(uploadUrl, chunk, {
+      headers: { 'Content-Length': String(chunk.length), 'Content-Range': `bytes ${start}-${end - 1}/${total}` },
+      maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 180000,
+    });
+    start = end;
+  }
+  if (!last?.data?.id) throw new Error('OneDrive upload session completed without returning a driveItem');
+  return last.data;
+}
+
 async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
   const uid = graphUserPath(userId);
   const token = await getAccessToken(userId);
 
-  const uploadUrl = `${GRAPH_BASE}/users/${uid}/drive/root:/QAMigration/${encodeURIComponent(filename)}:/content`;
-  const uploadHeaders = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' };
-
   let uploadRes;
   try {
-    uploadRes = await axios.put(uploadUrl, contentBuffer, {
-      headers: uploadHeaders,
-      maxBodyLength: 10 * 1024 * 1024,
-      timeout: 60000,
-    });
+    uploadRes = { data: await uploadDriveContent(uid, token, filename, contentBuffer) };
   } catch (firstErr) {
     const status = firstErr?.response?.status;
     if (status !== 404) throw firstErr;
@@ -3111,11 +3496,7 @@ async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
     }
     // Brief pause to let the newly-provisioned drive become available
     await new Promise(r => setTimeout(r, 3000));
-    uploadRes = await axios.put(uploadUrl, contentBuffer, {
-      headers: uploadHeaders,
-      maxBodyLength: 10 * 1024 * 1024,
-      timeout: 60000,
-    });
+    uploadRes = { data: await uploadDriveContent(uid, token, filename, contentBuffer) };
   }
 
   const itemId = uploadRes.data.id;
@@ -3162,12 +3543,57 @@ async function uploadFileAndCreateShareLink(userId, filename, contentBuffer) {
  * Returns { sizeBytes, messageCount, method, available }.
  * Returns available=false gracefully if the tenant's Exchange plan doesn't expose `size`.
  */
-async function getMailboxSizeBytes(userId) {
+/**
+ * Sum folder-level `sizeInBytes` across every mail folder (recursing into subfolders and hidden
+ * folders). This is the reliable mailbox-size source — it works even when the bulk /messages query
+ * omits the per-message `size` property (which some tenants/tokens do).
+ */
+async function sumMailFolderSizes(userId) {
   const uid = graphUserPath(userId);
-  let url = `${GRAPH_BASE}/users/${uid}/messages?$select=id,size&$top=999`;
-  let totalBytes = 0;
-  let messageCount = 0;
+  // mailFolder.sizeInBytes is a BETA-only property (v1.0 $select=sizeInBytes returns HTTP 400).
+  // Query the beta endpoint with the same token/scopes. totalItemCount/childFolderCount exist in both.
+  const betaBase = GRAPH_BASE.replace('/v1.0', '/beta');
+  const sel = '$select=id,displayName,sizeInBytes,totalItemCount,childFolderCount&$top=200';
+  let bytes = 0, items = 0, folderCount = 0, sizedFolders = 0;
+
+  async function walk(listUrl) {
+    let url = listUrl;
+    while (url) {
+      const res = await graphGet(url, userId);
+      for (const f of (res.data.value || [])) {
+        folderCount++;
+        if (f.sizeInBytes != null) { bytes += Number(f.sizeInBytes) || 0; sizedFolders++; }
+        items += Number(f.totalItemCount) || 0;
+        if ((f.childFolderCount || 0) > 0 && f.id) {
+          await walk(`${betaBase}/users/${uid}/mailFolders/${encodeURIComponent(f.id)}/childFolders?${sel}`);
+        }
+      }
+      url = res.data['@odata.nextLink'] || null;
+    }
+  }
+
+  await walk(`${betaBase}/users/${uid}/mailFolders?includeHiddenFolders=true&${sel}`);
+  return { bytes, items, folderCount, sizedFolders };
+}
+
+async function getMailboxSizeBytes(userId) {
+  // Primary: folder-level sizeInBytes (works even when /messages omits per-message `size`).
   try {
+    const f = await sumMailFolderSizes(userId);
+    if (f.bytes > 0) {
+      logger.info(`[getMailboxSizeBytes] ${userId}: ${f.bytes} B via folder sizeInBytes (${f.sizedFolders}/${f.folderCount} folders, ${f.items} items)`);
+      return { sizeBytes: f.bytes, messageCount: f.items, method: 'graph_folder_sizeInBytes', available: true };
+    }
+    logger.warn(`[getMailboxSizeBytes] ${userId}: folder sizeInBytes returned 0 across ${f.folderCount} folder(s) — falling back to per-message size`);
+  } catch (err) {
+    logger.warn(`[getMailboxSizeBytes] ${userId}: folder-size scan failed (${err.response?.status || ''} ${err.message}) — falling back to per-message size`);
+  }
+
+  // Fallback: sum per-message `size` across the whole mailbox.
+  const uid = graphUserPath(userId);
+  let totalBytes = 0, messageCount = 0;
+  try {
+    let url = `${GRAPH_BASE}/users/${uid}/messages?$select=id,size&$top=999`;
     while (url) {
       const res = await graphGet(url, userId);
       for (const msg of (res.data.value || [])) {
@@ -3177,12 +3603,10 @@ async function getMailboxSizeBytes(userId) {
       url = res.data['@odata.nextLink'] || null;
     }
   } catch (err) {
-    if (err.response?.status === 400) {
-      return { sizeBytes: 0, messageCount: 0, method: 'graph_messages_size', available: false };
-    }
-    throw err;
+    logger.warn(`[getMailboxSizeBytes] ${userId}: per-message size scan failed (${err.response?.status || ''} ${err.message})`);
   }
-  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: true };
+  logger.info(`[getMailboxSizeBytes] ${userId}: ${totalBytes} B via per-message size (${messageCount} messages)`);
+  return { sizeBytes: totalBytes, messageCount, method: 'graph_messages_size', available: totalBytes > 0 };
 }
 
 /**
@@ -3232,7 +3656,556 @@ async function deleteQAGroups(userId = '') {
   }
 }
 
+// ── Microsoft Teams (message product) ───────────────────────────────────────────
+// Post/read Teams channel & chat messages with a user's delegated token. Used by the
+// message-migration validation flow. Depends only on getAccessToken/GRAPH_BASE/axios/
+// tokenStore already defined above, so it's purely additive to the mail client.
+// targetId: "teamId/channelId" → channel; "19:…" (no slash) → chat.
+
+async function postTeamsMessage(userEmail, targetId, htmlContent, contentType = 'html') {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const body = { body: { content: htmlContent, contentType } };
+  let url;
+  let isChannel = false;
+  const slashIdx = targetId.indexOf('/');
+  if (slashIdx !== -1) {
+    const teamId    = targetId.slice(0, slashIdx);
+    const channelId = targetId.slice(slashIdx + 1);
+    url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`;
+    isChannel = true;
+  } else {
+    url = `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages`;
+  }
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id, isChannel };
+}
+
+async function postTeamsReply(userEmail, targetId, parentMessageId, htmlContent, contentType = 'html') {
+  if (!targetId.includes('/')) {
+    return postTeamsMessage(userEmail, targetId, htmlContent, contentType);
+  }
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const slashIdx = targetId.indexOf('/');
+  const teamId    = targetId.slice(0, slashIdx);
+  const channelId = targetId.slice(slashIdx + 1);
+  const url =
+    `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+    `/channels/${encodeURIComponent(channelId)}` +
+    `/messages/${encodeURIComponent(parentMessageId)}/replies`;
+  const body = { body: { content: htmlContent, contentType } };
+  const res = await axios.post(url, body, { headers });
+  return { ok: true, id: res.data.id };
+}
+
+function hasTeamsToken(userEmail) {
+  try {
+    const stored = tokenStore.getMicrosoftToken(userEmail);
+    if (!stored) return false;
+    // Admin-consent account — app-only auth is available for this tenant
+    if (stored.consented === true) return true;
+    // Delegated token: check agent tag or JWT scopes
+    if (!stored.accessToken && !stored.refreshToken) return false;
+    const agent = (stored.agent || '').toLowerCase();
+    if (agent === 'message' || agent === 'both') return true;
+    if (stored.accessToken) {
+      try {
+        const payload = JSON.parse(Buffer.from(stored.accessToken.split('.')[1], 'base64').toString());
+        const scp = (payload.scp || payload.scope || '').toLowerCase();
+        if (scp.includes('channel') || scp.includes('team') || scp.includes('chat')) return true;
+      } catch { /* ignore JWT decode errors */ }
+    }
+    return false;
+  } catch { return false; }
+}
+
+/**
+ * List all Teams the destination user is a member of.
+ * Returns [{ id, displayName }] or [] on error.
+ */
+async function listJoinedTeams(userEmail) {
+  try {
+    const token = await getAccessToken(userEmail);
+    // Use /users/{email}/joinedTeams so this works for both delegated and app-only auth.
+    // /me/joinedTeams only works for delegated tokens (requires a "me" context).
+    const url = `${GRAPH_BASE}/users/${encodeURIComponent(userEmail)}/joinedTeams`;
+    const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    return (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+  } catch (err) {
+    logger.warn(`[listJoinedTeams] ${userEmail}: ${err.response?.data?.error?.message || err.message}`);
+    return [];
+  }
+}
+
+/**
+ * List all channels in a Team.
+ * Tries delegated token first; falls back to app-only on 403 (user not a team member).
+ * CF-created Teams are owned by the CF service account — the dest admin may not be a member.
+ * Returns [{ id, displayName }] or [] on error.
+ */
+async function listTeamChannels(userEmail, teamId) {
+  const tenant = getMsTenant(userEmail);
+  const url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels`;
+  for (const getToken of [() => getAccessToken(userEmail), () => getAppAccessToken(tenant)]) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 });
+      return (res.data.value || []).map((c) => ({ id: c.id, displayName: c.displayName }));
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 403 || st === 401) continue; // not a member — try app-only
+      logger.warn(`[listTeamChannels] team=${teamId}: HTTP ${st || err.message}`);
+      return [];
+    }
+  }
+  logger.warn(`[listTeamChannels] team=${teamId}: all tokens exhausted`);
+  return [];
+}
+
+/**
+ * List ALL Teams in the tenant using app-only auth (not just joined teams).
+ * This finds teams the destination user hasn't joined yet — e.g. a team CF just
+ * created during migration where membership propagation hasn't completed.
+ *
+ * Requires Team.ReadBasic.All or Group.Read.All on the Azure app registration.
+ * Falls back to the Groups API (resourceProvisioningOptions filter) if /teams 404s.
+ *
+ * @param {string} userEmail  - used to resolve the correct tenant
+ * @returns {Array<{id, displayName}>}
+ */
+async function listAllTeams(userEmail) {
+  const tenant = getMsTenant(userEmail);
+  let appToken;
+  try {
+    appToken = await getAppAccessToken(tenant);
+  } catch (e) {
+    logger.warn(`[listAllTeams] cannot get app token for ${userEmail}: ${e.message}`);
+    return [];
+  }
+  const headers = { Authorization: `Bearer ${appToken}` };
+
+  // Try /teams endpoint first (requires Team.ReadBasic.All)
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/teams?$select=id,displayName&$top=999`,
+      { headers, timeout: 30000 }
+    );
+    const teams = (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+    logger.info(`[listAllTeams] ${userEmail}: ${teams.length} team(s) via /teams (app-only)`);
+    return teams;
+  } catch (err) {
+    logger.warn(`[listAllTeams] /teams failed (${err.response?.status || err.message}) — trying /groups filter`);
+  }
+
+  // Fallback: /groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team') (requires Group.Read.All)
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team')&$select=id,displayName&$top=999`,
+      { headers, timeout: 30000 }
+    );
+    const teams = (res.data.value || []).map((g) => ({ id: g.id, displayName: g.displayName }));
+    logger.info(`[listAllTeams] ${userEmail}: ${teams.length} team(s) via /groups (app-only)`);
+    return teams;
+  } catch (err2) {
+    logger.warn(`[listAllTeams] /groups fallback failed (${err2.response?.status || err2.message})`);
+    return [];
+  }
+}
+
+/**
+ * Search for a Teams team by displayName using an OData $filter on /groups.
+ * More targeted than listAllTeams — queries directly by name so it works even when
+ * the team is newly created (not yet in /teams index) or the dest user is not a member.
+ * Requires Group.Read.All application permission (or Team.ReadBasic.All).
+ *
+ * @param {string} userEmail   - used to resolve the correct tenant
+ * @param {string} teamName    - exact displayName to search for
+ * @returns {Array<{id, displayName}>}
+ */
+async function searchTeamByDisplayName(userEmail, teamName) {
+  if (!teamName || !teamName.trim()) return [];
+  const tenant = getMsTenant(userEmail);
+  const safe = teamName.replace(/'/g, "''");
+
+  // Try app-only token first (needs Group.Read.All / Team.ReadBasic.All application permission),
+  // then the user's delegated token as a fallback (user may have Teams admin role).
+  const tokens = [];
+  try { tokens.push(await getAppAccessToken(tenant)); } catch (_) {}
+  try {
+    const del = await getAccessToken(userEmail);
+    if (!tokens.includes(del)) tokens.push(del);
+  } catch (_) {}
+
+  if (tokens.length === 0) {
+    logger.warn(`[searchTeamByDisplayName] no token available for ${userEmail}`);
+    return [];
+  }
+
+  for (const token of tokens) {
+    const headers = { Authorization: `Bearer ${token}` };
+
+    // Primary: /groups OData filter — exact displayName match + resourceProvisioningOptions Team
+    try {
+      const filter = `displayName eq '${safe}' and resourceProvisioningOptions/Any(x:x eq 'Team')`;
+      const url = `${GRAPH_BASE}/groups?$filter=${encodeURIComponent(filter)}&$select=id,displayName&$top=10`;
+      const res = await axios.get(url, { headers: { ...headers, ConsistencyLevel: 'eventual' }, timeout: 30000 });
+      const teams = (res.data.value || []).map((g) => ({ id: g.id, displayName: g.displayName }));
+      logger.info(`[searchTeamByDisplayName] "${teamName}": ${teams.length} team(s) via /groups OData filter`);
+      if (teams.length > 0) return teams;
+    } catch (err) {
+      const st = err.response?.status;
+      logger.warn(`[searchTeamByDisplayName] /groups filter failed for "${teamName}": ${st || err.message}`);
+      if (st !== 403 && st !== 401) break; // non-auth error — stop retrying
+    }
+
+    // Fallback: $search on /teams displayName (Team.ReadBasic.All or equivalent)
+    try {
+      const url = `${GRAPH_BASE}/teams?$search="displayName:${safe}"&$select=id,displayName&$top=10`;
+      const res = await axios.get(url, { headers: { ...headers, ConsistencyLevel: 'eventual' }, timeout: 30000 });
+      const teams = (res.data.value || []).map((t) => ({ id: t.id, displayName: t.displayName }));
+      logger.info(`[searchTeamByDisplayName] "${teamName}": ${teams.length} team(s) via /teams $search`);
+      if (teams.length > 0) return teams;
+    } catch (err2) {
+      const st2 = err2.response?.status;
+      logger.warn(`[searchTeamByDisplayName] /teams $search failed for "${teamName}": ${st2 || err2.message}`);
+      if (st2 !== 403 && st2 !== 401) break;
+    }
+  }
+  return [];
+}
+
+/**
+ * Complete the migration at TEAM level for a team created in migration mode by CF.
+ * POST /teams/{teamId}/completeMigration
+ *
+ * Teams migration API requires this call BEFORE channel-level completeMigration.
+ * Requires Teamwork.Migrate.All which is APPLICATION-only (no delegated option).
+ * Safe to call if already in standard mode (HTTP 400 → ignored).
+ * Returns true if the team was opened, false if already open or on non-fatal error.
+ */
+async function completeMigrationForTeam(userEmail, teamId) {
+  if (!teamId) return false;
+  const tenant = getMsTenant(userEmail);
+  // Teamwork.Migrate.All is APPLICATION-only — try app token first, delegated as fallback
+  const tokenFns = [() => getAppAccessToken(tenant), () => getAccessToken(userEmail)];
+  for (const getToken of tokenFns) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      await axios.post(
+        `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/completeMigration`,
+        null,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      logger.info(`[completeMigrationForTeam] Team ${teamId} opened for ${userEmail}`);
+      return true;
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 400) {
+        logger.info(`[completeMigrationForTeam] Team ${teamId} already in standard mode (HTTP 400)`);
+        return false;
+      }
+      if (st === 403 || st === 401) continue; // try next token
+      logger.warn(`[completeMigrationForTeam] team=${teamId}: HTTP ${st || err.message}`);
+      return false;
+    }
+  }
+  logger.warn(`[completeMigrationForTeam] All tokens exhausted for team ${teamId}`);
+  return false;
+}
+
+/**
+ * Complete the migration for a Teams channel that was created in migration mode by CF.
+ * POST /teams/{teamId}/channels/{channelId}/completeMigration
+ *
+ * Must be called AFTER completeMigrationForTeam (team-level) has succeeded.
+ * When CloudFuze uses the Microsoft Teams migration API, channels are created in
+ * "migration mode" and their messages cannot be read until this endpoint is called.
+ * Requires Teamwork.Migrate.All which is APPLICATION-only (no delegated option).
+ *
+ * Safe to call if the channel is already in standard mode (HTTP 400 → ignored).
+ * Returns true if the channel was opened, false if already open or on non-fatal error.
+ */
+async function completeMigrationForChannel(userEmail, teamId, channelId) {
+  if (!teamId || !channelId) return false;
+  const tenant = getMsTenant(userEmail);
+  // Teamwork.Migrate.All is APPLICATION-only — try app token first, delegated as fallback
+  const tokenFns = [() => getAppAccessToken(tenant), () => getAccessToken(userEmail)];
+  for (const getToken of tokenFns) {
+    let token;
+    try { token = await getToken(); } catch (_) { continue; }
+    try {
+      await axios.post(
+        `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/completeMigration`,
+        null,
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 }
+      );
+      logger.info(`[completeMigrationForChannel] Channel ${channelId} (team ${teamId}) opened for ${userEmail}`);
+      return true;
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 400) {
+        logger.info(`[completeMigrationForChannel] Channel ${channelId} already in standard mode (HTTP 400)`);
+        return false;
+      }
+      if (st === 403 || st === 401) continue; // Teamwork.Migrate.All is app-only; try next token
+      logger.warn(`[completeMigrationForChannel] team=${teamId} ch=${channelId}: HTTP ${st || err.message}`);
+      return false;
+    }
+  }
+  logger.warn(`[completeMigrationForChannel] All tokens exhausted for team=${teamId} ch=${channelId}`);
+  return false;
+}
+
+/**
+ * Count all feature stats in a Teams channel (all history, paginated).
+ * Returns:
+ *   messageCount       — user messages (messageType === 'message')
+ *   fileCount          — messages with real file attachments (contentType 'reference')
+ *   reactionMsgCount   — messages with at least one reaction
+ *   totalReactionCount — total reaction instances across all messages
+ *   mentionMsgCount    — messages with at least one @mention
+ *   threadReplyCount   — total replies fetched (best-effort, may be 0 if inaccessible)
+ */
+async function countTeamsChannelMessages(userEmail, teamId, channelId) {
+  const s = {
+    messageCount: 0,
+    fileCount: 0,
+    audioFileCount: 0,
+    videoFileCount: 0,
+    imageFileCount: 0,
+    gifCount: 0,
+    // Reactions (expected 0 — CF does not migrate reactions)
+    reactionMsgCount: 0,
+    totalReactionCount: 0,
+    // Mentions
+    mentionMsgCount: 0,
+    totalMentionCount: 0,
+    // Formatting (detected from HTML body)
+    boldMsgCount: 0,
+    italicMsgCount: 0,
+    strikethroughMsgCount: 0,
+    codeBlockMsgCount: 0,
+    orderedListMsgCount: 0,
+    bulletListMsgCount: 0,
+    linkMsgCount: 0,
+    // Threads
+    threadReplyCount: 0,
+    error: null,
+  };
+  const parentIds = [];
+  try {
+    const token = await getAccessToken(userEmail);
+    const headers = { Authorization: `Bearer ${token}` };
+    let url =
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}` +
+      `/messages?$top=50&$select=id,messageType,attachments,reactions,mentions,body`;
+    while (url) {
+      const res = await axios.get(url, { headers });
+      for (const m of (res.data.value || [])) {
+        if (m.messageType !== 'message') continue;
+        s.messageCount++;
+        parentIds.push(m.id);
+
+        // Files — contentType 'reference' = real SharePoint/OneDrive file
+        for (const a of (m.attachments || [])) {
+          if (a.contentType === 'reference') {
+            s.fileCount++;
+            const name = (a.name || '').toLowerCase();
+            if (/\.(mp3|wav|m4a|ogg|aac|flac)$/.test(name)) s.audioFileCount++;
+            else if (/\.(mp4|mov|avi|mkv|webm|wmv)$/.test(name)) s.videoFileCount++;
+            else if (/\.gif$/.test(name)) s.gifCount++;
+            else if (/\.(jpg|jpeg|png|bmp|webp|svg)$/.test(name)) s.imageFileCount++;
+          }
+        }
+
+        // Reactions (per-user instances in Teams)
+        if (Array.isArray(m.reactions) && m.reactions.length > 0) {
+          s.reactionMsgCount++;
+          s.totalReactionCount += m.reactions.length;
+        }
+
+        // Mentions
+        if (Array.isArray(m.mentions) && m.mentions.length > 0) {
+          s.mentionMsgCount++;
+          s.totalMentionCount += m.mentions.length;
+        }
+
+        // Text formatting — from HTML body
+        const body = m.body?.content || '';
+        if (/<strong>|<b>/i.test(body))              s.boldMsgCount++;
+        if (/<em>|<i>/i.test(body))                  s.italicMsgCount++;
+        if (/<s>|<strike>|<del>/i.test(body))        s.strikethroughMsgCount++;
+        if (/<pre>|<code>/i.test(body))              s.codeBlockMsgCount++;
+        if (/<ol>/i.test(body))                      s.orderedListMsgCount++;
+        if (/<ul>/i.test(body))                      s.bulletListMsgCount++;
+        if (/<a\s+href=/i.test(body))                s.linkMsgCount++;
+      }
+      url = res.data['@odata.nextLink'] || null;
+    }
+
+    // Thread replies — count actual replies for all parent messages (batched, up to 500)
+    // Use $count=true + ConsistencyLevel:eventual to get real reply counts (not just 0/1).
+    const replyBase =
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}/messages/`;
+    const replyHeaders = { ...headers, ConsistencyLevel: 'eventual' };
+    const REPLY_BATCH = 10;
+    const parentSample = parentIds.slice(0, 500);
+    for (let i = 0; i < parentSample.length; i += REPLY_BATCH) {
+      const batch = parentSample.slice(i, i + REPLY_BATCH);
+      await Promise.all(batch.map(async (pid) => {
+        try {
+          const rr = await axios.get(
+            `${replyBase}${encodeURIComponent(pid)}/replies?$top=1&$select=id&$count=true`,
+            { headers: replyHeaders },
+          );
+          const cnt = typeof rr.data['@odata.count'] === 'number'
+            ? rr.data['@odata.count']
+            : (rr.data.value || []).length;
+          if (cnt > 0) s.threadReplyCount += cnt;
+        } catch { /* best effort */ }
+      }));
+    }
+  } catch (err) {
+    logger.warn(`[countTeamsChannelMessages] ${userEmail} team=${teamId} ch=${channelId}: ${err.message}`);
+    s.error = err.message;
+  }
+  return s;
+}
+
+async function readTeamsMessages(userEmail, targetId, { top = 50, sinceMinutes = 120 } = {}) {
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+  const sinceMs = Date.now() - sinceMinutes * 60 * 1000;
+  let url;
+  const isChannel = targetId.includes('/');
+  if (isChannel) {
+    const slash = targetId.indexOf('/');
+    const teamId    = targetId.slice(0, slash);
+    const channelId = targetId.slice(slash + 1);
+    url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages?$top=${top}`;
+  } else {
+    url = `${GRAPH_BASE}/chats/${encodeURIComponent(targetId)}/messages?$top=${top}`;
+  }
+  try {
+    const res = await axios.get(url, { headers });
+    const all = res.data.value || [];
+    return all.filter((m) => {
+      if (!m.createdDateTime) return true;
+      return new Date(m.createdDateTime).getTime() >= sinceMs;
+    });
+  } catch (err) {
+    const status = err.response?.status;
+    const errMsg = err.response?.data?.error?.message || err.message;
+    if (status === 403) {
+      logger.warn(`[readTeamsMessages] 403 reading ${targetId} for ${userEmail}: ${errMsg}.`);
+      return [];
+    }
+    throw err;
+  }
+}
+
+/**
+ * Fetch all messages from a Teams channel for deep validation comparison.
+ * Strips HTML from body content. Paginates until maxMessages reached.
+ */
+async function listTeamsChannelAllMessages(userEmail, teamId, channelId, maxMessages) {
+  if (maxMessages == null) maxMessages = 500;
+  const token = await getAccessToken(userEmail);
+  const headers = { Authorization: `Bearer ${token}` };
+  const results = [];
+  let url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages` +
+    `?$top=50&$select=id,createdDateTime,from,body,attachments,messageType,replyToId,deletedDateTime`;
+
+  while (url && results.length < maxMessages) {
+    try {
+      const res = await axios.get(url, { headers });
+      const msgs = res.data.value || [];
+      for (const m of msgs) {
+        if (m.messageType !== 'message') continue;
+        const rawHtml = m.body?.content || '';
+        // Preserve paragraph/line breaks BEFORE stripping tags so that the
+        // CF "Posted by: Name · timestamp" header ends up on its own line.
+        // Without this, <p>header</p><p>message</p> collapses into a single
+        // line "header message" and the header-stripping regex in
+        // normalizeMessageText() consumes the actual message content too.
+        const plainText = rawHtml
+          .replace(/<\/p>/gi, '\n')
+          .replace(/<\/div>/gi, '\n')
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        results.push({
+          id: m.id,
+          createdDateTime: m.createdDateTime || '',
+          timestampMs: m.createdDateTime ? new Date(m.createdDateTime).getTime() : 0,
+          text: plainText,
+          rawHtml,
+          senderName: m.from?.user?.displayName || m.from?.application?.displayName || 'Unknown',
+          hasAttachments: !!(m.attachments && m.attachments.length > 0),
+          // Only count real file references (contentType === 'reference') — CF also injects
+          // card/thumbnail attachments which must not inflate the file count.
+          attachmentCount: (m.attachments || []).filter((a) => a.contentType === 'reference').length,
+          isDeleted: !!(m.deletedDateTime),
+          isReply: !!(m.replyToId),
+          hasReplies: false, // updated after targeted reply-count fetch in validateSlackToTeams
+        });
+      }
+      url = res.data['@odata.nextLink'] || null;
+    } catch (err) {
+      logger.warn(`[listTeamsChannelAllMessages] ${userEmail} team=${teamId} ch=${channelId}: ${err.message}`);
+      break;
+    }
+  }
+  return results;
+}
+
+/**
+ * Fetch the number of replies for a single Teams channel message.
+ * Used by deep validation to check thread reply counts without fetching all reply content.
+ * Returns 0 on API error (non-fatal — caller logs the warning).
+ */
+async function countTeamsMessageReplies(userEmail, teamId, channelId, messageId) {
+  const token = await getAccessToken(userEmail);
+  try {
+    const res = await axios.get(
+      `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}` +
+      `/channels/${encodeURIComponent(channelId)}` +
+      `/messages/${encodeURIComponent(messageId)}/replies?$count=true&$top=1&$select=id`,
+      { headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }, timeout: 20000 }
+    );
+    return typeof res.data['@odata.count'] === 'number'
+      ? res.data['@odata.count']
+      : (res.data.value || []).length;
+  } catch {
+    return 0;
+  }
+}
+
 module.exports = {
+  postTeamsMessage,
+  postTeamsReply,
+  hasTeamsToken,
+  readTeamsMessages,
+  listJoinedTeams,
+  listAllTeams,
+  listTeamChannels,
+  searchTeamByDisplayName,
+  completeMigrationForTeam,
+  completeMigrationForChannel,
+  countTeamsChannelMessages,
+  countTeamsMessageReplies,
   getAccessToken,
   getMailFolders,
   getChildFolders,
@@ -3245,6 +4218,7 @@ module.exports = {
   findMessagesByInternetMessageId,
   findBestMessageBySubjectAndTime,
   resolveDestinationByInternetMessageId,
+  buildDestinationMessageIndex,
   stripAngleBrackets,
   internetMessageIdsEqual,
   listMessagesInFolderPaged,
@@ -3266,6 +4240,8 @@ module.exports = {
   getOrCreateMailFolder,
   getContactsCount,
   emptyFolderViaApi,
+  emptyDeletedItems,
+  permanentDeleteFolder,
   deleteAllMessagesInFolder,
   deleteFolder,
   deleteAllEventsInCalendar,
@@ -3283,6 +4259,7 @@ module.exports = {
   getOrCreateCalendar,
   shareCalendar,
   createGroup,
+  addGroupMembers,
   getGroupsCount,
   createMessageWithLargeAttachment,
   deleteMessageRule,
@@ -3304,8 +4281,12 @@ module.exports = {
   deleteQaSearchFolders,
   ewsGetConditionalFormattingRules,
   countMessagesBySubjectPrefix,
+  capInboxUnread,
   deleteAllInboxRules,
   deleteAllConditionalFormattingRules,
   deleteAllSearchFolders,
   deleteQAGroups,
+  getAppAccessToken,
+  getMsTenant,
+  listTeamsChannelAllMessages,
 };

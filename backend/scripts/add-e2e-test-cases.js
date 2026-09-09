@@ -218,7 +218,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Inbox',
     subject:'QA E2E - Links and Zoom Meeting - Inbox',
-    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/j/98765432100?pwd=QATestMeeting2026\n\nMeeting agenda: https://docs.example.com/agenda/inbox-qa\nSupport ticket: https://support.example.com/ticket/10001\n\nThis email validates that hyperlinks including Zoom meeting links are preserved during Outlook to Gmail migration.',
+    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/test\n\nMeeting agenda: https://support.google.com/mail/\nSupport ticket: https://support.zoom.us/hc/en-us\n\nThis email validates that hyperlinks including Zoom meeting links are preserved during Outlook to Gmail migration.',
     labelIds:['INBOX'], isRead:true, hasAttachment:false,
     expectedResult:'All links including the Zoom URL are present verbatim in the Gmail message body; Zoom link resolves to zoom.us' },
 
@@ -227,7 +227,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Sent Items',
     subject:'QA E2E - Links and Zoom Meeting - Sent Items',
-    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/j/98765432101?pwd=QATestMeeting2026\n\nMeeting agenda: https://docs.example.com/agenda/sent-qa\nSupport ticket: https://support.example.com/ticket/10002\n\nThis email validates link migration for Sent Items.',
+    textBody:'Please join the Zoom meeting:\nhttps://zoom.us/test\n\nMeeting agenda: https://support.google.com/mail/\nSupport ticket: https://support.zoom.us/hc/en-us\n\nThis email validates link migration for Sent Items.',
     labelIds:['SENT'], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link and all hyperlinks are intact in Gmail SENT email; Zoom link is accessible' },
 
@@ -236,7 +236,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Drafts',
     subject:'QA E2E - Links and Zoom Meeting - Drafts',
-    textBody:'Draft meeting invite:\nhttps://zoom.us/j/98765432102?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/draft-qa\n\nThis draft validates link migration for the Drafts folder.',
+    textBody:'Draft meeting invite:\nhttps://zoom.us/test\n\nAgenda: https://support.google.com/mail/\n\nThis draft validates link migration for the Drafts folder.',
     labelIds:['DRAFT'], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link and hyperlinks preserved in Gmail DRAFT; link accessible' },
 
@@ -245,7 +245,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Junk Email',
     subject:'QA E2E - Links and Zoom Meeting - Junk Email',
-    textBody:'Phishing simulation with Zoom link:\nhttps://zoom.us/j/98765432103?pwd=QATestMeeting2026\n\nFake support: https://support.example.com/ticket/10004\n\nThis junk email validates link migration in the SPAM folder.',
+    textBody:'Phishing simulation with Zoom link:\nhttps://zoom.us/test\n\nFake support: https://support.zoom.us/hc/en-us\n\nThis junk email validates link migration in the SPAM folder.',
     labelIds:['SPAM'], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail SPAM email; link format intact' },
 
@@ -254,7 +254,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Deleted Items',
     subject:'QA E2E - Links and Zoom Meeting - Deleted Items',
-    textBody:'Deleted meeting invite:\nhttps://zoom.us/j/98765432104?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/deleted-qa\n\nThis deleted email validates link migration in the TRASH folder.',
+    textBody:'Deleted meeting invite:\nhttps://zoom.us/test\n\nAgenda: https://support.google.com/mail/\n\nThis deleted email validates link migration in the TRASH folder.',
     labelIds:['TRASH'], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail TRASH email; link format intact' },
 
@@ -263,7 +263,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'Archive',
     subject:'QA E2E - Links and Zoom Meeting - Archive',
-    textBody:'Archived meeting invite:\nhttps://zoom.us/j/98765432105?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/archive-qa\n\nThis archived email validates link migration in Archive[Gmail].',
+    textBody:'Archived meeting invite:\nhttps://zoom.us/test\n\nAgenda: https://support.google.com/mail/\n\nThis archived email validates link migration in Archive[Gmail].',
     labelIds:[], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail Archive[Gmail] email; link format intact' },
 
@@ -272,7 +272,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'QA-Migration-Folder',
     subject:'QA E2E - Links and Zoom Meeting - QA-Migration-Folder',
-    textBody:'Custom folder meeting:\nhttps://zoom.us/j/98765432106?pwd=QATestMeeting2026\n\nAgenda: https://docs.example.com/agenda/custom-qa\n\nThis email validates link migration in a custom Outlook folder.',
+    textBody:'Custom folder meeting:\nhttps://zoom.us/test\n\nAgenda: https://support.google.com/mail/\n\nThis email validates link migration in a custom Outlook folder.',
     labelIds:[], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail custom label QA-Migration-Folder; link format intact' },
 
@@ -281,7 +281,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'QA-Work-Projects',
     subject:'QA E2E - Links and Zoom Meeting - QA-Work-Projects',
-    textBody:'Work project meeting:\nhttps://zoom.us/j/98765432107?pwd=QATestMeeting2026\n\nProject docs: https://docs.example.com/projects/work-qa\n\nThis email validates link migration in QA-Work-Projects folder.',
+    textBody:'Work project meeting:\nhttps://zoom.us/test\n\nProject docs: https://support.google.com/mail/\n\nThis email validates link migration in QA-Work-Projects folder.',
     labelIds:[], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail custom label QA-Work-Projects' },
 
@@ -290,7 +290,7 @@ const e2eCases = [
     combination:'Outlook → Gmail', productType:'Mail',
     folder:'QA-Client-Emails',
     subject:'QA E2E - Links and Zoom Meeting - QA-Client-Emails',
-    textBody:'Client meeting:\nhttps://zoom.us/j/98765432108?pwd=QATestMeeting2026\n\nClient portal: https://docs.example.com/clients/client-qa\n\nThis email validates link migration in QA-Client-Emails folder.',
+    textBody:'Client meeting:\nhttps://zoom.us/test\n\nClient portal: https://support.google.com/mail/\n\nThis email validates link migration in QA-Client-Emails folder.',
     labelIds:[], isRead:true, hasAttachment:false,
     expectedResult:'Zoom link preserved in Gmail custom label QA-Client-Emails' },
 

@@ -1,11 +1,51 @@
 const orchestrator = require('../orchestrator/AgentOrchestrator');
 const executionService = require('../services/executionService');
+const { ownsExecution } = require('../middleware/authUser');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
 const fs = require('fs');
 const path = require('path');
 
 const logsDir = path.resolve(__dirname, '../../logs');
+
+/**
+ * Append CONTENT_EXTRA_USER_MAPPINGS to the mappings a run was given.
+ *
+ * The wizard can only offer principals it fetched as mailboxes, so groups, shared mailboxes and
+ * distribution lists cannot be mapped through the UI at all. Without a destination principal
+ * CloudFuze has nobody to re-grant their permissions to, and the run reports them as out of scope.
+ * Pairs configured here are added to every run, and never override a pair the caller supplied.
+ */
+function mergeConfiguredMappings(given) {
+  // Required here rather than at module scope, matching how the rest of this file reads config.
+  const env = require('../config/env');
+  const extra = String(env.CONTENT_EXTRA_USER_MAPPINGS || '').trim();
+  if (!extra) return given;
+
+  const seen = new Set(given
+    .map((m) => String((m && m.sourceEmail) || '').toLowerCase())
+    .filter(Boolean));
+  const added = [];
+  for (const piece of extra.split(',')) {
+    const [rawSrc, rawDst] = String(piece).split(':');
+    const sourceEmail = String(rawSrc || '').trim().toLowerCase();
+    const destinationEmail = String(rawDst || '').trim().toLowerCase();
+    if (!sourceEmail || !destinationEmail) {
+      logger.warn(`CONTENT_EXTRA_USER_MAPPINGS: ignoring malformed entry "${piece.trim()}" `
+        + '— expected source:destination');
+      continue;
+    }
+    // A pair supplied by the caller wins: the run screen is the more specific instruction.
+    if (seen.has(sourceEmail)) continue;
+    seen.add(sourceEmail);
+    added.push({ sourceEmail, destinationEmail, fromConfig: true });
+  }
+  if (added.length > 0) {
+    logger.info(`Added ${added.length} configured principal mapping(s) from `
+      + `CONTENT_EXTRA_USER_MAPPINGS: ${added.map((a) => `${a.sourceEmail} -> ${a.destinationEmail}`).join(', ')}`);
+  }
+  return [...given, ...added];
+}
 
 async function runAgents(req, res) {
   try {
@@ -23,36 +63,77 @@ async function runAgents(req, res) {
       userEmailMappings,
       sourceAdminEmail,
       destAdminEmail,
+      mode,
+      migrationServerUrl,
+      migrationServerEmail,
+      migrationServerPassword,
     } = req.body;
-    const normalizedUserMappings = Array.isArray(userEmailMappings) ? userEmailMappings : [];
+    const normalizedUserMappings = mergeConfiguredMappings(
+      Array.isArray(userEmailMappings) ? userEmailMappings : []
+    );
 
     // Bulk migration: multiple mapped pairs — phased execution
-    // Phase 1 (parallel): create test data in all source accounts
-    // Phase 2 (sequential): migrate each pair one at a time
+    // Phase 0 (parallel): cleanup all accounts
+    // Phase 1 (sequential): create test data one by one
+    // Phase 2 (sequential): migrate via devemail
     // Phase 3 (parallel): validate all destination mailboxes
     if (mappedPairs && Array.isArray(mappedPairs) && mappedPairs.length > 0) {
-      const pairsData = mappedPairs.map((pair) => ({
-        sourceEmail: pair.sourceEmail,
-        destinationEmail: pair.destinationEmail,
-        migrationType: migrationType || 'FULL',
-        includeMail,
-        includeCalendar,
-        includeContacts,
-        testType: testType || 'E2E',
-        sourceProvider: pair.sourceProvider || 'google',
-        destinationProvider: pair.destinationProvider || 'microsoft',
-        userEmailMappings: normalizedUserMappings,
-        sourceAdminEmail: sourceAdminEmail || '',
-        destAdminEmail: destAdminEmail || '',
-      }));
-      const results = await orchestrator.runBulkFlow(pairsData);
-      return res.json({
-        bulk: true,
-        totalPairs: mappedPairs.length,
-        completed: results.filter((r) => r.status === 'COMPLETED').length,
-        failed: results.filter((r) => r.status === 'FAILED').length,
-        results,
+      // Shared id links every pair of this bulk run so all pairs render into ONE combined report.
+      const bulkId = mappedPairs.length > 1 ? require('crypto').randomUUID() : null;
+      const contexts = mappedPairs.map((pair) => {
+        const ctx = new MigrationContext({
+          sourceEmail: pair.sourceEmail,
+          destinationEmail: pair.destinationEmail,
+          migrationType: migrationType || 'FULL',
+          includeMail,
+          includeCalendar,
+          includeContacts,
+          testType: testType || 'E2E',
+          sourceProvider: pair.sourceProvider || 'google',
+          destinationProvider: pair.destinationProvider || 'microsoft',
+          userEmailMappings: normalizedUserMappings,
+          sourceAdminEmail: sourceAdminEmail || '',
+          destAdminEmail: destAdminEmail || '',
+          migrationServerUrl: migrationServerUrl || '',
+          migrationServerEmail: migrationServerEmail || '',
+          migrationServerPassword: migrationServerPassword || '',
+          mode: mode || 'email',
+          bulkId,
+          // Mail migration options (devemail toggles) — same for every pair in the bulk run.
+          migrateRules: req.body.migrateRules,
+          archiveMailbox: req.body.archiveMailbox,
+          migrateAsInPlaceArchive: req.body.migrateAsInPlaceArchive,
+          excludeGroups: req.body.excludeGroups,
+          mailJobName: req.body.mailJobName || '',
+          mailFromDate: req.body.mailFromDate || '',
+          mailToDate: req.body.mailToDate || '',
+        });
+        ctx.userEmail = req.userEmail || null; // owner — scopes this run to the signed-in user
+        executionService.create(ctx);
+        executionService.update(ctx.executionId, {
+          status: 'RUNNING',
+          currentAgent: 'Starting',
+          progress: 'Queued — bulk QA flow will start shortly',
+        });
+        return ctx;
       });
+
+      // Respond immediately so the UI can navigate to Logs; orchestration runs in background.
+      res.status(202).json({
+        bulk: true,
+        executionId: contexts[0].executionId,
+        totalPairs: contexts.length,
+        executionIds: contexts.map((c) => c.executionId),
+        status: 'RUNNING',
+        message: 'Bulk execution started. Poll GET /api/agents/executions to watch progress.',
+      });
+
+      setImmediate(() => {
+        orchestrator.runBulkFlow(contexts).catch((err) => {
+          logger.error(`Background bulk orchestration failed: ${err.message}`);
+        });
+      });
+      return;
     }
 
     // Single pair migration — return 202 immediately so the UI can poll execution progress
@@ -77,8 +158,27 @@ async function runAgents(req, res) {
       migrationServerUrl: req.body.migrationServerUrl || '',
       migrationServerEmail: req.body.migrationServerEmail || '',
       migrationServerPassword: req.body.migrationServerPassword || '',
+      mode: mode || 'email',
+      contentOptions: req.body.contentOptions || null,
+      jobName: req.body.jobName || '',
+      excludeFileTypes: req.body.excludeFileTypes || '',
+      replaceSpecialChar: req.body.replaceSpecialChar,
+      sourcePath: req.body.sourcePath || '',
+      destinationPath: req.body.destinationPath || '',
+      sourceFolderName: req.body.sourceFolderName || '',
+      contentUserFolders: Array.isArray(req.body.contentUserFolders) ? req.body.contentUserFolders : [],
+      useExistingSource: Boolean(req.body.useExistingSource),
+      // Mail migration options (devemail toggles). Omitted → MigrationContext defaults apply.
+      migrateRules: req.body.migrateRules,
+      archiveMailbox: req.body.archiveMailbox,
+      migrateAsInPlaceArchive: req.body.migrateAsInPlaceArchive,
+      excludeGroups: req.body.excludeGroups,
+      mailJobName: req.body.mailJobName || '',
+      mailFromDate: req.body.mailFromDate || '',
+      mailToDate: req.body.mailToDate || '',
     });
     context.validate();
+    context.userEmail = req.userEmail || null; // owner — scopes this run to the signed-in user
 
     executionService.create(context);
     executionService.update(context.executionId, {
@@ -106,14 +206,14 @@ async function runAgents(req, res) {
   }
 }
 
-function getExecutions(_req, res) {
-  const executions = executionService.getAll();
+function getExecutions(req, res) {
+  const executions = executionService.getAll(req.userEmail);
   res.json(executions);
 }
 
 function getExecution(req, res) {
   const execution = executionService.get(req.params.id);
-  if (!execution) {
+  if (!execution || !ownsExecution(execution, req.userEmail)) {
     return res.status(404).json({ error: 'Execution not found' });
   }
   try {
@@ -136,6 +236,11 @@ function getExecution(req, res) {
 
 function getExecutionLogs(req, res) {
   const executionId = req.params.id;
+  // Only the owner (or a legacy run) may read the logs.
+  const execution = executionService.get(executionId);
+  if (execution && !ownsExecution(execution, req.userEmail)) {
+    return res.status(404).json({ error: 'Execution not found' });
+  }
   const logFile = path.join(logsDir, `${executionId}.log`);
 
   try {
@@ -157,8 +262,8 @@ function getExecutionLogs(req, res) {
   }
 }
 
-function getStats(_req, res) {
-  res.json(executionService.getStats());
+function getStats(req, res) {
+  res.json(executionService.getStats(req.userEmail));
 }
 
 async function testConnections(req, res) {
@@ -234,43 +339,170 @@ function loadUsersConfig() {
   }
 }
 
+/** Map curated config users to the API shape used by the user-mapping UI. */
+function mapConfigUsers(admin) {
+  return (admin?.users || []).map((u) => ({
+    id: u.email,
+    email: u.email,
+    displayName: `${u.firstName || ''} ${u.lastName || ''}`.trim(),
+    firstName: u.firstName || '',
+    lastName: u.lastName || '',
+  }));
+}
+
+// Content uses fine-grained service keys (googledrive/onedrive/sharepoint/…) but user
+// listing is done at the ACCOUNT level (Gmail/Graph/Box). Normalize so a service key
+// resolves to the right listing path instead of falling through to an empty list.
+const USER_LISTING_PROVIDER = {
+  googledrive: 'google', googleshareddrive: 'google', gmail: 'google', // (googleshareddrive kept)
+  onedrive: 'microsoft', outlook: 'microsoft',
+  sharepoint: 'sharepoint', box: 'box', dropbox: 'dropbox',
+};
+
+/**
+ * Dropbox team members, in this endpoint's user shape.
+ *
+ * Dropbox has no directory API in the Graph/Gmail sense — the equivalent is the team member list,
+ * which only exists on a Business team. `adminEmail` is accepted for signature symmetry and is
+ * deliberately unused: a Dropbox team token lists the whole team regardless of which member it acts
+ * as, so filtering by the admin's domain (as the Microsoft branches do) would drop the mixed-domain
+ * teams this account actually has — its members span snapbot.io, filefuze.co and cloudfuze.com.
+ *
+ * INVITED members are excluded. An invited member has not accepted and has no Dropbox to read, so
+ * offering them as a migration source produces a run that cannot succeed. The count of those skipped
+ * is logged rather than silently dropped.
+ */
+async function listDropboxTeamUsers(adminEmail) {
+  const dropboxClient = require('../clients/dropboxClient');
+  const members = await dropboxClient.listTeamMembers();
+  const active = members.filter((m) => String(m.status || '').toLowerCase() === 'active');
+  const skipped = members.length - active.length;
+  if (skipped > 0) {
+    logger.info(
+      `listDropboxTeamUsers: ${skipped} member(s) excluded as not active (invited/suspended) — `
+      + 'they have no Dropbox content to migrate'
+    );
+  }
+  return active.map((m) => {
+    const name = m.displayName || m.email || '';
+    return {
+      // The dbmid: id, which every single-account Dropbox call needs as its member context.
+      id: m.teamMemberId,
+      email: m.email,
+      displayName: name,
+      firstName: name.split(' ')[0] || '',
+      lastName: name.split(' ').slice(1).join(' ') || '',
+    };
+  });
+}
+
 async function getSourceUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    // Content runs list every domain in the Workspace; mail keeps its single-domain list.
+    const allDomains = req.query.allDomains === '1' || req.query.allDomains === 'true';
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
     if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
 
     const config = loadUsersConfig();
     const admin = config.source?.admins?.find(
       (a) => a.email.toLowerCase() === adminEmail.toLowerCase()
     );
+    const configUsers = mapConfigUsers(admin);
 
-    if (admin && admin.users?.length > 0) {
-      const users = admin.users.map((u) => ({
-        id: u.email,
-        email: u.email,
-        displayName: `${u.firstName} ${u.lastName}`.trim(),
-        firstName: u.firstName,
-        lastName: u.lastName || '',
-      }));
-      return res.json({ adminEmail, users, source: 'config' });
+    // Live first (authoritative); the curated config list in data/users.json is a fallback
+    // only. This keeps the list current — a stale config entry no longer silently caps it.
+    let liveUsers = null;
+    let domainHint = null;
+    let liveErrMsg = null;
+    try {
+      if (provider === 'microsoft') {
+        const outlookClient = require('../clients/outlookClient');
+        logger.info(`getSourceUsers: fetching Microsoft tenant users (admin: ${adminEmail})`);
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail.split('@')[1]?.toLowerCase();
+        liveUsers = domain
+          ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+          : allUsers;
+        // Admin UPN domain ≠ mailbox SMTP domain: guide to a domain that exists.
+        if (domain && liveUsers.length === 0 && allUsers.length > 0) {
+          const domains = [...new Set(allUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
+          domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
+        }
+      } else if (provider === 'slack') {
+        const slackClient = require('../clients/slackClient');
+        logger.info(`getSourceUsers: fetching Slack workspace users (admin: ${adminEmail})`);
+        liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
+      } else if (provider === 'dropbox') {
+        logger.info(`getSourceUsers: fetching Dropbox team members (admin: ${adminEmail})`);
+        liveUsers = await listDropboxTeamUsers(adminEmail);
+      } else if (provider === 'google' || !provider) {
+        const gmailClient = require('../clients/gmailClient');
+        liveUsers = await gmailClient.listDomainUsers(adminEmail, { allDomains });
+      }
+    } catch (liveErr) {
+      logger.warn(`getSourceUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
+      liveErrMsg = liveErr.message;
     }
 
-    // Route by provider
-    if (provider === 'microsoft') {
+    if (liveUsers && liveUsers.length > 0) {
+      return res.json({ adminEmail, users: liveUsers, source: provider === 'microsoft' ? 'graph' : provider === 'dropbox' ? 'dropbox' : 'gmail' });
+    }
+
+    // Box / SharePoint providers (from dev) — dedicated discovery.
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getSourceUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getSourceUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail.split('@')[1]?.toLowerCase();
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, source: 'box-graph-fallback' });
+      }
+    }
+
+    if (provider === 'sharepoint') {
       const outlookClient = require('../clients/outlookClient');
-      logger.info(`getSourceUsers: fetching Microsoft tenant users (admin: ${adminEmail})`);
+      logger.info(`getSourceUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
       const allUsers = await outlookClient.listUsers(adminEmail);
       const domain = adminEmail.split('@')[1]?.toLowerCase();
-      const users = domain
-        ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
-        : allUsers;
-      return res.json({ adminEmail, users, source: 'graph' });
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, source: 'sharepoint' });
     }
 
-    // Default: Google Workspace
-    const gmailClient = require('../clients/gmailClient');
-    const users = await gmailClient.listDomainUsers(adminEmail);
-    res.json({ adminEmail, users, source: 'gmail' });
+    // Fallback to the curated config list, then domain guidance, then empty.
+    if (configUsers.length > 0) {
+      logger.info(`getSourceUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
+      return res.json({ adminEmail, users: configUsers, source: 'config' });
+    }
+    if (domainHint) return res.status(400).json({ error: domainHint });
+    // Dropbox: an empty list is never normal, so say why rather than returning [] and letting the
+    // wizard show "0 source" with no explanation — which is exactly how this gap presented.
+    if (provider === 'dropbox') {
+      return res.status(400).json({
+        error: `Couldn't list Dropbox team members: ${liveErrMsg || 'no members returned'}. `
+          + 'Check that a Dropbox account is connected (Connect Clouds → Dropbox), that the app has '
+          + 'the team scopes (team_data.member, team_info.read, members.read), and that this is a '
+          + 'Dropbox Business team — a personal Dropbox has no team member list.',
+      });
+    }
+    // Google: a live failure with no fallback almost always means the service account
+    // isn't authorized for Domain-Wide Delegation in THIS user's Workspace domain.
+    if ((provider === 'google' || !provider) && liveErrMsg) {
+      const domain = (adminEmail.split('@')[1] || '').toLowerCase();
+      return res.status(400).json({
+        error: `Couldn't list Google users for @${domain}: ${liveErrMsg}. `
+          + `Authorize the service account's Client ID for Domain-Wide Delegation in the ${domain} `
+          + `Google Admin console (scopes: admin.directory.user.readonly, drive), then retry.`,
+      });
+    }
+    return res.json({ adminEmail, users: liveUsers || [], source: provider === 'microsoft' ? 'graph' : provider === 'dropbox' ? 'dropbox' : 'gmail' });
   } catch (err) {
     logger.error(`getSourceUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -279,44 +511,91 @@ async function getSourceUsers(req, res) {
 
 async function getDestinationUsers(req, res) {
   try {
-    const { adminEmail, provider } = req.query;
+    const { adminEmail, provider: rawProvider } = req.query;
+    const provider = USER_LISTING_PROVIDER[rawProvider] || rawProvider;
 
     const config = loadUsersConfig();
     const admin = config.destination?.admins?.find(
       (a) => a.email.toLowerCase() === (adminEmail || '').toLowerCase()
     );
+    const configUsers = mapConfigUsers(admin);
 
-    if (admin && admin.users?.length > 0) {
-      const users = admin.users.map((u) => ({
-        id: u.email,
-        email: u.email,
-        displayName: `${u.firstName} ${u.lastName}`.trim(),
-        firstName: u.firstName || '',
-        lastName: u.lastName || '',
-      }));
-      logger.info(`getDestinationUsers: using config list (${users.length} users) for admin ${adminEmail}`);
-      return res.json({ adminEmail, users, total: users.length });
+    // Live first (authoritative); curated config list is a fallback only.
+    let liveUsers = null;
+    let domainHint = null;
+    try {
+      if (provider === 'google') {
+        const gmailClient = require('../clients/gmailClient');
+        logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
+        liveUsers = await gmailClient.listDomainUsers(adminEmail);
+      } else if (provider === 'slack') {
+        const slackClient = require('../clients/slackClient');
+        logger.info(`getDestinationUsers: fetching Slack workspace users (admin: ${adminEmail})`);
+        liveUsers = await slackClient.listWorkspaceUsers(adminEmail);
+      } else if (provider === 'dropbox') {
+        // No combination migrates INTO Dropbox today, but the wizard offers every content service on
+        // both sides. Handled here so selecting it lists members instead of silently showing none —
+        // the same gap that made a Dropbox SOURCE show "0 source" and block the Map Users step.
+        logger.info(`getDestinationUsers: fetching Dropbox team members (admin: ${adminEmail})`);
+        liveUsers = await listDropboxTeamUsers(adminEmail);
+      } else if (provider === 'microsoft' || !provider) {
+        const outlookClient = require('../clients/outlookClient');
+        logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
+        const allTenantUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+        liveUsers = domain
+          ? allTenantUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
+          : allTenantUsers;
+        if (domain && liveUsers.length === 0 && allTenantUsers.length > 0) {
+          const domains = [...new Set(allTenantUsers.map((u) => u.email.split('@')[1]?.toLowerCase()).filter(Boolean))];
+          domainHint = `No mailboxes found for @${domain} in this tenant. Available domains: ${domains.join(', ')}. Enter an admin email on one of these domains.`;
+        }
+      }
+    } catch (liveErr) {
+      logger.warn(`getDestinationUsers: live fetch failed (${liveErr.message}) — trying config fallback`);
     }
 
-    // Route by provider
-    if (provider === 'google') {
-      const gmailClient = require('../clients/gmailClient');
-      logger.info(`getDestinationUsers: fetching Google Workspace users (admin: ${adminEmail})`);
-      const users = await gmailClient.listDomainUsers(adminEmail);
-      return res.json({ adminEmail, users, total: users.length, source: 'gmail' });
+    if (liveUsers && liveUsers.length > 0) {
+      logger.info(`getDestinationUsers: ${liveUsers.length} users (live)`);
+      return res.json({ adminEmail, users: liveUsers, total: liveUsers.length, source: provider === 'google' ? 'gmail' : provider === 'dropbox' ? 'dropbox' : 'graph' });
+    }
+    // Box / SharePoint providers (from dev) — dedicated discovery.
+    if (provider === 'box') {
+      try {
+        const boxClient = require('../clients/boxClient');
+        logger.info(`getDestinationUsers: fetching Box managed users (admin: ${adminEmail})`);
+        const rawUsers = await boxClient.getUsers(adminEmail);
+        const users = rawUsers.map((u) => ({ id: u.id, email: u.login, displayName: u.name, firstName: u.name.split(' ')[0] || '', lastName: u.name.split(' ').slice(1).join(' ') || '' }));
+        return res.json({ adminEmail, users, total: users.length, source: 'box' });
+      } catch (boxErr) {
+        logger.warn(`getDestinationUsers: Box API unavailable (${boxErr.message}), falling back to Microsoft Graph`);
+        const outlookClient = require('../clients/outlookClient');
+        const allUsers = await outlookClient.listUsers(adminEmail);
+        const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+        const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+        return res.json({ adminEmail, users, total: users.length, source: 'box-graph-fallback' });
+      }
     }
 
-    // Default: Microsoft 365 via Graph API
-    const outlookClient = require('../clients/outlookClient');
-    logger.info(`getDestinationUsers: fetching Microsoft tenant users via Graph API (admin: ${adminEmail || 'none'})`);
-    const allTenantUsers = await outlookClient.listUsers(adminEmail);
-    const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
-    const users = domain
-      ? allTenantUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain)
-      : allTenantUsers;
-    logger.info(`getDestinationUsers: ${users.length} users found${domain ? ` (@${domain})` : ''}`);
+    if (provider === 'sharepoint') {
+      const outlookClient = require('../clients/outlookClient');
+      logger.info(`getDestinationUsers: fetching SharePoint/M365 tenant users (admin: ${adminEmail})`);
+      const allUsers = await outlookClient.listUsers(adminEmail);
+      const domain = adminEmail ? adminEmail.split('@')[1]?.toLowerCase() : null;
+      const users = domain ? allUsers.filter((u) => u.email.split('@')[1]?.toLowerCase() === domain) : allUsers;
+      return res.json({ adminEmail, users, total: users.length, source: 'sharepoint' });
+    }
 
-    res.json({ adminEmail, users, total: users.length, source: 'graph' });
+    // Fallback to the curated config list, then domain guidance, then empty.
+    if (configUsers.length > 0) {
+      logger.info(`getDestinationUsers: using config list (${configUsers.length} users) for admin ${adminEmail}`);
+      return res.json({ adminEmail, users: configUsers, total: configUsers.length, source: 'config' });
+    }
+    if (domainHint) {
+      logger.warn(`getDestinationUsers: ${domainHint}`);
+      return res.status(400).json({ error: domainHint });
+    }
+    return res.json({ adminEmail, users: [], total: 0, source: provider === 'google' ? 'gmail' : provider === 'dropbox' ? 'dropbox' : 'graph' });
   } catch (err) {
     logger.error(`getDestinationUsers error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -420,18 +699,82 @@ async function cleanDestination(req, res) {
   }
 }
 
-function generatePdf(req, res) {
+/**
+ * Run the content validation agent on demand for an execution that completed without a
+ * validationSummary (e.g. CloudFuze returned NOT_PROCESSED so the in-flow validation was skipped,
+ * or the run predates deep validation). Persists the result so the PDF + Results view light up.
+ * Returns the validationSummary, or null if this isn't a content run / no validator is registered.
+ */
+async function ensureContentValidation(execution) {
+  const ctx = execution.context || {};
+  const result = execution.result || {};
+  const isContent = ctx.domain === 'content' || ctx.mode === 'content';
+  if (!isContent || result.validationSummary) return result.validationSummary || null;
+
+  const { resolve } = require('../orchestrator/agentRegistry');
+  const set = resolve(ctx.domain || 'content', ctx.sourceProvider, ctx.destinationProvider);
+  if (!set?.ValidationAgent) return null;
+
+  const mr = result.migrationResult || {};
+  // Rebuild the context the validation agent reads, pulling migration outputs from the stored result.
+  const context = {
+    ...ctx,
+    executionId: execution.id || ctx.executionId,
+    migratedUsers: ctx.migratedUsers || mr.migratedUsers || [],
+    skippedUsers: ctx.skippedUsers || mr.skippedUsers || [],
+    permissionMapping: ctx.permissionMapping || mr.permissionMapping || null,
+    contentMigrationReport: result.contentMigrationReport || mr.contentMigrationReport || null,
+    migrationJobDetails: ctx.migrationJobDetails || mr.migrationJobDetails || null,
+  };
+
+  logger.info(`[generatePdf] No validationSummary for ${execution.id} — running content validation on demand`);
+  const summary = await new set.ValidationAgent().run(context);
+  executionService.update(execution.id, { result: { ...result, validationSummary: summary } });
+  execution.result = { ...result, validationSummary: summary };
+  return summary;
+}
+
+async function generatePdf(req, res) {
   try {
     const execution = executionService.get(req.params.id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
+
+    const { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf } = require('../utils/pdfGenerator');
+    const bulkId = execution.context?.bulkId;
+
+    // Bulk run → ONE combined report containing every pair (ordered by creation), regardless of
+    // which pair's row the download was triggered from.
+    if (bulkId) {
+      const siblings = executionService.getAll()
+        .filter((e) => e.context?.bulkId === bulkId && e.result)
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+      if (siblings.length === 0) return res.status(400).json({ error: 'Bulk run has no results yet' });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="bulk-validation-report-${String(bulkId).slice(0, 8)}.pdf"`);
+      generateBulkValidationPdf(siblings, res);
+      return;
+    }
+
     if (!execution.result) return res.status(400).json({ error: 'Execution has no results yet' });
 
-    const { generateValidationPdf } = require('../utils/pdfGenerator');
+    // Content migrations have their own check-list report (structure/permissions/versions/
+    // shared links); mail uses the deep-mail report.
+    const ctx = execution.context || {};
+    const isContent = ctx.domain === 'content' || ctx.mode === 'content'
+      || execution.result?.validationSummary?.domain === 'content';
+
+    // Content: if validation never ran (e.g. CloudFuze NOT_PROCESSED skipped it), run it now so a
+    // report is always downloadable after a completed run — same UX as mail.
+    if (isContent && !execution.result.validationSummary) {
+      try { await ensureContentValidation(execution); }
+      catch (err) { logger.warn(`[generatePdf] on-demand validation failed for ${req.params.id}: ${err.message}`); }
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="validation-report-${req.params.id.slice(0, 8)}.pdf"`);
 
-    generateValidationPdf(execution, res);
+    if (isContent) generateContentValidationPdf(execution, res);
+    else generateValidationPdf(execution, res);
   } catch (err) {
     logger.error(`generatePdf error: ${err.message}`);
     res.status(500).json({ error: err.message });
@@ -448,7 +791,11 @@ async function getSourceMailboxStats(req, res) {
     const gmailClientCheck = require('../clients/gmailClient');
     const tenant2Dwd = Array.isArray(envCheck.GOOGLE_TENANT_2_DOMAINS) && envCheck.GOOGLE_TENANT_2_DOMAINS.includes(emailDomain) && gmailClientCheck.hasServiceAccount('2');
     const tenant3Dwd = Array.isArray(envCheck.GOOGLE_TENANT_3_DOMAINS) && envCheck.GOOGLE_TENANT_3_DOMAINS.includes(emailDomain);
-    const isDwdUser = tenant2Dwd || tenant3Dwd;
+    // The single shared service account (GOOGLE_SERVICE_ACCOUNT_KEY) serves every domain not
+    // matched to a tenant-specific key, so any email is reachable when it's set. Without this,
+    // shared-SA deployments short-circuit to noToken:true and mailbox stats never load.
+    const sharedSaDwd = !!envCheck.GOOGLE_SERVICE_ACCOUNT_KEY;
+    const isDwdUser = tenant2Dwd || tenant3Dwd || sharedSaDwd;
     if (!isDwdUser && !envCheck.googleAccounts.has(email.toLowerCase())) {
       return res.json({ email, mailCount: 0, folderCount: 0, calendarCount: 0, eventCount: 0, noToken: true });
     }
@@ -709,7 +1056,7 @@ async function cancelExecution(req, res) {
   try {
     const { id } = req.params;
     const execution = executionService.get(id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
     if (execution.status !== 'RUNNING') {
       return res.status(400).json({ error: `Execution is not running (status: ${execution.status})` });
     }
@@ -898,7 +1245,7 @@ async function resumeExecution(req, res) {
   try {
     const { id } = req.params;
     const execution = executionService.get(id);
-    if (!execution) return res.status(404).json({ error: 'Execution not found' });
+    if (!execution || !ownsExecution(execution, req.userEmail)) return res.status(404).json({ error: 'Execution not found' });
     if (execution.status !== 'INTERRUPTED') {
       return res.status(400).json({ error: `Execution cannot be resumed (status: ${execution.status})` });
     }
@@ -913,6 +1260,441 @@ async function resumeExecution(req, res) {
   }
 }
 
+/**
+ * GET /agents/box/users?adminEmail=admin@domain.com
+ * List all active managed Box users for the given admin account.
+ */
+async function getBoxUsers(req, res) {
+  try {
+    const { adminEmail } = req.query;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail query param is required' });
+    const boxClient = require('../clients/boxClient');
+    const users = await boxClient.getUsers(adminEmail);
+    const mapped = users.map((u) => ({ id: u.id, email: u.login, displayName: u.name }));
+    res.json({ adminEmail, users: mapped, total: mapped.length });
+  } catch (err) {
+    logger.error(`getBoxUsers error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-box-data
+ * Body: { adminEmail, targetUserId? }
+ *
+ * Runs BoxTestDataAgent — creates the full QA data set in Box cloud.
+ * adminEmail must already be connected via GET /api/auth/box/url.
+ * targetUserId (optional): Box user ID to create data as (As-User impersonation).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxData(req, res) {
+  try {
+    const { adminEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxTestDataAgent = require('../agents/box/BoxTestDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxTestDataAgent',
+      progress: 'BoxTestDataAgent: starting Box data creation…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxTestDataAgent',
+          progress: 'BoxTestDataAgent: creating folders, uploading files, building versions…',
+        });
+        const result = await agent.run({ adminEmail, boxTargetUserId: targetUserId || null, executionId });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-box-automation-data
+ * Body: { adminEmail, collaboratorEmail?, targetUserId? }
+ *
+ * Runs BoxAutomationDataAgent — creates "AUTOMATION BOX" root folder with all
+ * 17 migration QA scenarios inside it.
+ * adminEmail must already be connected via GET /api/auth/box/url
+ * (or BOX_DEVELOPER_TOKEN set in .env).
+ * collaboratorEmail (optional): email to add as collaborator in permission scenarios.
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function createBoxAutomationData(req, res) {
+  try {
+    const { adminEmail, collaboratorEmail, targetUserId } = req.body;
+    if (!adminEmail) return res.status(400).json({ error: 'adminEmail is required' });
+
+    const BoxAutomationDataAgent = require('../agents/box/BoxAutomationDataAgent');
+    const executionService = require('../services/executionService');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      status: 'RUNNING',
+      currentAgent: 'BoxAutomationDataAgent',
+      progress: 'BoxAutomationDataAgent: creating AUTOMATION BOX root folder…',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Box automation data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new BoxAutomationDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'BoxAutomationDataAgent',
+          progress: 'BoxAutomationDataAgent: running 17 migration QA scenarios…',
+        });
+        const result = await agent.run({
+          adminEmail,
+          collaboratorEmail: collaboratorEmail || null,
+          boxTargetUserId: targetUserId || null,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], boxAutomation: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createBoxAutomationData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createBoxAutomationData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/create-drive-data
+ * Body: { sourceEmail, editorEmail?, viewerEmail?, sourceFolderName? }
+ *
+ * Runs DriveTestDataAgent — creates the full QA data set in Google My Drive.
+ * sourceEmail must belong to a tenant with a service account (DWD) or have a stored OAuth token.
+ * sourceFolderName defaults to "Agent My Drive" (matches the CSV migration path /Agent My Drive).
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function createDriveData(req, res) {
+  try {
+    const { sourceEmail, editorEmail, viewerEmail, sourceFolderName } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    const folderName = sourceFolderName || 'Agent My Drive';
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, sourceFolderName: folderName }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Drive data creation started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: creating folders, uploading files, building versions, setting permissions…',
+        });
+        const result = await agent.run({
+          sourceEmail,
+          editorEmail:      editorEmail || null,
+          viewerEmail:      viewerEmail || null,
+          sourceFolderName: folderName,
+          executionId,
+        });
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], driveData: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`createDriveData failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`createDriveData error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function getContentStats(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.query;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    if (!provider) return res.status(400).json({ error: 'provider is required (box or sharepoint)' });
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const stats = await boxClient.getBoxContentStats(adm, email);
+      return res.json(stats);
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content stats` });
+  } catch (err) {
+    logger.error(`getContentStats error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContent(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxContent(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported for content cleanup` });
+  } catch (err) {
+    logger.error(`cleanContent error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFiles(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFiles(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFiles error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function cleanContentFolders(req, res) {
+  try {
+    const { email, adminEmail, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'email is required' });
+    req.setTimeout(1800000);
+    res.setTimeout(1800000);
+
+    if (provider === 'box') {
+      const boxClient = require('../clients/boxClient');
+      const adm = adminEmail || email;
+      const result = await boxClient.cleanBoxFolders(adm, email);
+      const after = await boxClient.getBoxContentStats(adm, email);
+      return res.json({ email, deleted: result, after });
+    }
+
+    return res.status(400).json({ error: `Provider "${provider}" is not yet supported` });
+  } catch (err) {
+    logger.error(`cleanContentFolders error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/setup-drive-shared-links
+ * Body: {
+ *   sourceEmail,
+ *   rootFolderId,           — ID of "Agent My Drive" folder
+ *   existingSharedItems,    — [{label, id}, ...] items whose public links to remove
+ *   domain?                 — defaults to 'storefuze.com'
+ * }
+ *
+ * 1. Removes public "anyone" links from all previously shared items.
+ * 2. Creates "Agent Shared Links" folder with 5 files:
+ *    - 2 files with "anyone with the link" (viewer + editor)
+ *    - 3 files with domain-restricted link for storefuze.com (viewer + commenter + editor)
+ * Returns 202; poll GET /api/agents/executions/:id for progress.
+ */
+async function setupDriveSharedLinks(req, res) {
+  try {
+    const { sourceEmail, rootFolderId, existingSharedItems = [], domain = 'storefuze.com' } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!rootFolderId) return res.status(400).json({ error: 'rootFolderId is required' });
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, rootFolderId, domain }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: 'Shared links setup started. Poll GET /api/agents/executions/:id for progress.',
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: 'DriveTestDataAgent: removing public links, creating Agent Shared Links folder…',
+        });
+        const result = await agent.setupSharedLinksFolder(sourceEmail, rootFolderId, existingSharedItems, domain);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], sharedLinksSetup: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`setupDriveSharedLinks failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`setupDriveSharedLinks error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * POST /agents/update-drive-versions
+ * Body: { sourceEmail, versionedFiles: [{name, id}, ...], fromVersion?, toVersion? }
+ *
+ * Appends additional versions to existing Drive files — used for delta migration testing.
+ * fromVersion defaults to 5 (initial agent creates 5). toVersion defaults to 10.
+ * Returns 202 immediately; poll GET /api/agents/executions/:id for progress.
+ */
+async function updateDriveVersions(req, res) {
+  try {
+    const { sourceEmail, versionedFiles, fromVersion = 5, toVersion = 10 } = req.body;
+    if (!sourceEmail) return res.status(400).json({ error: 'sourceEmail is required' });
+    if (!Array.isArray(versionedFiles) || versionedFiles.length === 0) {
+      return res.status(400).json({ error: 'versionedFiles array is required (e.g. [{name, id}, ...])' });
+    }
+    if (fromVersion >= toVersion) {
+      return res.status(400).json({ error: `fromVersion (${fromVersion}) must be less than toVersion (${toVersion})` });
+    }
+
+    const DriveTestDataAgent = require('../agents/drive/DriveTestDataAgent');
+    const { v4: uuidv4 } = require('uuid');
+
+    const executionId = uuidv4();
+    executionService.create({
+      executionId,
+      toJSON: () => ({ executionId, sourceEmail, fromVersion, toVersion, files: versionedFiles.map((f) => f.name) }),
+    });
+
+    res.status(202).json({
+      executionId,
+      message: `Adding versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s). Poll GET /api/agents/executions/:id for progress.`,
+    });
+
+    setImmediate(async () => {
+      const agent = new DriveTestDataAgent();
+      try {
+        executionService.update(executionId, {
+          status: 'RUNNING',
+          currentAgent: 'DriveTestDataAgent',
+          progress: `DriveTestDataAgent: uploading versions ${fromVersion + 1}–${toVersion} to ${versionedFiles.length} file(s)…`,
+        });
+        const result = await agent.updateVersions(sourceEmail, versionedFiles, fromVersion, toVersion);
+        executionService.update(executionId, {
+          status: 'COMPLETED',
+          result: { executionId, status: 'COMPLETED', agentResults: [agent.toJSON()], updatedVersions: result },
+          progress: 'Completed',
+          completedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger.error(`updateDriveVersions failed: ${err.message}`);
+        executionService.update(executionId, {
+          status: 'FAILED',
+          error: err.message,
+          result: { executionId, status: 'FAILED', error: err.message, agentResults: [agent.toJSON()] },
+          progress: `Failed: ${err.message}`,
+          completedAt: new Date().toISOString(),
+        });
+      }
+    });
+  } catch (err) {
+    logger.error(`updateDriveVersions error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
@@ -922,5 +1704,8 @@ module.exports = {
   getCalendarEventCount, deleteCalendarEvents,
   getSourceCalendarStats, deleteSourceCalendarEvents,
   createOutlookData, cancelExecution, createTestData, resumeExecution,
+  getBoxUsers, createBoxData, createBoxAutomationData,
+  createDriveData, updateDriveVersions, setupDriveSharedLinks,
+  getContentStats, cleanContent, cleanContentFiles, cleanContentFolders,
 };
 

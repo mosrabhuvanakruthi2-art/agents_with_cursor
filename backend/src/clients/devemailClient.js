@@ -22,13 +22,14 @@
 
 const https  = require('https');
 const axios  = require('axios');
+const md5    = require('md5');
 const env    = require('../config/env');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const BASE_URL = 'https://devemail.cloudfuze.com/proxyservices/v1';
+const DEFAULT_BASE_URL = 'https://devemail.cloudfuze.com/proxyservices/v1';
 
 /** Terminal statuses returned by /mail/reports */
 const TERMINAL_STATUSES = new Set([
@@ -54,7 +55,7 @@ let cachedUserId = null;
 /** When true, appJwt came from /mail/login and IS already the Mail JWT — skip /mail/register */
 let appJwtIsMailJwt = false;
 /** Last observed job details (populated by pollReports) — cleared on each triggerMigration */
-let lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+let lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
 
 /**
  * Optional runtime credentials injected by MigrationAgent from the form submission.
@@ -104,7 +105,18 @@ function clearRuntimeConfig() {
   appJwt         = null;
   mailJwt        = null;
   cachedUserId   = null;
-  lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+  lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
+}
+
+/**
+ * Active API base URL. Prefers the runtime server URL injected from the Run Agent form
+ * (setRuntimeConfig baseUrl) so ANY server that speaks the devemail /proxyservices contract can be
+ * targeted with its own URL + credentials — new customer servers included. Falls back to the
+ * default devemail server when no runtime URL is given.
+ */
+function apiBase() {
+  const raw = runtimeConfig && runtimeConfig.baseUrl ? String(runtimeConfig.baseUrl).trim() : '';
+  return (raw || DEFAULT_BASE_URL).replace(/\/+$/, '');
 }
 
 // ─── JWT helpers ──────────────────────────────────────────────────────────────
@@ -126,6 +138,35 @@ function isJwtExpired(token) {
 /** Strip "Bearer " prefix from a raw server-returned token string. */
 function stripBearer(raw) {
   return String(raw ?? '').replace(/^Bearer\s*/i, '').trim();
+}
+
+// ─── Response-body unwrap ───────────────────────────────────────────────────
+// The devemail proxyservices reports endpoints DOUBLE-JSON-encode their bodies: the HTTP
+// response is a JSON *string* whose content is itself a stringified JSON array, e.g.
+//   "\"[{\\\"id\\\":\\\"…\\\"}]\""
+// axios parses only the OUTER layer, leaving a string. A plain `Array.isArray(res.data)`
+// check therefore fails and the payload looks "empty" — which is exactly why the reports
+// list appeared report-blind. Unwrap by JSON.parsing until we stop getting a string.
+
+/** Recursively JSON.parse a (possibly multiply-)stringified body. Returns the decoded value. */
+function _unwrapJson(data) {
+  let d = data;
+  for (let i = 0; i < 4 && typeof d === 'string'; i++) {
+    const s = d.trim();
+    if (!s) return null;
+    try { d = JSON.parse(s); } catch { return d; } // not JSON → return the string as-is
+  }
+  return d;
+}
+
+/** Unwrap a body and coerce it to an array (handles arrays, {content|jobs|data|details|…}). */
+function _asArray(data) {
+  const d = _unwrapJson(data);
+  if (Array.isArray(d)) return d;
+  if (d && typeof d === 'object') {
+    return d.content || d.jobs || d.data || d.details || d.mailMigrationDetails || [];
+  }
+  return [];
 }
 
 // ─── Credential resolution ────────────────────────────────────────────────────
@@ -155,45 +196,41 @@ async function getAppJwt(email, password) {
   if (!email)    throw new Error('devemailClient.getAppJwt: email is required');
   if (!password) throw new Error('devemailClient.getAppJwt: password is required');
 
-  // Strategy 1: POST /auth/user with MD5 then plaintext password
-  const crypto = require('crypto');
-  const md5Password = crypto.createHash('md5').update(password).digest('hex');
-  const env = require('../config/env');
+  const md5Password = md5(password);
 
-  logger.info(`devemailClient: POST /auth/user (email=${email}) — trying MD5 then plaintext`);
-
+  // Strategy 1: for non-default users, use headless browser login to get THEIR own JWT.
+  // /auth/user is broken server-side (returns 500 for all users).
+  // Basic auth matches by password hash only — all users sharing the same password would get
+  // the wrong account. Browser login is the only reliable way to get the correct user's JWT.
   let res;
-  for (const [label, pwd] of [['md5', md5Password], ['plaintext', password]]) {
+  const isDefaultUser = email.toLowerCase() === (env.CLOUDFUZE_OWNER_EMAIL || '').toLowerCase().trim();
+  if (!isDefaultUser) {
     try {
-      res = await retryWithBackoff(
-        () =>
-          axios.post(
-            `${BASE_URL}/auth/user`,
-            { email, password: pwd },
-            axiosCfg({ headers: { 'Content-Type': 'application/json' }, timeout: 30000 })
-          ),
-        { label: `devemailClient POST /auth/user (${label})`, maxRetries: 2 }
-      );
-      logger.info(`devemailClient: POST /auth/user succeeded with ${label} password`);
-      break;
-    } catch (err) {
-      logger.warn(`devemailClient: POST /auth/user failed with ${label} password: ${err.message}`);
-      res = null;
+      const { getJwtViaBrowser } = require('./devemailBrowserClient');
+      logger.info(`devemailClient: trying browser login for ${email}`);
+      const browserJwt = await getJwtViaBrowser(email, password);
+      logger.info('devemailClient: browser login succeeded — JWT captured for current user');
+      // emailToken from localStorage is already Mail-scoped — use it as mailJwt directly.
+      // Do NOT go through /mail/register with env Basic auth (that would give bhuvana's JWT).
+      mailJwt = browserJwt;
+      appJwtIsMailJwt = false;
+      res = { data: browserJwt, headers: {} };
+    } catch (browserErr) {
+      logger.warn(`devemailClient: browser login failed (${browserErr.message}) — falling back to Basic auth`);
     }
   }
 
-  // Strategy 2 (fallback): POST /mail/login with Basic auth
-  // This uses the userId:passwordHash Basic credentials stored in MIGRATION_API_BASIC_AUTH.
-  // Confirmed working: returns bhuvana's JWT which is accepted by /mail/move/initiate.
+  // Strategy 2 (fallback): POST /mail/login with env Basic auth token.
+  // Used for the default env user, or when browser login fails.
   if (!res) {
     const basicCred = (env.MIGRATION_API_BASIC_AUTH || '').trim();
-    if (!basicCred) throw new Error('devemailClient: /auth/user failed and MIGRATION_API_BASIC_AUTH not set');
-    logger.info('devemailClient: /auth/user failed — falling back to POST /mail/login (Basic auth)');
+    if (!basicCred) throw new Error('devemailClient: no auth method succeeded and MIGRATION_API_BASIC_AUTH not set');
+    logger.info('devemailClient: using POST /mail/login (Basic auth)');
     try {
       res = await retryWithBackoff(
         () =>
           axios.post(
-            `${BASE_URL}/mail/login`,
+            `${apiBase()}/mail/login`,
             null,
             axiosCfg({
               headers: { Authorization: `Basic ${basicCred}` },
@@ -203,7 +240,7 @@ async function getAppJwt(email, password) {
         { label: 'devemailClient POST /mail/login (Basic)', maxRetries: 2 }
       );
       logger.info('devemailClient: POST /mail/login (Basic auth) succeeded — JWT is already Mail-scoped, skipping /mail/register');
-      appJwtIsMailJwt = true; // signal authenticate() to skip /mail/register
+      appJwtIsMailJwt = true;
     } catch (err2) {
       throw new Error(`devemailClient: all auth methods failed. /mail/login: ${err2.message}`);
     }
@@ -249,7 +286,7 @@ async function validateUser(email) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/users/validateUser`,
+        `${apiBase()}/users/validateUser`,
         axiosCfg({
           params:  { searchUser: email.trim(), _: Date.now() },
           timeout: 30000,
@@ -303,7 +340,7 @@ async function getMailJwt(currentAppJwt, cloudName, email, userId) {
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${BASE_URL}/mail/register`,
+        `${apiBase()}/mail/register`,
         { cloudName, email, userId },
         axiosCfg({
           headers: {
@@ -392,7 +429,7 @@ async function authenticate(emailOverride, passwordOverride) {
           const regRes = await retryWithBackoff(
             () =>
               axios.post(
-                `${BASE_URL}/mail/register`,
+                `${apiBase()}/mail/register`,
                 null,
                 axiosCfg({
                   headers: { Authorization: `Basic ${basicCred}` },
@@ -477,7 +514,7 @@ async function getClouds() {
       const res = await retryWithBackoff(
         () =>
           axios.get(
-            `${BASE_URL}/mail/clouds`,
+            `${apiBase()}/mail/clouds`,
             axiosCfg({
               headers: { Authorization: header },
               params:  { _: Date.now() },
@@ -511,7 +548,7 @@ async function getClouds() {
     const res = await retryWithBackoff(
       () =>
         axios.get(
-          `${BASE_URL}/users/${userId}/get/all/cloud`,
+          `${apiBase()}/users/${userId}/get/all/cloud`,
           axiosCfg({
             headers: { Authorization: basicHeader },
             params:  { _: Date.now() },
@@ -595,7 +632,7 @@ async function getDomains(destCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/email/move/domains/${destCloudId}`,
+        `${apiBase()}/email/move/domains/${destCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${mailJwt}` },
           params:  { _: Date.now() },
@@ -629,7 +666,7 @@ async function getUserMapping(srcCloudId, dstCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/users/mapping/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/users/mapping/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { _: Date.now() },
@@ -671,7 +708,7 @@ async function getCachedMailboxMetadata(
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/cache/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/cache/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo, pageSize, _: Date.now() },
@@ -718,7 +755,7 @@ async function uploadUserCSV(sourceCloudId, destCloudId, pairs) {
   const res = await retryWithBackoff(
     () =>
       axios.post(
-        `${BASE_URL}/email/user/csv/${sourceCloudId}/${destCloudId}`,
+        `${apiBase()}/email/user/csv/${sourceCloudId}/${destCloudId}`,
         csvContent,
         axiosCfg({
           headers: {
@@ -755,7 +792,7 @@ async function cacheUserMapping(srcCloudId, dstCloudId) {
   const res = await retryWithBackoff(
     () =>
       axios.get(
-        `${BASE_URL}/mail/cache/${srcCloudId}/${dstCloudId}`,
+        `${apiBase()}/mail/cache/${srcCloudId}/${dstCloudId}`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo: 0, pageSize: 20, _: Date.now() },
@@ -790,7 +827,7 @@ async function getPermissionMapping(srcCloudId, dstCloudId, { pageSize = 500 } =
 
   try {
     const res = await axios.get(
-      `${BASE_URL}/email/user/cache/${srcCloudId}/${dstCloudId}`,
+      `${apiBase()}/email/user/cache/${srcCloudId}/${dstCloudId}`,
       axiosCfg({
         headers: { Authorization: `Bearer ${jwt}` },
         params:  { pageNo: 0, pageSize, _: Date.now() },
@@ -821,7 +858,11 @@ async function getPermissionMapping(srcCloudId, dstCloudId, { pageSize = 500 } =
  * @param {string}  context.destinationEmail   Destination mailbox address
  * @param {string}  [context.sourceCloudName]  Default "GMAIL"
  * @param {string}  [context.destCloudName]    Default "OUTLOOK"
- * @param {string}  [context.sourceProvider]   "microsoft" → archivedMailBox=true
+ * @param {string}  [context.sourceProvider]   Source provider (informational).
+ * @param {boolean} [context.migrateRules]     Migrate Rules toggle (mailRules); opt-in, default off
+ *
+ * Archive handling is the SAME for every mail combination: backup=true ("Archive Mailbox" ON) and
+ * archivedMailBox=false ("Migrate As In-Place Archive" OFF). It is not source-aware.
  * @param {string}  [context.migrationType]    "DELTA" for delta migration
  * @param {boolean} [context.includeCalendar]
  * @param {boolean} [context.includeContacts]
@@ -833,24 +874,33 @@ async function triggerMigration(context) {
   const ownerEmailId = resolveEmail() || context.sourceEmail;
 
   // Reset job details so getLastJobDetails() reflects this run only
-  lastJobDetails = { workspaceId: null, totalCount: null, processedCount: null };
+  lastJobDetails = { jobId: null, jobName: null, workspaceId: null, totalCount: null, processedCount: null };
 
   const fromCloud = (context.sourceCloudName || 'GMAIL').toUpperCase();
   const toCloud   = (context.destCloudName   || 'OUTLOOK').toUpperCase();
 
-  // Build jobName in the format the server expects: OneTime-FROM-TO-YYYYMMDD-HHMMSS
+  // Build jobName in the format the server expects: {OneTime|Delta}-FROM-TO-YYYYMMDD-HHMMSS.
+  // A UI-supplied name (context.mailJobName) overrides the auto-generated one.
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
   const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const jobName  = `OneTime-${fromCloud}-${toCloud}-${datePart}-${timePart}`;
+  const jobPrefix = context.migrationType === 'DELTA' ? 'Delta' : 'OneTime';
+  const jobName  = (context.mailJobName && String(context.mailJobName).trim())
+    || `${jobPrefix}-${fromCloud}-${toCloud}-${datePart}-${timePart}`;
 
-  const payload = [
-    {
+  // Build one workspace entry per mapped pair so all users land in one job.
+  // Falls back to the single context.sourceEmail/destinationEmail for single-user runs.
+  const pairsToMigrate = (Array.isArray(context.userEmailMappings) && context.userEmailMappings.length > 0)
+    ? context.userEmailMappings
+    : [{ sourceEmail: context.sourceEmail, destinationEmail: context.destinationEmail }];
+
+  const payload = pairsToMigrate.map((pair) => {
+    const item = {
       fromCloudName:   fromCloud,
       toCloudName:     toCloud,
-      fromMailId:      context.sourceEmail,
-      toMailId:        context.destinationEmail,
+      fromMailId:      pair.sourceEmail || context.sourceEmail,
+      toMailId:        pair.destinationEmail || context.destinationEmail,
       ownerEmailId,
       fromRootId:      '/',
       toRootId:        '/',
@@ -859,16 +909,36 @@ async function triggerMigration(context) {
       onlineMove:      false,
       contacts:        Boolean(context.includeContacts),
       drawings:        false,
-      backup:          true, // Archive Mailbox (Migration Options) — enabled for both O→G and G→O
-      orphanWorkSpace: Boolean(context.migrateOrphanedLabels), // Migrate Orphaned Labels toggle
-      archivedMailBox: false, // Migrate As In-Place Archive (Job Options) — different feature, keep false
+      // devemail "Options" toggles — driven by the Run-Agent UI (mailOptions). Defaults match
+      // the previously hardcoded values so an unset field behaves exactly as before:
+      //   Archive Mailbox (backup) ON, In-Place Archive (archivedMailBox) OFF, Exclude Groups OFF.
+      backup:          context.archiveMailbox !== false,
+      orphanWorkSpace: Boolean(context.migrateOrphanedLabels),
+      archivedMailBox: context.migrateAsInPlaceArchive === true,
       teamFolder:      false,
       cronExpression:  '1H0M',
-      disableGroups:   false,
+      disableGroups:   context.excludeGroups === true,
       processedCount:  null,
       inProgressCount: null,
-    },
-  ];
+    };
+    // Migrate Rules (mailRules): the devemail `/mail/move/initiate` model does NOT accept this
+    // field — sending it makes the server's inbound JAX-RS deserialization fail with HTTP 500
+    // (NoSuchMethodError while building the error response). devemail's OWN web UI has a
+    // "Migrate Rules" toggle, so the server supports the feature, but under a field name we have
+    // not yet captured. Until that real field name is confirmed (from devemail's Start Migration
+    // network request), we do NOT send anything for it — sending our guess breaks the migration.
+    // NOTE: intentionally NOT sending context.migrateRules to avoid the HTTP 500.
+    // Migrate date range (opt-in). Sent as the CloudFuze mail fields pickEmailsFromDate /
+    // pickEmailsBeforeDate (see migrationClient newtestemail5 payload), formatted
+    // "YYYY-MM-DD 00:00:00". Only included when the UI actually picked a date, so default
+    // runs are unaffected (and can't hit unknown-field deserialization errors).
+    const fmtDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '').trim()) ? `${String(d).trim()} 00:00:00` : null;
+    const pickFrom = fmtDate(context.mailFromDate);
+    const pickBefore = fmtDate(context.mailToDate);
+    if (pickFrom) item.pickEmailsFromDate = pickFrom;
+    if (pickBefore) item.pickEmailsBeforeDate = pickBefore;
+    return item;
+  });
 
   logger.info(`devemailClient triggerMigration payload: ${JSON.stringify(payload)}`);
 
@@ -889,7 +959,7 @@ async function triggerMigration(context) {
       const res = await retryWithBackoff(
         () =>
           axios.post(
-            `${BASE_URL}/${path}`,
+            `${apiBase()}/${path}`,
             payload,
             axiosCfg({
               headers: {
@@ -910,6 +980,7 @@ async function triggerMigration(context) {
 
       return {
         jobId:       res.data?.id || res.data?.[0]?.id || res.data?.jobId || 'initiated',
+        jobName,
         status:      'INITIATED',
         rawResponse: res.data,
         initiatePath: path,
@@ -919,7 +990,7 @@ async function triggerMigration(context) {
       const st    = err.response?.status;
       const allow = err.response?.headers?.allow || err.response?.headers?.Allow;
       const errBody = err.response?.data ? JSON.stringify(err.response.data) : '(no body)';
-      logger.error(`devemailClient POST ${BASE_URL}/${path} HTTP ${st} — ${errBody}`);
+      logger.error(`devemailClient POST ${apiBase()}/${path} HTTP ${st} — ${errBody}`);
       if ((st === 405 || st === 404) && i < pathCandidates.length - 1) {
         logger.warn(
           `devemailClient POST ${path} → HTTP ${st}${allow ? `; Allow: ${allow}` : ''} — trying next path`
@@ -954,9 +1025,16 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
   const maxPolls    = Math.ceil((maxMinutes * 60 * 1000) / intervalMs);
   const normFrom    = String(fromMailId || '').toLowerCase().trim();
   const execService = require('../services/executionService');
-  const MAX_NO_MATCH = 5;
+  // /mail/reports only shows COMPLETED jobs; /email/user/jobs may return them earlier.
+  // We try /mail/reports first; if it returns 0 jobs once, we permanently switch to /email/user/jobs.
+  // MAX_NO_MATCH = maxPolls means we never give up the full window just due to no-match streak.
+  const MAX_NO_MATCH = maxPolls;
   let noMatchStreak  = 0;
   let consecutiveAuthErrors = 0;
+
+  const reportsUrlCandidates = [`${apiBase()}/mail/reports`, `${apiBase()}/email/user/jobs`];
+  let reportsUrl = reportsUrlCandidates[0];
+  let reportsUrlFallbackIdx = 1;
 
   logger.info(
     `devemailClient pollReports: watching ${fromMailId}, max ${maxMinutes} min (${maxPolls} polls)`
@@ -986,7 +1064,7 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
 
     try {
       const res = await axios.get(
-        `${BASE_URL}/mail/reports`,
+        reportsUrl,
         axiosCfg({
           headers: { Authorization: `Bearer ${activeJwt}` },
           params:  { pageNo: 0, pageSize: 50, _: Date.now() },
@@ -995,7 +1073,7 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       );
 
       consecutiveAuthErrors = 0;
-      const jobs = Array.isArray(res.data) ? res.data : (res.data?.content || []);
+      const jobs = _asArray(res.data);
 
       let matchedJob    = null;
       let matchedDetail = null;
@@ -1023,12 +1101,19 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       }
 
       if (!matchedJob) {
+        // If current URL returned 0 jobs and a fallback exists, switch once immediately
+        if (jobs.length === 0 && reportsUrlFallbackIdx < reportsUrlCandidates.length) {
+          const nextUrl = reportsUrlCandidates[reportsUrlFallbackIdx++];
+          logger.info(`devemailClient reports poll ${attempt}: 0 jobs from ${reportsUrl} — switching to ${nextUrl}`);
+          reportsUrl = nextUrl;
+          continue;
+        }
         noMatchStreak++;
         if (attempt === 1 && jobs.length > 0) {
           logger.info(`devemailClient reports sample job keys: ${Object.keys(jobs[0]).join(', ')}`);
         }
         logger.info(
-          `devemailClient pollReports ${attempt}/${maxPolls}: job for ${fromMailId} not found ` +
+          `devemailClient pollReports ${attempt}/${maxPolls} [${reportsUrl.split('/').pop()}]: job for ${fromMailId} not found ` +
           `(${jobs.length} job(s), no-match streak ${noMatchStreak}/${MAX_NO_MATCH})`
         );
         if (noMatchStreak >= MAX_NO_MATCH) {
@@ -1055,8 +1140,11 @@ async function pollReports(fromMailId, maxMinutes = 30, intervalMs = 30000, onPr
       const countsDone     = totalCount > 0 && processedCount >= totalCount;
 
       // Keep module-level lastJobDetails current for getLastJobDetails() / fetchCurrentJobStatus()
+      // jobId = parent migration job (shared across pairs); workspaceId = this pair's sub-task.
       lastJobDetails = {
-        workspaceId:    matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || matchedDetail?.workspaceId || null,
+        jobId:          matchedJob.id || matchedJob.jobId || null,
+        jobName:        matchedJob.jobName || matchedJob.name || null,
+        workspaceId:    matchedDetail?.id || matchedDetail?.workspaceId || matchedJob.workspaceId || matchedJob.id || matchedJob.jobId || null,
         totalCount:     totalCount     || null,
         processedCount: processedCount || null,
       };
@@ -1146,7 +1234,7 @@ async function fetchCurrentJobStatus(fromMailId) {
     // Try page sizes in ascending order — larger page increases chance of finding the job
     for (const pageSize of [50, 200]) {
       const res = await axios.get(
-        `${BASE_URL}/mail/reports`,
+        `${apiBase()}/mail/reports`,
         axiosCfg({
           headers: { Authorization: `Bearer ${jwt}` },
           params:  { pageNo: 0, pageSize, _: Date.now() },
@@ -1154,7 +1242,7 @@ async function fetchCurrentJobStatus(fromMailId) {
         })
       );
 
-      const jobs = Array.isArray(res.data) ? res.data : (res.data?.content || []);
+      const jobs = _asArray(res.data);
       if (jobs.length === 0 && pageSize === 50) continue;
 
       let matchedJob    = null;
@@ -1224,6 +1312,178 @@ function getLastJobDetails() {
   return { ...lastJobDetails };
 }
 
+/**
+ * GET /mail/reports/{jobId} — per-user-pair sub-task breakdown for a specific migration job.
+ * Returns the raw array of pair sub-tasks, e.g.
+ *   [{ id, fromMailId, toMailId, fromCloud, toCloud, processStatus, totalCount, processedCount }]
+ * Used to populate the validation report's CloudFuze Migration Status table (Job ID + per-pair
+ * Workspace ID / counts) after the migration completes, with fresh auth.
+ *
+ * @param {string} jobId  Parent migration job id (matchedJob.id from /mail/reports)
+ * @returns {Promise<Array>} pair sub-tasks, or [] on failure
+ */
+async function getJobReport(jobId) {
+  if (!jobId || jobId === 'initiated') return [];
+  try {
+    const { mailJwt: jwt } = await authenticate();
+    const res = await axios.get(
+      `${apiBase()}/mail/reports/${encodeURIComponent(jobId)}`,
+      axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { _: Date.now() }, timeout: 30000 })
+    );
+    return _asArray(res.data);
+  } catch (err) {
+    logger.warn(`devemailClient getJobReport(${jobId}) failed: ${err.response?.status || err.message}`);
+    return [];
+  }
+}
+
+/**
+ * GET /mail/workSpaces/{jobDetailId} — folder-level migration records for one pair sub-task
+ * (the deepest drill-down). jobDetailId is the per-pair `id` from /mail/reports/{jobId}.
+ * Returns the raw array, e.g. [{ id, sourceId, destId, destFolderPath, processStatus, ... }].
+ *
+ * @param {string} jobDetailId  per-pair sub-task (workspace) id from /mail/reports/{jobId}
+ * @returns {Promise<Array>} folder-level workspace records, or [] on failure
+ */
+async function getWorkspaceRecords(jobDetailId) {
+  if (!jobDetailId) return [];
+  try {
+    const { mailJwt: jwt } = await authenticate();
+    const res = await axios.get(
+      `${apiBase()}/mail/workSpaces/${encodeURIComponent(jobDetailId)}`,
+      axiosCfg({ headers: { Authorization: `Bearer ${jwt}` }, params: { pageNo: 0, pageSize: 50, _: Date.now() }, timeout: 30000 })
+    );
+    return _asArray(res.data);
+  } catch (err) {
+    logger.warn(`devemailClient getWorkspaceRecords(${jobDetailId}) failed: ${err.response?.status || err.message}`);
+    return [];
+  }
+}
+
+// ─── Reports job resolver ─────────────────────────────────────────────────────
+// Resolves Job ID + Workspace ID + counts + per-folder breakdown from /mail/reports so the
+// validation report can show them. The reports endpoints DOUBLE-JSON-encode their responses; once
+// _asArray() unwraps that, our own Basic-auth Mail JWT reads them fine — the earlier "report-blind"
+// symptom was that parsing bug, not a token-scope limitation. A captured SSO token (data/
+// devemail-sso-token.json, optional) is used automatically if present, but is no longer required.
+
+const _fs = require('fs');
+const _path = require('path');
+const SSO_TOKEN_FILE = (process.env.DEVEMAIL_SSO_TOKEN_FILE || '').trim()
+  || _path.resolve(__dirname, '..', '..', 'data', 'devemail-sso-token.json');
+
+function loadSsoToken() {
+  try {
+    const j = JSON.parse(_fs.readFileSync(SSO_TOKEN_FILE, 'utf8'));
+    const tok = (j.token || '').trim();
+    if (!tok) return null;
+    const exp = (() => { try { return JSON.parse(Buffer.from(tok.split('.')[1], 'base64').toString()).exp * 1000; } catch { return 0; } })();
+    if (exp && exp < Date.now()) {
+      logger.warn(`devemailClient: saved SSO token expired (${new Date(exp).toISOString()}) — re-run capture-migration-details.js`);
+      return null;
+    }
+    return tok;
+  } catch { return null; }
+}
+
+/**
+ * Resolve a migration job's Job ID + per-pair Workspace ID + counts + per-folder breakdown.
+ *
+ * Token source: prefers a captured SSO token if present, else falls back to our own Basic-auth
+ * Mail JWT — both read /mail/reports correctly now that double-encoded bodies are unwrapped.
+ *
+ * Job selection: when a concrete `jobId` is known (from the initiate/poll response) it is used
+ * directly (most reliable); otherwise the job is matched from /mail/reports by `jobName`, falling
+ * back to the newest job.
+ *
+ * @param {{ jobId?: string, jobName?: string, fromMailId?: string }} opts
+ * @returns {Promise<{ jobId, workspaceId, totalCount, processedCount, status, folderBreakdown }|null>}
+ */
+async function resolveJobViaSsoToken({ jobId: knownJobId, jobName, fromMailId } = {}) {
+  // Token source: prefer a captured SSO token if one is present, but our own Basic-auth Mail JWT
+  // reads /mail/reports fine now that responses are unwrapped — so no manual token is required.
+  let token = loadSsoToken();
+  let tokenSource = 'SSO token';
+  if (!token) {
+    try {
+      const auth = await authenticate();
+      token = auth.mailJwt;
+      tokenSource = 'Basic-auth Mail JWT';
+    } catch (e) {
+      logger.warn(`devemailClient resolveJobViaSsoToken: no SSO token and Basic auth failed — ${e.message}`);
+      return null;
+    }
+  }
+  if (!token) return null;
+  logger.info(`devemailClient resolveJobViaSsoToken: resolving via ${tokenSource}`);
+  const H = axiosCfg({ headers: { Authorization: `Bearer ${token}` }, timeout: 30000, params: { _: Date.now() } });
+  const norm = (s) => String(s || '').toLowerCase().trim();
+  try {
+    // Resolve the parent Job ID: use a known id directly, else match it from the reports list.
+    let jobId = (knownJobId && knownJobId !== 'initiated') ? knownJobId : null;
+    let job = null;
+    if (!jobId) {
+      const listRes = await axios.get(`${apiBase()}/mail/reports`, H);
+      const jobs = _asArray(listRes.data);
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        logger.warn('devemailClient resolveJobViaSsoToken: reports list returned no jobs');
+        return null;
+      }
+      job = (jobName && jobs.find((j) => norm(j.jobName || j.name) === norm(jobName))) || jobs[0];
+      jobId = job.id || job.jobId;
+    }
+    if (!jobId) return null;
+    const r = await axios.get(`${apiBase()}/mail/reports/${encodeURIComponent(jobId)}`, H);
+    const arr = _asArray(r.data);
+    const pair = (arr || []).find((p) => norm(p.fromMailId || p.fromEmail) === norm(fromMailId)) || (arr || [])[0] || {};
+    const result = {
+      jobId,
+      // Workspace ID = the per-pair sub-task id. Different API shapes name it differently
+      // (id / jobDetailId / emailWorkSpaceId / uniqueEmailWorkSpaceId / workSpaceId) — accept any.
+      workspaceId: pair.id || pair.jobDetailId || pair.emailWorkSpaceId || pair.uniqueEmailWorkSpaceId || pair.workSpaceId || pair.workspaceId || null,
+      totalCount: pair.totalCount ?? pair.total ?? null,
+      processedCount: pair.processedCount ?? pair.processed ?? null,
+      status: pair.processStatus || pair.syncStatus || (job && job.status) || null,
+      folderBreakdown: [],
+    };
+
+    // Per-folder breakdown via GET /mail/workSpaces/{workspaceId} — CloudFuze's own source→dest
+    // folder records + per-folder counts, for a cross-check against our folder validation.
+    if (result.workspaceId) {
+      try {
+        const wr = await axios.get(
+          `${apiBase()}/mail/workSpaces/${encodeURIComponent(result.workspaceId)}`,
+          axiosCfg({ headers: { Authorization: `Bearer ${token}` }, timeout: 30000, params: { pageNo: 0, pageSize: 500, type: 'all', folder: true, _: Date.now() } })
+        );
+        const recs = _asArray(wr.data);
+        result.folderBreakdown = (recs || [])
+          .filter((f) => f && (f.mailFolder || f.destFolderName || f.movedFolder)) // skip the root "/" placeholder
+          .map((f) => {
+            const destPath = String(f.destFolderPath || '/').replace(/\/+$/, '');
+            const destName = f.destFolderName || f.movedFolder || f.mailFolder || '';
+            return {
+              folder: f.mailFolder || f.movedFolder || destName || '(unknown)',
+              destPath: `${destPath}/${destName}`.replace(/^\/+/, '/'),
+              total: f.totalCount ?? null,
+              messages: f.messagesCount ?? null,
+              unread: f.unreadCount ?? null,
+              status: f.processStatus || null,
+              subFolder: !!f.subFolder,
+            };
+          });
+        logger.info(`devemailClient resolveJobViaSsoToken: folderBreakdown = ${result.folderBreakdown.length} folder record(s)`);
+      } catch (we) {
+        logger.warn(`devemailClient resolveJobViaSsoToken: workSpaces fetch failed (non-fatal): ${we.response?.status || we.message}`);
+      }
+    }
+    logger.info(`devemailClient resolveJobViaSsoToken: jobId=${result.jobId}, workspaceId=${result.workspaceId}, counts=${result.processedCount}/${result.totalCount}`);
+    return result;
+  } catch (e) {
+    logger.warn(`devemailClient resolveJobViaSsoToken failed: ${e.response?.status || e.message}`);
+    return null;
+  }
+}
+
 // ─── clearToken / clearState ──────────────────────────────────────────────────
 
 function clearToken() {
@@ -1268,8 +1528,13 @@ module.exports = {
   pollReports,
   fetchCurrentJobStatus,
   getLastJobDetails,
+  getJobReport,
+  getWorkspaceRecords,
+  loadSsoToken,
+  resolveJobViaSsoToken,
 
-  // Constants
-  BASE_URL,
+  // Base URL — default + the active (runtime-aware) resolver
+  BASE_URL: DEFAULT_BASE_URL,
+  apiBase,
   TERMINAL_STATUSES,
 };

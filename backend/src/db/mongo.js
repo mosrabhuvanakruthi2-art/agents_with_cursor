@@ -17,8 +17,8 @@ let client = null;
 function buildMongoClientOptions() {
   /** @type {import('mongodb').MongoClientOptions} */
   const opts = {
-    serverSelectionTimeoutMS: 60_000,
-    connectTimeoutMS: 60_000,
+    serverSelectionTimeoutMS: 20_000,
+    connectTimeoutMS: 20_000,
     serverApi: {
       version: ServerApiVersion.v1,
       strict: false,

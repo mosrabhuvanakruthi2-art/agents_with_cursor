@@ -194,12 +194,7 @@ export default function CleanSourcePage() {
         </div>
       )}
 
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Gmail Clean Up</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          View mailbox stats and clean Gmail source accounts before migration
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">View mailbox stats and clean Gmail source accounts before migration.</p>
 
       {anyCleanRunning && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-center gap-3">

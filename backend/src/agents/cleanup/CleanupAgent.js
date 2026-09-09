@@ -2,6 +2,8 @@ const { BaseAgent } = require('../core/BaseAgent');
 const outlookClient = require('../../clients/outlookClient');
 const gmailClient   = require('../../clients/gmailClient');
 const logger        = require('../../utils/logger');
+const env           = require('../../config/env');
+const { normalizeDriveName } = require('../../utils/driveNames');
 
 /**
  * Full-wipe helpers for Outlook accounts.
@@ -47,6 +49,310 @@ async function wipeOutlookSettings(email, log) {
 }
 
 /**
+ * Folder and file names DriveTestDataAgent seeds. Content cleanup deletes ONLY these (and the
+ * " 1"…" N" copies CloudFuze creates when a name is already taken), so anything else at the
+ * destination — another team's folder, CloudFuze's own report files — is never touched.
+ */
+const SEEDED_CONTENT_NAMES = [
+  'Agent Files', 'Agent Native Files', 'Agent Permissions', 'Agent Versions',
+  'Agent Shared Links', 'Permission Matrix', 'Shared Link Matrix', 'File Formats',
+  'Long Folder Path', 'Over Limit Path', 'root_readme.txt',
+  // DESTINATION-ONLY, and created by CloudFuze rather than migrated from the source: when a path
+  // exceeds SharePoint's 400-character limit the content is relocated into "Long File Names" beside
+  // the migrated root, and a .url placeholder is left behind. It is our own run's output, so it has
+  // to be cleaned like the rest — left in place it survived every run, the next migration relocated
+  // into it again, and the copies stacked up as "… 1", "… 2".
+  //
+  // It never exists in the SOURCE (verified: both Shared Drive roots hold only the seeded root),
+  // so source cleanup cannot match it by accident. Destination cleanup only ever scans the library
+  // root and each row's own destination folder, so the blast radius is this run's own test area.
+  'Long File Names',
+];
+
+/** True when `name` is a seeded item, or a counter/duplicate copy of one. */
+/**
+ * @param {string} name              item name at the destination
+ * @param {string|string[]} roots    the migrated root folder name(s) actually in use
+ */
+function isSeededContentName(name, roots) {
+  const rootNames = (Array.isArray(roots) ? roots : [roots])
+    .map((r) => String(r || '').trim())
+    .filter(Boolean);
+  const base = String(name || '')
+    .replace(/ \d+$/, '')                          // "Agent Files 3"      -> "Agent Files"
+    .replace(/\(\d+\)(\.[A-Za-z0-9]+)$/, '$1');     // "root_readme(2).txt" -> "root_readme.txt"
+  if (rootNames.includes(base)) return true;
+  if (SEEDED_CONTENT_NAMES.includes(base)) return true;
+  if (/^Long Name Folder A+$/.test(base)) return true;   // the 200-character folder
+  // Must require actual special characters between the words. /^Special .*Folder$/ also matched a
+  // folder literally named "Special Folder", which could belong to anyone — a false positive here
+  // deletes someone else's data.
+  if (/^Special [^A-Za-z0-9 ]+ Folder$/.test(base)) return true;
+  return false;
+}
+
+/**
+ * Content cleanup — the Drive/SharePoint equivalent of the mailbox wipes above.
+ *
+ * This did not exist. The orchestrator skipped CleanupAgent for content entirely, on the stated
+ * grounds that there was "no test data to clean", and /api/agents/clean-content supports Box only.
+ * So every content run seeded on top of the last and migrated on top of the last migration: the
+ * source grew 316 -> 395 -> 474 items, the destination accumulated `Agent Files`, `Agent Files 1`
+ * … `Agent Files 4` holding identical files, and validation attributed all of it to the migration
+ * as "extra" and "misplaced" (70 extra, 260 misplaced on one run). None were real defects.
+ */
+async function cleanContentSides(context, log, summary) {
+  const driveClient = require('../../clients/driveClient');
+  const sharepointClient = require('../../clients/sharepointClient');
+  const boxClient = require('../../clients/boxClient');
+
+  const srcProvider = String(context.sourceProvider || '').toLowerCase();
+  const dstProvider = String(context.destinationProvider || '').toLowerCase();
+  // The wizard leaves the BASE folder empty when every user has a per-user override — the summary
+  // screen shows "Agent Box Data" there only as a placeholder. Reading context.sourceFolderName
+  // alone therefore found nothing to clean on exactly the runs that needed cleaning. Gather every
+  // folder name actually in play.
+  const folderNames = [...new Set([
+    ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+      .map((u) => u && u.sourceFolderName),
+    ...(Array.isArray(context.userFolderMappings) ? context.userFolderMappings : [])
+      .map((u) => u && u.sourcePath && String(u.sourcePath).replace(/^\/+/, '')),
+    context.sourceFolderName,
+  ].map((n) => String(n || '').trim()).filter(Boolean))];
+  if (folderNames.length === 0) {
+    log.info('CleanupAgent: no source folder name in context — skipping content cleanup');
+    return;
+  }
+  log.info(`CleanupAgent: content roots in play: ${folderNames.map((n) => `"${n}"`).join(', ')}`);
+
+  // Refuse to clean while another execution is still seeding the same source account. In run
+  // f51cb73c a prior run was mid-seed when this cleanup deleted the folder underneath it, and its
+  // remaining uploads failed with "File not found: <parent id>" — 9 unseeded scenarios instead of
+  // the usual 6. Cleaning is an optimisation; corrupting a live run is not worth it.
+  try {
+    const executionService = require('../../services/executionService');
+    const clash = executionService.getAll()
+      // Field names matter here: the record uses `executionId`, and the source account lives on
+      // the nested `context`, not at the top level.
+      .filter((e) => e.executionId !== context.executionId
+        && e.status === 'RUNNING'
+        && String((e.context && e.context.sourceEmail) || '').toLowerCase()
+          === String(context.sourceEmail || '').toLowerCase());
+    if (clash.length > 0) {
+      log.warn(`CleanupAgent: ${clash.length} other execution(s) still RUNNING on `
+        + `${context.sourceEmail} (${clash.map((e) => e.executionId).join(', ')}) — skipping content cleanup `
+        + 'so their seeding is not deleted mid-flight');
+      summary.sourceContent.errors.push('skipped: concurrent execution on the same source account');
+      return;
+    }
+  } catch (err) {
+    log.warn(`CleanupAgent: could not check for concurrent executions (${err.message}) — continuing`);
+  }
+
+  // Source: EMPTY the seeded root, do not delete it.
+  //
+  // Deleting and recreating the root gives it a NEW Drive folder id on every run, which churns the
+  // id that CloudFuze is asked to migrate. Emptying keeps the id stable across runs while still
+  // giving each run clean data, and DriveTestDataAgent already does find-or-create on the root
+  // (DriveTestDataAgent.js:208) so it refills the same folder.
+  //
+  // Do NOT read this as the cure for the 0-pairs problem. It was first written on the theory that
+  // the delete invalidated a CloudFuze-side path cache; probe job 6a8c86a6 disproved that — the
+  // mapping came back mapped=false with both pathRootFolderId null against a folder that had
+  // existed, untouched, for 28 minutes. No run in logs/ has ever had mapped=true. Stable ids are
+  // worth having on their own; the mapping failure is a separate, still-open problem.
+  if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
+    try {
+      // EVERY drive the run touches, not just GOOGLE_SHARED_DRIVE_NAME.
+      //
+      // Reading the env var alone meant a two-drive run only ever emptied the folder in the FIRST
+      // drive. The second drive's folder kept the previous run's data and gained the new seed on top,
+      // so its source held every folder twice — run c4722d01 measured 24 children in QA_Team2 against
+      // 12 in QA_Team1. The migration then faithfully copied the duplicates, and validation reported
+      // 14 missing / 11 extra / 73 misplaced against a migration that had done nothing wrong.
+      //
+      // An empty id set means "no drive filter" (My Drive), which is the pre-existing behaviour.
+      const driveIds = new Set();
+      if (srcProvider === 'googleshareddrive') {
+        const wantedDrives = [...new Set([
+          ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+            .map((u) => normalizeDriveName(u && u.sourceDriveName)),
+          ...(Array.isArray(context.userFolderMappings) ? context.userFolderMappings : [])
+            .map((u) => normalizeDriveName(u && u.sourceDriveName)),
+          normalizeDriveName(context.sourceSharedDriveName),
+          normalizeDriveName(env.GOOGLE_SHARED_DRIVE_NAME),
+        ].filter(Boolean))];
+        for (const name of wantedDrives) {
+          try {
+            const drive = await driveClient.resolveSharedDriveByName(name, context.sourceEmail);
+            if (drive) driveIds.add(drive.id);
+            else log.warn(`CleanupAgent: Shared Drive "${name}" not visible — nothing to clean there`);
+          } catch (dErr) {
+            summary.sourceContent.errors.push(`resolve drive ${name}: ${dErr.message}`);
+          }
+        }
+        log.info(`CleanupAgent: source drives in play: ${wantedDrives.map((n) => `"${n}"`).join(', ')} `
+          + `(${driveIds.size} resolved)`);
+      }
+      const roots = (await Promise.all(folderNames.map((n) => driveClient.findFoldersByName(n, context.sourceEmail))))
+        .flat()
+        .filter((h) => (driveIds.size > 0 ? driveIds.has(h.driveId) : true));
+      for (const root of roots) {
+        const children = await driveClient.listChildren(root.id, context.sourceEmail);
+        for (const child of children) {
+          try {
+            await driveClient.deleteFile(child.id, context.sourceEmail);
+            summary.sourceContent.itemsDeleted += 1;
+          } catch (err) {
+            summary.sourceContent.errors.push(`${child.name}: ${err.message}`);
+          }
+        }
+        summary.sourceContent.foldersEmptied += 1;
+        log.info(`CleanupAgent: emptied source folder "${root.name}" (${root.id}) — `
+          + `${children.length} child item(s) removed, folder kept so CloudFuze keeps resolving it`);
+      }
+      if (roots.length === 0) {
+        log.info(`CleanupAgent: no source folder matching ${folderNames.join(' / ')} — seeding will create it`);
+      }
+    } catch (err) {
+      summary.sourceContent.errors.push(err.message);
+      log.warn(`CleanupAgent: source content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+
+  // Box as source. Same "empty the seeded root, keep the folder" contract as Google Drive above —
+  // boxClient.cleanBoxContent exists but wipes the ENTIRE account root unscoped, which is far more
+  // than this run's own test data, so it is deliberately not reused here.
+  if (srcProvider === 'box' && context.sourceEmail) {
+    try {
+      const adminEmail = context.sourceAdminEmail || env.BOX_ADMIN_EMAIL || context.sourceEmail;
+      const token = await boxClient.getValidToken(adminEmail);
+      const user = await boxClient.getBoxUserByEmail(adminEmail, context.sourceEmail);
+      const asUserId = user ? user.id : null;
+      const rootItems = await boxClient.getFolderItems('0', token, asUserId);
+      const roots = rootItems.filter((i) => i.type === 'folder' && folderNames.includes(i.name));
+      for (const root of roots) {
+        const children = await boxClient.getFolderItems(root.id, token, asUserId);
+        for (const child of children) {
+          try {
+            await boxClient.deleteBoxItem(child.type, child.id, token, asUserId);
+            summary.sourceContent.itemsDeleted += 1;
+          } catch (err) {
+            summary.sourceContent.errors.push(`${child.name}: ${err.message}`);
+          }
+        }
+        summary.sourceContent.foldersEmptied += 1;
+        log.info(`CleanupAgent: emptied source folder "${root.name}" (${root.id}) — `
+          + `${children.length} child item(s) removed, folder kept so CloudFuze keeps resolving it`);
+      }
+      if (roots.length === 0) {
+        log.info(`CleanupAgent: no Box source folder matching ${folderNames.join(' / ')} — seeding will create it`);
+      }
+    } catch (err) {
+      summary.sourceContent.errors.push(err.message);
+      log.warn(`CleanupAgent: Box source content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+
+  // Destination: delete only the seeded/migrated items, by allowlist. Shared by every destination
+  // provider below — a multi-drive/multi-unit run puts each source drive in its own destination
+  // sub-folder, so the seeded tree is not always at the library/drive root, and a single-pair run
+  // (no contentUserFolders array) carries its one destination path on context.destinationPath
+  // instead. Scanning only "/" missed that case entirely — the exact gap that let a Dropbox →
+  // Google Drive run's leftover "/Dropbox-QA-Dest" content survive untouched between runs and get
+  // counted as "matched" against a job that had actually moved nothing.
+  //
+  // Read from contentUserFolders / context.destinationPath, not userFolderMappings: cleanup runs
+  // BEFORE seeding, and the mappings do not exist yet at this point.
+  const destRoots = [...new Set([
+    '/',
+    context.destinationPath,
+    ...(Array.isArray(context.contentUserFolders) ? context.contentUserFolders : [])
+      .map((u) => u && u.destinationPath),
+  ].map((p) => String(p || '').trim()).filter((p) => p && p !== '/'))];
+
+  if (dstProvider === 'sharepoint' && context.destinationEmail) {
+    try {
+      const deepContentCore = require('../../validation/shared/deepContentCore');
+      const site = await sharepointClient.getSite(env.SHAREPOINT_HOSTNAME, env.SHAREPOINT_SITE_PATH, context.destinationEmail);
+      const spRoots = ['/', ...destRoots.map((p) => deepContentCore.inDrivePath(p)).filter((p) => p && p !== '/')];
+
+      for (const base of spRoots) {
+        let children;
+        try {
+          children = await sharepointClient.listFolderChildren(site.id, base, context.destinationEmail);
+        } catch (listErr) {
+          // A destination folder that does not exist yet is the normal case on a first run.
+          log.info(`CleanupAgent: destination "${base}" not readable (${listErr?.response?.status || listErr.message}) — nothing to clean there`);
+          continue;
+        }
+        const targets = children.filter((k) => isSeededContentName(k.name, folderNames));
+        log.info(`CleanupAgent: destination "${base}" has ${children.length} item(s); ${targets.length} seeded `
+          + `item(s) to delete, ${children.length - targets.length} left untouched`);
+        // The wrapper folder itself is deliberately NOT deleted — it may have existed before this
+        // run with unrelated content. Only names on the seeded allowlist are removed.
+        for (const t of targets) {
+          const path = `${base === '/' ? '' : base}/${t.name}`;
+          try {
+            await sharepointClient.deleteItemByPath(site.id, path, context.destinationEmail);
+            summary.destContent.foldersDeleted += 1;
+          } catch (err) {
+            summary.destContent.errors.push(`${path}: ${err.message}`);
+          }
+        }
+      }
+      log.info(`CleanupAgent: deleted ${summary.destContent.foldersDeleted} destination item(s) across ${spRoots.length} location(s)`);
+    } catch (err) {
+      summary.destContent.errors.push(err.message);
+      log.warn(`CleanupAgent: destination content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+
+  // Google Drive / Google Shared Drive as destination (Dropbox → Google, Box → Google, etc.).
+  // Mirrors the SharePoint branch above exactly: resolve each known destination path, delete only
+  // children on the seeded-name allowlist, leave everything else — including the wrapper folder
+  // itself — untouched. Only the My Drive root is resolved here (rootId: 'root'); a Shared Drive
+  // destination needs its drive id, which nothing in context carries yet at this point, so that
+  // case is skipped (logged, non-fatal) rather than guessed at.
+  if (['googledrive', 'googleshareddrive'].includes(dstProvider) && context.destinationEmail) {
+    try {
+      const gRoots = ['/', ...destRoots];
+      let deleted = 0;
+      for (const base of gRoots) {
+        const hit = base === '/'
+          ? { id: 'root', name: '(My Drive root)' }
+          : await driveClient.resolveFolderByPath(base, context.destinationEmail, { rootId: 'root' }).catch(() => null);
+        if (!hit) {
+          log.info(`CleanupAgent: destination "${base}" not readable in My Drive — nothing to clean there `
+            + '(a Shared Drive destination is not resolvable here and is left untouched)');
+          continue;
+        }
+        const children = await driveClient.listChildren(hit.id, context.destinationEmail).catch((err) => {
+          summary.destContent.errors.push(`list ${base}: ${err.message}`);
+          return [];
+        });
+        const targets = children.filter((k) => isSeededContentName(k.name, folderNames));
+        log.info(`CleanupAgent: destination "${base}" has ${children.length} item(s); ${targets.length} seeded `
+          + `item(s) to delete, ${children.length - targets.length} left untouched`);
+        for (const t of targets) {
+          try {
+            await driveClient.deleteFile(t.id, context.destinationEmail);
+            deleted += 1;
+            summary.destContent.foldersDeleted += 1;
+          } catch (err) {
+            summary.destContent.errors.push(`${base}/${t.name}: ${err.message}`);
+          }
+        }
+      }
+      log.info(`CleanupAgent: deleted ${deleted} destination item(s) across ${gRoots.length} My Drive location(s)`);
+    } catch (err) {
+      summary.destContent.errors.push(err.message);
+      log.warn(`CleanupAgent: destination content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
+}
+
+/**
  * CleanupAgent — wipes EVERYTHING from source and destination test accounts
  * before each run so every migration starts from a complete zero state.
  *
@@ -74,7 +380,18 @@ class CleanupAgent extends BaseAgent {
     const summary = {
       sourceOutlook: { messagesDeleted: 0, foldersDeleted: 0, eventsDeleted: 0, errors: [] },
       destGmail:     { messagesDeleted: 0, foldersDeleted: 0, eventsDeleted: 0, errors: [] },
+      sourceContent: { foldersEmptied: 0, itemsDeleted: 0, errors: [] },
+      destContent:   { foldersDeleted: 0, errors: [] },
     };
+
+    // Content runs clean files and folders, not mailboxes. Falling through to the mail branches
+    // below would be actively wrong: for a content run sourceProvider is 'googleshareddrive', so
+    // `!isOutlookSrc` is true and the Gmail branch would wipe the source account's entire MAILBOX.
+    if (context.mode === 'content') {
+      log.info('CleanupAgent: content run — cleaning seeded folders on both sides');
+      await cleanContentSides(context, log, summary);
+      return summary;
+    }
 
     const isOutlookSrc = context.sourceProvider === 'microsoft';
     const isGmailDst   = context.destinationProvider === 'google';
@@ -162,3 +479,6 @@ class CleanupAgent extends BaseAgent {
 }
 
 module.exports = CleanupAgent;
+// Exported for tests: this predicate decides what content cleanup DELETES, so it is pinned.
+module.exports.isSeededContentName = isSeededContentName;
+module.exports.SEEDED_CONTENT_NAMES = SEEDED_CONTENT_NAMES;

@@ -1,0 +1,396 @@
+'use strict';
+
+/**
+ * Google Drive DESTINATION-side validation agent — the Google counterpart of
+ * agents/sharepoint/SharePointValidationAgent.js.
+ *
+ * Same reasoning as that file: every combination that lands in Google should answer "how do we read
+ * Google" in exactly one place. Google is the first non-Microsoft destination in this repo (added for
+ * the Dropbox → Google combinations), so this is where its destination behaviour lives.
+ *
+ * This class owns the DESTINATION half only:
+ *   - resolving the destination root (My Drive, or a named Shared Drive)
+ *   - finding where a migrated folder actually landed
+ *   - reading the tree, permissions, link permissions, revisions, timestamps and file bytes
+ *
+ * The SOURCE half — which cloud the data came from, its roles, its mime types — stays in the
+ * per-combination file under validation/combinations/content/, as CONTRIBUTING requires.
+ *
+ * Subclass it, don't edit it for one combination:
+ *   class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent
+ *
+ * Four Google-specific facts drive most of what follows, and each has bitten a SharePoint-shaped
+ * assumption:
+ *
+ *   1. **My Drive's root id is the literal string 'root'**, while a Shared Drive's root id IS the
+ *      drive id. One code path, two kinds of id.
+ *   2. **Permissions are per-file, not inherited from a folder** the way SharePoint's are. A file
+ *      inside a shared folder carries its own permission entries, so reading the folder alone
+ *      reports nothing about its children.
+ *   3. **A "link" is a permission**, not a separate object: `type: 'anyone'` or `type: 'domain'` in
+ *      the same permissions list as user grants. Filtering those out of the user comparison is
+ *      mandatory, or every anyone-with-link file reads as an unexpected extra grant.
+ *   4. **Native Google docs report no meaningful size and cannot be downloaded** — they must be
+ *      exported to a concrete format. Hashing one against its source bytes is not possible.
+ */
+
+const ContentReportValidationAgent = require('../content/ContentReportValidationAgent');
+const driveClient = require('../../clients/driveClient');
+const core = require('../../validation/shared/deepContentCore');
+const env = require('../../config/env');
+const logger = require('../../utils/logger');
+
+/** How many "name N" / "name (N)" dedup variants to probe when CloudFuze appends a counter. */
+const DEDUP_MAX = 5;
+
+/** Google's own MIME type for a folder. */
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * Permission `type` values that describe a LINK rather than a person or group.
+ *
+ * `anyone`  — "Anyone with the link"      (Dropbox scope 3.1)
+ * `domain`  — "<organisation>"            (Dropbox scope 3.2, shown as the org's name)
+ */
+const LINK_PERMISSION_TYPES = new Set(['anyone', 'domain']);
+
+class GoogleDriveValidationAgent extends ContentReportValidationAgent {
+  constructor(name = 'GoogleDriveValidationAgent') {
+    super(name);
+  }
+
+  /**
+   * The destination Shared Drive name for one unit, by explicit precedence.
+   *
+   * Resolution order, most specific first — stated as a list because a silent wrong choice here is
+   * the most expensive kind of error in this file: pointing the comparison at the wrong drive reports
+   * every item missing, which reads as a total migration failure but is a configuration mistake.
+   *
+   *   1. `unit.destinationDriveName` — per-unit. The repo already migrates N drives in one run, each
+   *      to its own destination, so a single run can legitimately span several destination drives.
+   *   2. the FIRST SEGMENT of `unit.destinationPath` — destination paths arrive drive-style
+   *      ("/QA_Team1/Folder"), the same shape `siteSegmentOf` reads a SharePoint site from.
+   *   3. `context.destinationSharedDriveName` — run-level, symmetric with `sourceSharedDriveName`.
+   *   4. `env.GOOGLE_DEST_SHARED_DRIVE_NAME` — the configured default.
+   *
+   * `GOOGLE_SHARED_DRIVE_NAME` is deliberately NOT in that list. It names the SOURCE drive for the
+   * Drive→SharePoint combinations, so falling back to it would quietly validate a Dropbox migration
+   * against the Google drive some other combination reads from.
+   */
+  destinationDriveNameFor(context, unit = null) {
+    const firstSegment = (p) => String(p || '').split('/').filter(Boolean)[0] || '';
+    return String(
+      unit?.destinationDriveName
+      || firstSegment(unit?.destinationPath)
+      || context?.destinationSharedDriveName
+      || env.GOOGLE_DEST_SHARED_DRIVE_NAME
+      || ''
+    ).trim();
+  }
+
+  /**
+   * Resolve where the migration landed on the Google side.
+   *
+   * `destinationProvider` decides the shape:
+   *   - `googledrive`       → My Drive, rootId 'root', no driveId
+   *   - `googleshareddrive` → a Shared Drive resolved BY NAME, rootId = driveId = the drive's id
+   *
+   * Returns `{ rootId, driveId, label, driveName }`. Throws when a named Shared Drive cannot be
+   * found: validating against the wrong root would compare the source with an unrelated tree and
+   * report every item missing — a failure that looks like a migration defect but is configuration.
+   *
+   * @param {object} context
+   * @param {object|null} unit  the per-unit row, so a multi-drive run resolves each unit's own drive
+   */
+  async resolveDestinationRoot(context, unit = null) {
+    const email = context.destinationEmail;
+    const provider = String(context.destinationProvider || 'googledrive').toLowerCase();
+
+    if (provider !== 'googleshareddrive') {
+      return { rootId: 'root', driveId: null, label: 'My Drive', driveName: null };
+    }
+
+    const name = this.destinationDriveNameFor(context, unit);
+    if (!name) {
+      throw new Error(
+        'Destination is a Google Shared Drive but no drive name could be resolved. Supply one of: '
+        + 'the unit\'s destinationDriveName, a drive-style destination path ("/DriveName/Folder"), '
+        + 'context.destinationSharedDriveName, or GOOGLE_DEST_SHARED_DRIVE_NAME. A Shared Drive '
+        + 'cannot be addressed without its name — its id doubles as its root folder id.'
+      );
+    }
+
+    const drive = await driveClient.resolveSharedDriveByName(name, email);
+    if (!drive) {
+      const available = await driveClient.listSharedDrives(email).catch(() => []);
+      throw new Error(
+        `Google Shared Drive "${name}" is not visible to ${email}. Available: `
+        + (available.map((d) => d.name).join(', ') || '(none)')
+        + '. Note that drives.list only returns drives this account is a MEMBER of, so a drive that '
+        + 'exists but has not been shared with the account will not appear here.'
+      );
+    }
+    // A Shared Drive's id doubles as its root folder id.
+    return {
+      rootId: drive.id,
+      driveId: drive.id,
+      label: `Shared Drive "${drive.name}"`,
+      driveName: drive.name,
+    };
+  }
+
+  /**
+   * Find the folder the migration actually created under the destination root.
+   *
+   * CloudFuze may land the content under the source folder's name, under a configured destination
+   * folder name, or with a dedup counter appended when something of that name already existed.
+   * Probing the variants here means a renamed landing folder does not read as "everything missing".
+   *
+   * @returns {{ id, name, path }|null} null when nothing plausible exists — the caller reports that
+   *   as an empty destination rather than throwing, because "the migration created nothing" is a
+   *   real and reportable outcome.
+   */
+  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email, driveName = null) {
+    let base = String(destBase || '').trim();
+    const opts = { rootId, driveId };
+
+    // Strip the DRIVE NAME from the front of a Shared Drive destination path.
+    //
+    // Destination paths arrive drive-style — "/QA/DBX-MyDrive-lavanya-test" means the folder
+    // "DBX-MyDrive-lavanya-test" inside Shared Drive "QA". Resolving that path *within* the drive
+    // looks for a folder literally named "QA" inside drive QA, finds nothing, and falls through to
+    // probing the source folder name — which is not what the destination is called. That is how a
+    // migration of 69 items that landed correctly was reported as "the migration appears to have
+    // created nothing" (job 6a981fc5).
+    //
+    // Same idea as `core.siteSegmentOf` for SharePoint: the first segment names the container, not
+    // a folder inside it.
+    if (driveId && driveName && base) {
+      const segs = base.split('/').filter(Boolean);
+      if (segs.length && segs[0].toLowerCase() === String(driveName).toLowerCase()) {
+        base = `/${segs.slice(1).join('/')}`;
+        logger.info(
+          `[GoogleDriveValidationAgent] destination path names Shared Drive "${driveName}" — `
+          + `resolving "${base}" inside it`
+        );
+      }
+    }
+
+    const name = String(sourceFolderName || '').trim();
+    const candidates = name ? [name] : [];
+    for (let i = 1; i <= DEDUP_MAX; i++) {
+      if (name) candidates.push(`${name} ${i}`, `${name} (${i})`);
+    }
+
+    // An explicit destination path wins when it resolves — BUT CloudFuze does not consistently
+    // place content flat inside it. Sometimes the run's files land directly under destBase
+    // ("/Dropbox-QA-Dest/01-Root-Folder-Permissions/…"); other times CloudFuze nests everything one
+    // level deeper, inside a subfolder named after the SOURCE folder
+    // ("/Dropbox-QA-Dest/QA-MyDrive-lavanya/01-Root-Folder-Permissions/…") — same job type, same
+    // destination path, different runs. Job 6a9a9554 did the latter: returning destBase itself made
+    // every real item's parent path carry an extra "/QA-MyDrive-lavanya" segment the source tree
+    // does not have, so the comparison matched 0 of 69 and reported 68 as "misplaced" — a migration
+    // that actually succeeded read as a near-total failure.
+    //
+    // So: prefer a subfolder of destBase matching the source name when one exists (the more specific
+    // signal — CloudFuze would not coincidentally create a folder with that exact name), and only
+    // fall back to destBase itself when no such nested folder is present (the flat-placement case).
+    if (base && base !== '/') {
+      const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
+      if (hit) {
+        for (const candidate of candidates) {
+          const nested = await driveClient.findByName(candidate, hit.id, email).catch(() => null);
+          if (nested) {
+            logger.info(
+              `[GoogleDriveValidationAgent] "${base}" contains a nested "${nested.name}" matching `
+              + 'the source folder name — using it as the migrated root instead of the destination '
+              + 'path itself (CloudFuze nested this run rather than placing content flat)'
+            );
+            return { id: nested.id, name: nested.name, path: `${hit.path || base}/${nested.name}` };
+          }
+        }
+        return hit;
+      }
+    }
+
+    if (!name) {
+      // No name to look for: the destination root itself is the comparison root.
+      return { id: rootId, name: '(destination root)', path: '/' };
+    }
+
+    for (const candidate of candidates) {
+      const found = await driveClient.findByName(candidate, rootId, email).catch(() => null);
+      if (found) return { id: found.id, name: found.name, path: `/${found.name}` };
+    }
+    return null;
+  }
+
+  /**
+   * The destination tree, with paths relativized to the migrated root so it compares to the source.
+   *
+   * `driveClient.buildFolderTree` already returns this repo's canonical item shape, so no
+   * normalisation happens here — which is the point of having one destination agent.
+   */
+  async readTree(rootFolderId, email, opts = {}) {
+    const { driveId = null, maxDepth = 25, rootPath = '' } = opts;
+    const raw = await driveClient.buildFolderTree(rootFolderId, email, { driveId, maxDepth });
+    return rootPath ? core.relativize(raw, rootPath) : raw;
+  }
+
+  /**
+   * Permissions on one item, split into people and links.
+   *
+   * Splitting is not a convenience — it is required for correctness. In Drive a shared link IS a
+   * permission entry (`type: 'anyone'` / `'domain'`), so leaving them in the user list makes every
+   * link look like an extra grant to an unknown principal, and every user comparison then reports a
+   * discrepancy it should not.
+   *
+   * Never throws: an unreadable item reads as empty, which the caller reports rather than mistaking
+   * for a pass.
+   *
+   * @returns {{ permissions: Array, links: Array }}
+   *   permissions — [{ email, roles: [], principalType, displayName }] in the shape
+   *                 deepContentCore.comparePermissions expects
+   *   links       — [{ scope, type, role }] in the shape compareSharedLinks expects
+   */
+  async readPermissions(fileId, email) {
+    let raw;
+    try {
+      raw = await driveClient.listPermissions(fileId, email);
+    } catch (err) {
+      logger.warn(`[GoogleDriveValidationAgent] could not read permissions for ${fileId}: ${err.message}`);
+      return { permissions: [], links: [] };
+    }
+
+    // driveClient.listPermissions already splits people/group grants from link permissions and
+    // returns `{ grants, links }` — this used to expect a flat, undivided permissions array (the
+    // shape driveClient returned before that split was added) and loop over it with
+    // `Array.isArray(raw) ? raw : []`. raw is an object, not an array, so that check was always
+    // false and this silently returned `{ permissions: [], links: [] }` for every single call —
+    // every shared-link comparison "differed" and every permission grant read as absent, not
+    // because anything failed to migrate, but because this never saw real data to compare against.
+    const grants = Array.isArray(raw?.grants) ? raw.grants : [];
+    const rawLinks = Array.isArray(raw?.links) ? raw.links : [];
+
+    const permissions = grants.map((p) => ({
+      email: String(p.email || '').toLowerCase(),
+      displayName: '',
+      roles: [String(p.role || '').toLowerCase()],
+      principalType: p.type === 'group' ? 'group' : 'user',
+      deleted: false,
+      inherited: Boolean(p.inherited),
+      inheritedFrom: p.inheritedFrom || null,
+    }));
+
+    // 'anonymous'/'organization' is the vocabulary the shared comparator and the dropbox_to_google
+    // role map both speak, so translate Google's wording once, here.
+    const links = rawLinks.map((l) => {
+      const role = String(l.role || '').toLowerCase();
+      return {
+        scope: String(l.type || '').toLowerCase() === 'anyone' ? 'anonymous' : 'organization',
+        type: role === 'writer' || role === 'organizer' || role === 'fileorganizer' ? 'edit' : 'view',
+        role,
+        // Google reports the org's display name for a domain link (e.g. "Sync Orbit"). Kept for
+        // the report only — matching is always on SCOPE, never on this string, because it differs
+        // per tenant.
+        domain: l.domain || null,
+      };
+    });
+
+    return { permissions, links };
+  }
+
+  /** Items directly in one folder. Never throws — an unreadable folder reads as empty. */
+  async listChildren(folderId, email, driveId = null) {
+    return driveClient.listChildrenDetailed(folderId, email, driveId).catch(() => []);
+  }
+
+  /**
+   * Revision count for one item.
+   *
+   * Reported, not judged, for the Dropbox pair: scope 9.2 makes the expected count a JOB SETTING,
+   * and 10.19 records that a migrated Paper's history is created during migration rather than
+   * carried over. Never throws.
+   */
+  async readVersionCount(fileId, email) {
+    const revs = await driveClient.listRevisions(fileId, email).catch(() => []);
+    return Array.isArray(revs) ? revs.length : 0;
+  }
+
+  /**
+   * One destination file, split into non-empty lines.
+   *
+   * This is how the CSV reports CloudFuze writes into the destination are read (Dropbox scope 3.1,
+   * 3.2, 8.1 and the out-of-scope in-line comments). Those are ordinary files — there is no special
+   * API for them, a point worth restating because two features on another combination were marked
+   * "not automated — no API for the CSV" while the files sat in the destination the whole time.
+   *
+   * A CSV that CloudFuze wrote as a Google Sheet is exported rather than downloaded, since a native
+   * doc cannot be downloaded directly.
+   */
+  async readTextLines(item, email) {
+    const fileId = typeof item === 'string' ? item : item?.id;
+    const mimeType = typeof item === 'string' ? null : item?.mimeType;
+    if (!fileId) return [];
+    try {
+      const buf = core.isGoogleNative(mimeType)
+        ? await driveClient.exportNativeFile(fileId, 'text/csv', email)
+        : await driveClient.downloadFile(fileId, email);
+      return buf.toString('utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
+    } catch (err) {
+      logger.warn(`[GoogleDriveValidationAgent] could not read ${fileId}: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * File bytes for Tier B hashing. Throws — `tierBHashes` turns the failure into a reported skip.
+   *
+   * A native Google doc has no original bytes to hash: it must be exported, and the export is a
+   * NEW rendering whose bytes will never equal the source's. So this refuses rather than returning
+   * export bytes that would produce a guaranteed, meaningless hash mismatch.
+   */
+  async readContent(item, email) {
+    const fileId = typeof item === 'string' ? item : item?.id;
+    const mimeType = typeof item === 'string' ? null : item?.mimeType;
+    if (core.isGoogleNative(mimeType)) {
+      throw new Error(
+        'native Google doc — no original bytes exist to hash; an export is a new rendering and '
+        + 'could never match the source hash'
+      );
+    }
+    return driveClient.downloadFile(fileId, email);
+  }
+
+  /**
+   * Scope 6.1 — suppress email notifications, judged from the Google side.
+   *
+   * Deliberately NOT implemented as a mailbox scan. The SharePoint agent can read the destination
+   * user's Outlook inbox over Graph, but the Google equivalent needs Gmail scopes on the destination
+   * account, which the content flow does not request. Rather than guess, this reports that the check
+   * was not performed and says what it would take — the alternative is a check that silently always
+   * passes, which is worse than an honest gap.
+   *
+   * @returns {{ ok: false, leaks: [], error: string }}
+   */
+  async findSharingNotifications() {
+    return {
+      ok: false,
+      leaks: [],
+      error:
+        'Not checked: verifying suppressed notifications on a Google destination requires Gmail '
+        + 'read scope on the destination account, which the content flow does not request. Feature '
+        + '6.1 must be confirmed manually, and is reported as NOT VERIFIED rather than as a pass.',
+    };
+  }
+
+  /** True for a Drive folder. */
+  static isFolder(item) {
+    return item?.mimeType === FOLDER_MIME || item?.type === 'folder';
+  }
+}
+
+module.exports = GoogleDriveValidationAgent;
+module.exports.DEDUP_MAX = DEDUP_MAX;
+module.exports.FOLDER_MIME = FOLDER_MIME;
+module.exports.LINK_PERMISSION_TYPES = LINK_PERMISSION_TYPES;

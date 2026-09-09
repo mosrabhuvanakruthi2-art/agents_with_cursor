@@ -3,6 +3,7 @@
  */
 
 const crypto = require('crypto');
+const tolerance = require('./mailTolerance');
 
 /**
  * @typedef {object} FieldDiff
@@ -82,6 +83,11 @@ function destTierAFromEmails(dest) {
   if (Array.isArray(dest.fromEmails)) {
     return [...new Set(dest.fromEmails.map((e) => String(e).trim().toLowerCase()).filter(Boolean))].sort();
   }
+  // Gmail supplies `from` as a header STRING (e.g. "Ben <ben@x.com>"); Graph supplies an object.
+  // Parse the string form so Gmail-destination combinations (e.g. Gmail→Gmail) populate the
+  // destination sender instead of coming back empty (which flagged a false From mismatch on
+  // every message with a blank Destination column).
+  if (typeof dest.from === 'string') return parseRecipientEmails(dest.from);
   return graphFromToEmails(dest.from || null);
 }
 
@@ -148,6 +154,45 @@ function expectedDestRecipientsFromSource(sourceSortedLower, mappingMap) {
 }
 
 /**
+ * Canonicalize addresses for cross-tenant comparison by rewriting any address on the
+ * destination domain back to the source domain (same local part). This models expected
+ * migration behavior: an internal / distribution-list address is migrated and converted
+ * to its destination-domain equivalent (e.g. qaagentdl@source.com → qaagentdl@dest.com),
+ * with the local part preserved. External addresses (on neither tenant domain) are left
+ * untouched, so a genuinely wrong recipient still fails the compare.
+ * @param {string[]} list sorted unique lowercase emails
+ */
+function canonicalizeDomainRewrite(list, sourceDomain, destinationDomain) {
+  if (!sourceDomain || !destinationDomain || sourceDomain === destinationDomain) return list;
+  const out = list.map((e) => {
+    const at = String(e).lastIndexOf('@');
+    if (at < 0) return e;
+    const local = e.slice(0, at);
+    const dom = e.slice(at + 1).toLowerCase();
+    return dom === destinationDomain ? `${local}@${sourceDomain}` : e;
+  });
+  return [...new Set(out)].sort();
+}
+
+/**
+ * Compare two recipient sets, treating a source→destination domain rewrite as a match.
+ * Exact equality passes first; otherwise both sides are canonicalized (dest domain → source
+ * domain) so a migrated address that only changed tenant domain is not flagged.
+ */
+function recipientSetsEqual(expected, actual, opts = {}) {
+  if (JSON.stringify(expected) === JSON.stringify(actual)) return true;
+  const sd = (opts.sourceDomain || '').toLowerCase();
+  const dd = (opts.destinationDomain || '').toLowerCase();
+  if (sd && dd && sd !== dd) {
+    return (
+      JSON.stringify(canonicalizeDomainRewrite(expected, sd, dd)) ===
+      JSON.stringify(canonicalizeDomainRewrite(actual, sd, dd))
+    );
+  }
+  return false;
+}
+
+/**
  * Strip HTML tags for loose body comparison (Tier C warning).
  */
 function htmlToPlainLoose(html) {
@@ -172,16 +217,22 @@ function compareTierA(source, dest, opts = {}) {
     opts.recipientMapping instanceof Map && opts.recipientMapping.size > 0 ? opts.recipientMapping : null;
   const diffs = [];
 
-  // From: migration preserves the original sender address (e.g. Peter stays Peter in migrated Sent Items).
-  // Compare raw source vs destination; do NOT apply user-mapping — that's for recipients in the dest tenant.
+  // From: by default migration preserves the original sender address (e.g. Peter stays Peter in
+  // migrated Sent Items), so compare raw source vs destination without user-mapping.
+  // When opts.mapFrom is set (Outlook→Outlook, where the mailbox-owner identity is remapped to a
+  // destination-tenant user), apply the SAME permission mapping used for To/Cc/Bcc so a sender that
+  // should have been remapped (e.g. ben@… → kim@…) is reported consistently instead of silently
+  // passing because the source and destination both still read the original address.
   {
     const sFromRaw = sourceTierAFromEmails(source);
     const dFrom = destTierAFromEmails(dest);
-    if (sFromRaw.length > 0 && JSON.stringify(sFromRaw) !== JSON.stringify(dFrom)) {
+    const expectedFrom =
+      opts.mapFrom && mappingMap ? expectedDestRecipientsFromSource(sFromRaw, mappingMap) : sFromRaw;
+    if (sFromRaw.length > 0 && !recipientSetsEqual(expectedFrom, dFrom, opts)) {
       diffs.push({
         field: 'from',
         ok: false,
-        expected: sFromRaw.join(','),
+        expected: expectedFrom.join(','),
         actual: dFrom.join(','),
         displaySource: sFromRaw.join(','),
         displayDestination: dFrom.join(','),
@@ -205,9 +256,10 @@ function compareTierA(source, dest, opts = {}) {
   }
 
   const sToRaw = source.toEmails || parseRecipientEmails(source.to || '');
-  const dTo = dest.toEmails || graphRecipientsToEmails(dest.toRecipients);
+  const dTo = dest.toEmails
+    || (dest.toRecipients ? graphRecipientsToEmails(dest.toRecipients) : parseRecipientEmails(dest.to || ''));
   const expectedTo = mappingMap ? expectedDestRecipientsFromSource(sToRaw, mappingMap) : sToRaw;
-  if (JSON.stringify(expectedTo) !== JSON.stringify(dTo)) {
+  if (!recipientSetsEqual(expectedTo, dTo, opts)) {
     diffs.push({
       field: 'to',
       ok: false,
@@ -220,9 +272,10 @@ function compareTierA(source, dest, opts = {}) {
   }
 
   const sCcRaw = source.ccEmails || parseRecipientEmails(source.cc || '');
-  const dCc = dest.ccEmails || graphRecipientsToEmails(dest.ccRecipients);
+  const dCc = dest.ccEmails
+    || (dest.ccRecipients ? graphRecipientsToEmails(dest.ccRecipients) : parseRecipientEmails(dest.cc || ''));
   const expectedCc = mappingMap ? expectedDestRecipientsFromSource(sCcRaw, mappingMap) : sCcRaw;
-  if (JSON.stringify(expectedCc) !== JSON.stringify(dCc)) {
+  if (!recipientSetsEqual(expectedCc, dCc, opts)) {
     diffs.push({
       field: 'cc',
       ok: false,
@@ -236,10 +289,11 @@ function compareTierA(source, dest, opts = {}) {
 
   if (compareBcc) {
     const sBccRaw = source.bccEmails || parseRecipientEmails(source.bcc || '');
-    const dBcc = dest.bccEmails || graphRecipientsToEmails(dest.bccRecipients);
+    const dBcc = dest.bccEmails
+      || (dest.bccRecipients ? graphRecipientsToEmails(dest.bccRecipients) : parseRecipientEmails(dest.bcc || ''));
     const expectedBcc = mappingMap ? expectedDestRecipientsFromSource(sBccRaw, mappingMap) : sBccRaw;
     const bccSev = opts.bccAsError !== false ? 'error' : 'warning';
-    if (JSON.stringify(expectedBcc) !== JSON.stringify(dBcc)) {
+    if (!recipientSetsEqual(expectedBcc, dBcc, opts)) {
       diffs.push({
         field: 'bcc',
         ok: false,
@@ -262,7 +316,7 @@ function compareTierA(source, dest, opts = {}) {
       : dest.replyTo && typeof dest.replyTo === 'string'
         ? parseRecipientEmails(dest.replyTo)
         : graphRecipientsToEmails(dest.replyTo);
-    if (sReplyTo.length > 0 && JSON.stringify(sReplyTo) !== JSON.stringify(dReplyTo)) {
+    if (sReplyTo.length > 0 && !recipientSetsEqual(sReplyTo, dReplyTo, opts)) {
       diffs.push({
         field: 'replyTo',
         ok: false,
@@ -309,13 +363,41 @@ function compareTierA(source, dest, opts = {}) {
   return diffs;
 }
 
-function normalizeMailBodyPlain(s) {
+/**
+ * Decode the common HTML entities so a body stored as HTML (Outlook destination) compares equal to
+ * the plain-text source. Outlook stores quotes as &quot;, ampersands as &amp;, etc. — without this,
+ * `"QA-TestLabel"` (source) vs `&quot;QA-TestLabel&quot;` (destination) was flagged as a body
+ * mismatch even though they render identically. Decode &amp; LAST so "&amp;quot;" isn't over-decoded.
+ */
+function decodeHtmlEntities(s) {
   return String(s || '')
+    .replace(/&quot;/gi, '"').replace(/&#0*34;/g, '"')
+    .replace(/&apos;/gi, "'").replace(/&#0*39;/g, "'")
+    .replace(/&nbsp;/gi, ' ').replace(/&#0*160;/g, ' ')
+    .replace(/&lt;/gi, '<').replace(/&#0*60;/g, '<')
+    .replace(/&gt;/gi, '>').replace(/&#0*62;/g, '>')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return _; } })
+    .replace(/&#(\d+);/g, (_, d) => { try { return String.fromCodePoint(parseInt(d, 10)); } catch { return _; } })
+    .replace(/&amp;/gi, '&').replace(/&#0*38;/g, '&');
+}
+
+function normalizeMailBodyPlain(s) {
+  return decodeHtmlEntities(String(s || ''))
     .replace(/\r\n/g, '\n')
     .replace(/[\t\f\v]+/g, ' ')
     .replace(/ +/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Extract emoji (Extended_Pictographic code points) from a string, as an array.
+ * Numeric HTML character references (e.g. &#x1F600;) should be decoded first via
+ * normalizeMailBodyPlain so emoji stored as entities are counted too.
+ */
+function extractEmojis(str) {
+  const m = String(str || '').match(/\p{Extended_Pictographic}/gu);
+  return m || [];
 }
 
 /** Gmail system labels ↔ Outlook system folders (lowercased, space-stripped forms). */
@@ -436,17 +518,30 @@ function parseGmailLabels(labels) {
  *     if `migrateOrphaned` is true → "Archive" else the caller should treat as "not migrated".
  *
  * @param {string[] | string} labels Gmail label names (IDs expanded by caller already).
- * @param {{ migrateOrphaned?: boolean }} [opts]
- * @returns {{ expectedFolder: string | null, reason: string, source: 'system'|'custom'|'starred-only'|'orphan'|'never-migrated' }}
+ * @param {{ migrateOrphaned?: boolean, archiveMailbox?: boolean }} [opts]
+ * @returns {{ expectedFolder: string | null, reason: string, source: 'system'|'custom'|'starred-only'|'orphan'|'never-migrated'|'all-mail' }}
  */
+// Outlook destination folder CloudFuze creates for archived (All-Mail-only) Gmail mail when the
+// "Archive Mailbox" migration option is enabled.
+const GMAIL_ALL_MAIL_FOLDER = '[Gmail]All Mail';
 function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   const list = parseGmailLabels(labels);
   if (list.length === 0) {
+    // Archived, label-less mail (only in Gmail "All Mail"). When the CloudFuze "Archive Mailbox"
+    // option is ON, these migrate to an Outlook custom folder named "[Gmail]All Mail". Otherwise they
+    // fall back to the Migrate-Orphaned-Labels behaviour (Archive, or not migrated).
+    if (opts.archiveMailbox) {
+      return {
+        expectedFolder: GMAIL_ALL_MAIL_FOLDER,
+        reason: `No labels (archived) → Outlook "${GMAIL_ALL_MAIL_FOLDER}" (Archive Mailbox enabled)`,
+        source: 'all-mail',
+      };
+    }
     return {
       expectedFolder: opts.migrateOrphaned ? 'Archive' : null,
       reason: opts.migrateOrphaned
         ? 'No labels → Archive (Migrate Orphaned Labels enabled)'
-        : 'No labels → All Mail only; not migrated unless Migrate Orphaned Labels is enabled',
+        : 'No labels → All Mail only; not migrated unless Archive Mailbox / Migrate Orphaned Labels is enabled',
       source: 'orphan',
     };
   }
@@ -475,10 +570,25 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
     return !GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.has(U) && !isMarker(l) && !isNeverMigrated(l);
   });
 
+  // A Gmail mail with MULTIPLE folder-mapping labels legitimately lands in EACH mapped Outlook folder
+  // (e.g. SENT + ProjectX → the mail exists in BOTH "Sent Items" AND "ProjectX"). Collect every
+  // acceptable folder so the placement check passes when the message is found in ANY of them — not
+  // only the single priority pick. (STARRED/IMPORTANT/UNREAD are flags, not folders → excluded.)
+  const acceptableFolders = [...new Set(
+    list
+      .filter((l) => !isMarker(l) && !isNeverMigrated(l))
+      .map((l) => {
+        const U = String(l || '').toUpperCase();
+        return GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.has(U) ? GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(U) : l;
+      })
+      .filter(Boolean)
+  )];
+
   if (priorityMatch) {
     return {
       expectedFolder: GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch),
-      reason: `Gmail system label ${priorityMatch} ≡ Outlook "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch)}"${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Gmail system label ${priorityMatch} ≡ Outlook "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(priorityMatch)}"${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'system',
     };
   }
@@ -486,7 +596,8 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   if (firstCustom) {
     return {
       expectedFolder: firstCustom,
-      reason: `Custom Gmail label "${firstCustom}" → same-name Outlook folder${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Custom Gmail label "${firstCustom}" → same-name Outlook folder${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'custom',
     };
   }
@@ -494,7 +605,8 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
   if (categoryMatch) {
     return {
       expectedFolder: GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase()),
-      reason: `Gmail category ${categoryMatch} → Outlook folder "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase())}"${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
+      acceptableFolders,
+      reason: `Gmail category ${categoryMatch} → Outlook folder "${GMAIL_SYSTEM_LABEL_TO_OUTLOOK_FOLDER.get(categoryMatch.toUpperCase())}"${acceptableFolders.length > 1 ? ` (also acceptable: ${acceptableFolders.join(', ')})` : ''}${hasStarred ? ' (STARRED kept as red flag in original folder)' : ''}`,
       source: 'system',
     };
   }
@@ -507,11 +619,20 @@ function expectedOutlookFolderForGmailLabels(labels, opts = {}) {
     };
   }
 
+  // No primary folder label (archived, only in All Mail). Same rule as the no-labels case above:
+  // "[Gmail]All Mail" when Archive Mailbox is on, else the orphaned-label fallback.
+  if (opts.archiveMailbox) {
+    return {
+      expectedFolder: GMAIL_ALL_MAIL_FOLDER,
+      reason: `No primary folder label (archived) → Outlook "${GMAIL_ALL_MAIL_FOLDER}" (Archive Mailbox enabled)`,
+      source: 'all-mail',
+    };
+  }
   return {
     expectedFolder: opts.migrateOrphaned ? 'Archive' : null,
     reason: opts.migrateOrphaned
       ? 'No primary folder label → Archive (Migrate Orphaned Labels enabled)'
-      : 'No primary folder label and Migrate Orphaned Labels is not enabled — not migrated',
+      : 'No primary folder label and Archive Mailbox / Migrate Orphaned Labels is not enabled — not migrated',
     source: 'orphan',
   };
 }
@@ -564,6 +685,7 @@ function validateGmailToOutlookPlacement(input) {
 
   const rule = expectedOutlookFolderForGmailLabels(gmailLabels, {
     migrateOrphaned: options.migrateOrphaned === true,
+    archiveMailbox: options.archiveMailbox === true,
   });
 
   if (rule.expectedFolder === null && rule.source === 'never-migrated') {
@@ -592,6 +714,11 @@ function validateGmailToOutlookPlacement(input) {
     }
   } else if (rule.expectedFolder) {
     const expected = rule.expectedFolder;
+    // A mail with several folder-mapping labels lands in EACH mapped folder — accept ANY of them.
+    const accept = (rule.acceptableFolders && rule.acceptableFolders.length)
+      ? rule.acceptableFolders
+      : [expected];
+    const matchesAny = destFolderPath && accept.some((f) => normalizedNameEquals(f, destFolderPath));
     if (!destFolderPath) {
       diffs.push({
         field: 'folder',
@@ -602,14 +729,14 @@ function validateGmailToOutlookPlacement(input) {
         displayDestination: `(no folder) — expected "${expected}" per mapping: ${rule.reason}`,
         severity,
       });
-    } else if (!normalizedNameEquals(expected, destFolderPath)) {
+    } else if (!matchesAny) {
       diffs.push({
         field: 'folder',
         ok: false,
-        expected,
+        expected: accept.join(' or '),
         actual: destFolderPath,
         displaySource: parseGmailLabels(gmailLabels).join(' | ') || '(no labels)',
-        displayDestination: `${destFolderPath} — expected "${expected}" per mapping: ${rule.reason}`,
+        displayDestination: `${destFolderPath} — expected one of [${accept.join(', ')}] per mapping: ${rule.reason}`,
         severity,
       });
     }
@@ -668,6 +795,29 @@ function compareTierC(sourcePlain, destHtmlOrPlain, options = {}) {
   if (s.length > maxChars) s = s.substring(0, maxChars);
   if (d.length > maxChars) d = d.substring(0, maxChars);
   if (s === d) return diffs;
+
+  // Dedicated emoji-integrity check: when source body carries emoji, assert every distinct
+  // emoji survives in the destination body. Flags emoji loss/corruption explicitly (labeled
+  // 'emoji') instead of letting it hide inside the generic body diff. Applies to every
+  // combination that runs Tier C (Gmail→Gmail, Outlook→Outlook, and the cross-provider pairs).
+  const srcEmojis = [...new Set(extractEmojis(s))];
+  if (srcEmojis.length > 0) {
+    const dstEmojiSet = new Set(extractEmojis(d));
+    const missing = srcEmojis.filter((e) => !dstEmojiSet.has(e));
+    if (missing.length > 0) {
+      diffs.push({
+        field: 'emoji',
+        ok: false,
+        expected: srcEmojis.join(' '),
+        actual: [...dstEmojiSet].join(' ') || '(none)',
+        displaySource: srcEmojis.join(' '),
+        displayDestination: [...dstEmojiSet].join(' ') || '(none)',
+        note: `Emoji not preserved in body — missing: ${missing.join(' ')}`,
+        severity: options.bodyMismatchSeverity || 'warning',
+      });
+    }
+  }
+
   const previewLen = Math.min(8000, Math.max(500, Math.min(s.length || 1, d.length || 1, 4000)));
   const expPrev = s.length > previewLen ? `${s.substring(0, previewLen)}… [${s.length} chars]` : s;
   const actPrev = d.length > previewLen ? `${d.substring(0, previewLen)}… [${d.length} chars]` : d;
@@ -767,33 +917,7 @@ function sha256Hex(buffer) {
 function compareAttachmentSizesWithTolerance(srcAttachments, dstAttachments, combination) {
   if (!srcAttachments || srcAttachments.length === 0) return [];
 
-  const CONFIG = {
-    gmail_to_outlook: {
-      infoMin: 1.00, infoMax: 1.60,
-      warnMin: 0.85, warnMax: 2.00,
-      expectedNote:
-        'Gmail API reports decoded (raw) bytes; Graph API includes base64 encoding + MIME envelope overhead (~33–45% larger). ' +
-        'This size difference is expected during Gmail→Outlook migration.',
-    },
-    outlook_to_gmail: {
-      infoMin: 0.55, infoMax: 1.05,
-      warnMin: 0.40, warnMax: 1.20,
-      expectedNote:
-        'Graph API reports base64-encoded + MIME size; Gmail API reports decoded (raw) bytes (~25–32% smaller). ' +
-        'This size difference is expected during Outlook→Gmail migration.',
-    },
-    outlook_to_outlook: {
-      infoMin: 0.90, infoMax: 1.10,
-      warnMin: 0.70, warnMax: 1.30,
-      expectedNote: 'Same platform (Outlook→Outlook): attachment sizes should be near-identical.',
-    },
-    gmail_to_gmail: {
-      infoMin: 0.90, infoMax: 1.10,
-      warnMin: 0.70, warnMax: 1.30,
-      expectedNote: 'Same platform (Gmail→Gmail): attachment sizes should be near-identical.',
-    },
-  };
-
+  const CONFIG = tolerance.attachmentSize;
   const cfg = CONFIG[combination] || CONFIG.outlook_to_outlook;
 
   const toMap = (list) =>
@@ -958,11 +1082,14 @@ function compareReadState(srcIsRead, destIsRead) {
 
 /**
  * Compare Outlook flag state vs Gmail STARRED label (Outlook→Gmail).
- * flagged → expect STARRED; notFlagged/complete → STARRED should not be caused by source flag.
+ * Outlook flags are three-state: notFlagged / flagged / complete. Gmail has only STARRED, so a
+ * mail that was EVER flagged — whether the follow-up is still active ('flagged') or has been marked
+ * done ('complete') — correctly migrates to STARRED. Only 'notFlagged' should be un-starred.
  */
 function compareOutlookFlagToGmailStarred(srcFlagStatus, gmailLabelIds) {
   const labels = Array.isArray(gmailLabelIds) ? gmailLabelIds : [];
-  const srcFlagged = String(srcFlagStatus || '').toLowerCase() === 'flagged';
+  const status = String(srcFlagStatus || '').toLowerCase();
+  const srcFlagged = status === 'flagged' || status === 'complete';
   const destStarred = labels.includes('STARRED');
   if (srcFlagged === destStarred) return [];
   if (srcFlagged && !destStarred) {
@@ -1047,6 +1174,25 @@ function compareImportanceOutlookToOutlook(srcImportance, destImportance, severi
 }
 
 /**
+ * Compare sensitivity values (Outlook→Outlook): normal | personal | private | confidential.
+ * Sensitivity is a compliance-relevant property, so a mismatch is an 'error' (real bug) by default.
+ */
+function compareSensitivityOutlookToOutlook(srcSensitivity, destSensitivity, severity = 'error') {
+  const s = String(srcSensitivity || 'normal').toLowerCase();
+  const d = String(destSensitivity || 'normal').toLowerCase();
+  if (s === d) return [];
+  return [{
+    field: 'sensitivity',
+    ok: false,
+    expected: s,
+    actual: d,
+    displaySource: s,
+    displayDestination: d,
+    severity,
+  }];
+}
+
+/**
  * Compare sent timestamps between source and destination.
  * Parses both ISO 8601 and RFC 2822 (Gmail Date header) formats.
  * Uses 'warning' severity — some platforms re-stamp on import.
@@ -1091,16 +1237,8 @@ function formatBytes(bytes) {
 }
 
 // Per-combination tolerance for total mailbox size ratio (dst / src).
-const MAILBOX_SIZE_CONFIG = {
-  outlook_to_gmail:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
-    note: 'Outlook MIME sizes vs Gmail sizeEstimate — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
-  gmail_to_outlook:   { infoMin: 0.70, infoMax: 1.30, warnMin: 0.50, warnMax: 1.60,
-    note: 'Gmail sizeEstimate vs Outlook MIME sizes — a ±30% difference is normal due to header additions and encoding conversions during migration.' },
-  outlook_to_outlook: { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
-    note: 'Same platform (Outlook→Outlook): mailbox sizes should be near-identical (±15%).' },
-  gmail_to_gmail:     { infoMin: 0.85, infoMax: 1.15, warnMin: 0.70, warnMax: 1.30,
-    note: 'Same platform (Gmail→Gmail): mailbox sizes should be near-identical (±15%).' },
-};
+// Bands live in ./mailTolerance/<combination>.js (one file per combination).
+const MAILBOX_SIZE_CONFIG = tolerance.mailboxSize;
 
 /**
  * Build a structured mailbox size comparison result.
@@ -1168,6 +1306,7 @@ module.exports = {
   GMAIL_LABELS_NEVER_MIGRATED,
   parseGmailLabels,
   normalizeMailBodyPlain,
+  extractEmojis,
   htmlToPlainLoose,
   sha256Hex,
   compareOutlookReadToGmailUnread,
@@ -1177,6 +1316,7 @@ module.exports = {
   compareFlagState,
   compareOutlookImportanceToGmailImportant,
   compareImportanceOutlookToOutlook,
+  compareSensitivityOutlookToOutlook,
   compareSentDateTime,
   compareAttachmentSizesWithTolerance,
   buildMailboxSizeValidation,

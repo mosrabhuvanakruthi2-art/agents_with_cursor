@@ -1,7 +1,7 @@
 const dotenv = require('dotenv');
 const path = require('path');
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const requiredVars = [
   'GOOGLE_CLIENT_ID',
@@ -49,7 +49,6 @@ function parseGoogleAccounts() {
     }
   }
 
-  console.log(`[env] Loaded ${accounts.size} Google account(s): ${Array.from(accounts.keys()).join(', ')}`);
   return accounts;
 }
 
@@ -150,7 +149,6 @@ function parseOutlookAccounts() {
   const raw = process.env.OUTLOOK_ACCOUNTS || '';
   if (!raw) return [];
   const emails = raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
-  console.log(`[env] Loaded ${emails.length} Outlook account(s): ${emails.join(', ')}`);
   return emails;
 }
 
@@ -170,9 +168,6 @@ function parseUserEmailMappings() {
       destinationEmail: pair.substring(colonIdx + 1).trim().toLowerCase(),
     };
   }).filter((p) => p && p.sourceEmail && p.destinationEmail);
-  if (pairs.length > 0) {
-    console.log(`[env] Loaded ${pairs.length} USER_EMAIL_MAPPINGS pair(s)`);
-  }
   return pairs;
 }
 
@@ -232,6 +227,18 @@ module.exports = {
   /** Absolute or relative-to-cwd path to the service account JSON key for tenant 3 (migrationn.com DWD). */
   GOOGLE_SERVICE_ACCOUNT_KEY_3: (() => {
     const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY_3 || '').trim();
+    if (!raw) return '';
+    if (path.isAbsolute(raw)) return raw;
+    return path.resolve(__dirname, '../../', raw);
+  })(),
+  /**
+   * Single shared service account key (Domain-Wide Delegation) used for ALL Google
+   * domains that don't have a tenant-specific key above. Authorize this one service
+   * account's client ID + scopes in each Workspace domain's Admin Console, then set
+   * this path and you can drop GOOGLE_SERVICE_ACCOUNT_KEY_2/_3 and the OAuth client IDs.
+   */
+  GOOGLE_SERVICE_ACCOUNT_KEY: (() => {
+    const raw = (process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '').trim();
     if (!raw) return '';
     if (path.isAbsolute(raw)) return raw;
     return path.resolve(__dirname, '../../', raw);
@@ -308,6 +315,39 @@ module.exports = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   /** Optional path to gmail-test-cases.xlsx (mail + draft matrix). Empty = backend/data/gmail-test-cases.xlsx */
   GMAIL_TEST_CASES_XLSX: (process.env.GMAIL_TEST_CASES_XLSX || '').trim(),
+  /**
+   * Max UNREAD emails to leave in the Outlook Inbox after seeding. The test data creates
+   * many unread messages; after seeding, the excess (oldest) are marked read so the Inbox
+   * looks realistic while retaining enough unread mail to validate read-state. Default 12.
+   */
+  OUTLOOK_INBOX_MAX_UNREAD: (() => {
+    const n = parseInt(process.env.OUTLOOK_INBOX_MAX_UNREAD ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 12;
+  })(),
+  /**
+   * Address of a PRE-PROVISIONED Microsoft 365 shared mailbox (created once in the Admin Center;
+   * Graph cannot create shared mailboxes). When set, the Outlook test-data agent seeds real content
+   * INTO this shared mailbox via Graph app-only and uses it as the real sender for the shared-mailbox
+   * test case. When empty, the agent falls back to a From-header simulation (no real shared mailbox).
+   */
+  SHARED_MAILBOX_ADDRESS: (process.env.SHARED_MAILBOX_ADDRESS || '').trim().toLowerCase(),
+
+  /**
+   * Address of a PRE-CREATED mail-enabled distribution list on the SOURCE user's domain
+   * (created once in the Admin Center — Graph/our app cannot set a group's SMTP domain, it always
+   * lands on the tenant default). When set, the Outlook test-data agent uses THIS address for the
+   * distribution-list test case instead of creating a new group. When empty, it falls back to
+   * creating a Graph group (which gets the tenant default domain).
+   */
+  DISTRIBUTION_LIST_ADDRESS: (process.env.DISTRIBUTION_LIST_ADDRESS || '').trim().toLowerCase(),
+
+  /**
+   * Path to a saved Playwright storageState JSON that carries an authenticated devemail portal
+   * session (the portal uses Google/Office365 SSO, so headless password login doesn't work). When
+   * set, the Workspace-ID reports scraper reuses this session instead of logging in. Capture it once
+   * with: node scripts/capture-devemail-session.js
+   */
+  DEVEMAIL_STORAGE_STATE: (process.env.DEVEMAIL_STORAGE_STATE || '').trim(),
 
   /** Xray Server/DC + Jira: site base URL, no trailing slash */
   JIRA_BASE_URL: (process.env.JIRA_BASE_URL || '').trim().replace(/\/+$/, '').replace(/\/jira\/?$/i, ''),
@@ -323,7 +363,14 @@ module.exports = {
   /** Neutara Ticketing — new bug tracker replacing Jira for QA bug creation */
   NEUTARA_BASE_URL: (process.env.NEUTARA_BASE_URL || 'https://neutaraticketing.cftools.live').trim(),
   NEUTARA_API_KEY:  (process.env.NEUTARA_API_KEY  || '').trim(),
-  NEUTARA_SPACE:    (process.env.NEUTARA_SPACE     || 'AQ').trim(),
+  NEUTARA_SPACE:    (process.env.NEUTARA_SPACE     || 'QT').trim(),
+  NEUTARA_REPORTER_EMAIL: (process.env.NEUTARA_REPORTER_EMAIL || 'qaagent@cloudfuze.com').trim(),
+  NEUTARA_ATTACH_PDF: (process.env.NEUTARA_ATTACH_PDF || 'true').trim(),
+  NEUTARA_ATTACH_MODE: (process.env.NEUTARA_ATTACH_MODE || 'embed').trim(),
+  // Interval (ms) between creating sibling sub-folders / nested labels at the source, so each gets a
+  // distinct, increasing creation timestamp and the destination preserves folder order (matches manual
+  // creation with natural gaps). Default 30s per QA. Set 0 to disable (faster seed, order may not hold).
+  FOLDER_CREATE_INTERVAL_MS: Number(process.env.FOLDER_CREATE_INTERVAL_MS || 30000),
   /** Grafana base URL for log queries (default: http://logwatch.cloudfuze.com) */
   GRAFANA_BASE_URL: (process.env.GRAFANA_BASE_URL || 'http://logwatch.cloudfuze.com').trim(),
   /** Grafana Service Account Bearer token for programmatic API access */
@@ -404,4 +451,286 @@ module.exports = {
   BULK_CALENDAR_API_URL: (process.env.BULK_CALENDAR_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
   /** Base URL for the create-mails-outlook Spring Boot service. Default: http://localhost:8080 */
   OUTLOOK_DATA_API_URL: (process.env.OUTLOOK_DATA_API_URL || 'http://localhost:8080').trim().replace(/\/+$/, ''),
+  /** Box OAuth 2.0 app credentials (Standard OAuth 2.0 app from Box Developer Console) */
+  BOX_CLIENT_ID: (process.env.BOX_CLIENT_ID || '').trim(),
+  BOX_CLIENT_SECRET: (process.env.BOX_CLIENT_SECRET || '').trim(),
+  /**
+   * Dropbox (Business) app credentials, for the Dropbox → Google combinations.
+   *
+   * Prefer the refresh-token trio: Dropbox access tokens are short-lived (4 hours), which is shorter
+   * than a full content validation run, so a run configured with only DROPBOX_ACCESS_TOKEN can fail
+   * partway through with a 401 that looks like a permissions problem.
+   *
+   * The app needs these scopes: files.metadata.read, files.content.read, files.content.write,
+   * sharing.read, sharing.write — plus team_data.member, team_info.read and members.read for a
+   * Business team (listing members, groups and team folders).
+   */
+  DROPBOX_APP_KEY: (process.env.DROPBOX_APP_KEY || '').trim(),
+  DROPBOX_APP_SECRET: (process.env.DROPBOX_APP_SECRET || '').trim(),
+  DROPBOX_REFRESH_TOKEN: (process.env.DROPBOX_REFRESH_TOKEN || '').trim(),
+  /** Short-lived fallback token. Used only when the refresh trio above is absent. */
+  DROPBOX_ACCESS_TOKEN: (process.env.DROPBOX_ACCESS_TOKEN || '').trim(),
+  /**
+   * Root path the QA flow seeds into and validates from, e.g. "/QA-Dropbox-<yourname>".
+   *
+   * **NO DEFAULT, deliberately.** This used to default to "/QA-Automation", and the seeding agent
+   * DELETES its root before seeding. Two people on the same branch therefore shared one destructive
+   * default: on 2026-09-02 a run whose folder name had not been filled in fell back to it and wiped
+   * a teammate's Dropbox → Shared Drive test folder — twice, because the fallback was silent.
+   *
+   * Unset now means "refuse to seed" rather than "seed into whatever everyone shares". Give each
+   * person their own root; a wipe can then only ever destroy their own data.
+   */
+  DROPBOX_TEST_ROOT: (process.env.DROPBOX_TEST_ROOT || '').trim(),
+  /**
+   * Principals the seeding agent grants access to (scope 2.1–2.5).
+   *
+   * Dropbox rejects a grant to an address it cannot resolve, so these must be real. Each is
+   * optional: an unset value SKIPS that class of grant with a warning rather than failing the run,
+   * because a missing QA account is a configuration gap, not a product defect.
+   *
+   * DROPBOX_TEST_INTERNAL_USER — a second account inside the Dropbox team (user grants)
+   * DROPBOX_TEST_EXTERNAL_USER — an address OUTSIDE the team (external shares, feature 2.5)
+   * DROPBOX_TEST_GROUP         — the display name of an existing Dropbox team group. Looked up by
+   *                              name; never created, because seeding must not alter team config.
+   */
+  /**
+   * Default DESTINATION Google Shared Drive name, for combinations landing in a Shared Drive
+   * (dropbox → googleshareddrive).
+   *
+   * Deliberately separate from GOOGLE_SHARED_DRIVE_NAME, which names the SOURCE drive for the
+   * Drive→SharePoint combinations. Reusing that one would quietly validate a Dropbox migration
+   * against the drive a different combination reads from.
+   */
+  GOOGLE_DEST_SHARED_DRIVE_NAME: (process.env.GOOGLE_DEST_SHARED_DRIVE_NAME || '').trim(),
+  DROPBOX_TEST_INTERNAL_USER: (process.env.DROPBOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
+  DROPBOX_TEST_EXTERNAL_USER: (process.env.DROPBOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
+  DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),
+  /**
+   * Content migration server credentials (qarelease).
+   * Used as fallback when the Migration Server password field is left empty in the form.
+   * CONTENT_MIGRATION_SERVER_URL  — e.g. https://qarelease.cloudfuze.com/
+   * CONTENT_MIGRATION_SERVER_EMAIL — app account email on that server
+   * CONTENT_MIGRATION_SERVER_PASSWORD — app account password (plaintext; MD5-hashed before sending)
+   */
+  CONTENT_MIGRATION_SERVER_URL: (process.env.CONTENT_MIGRATION_SERVER_URL || '').trim(),
+  CONTENT_MIGRATION_SERVER_EMAIL: (process.env.CONTENT_MIGRATION_SERVER_EMAIL || '').trim(),
+  CONTENT_MIGRATION_SERVER_PASSWORD: (process.env.CONTENT_MIGRATION_SERVER_PASSWORD || '').trim(),
+  /**
+   * Pin the exact qarelease cloud registrations for content migration.
+   * Multiple Box/SharePoint registrations exist for the same email/domain; only one
+   * resolves path mappings. Captured from the working UI request. When set, MigrationAgent
+   * overrides findCloudId's pick with these IDs.
+   */
+  CONTENT_SOURCE_CLOUD_ID: (process.env.CONTENT_SOURCE_CLOUD_ID || '').trim(),
+  CONTENT_DEST_CLOUD_ID: (process.env.CONTENT_DEST_CLOUD_ID || '').trim(),
+  /**
+   * Diagnostic source-path pin. CONTENT_SOURCE_PATH_OVERRIDE forces the content migration
+   * source path (e.g. /NEWDATA) and CONTENT_SOURCE_ROOT_ID_OVERRIDE its matching Box folder id.
+   * Use to test whether the path-mapping CSV resolves for an already-indexed folder vs a
+   * freshly-created one. Leave blank in normal operation.
+   */
+  CONTENT_SOURCE_PATH_OVERRIDE: (process.env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim(),
+  CONTENT_SOURCE_ROOT_ID_OVERRIDE: (process.env.CONTENT_SOURCE_ROOT_ID_OVERRIDE || '').trim(),
+  /**
+   * When the path-mapping CSV resolves 0 pairs, abort before creating a (0-pair) job.
+   * Defaults to enabled; set to the string 'false' to proceed anyway (legacy behaviour).
+   */
+  CONTENT_REQUIRE_CSV_MAPPING: (process.env.CONTENT_REQUIRE_CSV_MAPPING || '').trim() || 'true',
+
+  /**
+   * Deep content validation (files/folders source↔destination comparison).
+   * Feature reference: backend/data/feature-scope/google-shared-drive-to-sharepoint-*.md
+   *
+   * ENABLE_DEEP_CONTENT_VALIDATION   — master switch; off means content runs stay report-only
+   * CONTENT_DEEP_VALIDATE_METADATA   — Tier C: permissions, links, versions, timestamps
+   * CONTENT_DEEP_VALIDATE_LINKS      — shared-link scope/type comparison (part of Tier C)
+   * CONTENT_DEEP_VALIDATE_FILE_HASH  — Tier B: SHA-256 of file bytes. Two full downloads per file,
+   *                                    so it is OFF by default and capped by DEEP_CONTENT_MAX_FILES.
+   * CONTENT_DEEP_VALIDATE_NOTIFICATIONS — checks the destination mailbox received no SharePoint
+   *                                    sharing mail (features 9.1/9.2); needs mailbox access.
+   */
+  ENABLE_DEEP_CONTENT_VALIDATION: (process.env.ENABLE_DEEP_CONTENT_VALIDATION || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_METADATA: (process.env.CONTENT_DEEP_VALIDATE_METADATA || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_LINKS: (process.env.CONTENT_DEEP_VALIDATE_LINKS || '').trim().toLowerCase() !== 'false',
+  CONTENT_DEEP_VALIDATE_FILE_HASH: (process.env.CONTENT_DEEP_VALIDATE_FILE_HASH || '').trim().toLowerCase() === 'true',
+  CONTENT_DEEP_VALIDATE_NOTIFICATIONS: (process.env.CONTENT_DEEP_VALIDATE_NOTIFICATIONS || '').trim().toLowerCase() === 'true',
+  // Did the MIGRATION JOB ask CloudFuze to suppress destination email? Features 9.1/9.2 compare
+  // the destination mailbox, and the combination document is explicit that without suppression
+  // "users receive standard SharePoint sharing notifications" — so mail is the CORRECT outcome
+  // then, and failing on it reports a defect against normal Microsoft 365 behaviour. Nothing in
+  // this repo requests suppression today, so the default is false and the features report as not
+  // exercised. Declared explicitly, never inferred from "we found no mail".
+  CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS:
+    (process.env.CONTENT_MIGRATION_SUPPRESSES_NOTIFICATIONS || '').trim().toLowerCase() === 'true',
+  DEEP_CONTENT_MAX_FILES: (() => {
+    const n = parseInt(process.env.DEEP_CONTENT_MAX_FILES ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 500;
+  })(),
+
+  /**
+   * CloudFuze content-job flags. These are read by migrationClient when it builds the
+   * newmultiuser update call. They MUST be declared here: this module is an explicit whitelist and
+   * never spreads process.env, so a var that is only referenced as env.FOO — without a line in this
+   * object — is permanently `undefined`. That is not hypothetical: CONTENT_TEAM_FOLDERS_MIGRATE and
+   * CONTENT_PICK_INSIDE_FOLDER were both introduced as opt-in flags guarded by
+   * `env.X === 'true'` while missing from here, which made the opt-in unreachable and pinned both
+   * flags to false on every run for as long as they existed.
+   *
+   * CONTENT_TEAM_FOLDERS_MIGRATE — "Team Folders" is Google's old name for Shared Drives. With it
+   *   false against a GOOGLE_SHARED_DRIVES cloud, the scan finds the root folder but not its
+   *   contents (one item scanned, an empty folder at the destination).
+   * CONTENT_PICK_INSIDE_FOLDER — whether CloudFuze descends into the named folder rather than
+   *   treating the pair as one opaque object.
+   * CONTENT_MIGRATE_FOLDER_NAME — wrapper folder created at the destination; blank matches the
+   *   wizard, which sends an empty value.
+   * CONTENT_CSV_VALIDATION_* — how long to wait for path-CSV validation before giving up.
+   */
+  CONTENT_TEAM_FOLDERS_MIGRATE: (process.env.CONTENT_TEAM_FOLDERS_MIGRATE || '').trim().toLowerCase(),
+  CONTENT_PICK_INSIDE_FOLDER: (process.env.CONTENT_PICK_INSIDE_FOLDER || '').trim().toLowerCase(),
+  CONTENT_MIGRATE_FOLDER_NAME: (process.env.CONTENT_MIGRATE_FOLDER_NAME || '').trim(),
+  /** Optional override for the job's 'migrate files up to' cutoff, 'YYYY-MM-DD HH:mm:ss'. */
+  CONTENT_MIGRATION_TO_DATE: (process.env.CONTENT_MIGRATION_TO_DATE || '').trim(),
+  CONTENT_CSV_VALIDATION_POLL_MS: (() => {
+    const n = parseInt(process.env.CONTENT_CSV_VALIDATION_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 5000;
+  })(),
+  CONTENT_CSV_VALIDATION_MAX_POLLS: (() => {
+    const n = parseInt(process.env.CONTENT_CSV_VALIDATION_MAX_POLLS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 60;
+  })(),
+
+  /**
+   * How many times AgentOrchestrator re-submits a content migration job after CloudFuze's own CSV
+   * path-validation rejects it with a CONFLICT-family stop status (e.g. "Migration not Allowed for
+   * wrong CSV paths") — confirmed intermittent: the identical request succeeds on one attempt and
+   * fails on the next with no difference in what we send. Set to 0 to disable retrying entirely.
+   */
+  CONTENT_MIGRATION_RETRY_MAX: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_MAX ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  })(),
+  CONTENT_MIGRATION_RETRY_DELAY_MS: (() => {
+    const n = parseInt(process.env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 10000;
+  })(),
+
+  /**
+   * Destination SharePoint target. These were hardcoded in the Box→SharePoint validator; the defaults
+   * keep that behaviour so nothing changes for existing runs, while combinations beyond the first are
+   * not pinned to one tenant.
+   */
+  SHAREPOINT_HOSTNAME: (process.env.SHAREPOINT_HOSTNAME || 'filefuze.sharepoint.com').trim(),
+  SHAREPOINT_SITE_PATH: (process.env.SHAREPOINT_SITE_PATH || '/sites/SANITYDATAA').trim(),
+
+  /** Name of the Google Shared Drive holding the source test data (Shared Drive → SharePoint runs). */
+  GOOGLE_SHARED_DRIVE_NAME: (process.env.GOOGLE_SHARED_DRIVE_NAME || '').trim(),
+
+  /**
+   * Extra grantees the content permission matrix seeds alongside the internal editor/viewer.
+   * The manual QA suite treats these as first-class dimensions — group grants are the majority of
+   * its Shared Drive → SharePoint cases, and external shares are feature 4.9. Leave blank and those
+   * dimensions are reported "not exercised" rather than silently assumed to pass.
+   */
+  /**
+   * Principals the permission matrix (in-scope features 4.2-4.8) grants access to. All four were
+   * unset, so _createPermissionMatrix skipped every case and features 4.2-4.8 sat at NA on every
+   * run — the machinery was built and never switched on.
+   *
+   * EDITOR/VIEWER must be users that already appear in the run's user mapping, or CloudFuze has
+   * no destination principal to re-grant to and the check fails for a reason that is not a defect.
+   * Note that some accounts cannot hold the `commenter` role at all — Google rejects it with
+   * "lack the necessary license" — so the editor account should be a licensed one.
+   */
+  /**
+   * Set to 'blocked' when the destination site refuses anonymous ("anyone with the link")
+   * sharing. The combination document is explicit that this is expected rather than a defect:
+   * "If external sharing is restricted or disabled in SharePoint, those permissions may not be
+   * applied in the destination" (#13 External Shares). Verify before setting it — Graph
+   * createLink with scope=anonymous answers "notAllowed: sharing has been disabled on this site".
+   * Left unset, missing anonymous links are reported as failures.
+   */
+  /**
+   * Extra source->destination principal pairs, appended to every run's user mapping.
+   * Format: "source1:dest1,source2:dest2".
+   *
+   * Exists because the wizard can only map principals it fetched as MAILBOXES. A group, shared
+   * mailbox or distribution list is never in that list, so its permissions could not be mapped —
+   * CloudFuze had no destination principal to re-grant to, and the validator correctly reported
+   * them out of scope ("no GROUP permissions were exercised"). Configuring the pairs here means
+   * every run carries them without depending on someone importing a CSV by hand.
+   */
+  CONTENT_EXTRA_USER_MAPPINGS: (process.env.CONTENT_EXTRA_USER_MAPPINGS || '').trim(),
+  CONTENT_DEST_ANONYMOUS_SHARING: (process.env.CONTENT_DEST_ANONYMOUS_SHARING || '').trim().toLowerCase(),
+  GOOGLE_TEST_EDITOR_EMAIL: (process.env.GOOGLE_TEST_EDITOR_EMAIL || '').trim(),
+  GOOGLE_TEST_VIEWER_EMAIL: (process.env.GOOGLE_TEST_VIEWER_EMAIL || '').trim(),
+  GOOGLE_TEST_GROUP_EMAIL: (process.env.GOOGLE_TEST_GROUP_EMAIL || '').trim(),
+  GOOGLE_TEST_EXTERNAL_EMAIL: (process.env.GOOGLE_TEST_EXTERNAL_EMAIL || '').trim(),
+
+  // ── Message product (Slack / Google Chat / Teams) ──────────────────────────────
+  /** 4th Google tenant (message product). */
+  GOOGLE_CLIENT_ID_4: process.env.GOOGLE_CLIENT_ID_4,
+  GOOGLE_CLIENT_SECRET_4: process.env.GOOGLE_CLIENT_SECRET_4,
+  GOOGLE_TENANT_4_DOMAINS: (process.env.GOOGLE_TENANT_4_DOMAINS || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean),
+  /** Azure app client id used for message (Teams) delegated tokens, if separate from GRAPH_CLIENT_ID. */
+  MS_MESSAGE_CLIENT_ID: process.env.MS_MESSAGE_CLIENT_ID || '',
+  /** CloudFuze chat-migration server credentials (email/password login). */
+  MIGRATION_API_USERNAME: (process.env.MIGRATION_API_USERNAME || '').trim(),
+  MIGRATION_API_PASSWORD: (process.env.MIGRATION_API_PASSWORD || '').trim(),
+  /**
+   * Dedicated CHAT-migration CloudFuze account. Chat (Slack/Teams/Google Chat) clouds
+   * usually live in a DIFFERENT CloudFuze subscriber account than the mail account.
+   * If set, chatMigrationClient logs into THIS account; otherwise it falls back to the
+   * shared MIGRATION_API_* (mail) credentials. Any of URL / BASIC_AUTH / BEARER /
+   * USERNAME+PASSWORD may be supplied (same precedence as the mail client).
+   */
+  CHAT_MIGRATION_API_URL: normalizeMigrationApiUrl(process.env.CHAT_MIGRATION_API_URL || process.env.MIGRATION_API_URL || 'http://localhost:8080'),
+  CHAT_MIGRATION_API_BASIC_AUTH: (process.env.CHAT_MIGRATION_API_BASIC_AUTH || '').trim(),
+  CHAT_MIGRATION_API_KEY: (process.env.CHAT_MIGRATION_API_KEY || '').trim(),
+  CHAT_MIGRATION_API_BEARER_TOKEN: cleanEnvValue(process.env.CHAT_MIGRATION_API_BEARER_TOKEN || ''),
+  CHAT_MIGRATION_API_USERNAME: (process.env.CHAT_MIGRATION_API_USERNAME || '').trim(),
+  CHAT_MIGRATION_API_PASSWORD: (process.env.CHAT_MIGRATION_API_PASSWORD || '').trim(),
+  /** When 'true', skip CloudFuze validateUser before triggering a chat migration. */
+  CLOUDFUZE_SKIP_VALIDATE_USER: String(process.env.CLOUDFUZE_SKIP_VALIDATE_USER ?? '').trim().toLowerCase() === 'true',
+  /** Optional Google Chat space id for seeding/validation. */
+  GOOGLE_CHAT_SPACE: (process.env.GOOGLE_CHAT_SPACE || '').trim(),
+  /** Optional overrides for the CloudFuze chat-migration initiate/close paths + wait. */
+  CHAT_MIGRATION_API_INITIATE_PATH: (process.env.CHAT_MIGRATION_API_INITIATE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''),
+  CHAT_MIGRATION_CLOSE_PATH: (process.env.CHAT_MIGRATION_CLOSE_PATH || '').trim().replace(/^\/+/, '').replace(/\/+$/, ''),
+  CHAT_MIGRATION_MAX_WAIT_MINUTES: parseInt(process.env.CHAT_MIGRATION_MAX_WAIT_MINUTES || '30', 10) || 30,
+  /** Slack tokens (message product). SLACK_USER_TOKEN (xoxp-…) auto-installs on startup. */
+  SLACK_USER_TOKEN: cleanEnvValue(process.env.SLACK_USER_TOKEN || ''),
+  SLACK_BOT_TOKEN: cleanEnvValue(process.env.SLACK_BOT_TOKEN || ''),
+  SLACK_CHANNEL_ID: (process.env.SLACK_CHANNEL_ID || '').trim(),
+  SLACK_CLIENT_ID: cleanEnvValue(process.env.SLACK_CLIENT_ID || ''),
+  SLACK_CLIENT_SECRET: cleanEnvValue(process.env.SLACK_CLIENT_SECRET || ''),
+  SLACK_REDIRECT_URI: cleanEnvValue(process.env.SLACK_REDIRECT_URI || ''),
+  /** Teams target ids for seeding/validation. */
+  TEAMS_TEAM_ID: (process.env.TEAMS_TEAM_ID || '').trim(),
+  TEAMS_CHANNEL_ID: (process.env.TEAMS_CHANNEL_ID || '').trim(),
+  /** CF chat-migration server accounts: primary (MIGRATION_API_USERNAME/PASSWORD) + CF_EXTRA_ACCOUNTS ("email:pwd,email:pwd"). */
+  CF_ACCOUNTS: (() => {
+    const primary = (process.env.MIGRATION_API_USERNAME || '').trim();
+    const primaryPwd = (process.env.MIGRATION_API_PASSWORD || '').trim();
+    const accounts = primary ? [{ email: primary, password: primaryPwd }] : [];
+    const extras = (process.env.CF_EXTRA_ACCOUNTS || '').trim();
+    if (extras) {
+      for (const pair of extras.split(',')) {
+        const idx = pair.indexOf(':');
+        if (idx === -1) continue;
+        const email = pair.substring(0, idx).trim();
+        const password = pair.substring(idx + 1).trim();
+        if (email && password && !accounts.find((a) => a.email === email)) accounts.push({ email, password });
+      }
+    }
+    return accounts;
+  })(),
+
+  // ── Microsoft login for the QA tool itself (Azure AD "Cloudfuze domain" app) ──
+  // Separate from the Graph cloud-connection app above — used ONLY to authenticate
+  // users into the QA Agent UI (PKCE browser flow → backend code exchange → app JWT).
+  AZURE_CLIENT_ID: cleanEnvValue(process.env.AZURE_CLIENT_ID || ''),
+  AZURE_TENANT_ID: cleanEnvValue(process.env.AZURE_TENANT_ID || 'common'),
+  AZURE_CLIENT_SECRET: cleanEnvValue(process.env.AZURE_CLIENT_SECRET || ''),
+  JWT_SECRET: cleanEnvValue(process.env.JWT_SECRET || ''),
 };

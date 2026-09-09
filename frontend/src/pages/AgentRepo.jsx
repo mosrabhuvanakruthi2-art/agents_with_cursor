@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { getCustomTestCases, updateCustomTestCase } from '../services/api';
 import { useToast } from '../context/ToastContext';
@@ -381,14 +381,11 @@ export default function AgentRepo() {
     : null;
 
   return (
-    <div className="-mx-6 -my-8 flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden">
 
       {/* ── Top bar ── */}
       <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-gray-200 flex-shrink-0">
-        <div>
-          <h1 className="text-lg font-bold text-gray-900">Agent Repository</h1>
-          <p className="text-xs text-gray-500">Browse and edit saved test cases by product, combination and folder</p>
-        </div>
+        <p className="text-xs text-gray-500">Browse and edit saved test cases by product, combination and folder</p>
         <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
           {['smoke', 'sanity'].map((type) => {
             const count = (allCases[type] || []).length;

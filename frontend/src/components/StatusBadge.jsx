@@ -8,6 +8,9 @@ const statusConfig = {
   FAIL: { bg: 'bg-red-100', text: 'text-red-700', dot: 'bg-red-500' },
   CANCELLED: { bg: 'bg-orange-100', text: 'text-orange-700', dot: 'bg-orange-500' },
   INTERRUPTED: { bg: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-500' },
+  PARTIAL:     { bg: 'bg-amber-100',  text: 'text-amber-700',  dot: 'bg-amber-500'  },
+  INCOMPLETE:  { bg: 'bg-purple-100', text: 'text-purple-700', dot: 'bg-purple-400' },
+  SKIPPED:     { bg: 'bg-gray-100',   text: 'text-gray-500',   dot: 'bg-gray-400'   },
 };
 
 export default function StatusBadge({ status }) {

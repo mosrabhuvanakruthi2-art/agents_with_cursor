@@ -53,7 +53,7 @@ The dashboard opens at `http://localhost:3000` (proxies API calls to the backend
 
 ## Environment Variables
 
-See `backend/.env.example` for all required variables:
+See `.env.example` at the repo root for all required variables:
 
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` — Google OAuth2
 - `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, `GRAPH_TENANT_ID` — Microsoft Graph

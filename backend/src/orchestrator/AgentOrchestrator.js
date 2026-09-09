@@ -1,14 +1,64 @@
-const GmailTestDataAgent = require('../agents/gmail/GmailTestDataAgent');
-const OutlookTestDataAgent = require('../agents/outlook/OutlookTestDataAgent');
 const MigrationAgent = require('../agents/migration/MigrationAgent');
-const OutlookValidationAgent = require('../agents/outlook/OutlookValidationAgent');
-const GmailValidationAgent = require('../agents/gmail/GmailValidationAgent');
 const CleanupAgent = require('../agents/cleanup/CleanupAgent');
 const MigrationContext = require('../models/MigrationContext');
+const env = require('../config/env');
 const logger = require('../utils/logger');
 const { createExecutionLogger } = require('../utils/logger');
 const executionService = require('../services/executionService');
 const neutaraClient = require('../clients/neutaraClient');
+const { resolve: resolveAgents, list: listCombinations } = require('./agentRegistry');
+const devemailClient = require('../clients/devemailClient');
+const { normalizeDriveName } = require('../utils/driveNames');
+const sharepointClient = require('../clients/sharepointClient');
+const deepContentCore = require('../validation/shared/deepContentCore');
+
+/**
+ * Resolve the test-data + validation agent classes for a context's combination.
+ * Throws if the (domain, source, destination) combination is not registered.
+ */
+function agentsFor(context) {
+  const domain = context.domain || 'mail';
+  const src = context.sourceProvider || 'google';
+  const dst = context.destinationProvider || 'microsoft';
+  const set = resolveAgents(domain, src, dst);
+  if (!set) {
+    // Say what IS registered. The registry loads combination files once, when the module is first
+    // required, so a file added while the server is running stays invisible until a restart — listing
+    // the loaded set turns "combination missing" into "server needs restarting" at a glance.
+    const available = listCombinations()
+      .filter((c) => c.domain === domain)
+      .map((c) => `${c.sourceProvider} → ${c.destinationProvider}`)
+      .sort();
+    const known = available.length > 0
+      ? `Registered for ${domain}: ${available.join(', ')}.`
+      : `Nothing is registered for domain "${domain}".`;
+    throw new Error(
+      `No agents registered for ${domain}: ${src} → ${dst}. ${known} `
+      + 'If the combination file exists on disk but is not listed, this process loaded the registry '
+      + 'before it was added — restart the server.'
+    );
+  }
+  return set;
+}
+
+const CONTENT_PROVIDERS = ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'];
+
+/** True when this run is a content (files/folders) migration rather than mail. */
+function isContentModeFor(context) {
+  return (
+    context.domain === 'content' ||
+    context.mode === 'content' ||
+    (!context.includeMail && (context.includeCalendar || context.includeContacts))
+  );
+}
+
+/** True when either side is a content cloud — content migrations skip email validation. */
+function isContentProvidersFor(context) {
+  return (
+    CONTENT_PROVIDERS.includes(context.sourceProvider) ||
+    CONTENT_PROVIDERS.includes(context.destinationProvider)
+  );
+}
 
 class AgentOrchestrator {
   /**
@@ -22,7 +72,6 @@ class AgentOrchestrator {
     log.info(`Bulk flow started for ${pairsData.length} pair(s) — phased: create → migrate → validate`);
 
     // Build a state object per pair so phases can share context without re-constructing
-    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
     const pairs = pairsData.map((pairData) => {
       const context = pairData instanceof MigrationContext ? pairData : new MigrationContext(pairData);
       context.validate();
@@ -30,24 +79,17 @@ class AgentOrchestrator {
       if (!executionService.get(context.executionId)) {
         executionService.create(context);
       }
-      const isOutlookSource = context.sourceProvider === 'microsoft';
-      const isGmailDest     = context.destinationProvider === 'google';
-      const isGmailSource   = context.sourceProvider === 'google';
-
-      let outlookAgent;
-      if (isGmailDest && isGmailSource) {
-        outlookAgent = new GmailToGmailValidationAgent();
-      } else if (isGmailDest) {
-        outlookAgent = new GmailValidationAgent();
-      } else {
-        outlookAgent = new OutlookValidationAgent();
-      }
+      const { TestDataAgent, ValidationAgent } = agentsFor(context);
+      const isContentMode = isContentModeFor(context);
 
       return {
         context,
-        dataAgent: isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent(),
+        isContentMode,
+        // Content migrations seed source data via a separate flow, so a combination may
+        // register no TestDataAgent — keep it null and skip the seeding phase.
+        dataAgent: TestDataAgent ? new TestDataAgent() : null,
         migrationAgent: new MigrationAgent(),
-        outlookAgent,
+        outlookAgent: new ValidationAgent(),
         removeExecLogger,
         startTime: Date.now(),
         sourceData: null,
@@ -61,6 +103,10 @@ class AgentOrchestrator {
     log.info('Bulk Phase 0/3: cleaning previous QA test data from all pairs in parallel');
     await Promise.all(pairs.map(async (pair) => {
       const { context } = pair;
+      // Content used to be excluded here. CleanupAgent now has a content branch that clears the
+      // seeded source folder and the seeded items at the SharePoint destination, so content runs
+      // need it too — without it each run seeded and migrated on top of the previous one and the
+      // duplicates were reported as migration failures.
       if (context.skipCleanup === true) return;
       executionService.update(context.executionId, {
         currentAgent: 'CleanupAgent',
@@ -74,10 +120,21 @@ class AgentOrchestrator {
       }
     }));
 
-    // ── Phase 1: Create test data for all pairs in parallel ──────────────────
-    log.info('Bulk Phase 1/3: creating test data for all pairs in parallel');
-    await Promise.all(pairs.map(async (pair) => {
+    // ── Phase 1: Create test data for all pairs sequentially (one by one) ───
+    // Sequential order ensures each source mailbox is fully seeded before the
+    // next starts — avoids Gmail API rate-limit collisions and guarantees all
+    // data is present before migration is triggered.
+    log.info('Bulk Phase 1/3: creating test data for all pairs one by one (sequential)');
+    for (const pair of pairs) {
       const { context, dataAgent } = pair;
+      // Content migrations have no test-data agent — source data already exists in the cloud.
+      if (pair.isContentMode || !dataAgent) {
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          progress: '[1/3] Skipping test-data creation (content migration)…',
+        });
+        continue;
+      }
       executionService.update(context.executionId, {
         status: 'RUNNING',
         currentAgent: dataAgent.getName(),
@@ -98,14 +155,42 @@ class AgentOrchestrator {
         });
         log.error(`Pair ${context.sourceEmail}: Phase 1 error: ${err.message}`);
       }
-    }));
+    }
 
     // ── Phase 2: Migrate all pairs sequentially ───────────────────────────────
+    // For devemail bulk runs: all pairs go into ONE job (payload array with N workspaces).
+    // Only the first non-errored pair (lead) triggers migration; the rest share its jobId.
     log.info('Bulk Phase 2/3: running migrations sequentially');
+    const leadPair    = pairs.find((p) => !p.error) || null;
+    const isDevemailBulk = pairs.length > 1 &&
+      (leadPair?.context?.migrationServerUrl || '').toLowerCase().includes('devemail');
+
+    // For devemail bulk: mark non-lead pairs immediately so the UI shows a meaningful
+    // status rather than stale "cleanup" progress while the lead pair polls (up to 30 min).
+    if (isDevemailBulk) {
+      for (const pair of pairs) {
+        if (pair === leadPair || pair.error) continue;
+        executionService.update(pair.context.executionId, {
+          currentAgent: 'MigrationAgent',
+          status: 'RUNNING',
+          progress: '[2/3] MigrationAgent: waiting — migration triggered by lead pair…',
+        });
+        log.info(`Pair ${pair.context.sourceEmail}: devemail bulk — pre-marked as waiting for shared job`);
+      }
+    }
+
     for (const pair of pairs) {
       if (pair.error) continue;
       const { context, migrationAgent } = pair;
       if (executionService.isCancelled(context.executionId)) continue;
+
+      // Non-lead pairs: skip trigger entirely — lead already fired one job with all workspaces.
+      if (isDevemailBulk && pair !== leadPair) {
+        pair.migrationResult = { jobId: 'pending', status: 'INITIATED', sharedJob: true };
+        log.info(`Pair ${context.sourceEmail}: Phase 2 skipped — will share job ID from lead pair`);
+        continue;
+      }
+
       executionService.update(context.executionId, {
         currentAgent: migrationAgent.getName(),
         progress: '[2/3] MigrationAgent: triggering and monitoring migration…',
@@ -113,6 +198,47 @@ class AgentOrchestrator {
       try {
         pair.migrationResult = await migrationAgent.run(context);
         log.info(`Pair ${context.sourceEmail}: Phase 2 complete`);
+
+        // After lead finishes, propagate its jobId + per-pair workspace IDs to all non-lead pairs.
+        if (isDevemailBulk) {
+          const leadMigJob = pair.migrationResult?.migrationJobDetails || {};
+          const leadJobId  = leadMigJob.jobId || pair.migrationResult?.jobId || 'shared';
+          const leadServerUrl = leadMigJob.serverUrl || '';
+          const leadJobName   = leadMigJob.jobName   || '';
+
+          // Fetch job report once to get per-pair workspace IDs for all non-lead pairs.
+          let breakdown = [];
+          try {
+            breakdown = await devemailClient.getJobReport(leadJobId);
+          } catch (_) { /* best-effort */ }
+          const norm = (s) => String(s || '').toLowerCase().trim();
+
+          for (const other of pairs) {
+            if (other === pair || other.error) continue;
+            const pairEntry = breakdown.find(
+              (p) => norm(p.fromMailId || p.fromEmail) === norm(other.context.sourceEmail)
+            );
+            const wsId = pairEntry?.id || pairEntry?.jobDetailId || pairEntry?.workSpaceId || pairEntry?.workspaceId || null;
+            other.migrationResult = {
+              jobId: leadJobId,
+              status: 'INITIATED',
+              sharedJob: true,
+              migrationJobDetails: {
+                serverUrl:      leadServerUrl,
+                jobId:          leadJobId,
+                jobName:        leadJobName,
+                workspaceId:    wsId,
+                totalCount:     pairEntry?.totalCount     != null ? Number(pairEntry.totalCount)     : null,
+                processedCount: pairEntry?.processedCount != null ? Number(pairEntry.processedCount) : null,
+                cfStatus:       String(pairEntry?.processStatus || pairEntry?.syncStatus || '').toUpperCase() || null,
+              },
+            };
+            executionService.update(other.context.executionId, {
+              progress: `[2/3] MigrationAgent: shared job ${leadJobId} complete`,
+            });
+            log.info(`Pair ${other.context.sourceEmail}: shared job ${leadJobId} propagated, workspaceId=${wsId}`);
+          }
+        }
       } catch (err) {
         pair.error = err.message;
         const wasCancelled = executionService.isCancelled(context.executionId);
@@ -144,21 +270,36 @@ class AgentOrchestrator {
         pair.removeExecLogger();
         return;
       }
-      executionService.update(context.executionId, {
-        currentAgent: outlookAgent.getName(),
-        progress: `[3/3] ${outlookAgent.getName()}: comparing source vs destination…`,
-      });
+      // Content migrations skip email validation — surface the migration report instead.
+      const skipValidation = pair.migrationResult?.skipValidation || (pair.isContentMode && isContentProvidersFor(context));
+      if (skipValidation) {
+        executionService.update(context.executionId, {
+          currentAgent: 'Skipped',
+          progress: '[3/3] Validation skipped (content migration)',
+        });
+      } else {
+        executionService.update(context.executionId, {
+          currentAgent: outlookAgent.getName(),
+          progress: `[3/3] ${outlookAgent.getName()}: comparing source vs destination…`,
+        });
+      }
+      const buildAgentResults = () => [
+        ...(pair.isContentMode || !pair.dataAgent ? [] : [pair.dataAgent.toJSON()]),
+        pair.migrationAgent.toJSON(),
+        ...(skipValidation ? [] : [pair.outlookAgent.toJSON()]),
+      ];
       try {
-        pair.validationResult = await outlookAgent.run(context);
+        pair.validationResult = skipValidation ? null : await outlookAgent.run(context);
         const duration = Date.now() - pair.startTime;
         const result = {
           executionId: context.executionId,
           status: 'COMPLETED',
           duration,
-          agentResults: [pair.dataAgent.toJSON(), pair.migrationAgent.toJSON(), pair.outlookAgent.toJSON()],
+          agentResults: buildAgentResults(),
           sourceData: pair.sourceData,
           migrationResult: pair.migrationResult,
           validationSummary: pair.validationResult,
+          contentMigrationReport: pair.migrationResult?.contentMigrationReport || null,
         };
         executionService.update(context.executionId, {
           status: 'COMPLETED',
@@ -167,6 +308,23 @@ class AgentOrchestrator {
           completedAt: new Date().toISOString(),
         });
         log.info(`Pair ${context.sourceEmail}: Phase 3 complete`);
+
+        // Auto-raise Neutara bug on validation failure (fire-and-forget)
+        if (pair.validationResult?.overallStatus === 'FAIL') {
+          const execRecord = executionService.get(context.executionId);
+          neutaraClient.createBug(execRecord).then((issue) => {
+            if (issue?.knownLimitationsOnly) {
+              const note = `All ${issue.count} mismatch(es) are known limitations — no bug raised`;
+              log.info(note);
+              executionService.update(context.executionId, { knownLimitationsNote: note });
+            } else if (issue) {
+              log.info(`Neutara bug raised: ${issue.key}  ${issue.url}`);
+              executionService.update(context.executionId, { jiraIssue: issue });
+            }
+          }).catch((err) => {
+            log.warn(`Neutara bug creation failed: ${err.message}`);
+          });
+        }
       } catch (err) {
         pair.error = err.message;
         const wasCancelled = executionService.isCancelled(context.executionId);
@@ -179,7 +337,7 @@ class AgentOrchestrator {
             status: finalStatus,
             duration,
             error: err.message,
-            agentResults: [pair.dataAgent.toJSON(), pair.migrationAgent.toJSON(), pair.outlookAgent.toJSON()],
+            agentResults: buildAgentResults(),
           },
           error: err.message,
           progress: wasCancelled ? 'Cancelled by user' : `Phase 3 failed: ${err.message}`,
@@ -226,23 +384,21 @@ class AgentOrchestrator {
     log.info('Starting full migration QA flow');
 
     const isOutlookSource = context.sourceProvider === 'microsoft';
-    const isGmailDest     = context.destinationProvider === 'google';
-    const isGmailSource   = context.sourceProvider === 'google';
-    const dataAgent = isOutlookSource ? new OutlookTestDataAgent() : new GmailTestDataAgent();
-    const migrationAgent = new MigrationAgent();
-    const GmailToGmailValidationAgent = require('../agents/gmail/GmailToGmailValidationAgent');
-    let outlookAgent;
-    if (isGmailDest && isGmailSource) {
-      outlookAgent = new GmailToGmailValidationAgent();
-    } else if (isGmailDest) {
-      outlookAgent = new GmailValidationAgent();
-    } else {
-      outlookAgent = new OutlookValidationAgent();
-    }
+    const { TestDataAgent, ValidationAgent } = agentsFor(context);
+    // Some content combinations (e.g. Box→SharePoint) do register a TestDataAgent for seeding.
+    const dataAgent = TestDataAgent ? new TestDataAgent() : null;
+    let migrationAgent = new MigrationAgent();
+    const outlookAgent = new ValidationAgent();
+
+    // Detect content migration mode: domain/mode content, OR no mail with calendar/contacts flags
+    const isContentMode = isContentModeFor(context);
 
     try {
-      // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure)
-      if (!context.skipCleanup) {
+      // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
+      // Skipped only on resume (skipCleanup). Content was excluded here on the grounds that there
+      // was "no test data to clean", which was untrue: seeded folders accumulate on the source and
+      // migrated copies accumulate at the destination. CleanupAgent now handles both.
+      if (context.skipCleanup !== true) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: 'CleanupAgent',
@@ -257,24 +413,405 @@ class AgentOrchestrator {
         }
       }
 
-      // Step 1: Generate test data (Gmail or Outlook depending on source provider)
+      // Multi-user content: per-user folder entries come from the UI table
+      // (context.contentUserFolders); fall back to one entry per Map-Users pair. Align the
+      // base seed name to the first entry so Step 1's single seed IS entry[0]'s dataset.
+      const cufEntries = ((Array.isArray(context.contentUserFolders) && context.contentUserFolders.length > 0)
+        ? context.contentUserFolders
+        : (Array.isArray(context.userEmailMappings)
+            ? context.userEmailMappings.map((m) => ({ sourceEmail: m.sourceEmail, destinationEmail: m.destinationEmail }))
+            : []))
+        // Trim the path fields. `MigrationContext` trims the run-wide sourceFolderName and
+        // destinationPath but NOT these per-row copies, so a single leading space typed into the
+        // wizard reached CloudFuze as destFolderPath "/ /Dropbox-QA-Dest": the mapping saved, the
+        // job started, and nothing was created at the destination with no errorDescription to say
+        // why. The wizard now trims too; this is the backstop for any other caller (CSV import, API).
+        .map((e) => ({
+          ...e,
+          sourceFolderName: typeof e.sourceFolderName === 'string' ? e.sourceFolderName.trim() : e.sourceFolderName,
+          destinationPath: typeof e.destinationPath === 'string' ? e.destinationPath.trim() : e.destinationPath,
+          sourceDriveName: typeof e.sourceDriveName === 'string' ? e.sourceDriveName.trim() : e.sourceDriveName,
+        }));
+      if (isContentMode) log.info(`Content: useExistingSource=${context.useExistingSource} (true = skip seeding, migrate existing folder)`);
+      if (isContentMode && cufEntries.length > 0) {
+        // Resolve each entry's SOURCE email → Box user id so we seed As-User into that user's
+        // OWN account (not the connected admin). Requires the OAuth app's as-user header + the
+        // admin (erik) + "Manage users" scope. If a user can't be resolved, that entry falls
+        // back to the connected account (still a distinct dataset).
+        if (context.sourceProvider === 'box') {
+          try {
+            const boxClient = require('../clients/boxClient');
+            const adminEmail = String(context.sourceAdminEmail || context.sourceEmail || '').toLowerCase();
+            const users = await boxClient.getUsers(adminEmail);
+            const byEmail = {};
+            for (const u of users) byEmail[String(u.login || '').toLowerCase()] = u.id;
+            for (const e of cufEntries) {
+              // Don't As-User into the CONNECTED admin account itself — Box 403s on self-
+              // impersonation for uploads. That user seeds directly with the OAuth token.
+              const email = String(e.sourceEmail || '').toLowerCase();
+              e._boxUserId = (email === adminEmail) ? null : (byEmail[email] || null);
+            }
+            const resolved = cufEntries.filter((e) => e._boxUserId).length;
+            log.info(`Content multi-user: resolved ${resolved}/${cufEntries.length} source user(s) to their Box account (As-User seeding)`);
+          } catch (err) {
+            log.warn(`Content multi-user: could not list Box users (${err.message}) — seeding falls back to the connected account`);
+          }
+        }
+        // Align Step 1's single seed to entry[0]: its folder name AND its As-User target.
+        if ((cufEntries[0].sourceFolderName || '').trim()) context.sourceFolderName = cufEntries[0].sourceFolderName.trim();
+        if (cufEntries[0]._boxUserId) context.boxTargetUserId = cufEntries[0]._boxUserId;
+        // …and its Shared Drive. Step 1 seeds entry[0]'s dataset, so it has to target entry[0]'s
+        // drive; without this every row seeded into GOOGLE_SHARED_DRIVE_NAME, which is why a run
+        // could only ever exercise one drive.
+        const entry0Drive = normalizeDriveName(cufEntries[0].sourceDriveName);
+        if (entry0Drive) context.sourceSharedDriveName = entry0Drive;
+        // …and its drive-level access mode (feature 4.10): "open" grants the everyone-group at the
+        // drive root, "restricted" grants only the named few. Absent = no drive-level seeding, which
+        // is the pre-existing behaviour.
+        if (cufEntries[0].driveAccessMode) context.driveAccessMode = cufEntries[0].driveAccessMode;
+      }
+
+      // ── Use-existing-folder mode: skip seeding, resolve each user's EXISTING folder ──────
+      // When context.useExistingSource is set, the source folder(s) already exist — resolve each
+      // named folder to its real id and migrate directly. No data creation.
+      //
+      // This resolution used to be gated to `sourceProvider === 'box'`. For a Drive or Shared Drive
+      // source the block was skipped entirely, so userFolderMappings stayed empty and the flow fell
+      // back to migrating `/` — the whole drive root — instead of the folder the user named. It did
+      // that silently: the run looked normal and the wrong source only showed up in the path CSV.
+      const useExistingProvider = String(context.sourceProvider || '').toLowerCase();
+      const useExistingIsDrive = ['googledrive', 'googleshareddrive', 'google', 'drive'].includes(useExistingProvider);
+      // Dropbox needs its own branch for the same reason Drive did: without one, ticking "Use
+      // existing source folder" fell through to the SEEDING path and did the opposite of what the
+      // checkbox says — it wiped and re-created the folder the user asked to migrate as-is.
+      if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing Dropbox folder(s)`);
+        const dropboxClient = require('../clients/dropboxClient');
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          // The wizard's "Source folder base name" arrives as sourceFolderName; a run-wide value is
+          // the fallback so a single-row run needs nothing per row.
+          const folderPath = dropboxClient.dbxPath(
+            (e.sourceFolderName || '').trim() || context.sourceFolderName || context.sourcePath
+          );
+          if (!folderPath) {
+            log.warn(`Content useExistingSource: no source folder named for ${e.sourceEmail} — skipping`);
+            continue;
+          }
+          try {
+            // A Business team token cannot read a member's Dropbox without the member context.
+            const asMemberId = await dropboxClient.resolveTeamMemberId(e.sourceEmail).catch(() => null);
+            const found = await dropboxClient.getMetadata(folderPath, { asMemberId });
+            if (!found) {
+              log.warn(`Content useExistingSource: Dropbox folder "${folderPath}" not found for ${e.sourceEmail} — skipping`);
+              continue;
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: found.path,
+              sourceRootId: found.id ? String(found.id) : null,
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "${found.path}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderPath}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        } else {
+          throw new Error(
+            'Content useExistingSource: no existing Dropbox folder could be resolved — refusing to '
+            + 'run. Migrating nothing would report as a pass against an empty destination.'
+          );
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingProvider === 'box' && cufEntries.length > 0) {
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing folder(s)`);
+        const boxClient = require('../clients/boxClient');
+        const adminEmail = context.sourceAdminEmail || context.sourceEmail;
+        const token = await boxClient.getValidToken(adminEmail);
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          const folderPath = (e.sourceFolderName || '').trim().replace(/^\/?/, '/');
+          try {
+            const found = await boxClient.resolveFolderByPath(folderPath, token, e._boxUserId || null);
+            if (!found) { log.warn(`Content useExistingSource: folder "${folderPath}" not found for ${e.sourceEmail} — skipping`); continue; }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: found.path,
+              sourceRootId: String(found.id),
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "${found.path}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderPath}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingIsDrive && cufEntries.length > 0) {
+        // Drive / Shared Drive equivalent of the Box branch above. A Shared Drive folder is resolved
+        // within its drive, so the drive id is carried too — CloudFuze needs it as the scan root.
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing Drive folder(s)`);
+        const driveClient = require('../clients/driveClient');
+        const isSharedDrive = useExistingProvider === 'googleshareddrive';
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          // Trailing slashes matter as much as leading ones: a CSV column reads "/QA_Team1/" just
+          // as often as "/QA_Team1", and the old leading-only strip left "QA_Team1/" behind, which
+          // matched nothing.
+          const folderName = normalizeDriveName(e.sourceFolderName || context.sourceFolderName);
+          if (!folderName) {
+            log.warn(`Content useExistingSource: no source folder named for ${e.sourceEmail} — skipping`);
+            continue;
+          }
+          try {
+            let driveId = null;
+            let driveName = '';
+            if (isSharedDrive) {
+              // Each row may name its own drive; GOOGLE_SHARED_DRIVE_NAME is only the fallback.
+              // Reading the env value alone meant a two-drive run resolved both rows against one
+              // drive here, so the second row's folder was looked for in the wrong place.
+              driveName = normalizeDriveName(e.sourceDriveName) || normalizeDriveName(env.GOOGLE_SHARED_DRIVE_NAME);
+              const drive = await driveClient.resolveSharedDriveByName(driveName, e.sourceEmail);
+              if (!drive) {
+                log.warn(`Content useExistingSource: Shared Drive "${driveName}" not visible to ${e.sourceEmail} — skipping`);
+                continue;
+              }
+              driveId = drive.id;
+              driveName = drive.name;
+            }
+            const hits = (await driveClient.findFoldersByName(folderName, e.sourceEmail))
+              .filter((h) => (driveId ? h.driveId === driveId : true));
+            if (hits.length === 0) {
+              log.warn(`Content useExistingSource: folder "${folderName}" not found for ${e.sourceEmail} — skipping`);
+              continue;
+            }
+            if (hits.length > 1) {
+              log.warn(`Content useExistingSource: ${hits.length} folders named "${folderName}" for ${e.sourceEmail} — using the first (${hits[0].id})`);
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: `/${folderName}`,
+              sourceRootId: String(hits[0].id),
+              sourceDriveName: driveName || null,
+              sourceDriveId: driveId || null,
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "/${folderName}" `
+              + `(id=${hits[0].id}${driveId ? `, drive="${driveName}" ${driveId}` : ''})`);
+            // Kept for single-drive compatibility; the per-row fields above are authoritative.
+            if (driveId) context.sourceDriveId = driveId;
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve "${folderName}" for ${e.sourceEmail} failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing source folder could be resolved — refusing to run. '
+            + 'Migrating with no resolved folder falls back to the drive root, which is never what was asked for.'
+          );
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      }
+
+      // Step 1: Generate test data.
+      // Skipped when: explicitly skipped on resume (skipTestData), OR no TestDataAgent registered
+      // for this combination, OR useExistingSource (migrate an existing folder, no seeding).
       let sourceData = null;
-      if (!context.skipTestData) {
+      if (!context.skipTestData && dataAgent !== null && !context.useExistingSource) {
         executionService.update(context.executionId, {
           status: 'RUNNING',
           currentAgent: dataAgent.getName(),
           progress: isOutlookSource
             ? 'OutlookTestDataAgent: listing folders, provisioning test mail data…'
-            : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
+            : isContentMode
+              ? `${dataAgent.getName()}: seeding test data in source cloud…`
+              : 'GmailTestDataAgent: creating labels, mail, drafts, calendar (if E2E)…',
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
+        // For content migrations: capture source folder path AND its cloud folder ID so the
+        // MigrationAgent can pass a real fromRootId (CloudFuze needs the folder ID, not a path string).
+        if (sourceData?.rootFolderName) {
+          context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
+          if (sourceData.rootFolderId) context.sourceRootId = String(sourceData.rootFolderId);
+          if (sourceData.sharedDriveId) context.sourceDriveId = String(sourceData.sharedDriveId);
+          log.info(`Content source captured from ${dataAgent.getName()}: path=${context.sourceTestDataPath} folderId=${context.sourceRootId || '(none)'}`);
+
+          // Multi-user: one transfer unit per per-user entry. unit 0 reuses the folder Step 1
+          // just seeded (its name was aligned to entry[0]); each additional entry gets its own
+          // seeded dataset, using the entry's folder name (or "<base> <user>" when blank).
+          // (Box As-User needs an enterprise admin token — absent here — so all folders live in
+          // the connected source account; the structure is identical to true per-user and
+          // upgrades automatically once As-User is available.)
+          if (cufEntries.length > 0) {
+            const baseName = (context.sourceFolderName || '').trim() || 'Agent Box Data';
+            context.userFolderMappings = [{
+              sourceEmail: cufEntries[0].sourceEmail,
+              destinationEmail: cufEntries[0].destinationEmail,
+              sourcePath: context.sourceTestDataPath,
+              sourceRootId: context.sourceRootId,
+              // Step 1 seeded into entry[0]'s drive (aligned above), so record what it actually
+              // used rather than the run-wide name — they differ as soon as rows name drives.
+              sourceDriveName: normalizeDriveName(cufEntries[0].sourceDriveName) || normalizeDriveName(sourceData.sharedDriveName) || null,
+              sourceDriveId: sourceData.sharedDriveId || context.sourceDriveId || null,
+              // What was actually granted at the drive root, for the feature 4.10 comparison.
+              driveAccess: sourceData.driveAccess || null,
+              destinationPath: cufEntries[0].destinationPath || context.destinationPath || '',
+            }];
+            for (let i = 1; i < cufEntries.length; i++) {
+              const entry = cufEntries[i];
+              const localPart = String(entry.sourceEmail || `user${i + 1}`).split('@')[0];
+              // Each row may name its OWN Shared Drive. Rows that name none stay on the run-wide
+              // drive, so single-drive runs are unaffected. Two rows naming different drives get
+              // one seeding pass each, which is what makes "N drives in one run" real.
+              const rowDrive = normalizeDriveName(entry.sourceDriveName) || normalizeDriveName(context.sourceSharedDriveName) || '';
+              const step1Drive = normalizeDriveName(context.sourceSharedDriveName);
+              // The "<base> <user>" suffix exists because multi-USER rows all seed into ONE account,
+              // where identically named folders would collide. Rows separated by DRIVE have no such
+              // collision — and the whole point of a multi-drive run is that each drive holds the
+              // SAME tree, so suffixing would make the two sides non-comparable. Keep the base name
+              // whenever this row targets a different drive than Step 1 did.
+              const separatedByDrive = Boolean(rowDrive) && rowDrive !== step1Drive;
+              const folderName = (entry.sourceFolderName || '').trim()
+                || (separatedByDrive ? baseName : `${baseName} ${localPart}`);
+              try {
+                const extraAgent = new TestDataAgent();
+                // Seed As-User into THIS user's own Box account (null → connected account fallback).
+                const data = await extraAgent.run({
+                  ...context,
+                  sourceFolderName: folderName,
+                  boxTargetUserId: entry._boxUserId || null,
+                  sourceSharedDriveName: rowDrive || undefined,
+                  // Each drive declares its own access mode — that difference IS the test.
+                  driveAccessMode: entry.driveAccessMode || undefined,
+                });
+                context.userFolderMappings.push({
+                  sourceEmail: entry.sourceEmail,
+                  destinationEmail: entry.destinationEmail,
+                  sourcePath: `/${data.rootFolderName}`,
+                  sourceRootId: String(data.rootFolderId),
+                  sourceDriveName: normalizeDriveName(data.sharedDriveName) || rowDrive || null,
+                  sourceDriveId: data.sharedDriveId || null,
+                  driveAccess: data.driveAccess || null,
+                  destinationPath: entry.destinationPath || context.destinationPath || '',
+                });
+                log.info(`Content multi-user: seeded for ${entry.sourceEmail} → /${data.rootFolderName} (id=${data.rootFolderId})`
+                  + `${data.sharedDriveName ? ` in Shared Drive "${data.sharedDriveName}"` : ''}`);
+              } catch (seedErr) {
+                log.warn(`Content multi-user: seeding for ${entry.sourceEmail} failed (${seedErr.message}) — skipping this user`);
+              }
+            }
+            log.info(`Content multi-user: ${context.userFolderMappings.length} transfer unit(s) prepared from ${cufEntries.length} entry(ies)`);
+          }
+        }
+      } else if (dataAgent === null) {
+        log.info('Step 1: Skipped (no TestDataAgent registered for this combination)');
+        executionService.update(context.executionId, {
+          status: 'RUNNING',
+          currentAgent: migrationAgent.getName(),
+          progress: 'No test data agent for this combination — proceeding to migration…',
+        });
       } else {
         log.info(`Step 1: Skipping ${dataAgent.getName()} (already completed)`);
       }
 
       if (executionService.isCancelled(context.executionId)) {
         throw new Error('Execution cancelled by user');
+      }
+
+      // ── Guard: a Shared Drive migrates WHOLE, so its root must hold only QA data ─────────────
+      // CloudFuze scans a Shared Drive as the drive, never as a folder inside it: the source path
+      // and fromRootId must describe the same object, and a subfolder id scans nothing (see
+      // docs/content-migration-path-mapping-findings.md). So everything in the drive root migrates,
+      // not just the folder this run seeded.
+      //
+      // That was an operational rule someone had to remember, and it has already been broken once —
+      // a leftover "ZZ Seeding Fix Check" folder was migrated because of it. Checking it here turns
+      // the rule into a visible warning on the run instead of a surprise in the report.
+      //
+      // A warning rather than a failure: extra data in the drive makes the report noisier, but the
+      // run is still valid for the folder under test, and stopping someone's run over a stray folder
+      // would be worse than telling them about it.
+      if (isContentMode && /shared_?drive/i.test(String(context.sourceProvider || ''))) {
+        try {
+          const driveClient = require('../clients/driveClient');
+          const seeded = new Set(
+            (context.userFolderMappings || [])
+              .map((u) => normalizeDriveName(u.sourcePath))
+              .filter(Boolean)
+              .map((n) => n.toLowerCase())
+          );
+          const checkedDrives = new Map();
+          for (const u of context.userFolderMappings || []) {
+            if (!u.sourceDriveId || checkedDrives.has(u.sourceDriveId)) continue;
+            checkedDrives.set(u.sourceDriveId, true);
+            const rootKids = await driveClient.listChildren(u.sourceDriveId, u.sourceEmail || context.sourceEmail);
+            const strays = rootKids.filter((k) => !seeded.has(String(k.name || '').trim().toLowerCase()));
+            const label = u.sourceDriveName || u.sourceDriveId;
+            if (strays.length === 0) {
+              log.info(`Source drive "${label}": root holds only the seeded folder — nothing extra will migrate`);
+            } else {
+              log.warn(`Source drive "${label}": ${strays.length} item(s) in the drive root are NOT part of this `
+                + `run and WILL be migrated because a Shared Drive migrates whole — `
+                + `${strays.map((k) => `"${k.name}"`).join(', ')}. `
+                + 'Remove them from the drive to keep the report clean.');
+              context.sourceDriveStrays = [
+                ...(context.sourceDriveStrays || []),
+                { drive: label, items: strays.map((k) => k.name) },
+              ];
+            }
+          }
+        } catch (guardErr) {
+          log.warn(`Source drive contents check failed (non-blocking): ${guardErr.message}`);
+        }
+      }
+
+      // ── Pre-create each row's destination folder ────────────────────────────────────────────
+      // A multi-drive run gives each source drive its own destination sub-folder so the two trees
+      // do not merge. Nothing creates those folders: CloudFuze is handed a destination path, and
+      // whether it creates a missing segment has never been established on this server. So create
+      // them here, before the migration is triggered — a folder that turns out to be unnecessary
+      // is harmless, whereas a missing one risks the job resolving to the library root and the two
+      // drives writing over each other (an earlier run reported 70 extra / 260 misplaced from
+      // exactly that kind of merge).
+      //
+      // Non-blocking on purpose: if Graph cannot reach the destination the migration itself will
+      // fail with a clearer message than anything this step could raise.
+      if (isContentMode && /sharepoint/i.test(String(context.destinationProvider || ''))) {
+        const wanted = [...new Set(
+          (context.userFolderMappings || [])
+            .map((u) => deepContentCore.inDrivePath(u.destinationPath))
+            .filter((p) => p && p !== '/')
+        )];
+        if (wanted.length > 0) {
+          try {
+            const site = await sharepointClient.getSite(
+              context.sharepointHostname || env.SHAREPOINT_HOSTNAME,
+              context.sharepointSitePath || env.SHAREPOINT_SITE_PATH,
+              context.destinationEmail
+            );
+            for (const p of wanted) {
+              const made = await sharepointClient.ensureFolderPath(site.id, p, context.destinationEmail);
+              log.info(`Content destination: "${p}" ready${made.length ? ` (created ${made.join(', ')})` : ' (already existed)'}`);
+            }
+          } catch (destErr) {
+            log.warn(`Content destination pre-create failed (non-blocking): ${destErr.message}`);
+          }
+        }
       }
 
       // Step 2: Trigger and monitor migration
@@ -286,6 +823,43 @@ class AgentOrchestrator {
         });
         log.info('Step 2: Running MigrationAgent');
         migrationResult = await migrationAgent.run(context);
+
+        // CloudFuze's own CSV path-validation rejects some content jobs with CONFLICT ("Migration
+        // not Allowed for wrong CSV paths") intermittently — the identical request, byte-for-byte,
+        // succeeds on one attempt and fails on the next with no observable difference on our side
+        // (confirmed by diffing every outbound request across four consecutive runs of the same
+        // pair: CSV payload, cloud ids, job-creation body, and all 20 job-option parameters were
+        // identical whether the run succeeded or failed). Retrying the SAME unchanged request is
+        // therefore a legitimate recovery, not a workaround for a bug in what we send — only for
+        // CONFLICT-family stop statuses, never NO_WORK_ATTACHED, which means the source genuinely
+        // had nothing to migrate and a retry would just waste CONTENT_MIGRATION_RETRY_MAX attempts
+        // restating that.
+        const retriableStopStatuses = [
+          'PROCESSED_EMPTY', 'CONFLICT', 'CONFLICTS',
+          'NOT_PROCESSED', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
+        ];
+        const maxContentRetries = Number(env.CONTENT_MIGRATION_RETRY_MAX ?? 2);
+        if (isContentMode && migrationResult?.migrationFailed
+          && retriableStopStatuses.includes(migrationResult?.finalStatus) && maxContentRetries > 0) {
+          for (let attempt = 1;
+            attempt <= maxContentRetries && migrationResult?.migrationFailed
+              && retriableStopStatuses.includes(migrationResult?.finalStatus);
+            attempt++) {
+            log.warn(`MigrationAgent: content migration stopped with status `
+              + `"${migrationResult.finalStatus}" — retrying (attempt ${attempt}/${maxContentRetries}); `
+              + `cause: ${migrationResult.failureReason || 'unknown'}`);
+            executionService.update(context.executionId, {
+              progress: `MigrationAgent: retrying after "${migrationResult.finalStatus}" `
+                + `(attempt ${attempt}/${maxContentRetries})…`,
+            });
+            await new Promise((r) => setTimeout(r, Number(env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? 10000)));
+            if (executionService.isCancelled(context.executionId)) {
+              throw new Error('Execution cancelled by user');
+            }
+            migrationAgent = new MigrationAgent();
+            migrationResult = await migrationAgent.run(context);
+          }
+        }
       } else {
         log.info('Step 2: Skipping MigrationAgent (already completed)');
         migrationResult = executionService.get(context.executionId)?.result?.migrationResult || null;
@@ -295,13 +869,39 @@ class AgentOrchestrator {
         throw new Error('Execution cancelled by user');
       }
 
-      // Step 3: Validate in Outlook
-      executionService.update(context.executionId, {
-        currentAgent: outlookAgent.getName(),
-        progress: `${outlookAgent.getName()}: comparing source vs destination…`,
-      });
-      log.info(`Step 3: Running ${outlookAgent.getName()}`);
-      const validationResult = await outlookAgent.run(context);
+      // Step 3: Validate.
+      // A content combination with a real destination validator (static supportsDeepValidation =
+      // true, e.g. BoxToSharepointValidationAgent) ALWAYS runs once the flow completes — even when
+      // CloudFuze reported NOT_PROCESSED / conflict — because the validator checks the actual
+      // destination state. This gives content the same UX as mail: a downloadable report is always
+      // produced after the run. Skip only when no deep validator is registered for the combination.
+      const isContentProviders =
+        ['box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive'].includes(context.sourceProvider) ||
+        ['box', 'sharepoint', 'onedrive', 'googledrive', 'dropbox'].includes(context.destinationProvider);
+      const ValidationAgentClass = agentsFor(context)?.ValidationAgent;
+      const hasDeepValidation = Boolean(ValidationAgentClass?.supportsDeepValidation);
+      const skipValidation = hasDeepValidation
+        ? false
+        : (migrationResult?.skipValidation || (isContentMode && isContentProviders));
+
+      let validationResult = null;
+      if (skipValidation) {
+        const reason = migrationResult?.skipValidation
+          ? `content migration stop status "${migrationResult.finalStatus}"`
+          : `content migration (${context.sourceProvider} → ${context.destinationProvider}) — no deep validation registered`;
+        log.info(`Step 3: Skipped — ${reason}`);
+        executionService.update(context.executionId, {
+          currentAgent: 'Skipped',
+          progress: `Validation skipped — ${reason}`,
+        });
+      } else {
+        executionService.update(context.executionId, {
+          currentAgent: outlookAgent.getName(),
+          progress: `${outlookAgent.getName()}: comparing source vs destination…`,
+        });
+        log.info(`Step 3: Running ${outlookAgent.getName()}`);
+        validationResult = await outlookAgent.run(context);
+      }
 
       const duration = Date.now() - startTime;
 
@@ -310,13 +910,18 @@ class AgentOrchestrator {
         status: 'COMPLETED',
         duration,
         agentResults: [
-          dataAgent.toJSON(),
+          ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          outlookAgent.toJSON(),
+          ...(skipValidation ? [] : [outlookAgent.toJSON()]),
         ],
         sourceData,
         migrationResult,
         validationSummary: validationResult,
+        contentMigrationReport: migrationResult?.contentMigrationReport || null,
+        // A migration that attached no work moved nothing. Validation still runs (its findings are
+        // the report), but the run must not read as a pass anywhere downstream.
+        migrationFailed: Boolean(migrationResult?.migrationFailed),
+        migrationFailureReason: migrationResult?.failureReason || null,
       };
 
       executionService.update(context.executionId, {
@@ -326,8 +931,19 @@ class AgentOrchestrator {
         completedAt: new Date().toISOString(),
       });
 
-      // Auto-raise Neutara bug on validation failure (fire-and-forget — never blocks the flow)
-      if (validationResult?.overallStatus === 'FAIL') {
+      // Auto-raise Neutara bug on validation failure (fire-and-forget — never blocks the flow).
+      //
+      // Suppressed when the migration attached no work: every validation finding is then just a
+      // restatement of "nothing was copied", and filing them as content defects is actively
+      // misleading. Execution ac77ad80 (22 Aug) filed 5 such tickets against a destination nothing
+      // had ever been written to. The migration failure is the bug; report it once, in the run.
+      if (migrationResult?.migrationFailed) {
+        const note = `Migration moved nothing (${migrationResult.finalStatus}) — no bug raised; `
+          + 'validation findings only restate that the destination is empty. '
+          + `Cause: ${migrationResult.failureReason || 'unknown'}`;
+        log.warn(note);
+        executionService.update(context.executionId, { knownLimitationsNote: note });
+      } else if (validationResult?.overallStatus === 'FAIL') {
         const execRecord = executionService.get(context.executionId);
         neutaraClient.createBug(execRecord).then((issue) => {
           if (issue?.knownLimitationsOnly) {
@@ -358,9 +974,9 @@ class AgentOrchestrator {
         duration,
         error: err.message,
         agentResults: [
-          dataAgent.toJSON(),
+          ...(isContentMode ? [] : [dataAgent.toJSON()]),
           migrationAgent.toJSON(),
-          outlookAgent.toJSON(),
+          ...(isContentMode ? [] : [outlookAgent.toJSON()]),
         ],
       };
 
