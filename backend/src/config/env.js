@@ -716,21 +716,27 @@ module.exports = {
   /**
    * CONTENT_VALIDATION_START_DELAY_MS — wait ONCE before validation starts, not per item.
    *
-   * CloudFuze applies item sharing after the copy, and the delay is tens of minutes: on run
+   * LEAVE THIS AT 0. It was measured and it buys nothing.
+   *
+   * The premise was that CloudFuze applies item sharing tens of minutes after the copy: on run
    * dbx-gsd-1788506117829 two items still carried only inherited grants after the per-item window
-   * had waited its full 360s each.
+   * had waited its full 360s each. A 25-minute wait was added to cover that.
    *
-   * The per-item window (CONTENT_PERMISSION_SETTLE_*) is the wrong shape for a delay that long,
-   * because it COMPOUNDS: the two items above cost six minutes each and were six minutes apart in
-   * the log. Across a 72-item tree that is unusable, and it still cannot outlast the real delay.
+   * Run fe2581f8 tested it. With the delay at 0, permission features 2.1-2.4 all PASSED, and the
+   * destination carried a DIRECT grant (ben@filefuze.co=fileOrganizer) the moment validation
+   * started. The wait cost 30 minutes per run and changed no verdict — runs went from 53 minutes
+   * to 23 without it.
    *
-   * This waits once, for the whole run, before the first item is read — so a 25-minute delay costs
-   * 25 minutes total rather than 25 minutes per affected item, and every item is then checked with
-   * sharing already applied.
+   * The original observation is explainable without a delay. A Google Shared Drive propagates
+   * folder permissions by INHERITANCE: /01-Root-Folder-Permissions carries a direct grant while
+   * Sub-Level-1 under it shows the same grant as inherited. The validator was waiting for a direct
+   * grant on the child that is never coming, and logging it as "sharing not applied yet". No amount
+   * of waiting fixes a wrong expectation, which is why 25 minutes appeared to be needed and was
+   * not.
    *
-   * Default 0 (no wait), so nothing changes for a run that does not ask for it. Set it when the run
-   * needs real permission verdicts rather than "not judgeable yet"; leave it at 0 for a fast smoke
-   * run that only cares about structure.
+   * Kept as a knob rather than deleted, because a different destination cloud may genuinely apply
+   * sharing late. If you find yourself setting it, first check whether the grant you are waiting
+   * for is one the destination only ever inherits.
    */
   CONTENT_VALIDATION_START_DELAY_MS: (() => {
     const n = parseInt(process.env.CONTENT_VALIDATION_START_DELAY_MS ?? '', 10);
