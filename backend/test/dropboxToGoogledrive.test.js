@@ -11,6 +11,7 @@ const assert = require('assert');
 const dropboxClient = require('../src/clients/dropboxClient');
 const tolerance = require('../src/utils/contentTolerance');
 const destinations = require('../src/validation/destinations');
+const core = require('../src/validation/shared/deepContentCore');
 const roleMaps = require('../src/validation/roleMaps');
 const registry = require('../src/orchestrator/agentRegistry');
 const ValidationAgent = require('../src/validation/combinations/content/dropboxToGoogledrive');
@@ -347,6 +348,37 @@ function testEmptyRunNeverPasses() {
 }
 
 /** The seeding agent must refuse to seed at the account root. */
+/**
+ * Feature 5.1 asks whether a CHARACTER was replaced, so it must compare against the name the item
+ * is supposed to carry — which for a converted file has a different extension by design.
+ *
+ * Run e6bdd529 failed 5.1 on "qa-paper-full (1).paper" → "qa-paper-full (1).html". Not one
+ * character was replaced; that is the documented .paper → .html conversion. The parentheses are
+ * only what made the name risky enough to be examined, so the bug needed a converted file whose
+ * name ALSO carried a special character — which first existed when Paper was seeded.
+ */
+function testSpecialCharsSurviveConversion() {
+  // The exact pair from the run: the extension converts, every special character survives.
+  const src = 'qa-paper-full (1).paper';
+  const expected = core.convertName(src, undefined);
+  assert.strictEqual(expected, 'qa-paper-full (1).html', '.paper converts to .html');
+  assert.strictEqual(core.normKey(expected), core.normKey('qa-paper-full (1).html'),
+    'so the destination name matches what was expected and 5.1 must not flag it');
+  assert.notStrictEqual(core.normKey(src), core.normKey('qa-paper-full (1).html'),
+    'comparing against the SOURCE name is what produced the false failure');
+
+  // A genuine character replacement must still be caught after the change.
+  const nasty = 'weird#name.paper';
+  assert.strictEqual(core.convertName(nasty, undefined), 'weird#name.html');
+  assert.notStrictEqual(core.normKey(core.convertName(nasty, undefined)),
+    core.normKey('weird_name.html'), 'a replaced # is still a difference');
+
+  // A pass-through file is unaffected: no conversion, so the expected name is the source name.
+  assert.strictEqual(core.convertName('a(b)c.txt', undefined), 'a(b)c.txt',
+    'nothing converts .txt, so 5.1 compares the name as-is');
+  console.log('  5.1 compares against the converted name, not the source name: ok');
+}
+
 function testSeedingRefusesAccountRoot() {
   const agent = new DropboxTestDataAgent();
   assert.strictEqual(agent.getName(), 'DropboxTestDataAgent',
@@ -374,5 +406,6 @@ testRegistration();
 testFeatureChecklistCoverage();
 testEmptyRunNeverPasses();
 testSeedingRefusesAccountRoot();
+testSpecialCharsSurviveConversion();
 
 console.log('dropboxToGoogledrive.test.js: ok');

@@ -948,7 +948,28 @@ class AgentOrchestrator {
         // each of them, six minutes apart in the log. Per-item waiting compounds and still loses.
         //
         // Default 0, so a run that does not set it behaves exactly as before.
-        if (isContentMode && env.CONTENT_VALIDATION_START_DELAY_MS > 0) {
+        //
+        // Waited only when there is actually something settling. Two cases where there is not:
+        //
+        //  - a RESUME (skipMigration): the copy finished in an EARLIER run, so the gap has already
+        //    elapsed and the wait would re-read the same settled state 25 minutes later.
+        //
+        //  - a migration that MOVED NOTHING. A deep validator runs even after a CloudFuze stop
+        //    status, on purpose, so that a report is still produced — but then the wait has nothing
+        //    to wait for. Observed on job 6a9e71ecb17d0e315c811b2f: CONFLICT, "Migration not Allowed
+        //    for wrong CSV paths", totalFilesAndFolders=0, and the run still sat for 25 minutes
+        //    before validating an empty destination. The wait covers a copy-then-share gap; with no
+        //    copy there is no gap.
+        const movedNothing = Boolean(migrationResult?.skipValidation)
+          || (migrationResult?.contentMigrationReport
+            && Number(migrationResult.contentMigrationReport.totalCount) === 0);
+        if (movedNothing) {
+          log.info('Step 3: not waiting before validation — the migration moved nothing '
+            + `(status "${migrationResult?.finalStatus || 'unknown'}"), so there is no sharing to `
+            + 'settle. Validating the destination as it stands.');
+        }
+        if (isContentMode && !context.skipMigration && !movedNothing
+          && env.CONTENT_VALIDATION_START_DELAY_MS > 0) {
           const mins = (env.CONTENT_VALIDATION_START_DELAY_MS / 60000).toFixed(1);
           log.info(`Step 3: waiting ${mins} min before validating — CloudFuze applies item sharing `
             + 'after the copy, so reading now would report grants as missing that are simply not '

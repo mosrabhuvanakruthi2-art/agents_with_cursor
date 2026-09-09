@@ -65,9 +65,12 @@ const DOC_HTML = [
   '<h1>Quarter notes</h1>',
   '<table><tr><td>Item</td><td>Owner</td></tr><tr><td>One</td><td>Ben</td></tr>',
   '<tr><td>Two</td><td>Ada</td></tr></table>',
-  '<ul><li>alpha</li><li>beta</li><li>gamma</li></ul>',
-  '<ol><li>first</li><li>second</li></ol>',
-  '<ul><li>shipped</li><li>pending</li></ul>',
+  // Google emits one <ul>/<ol> per ITEM, all as siblings at depth 0. Read off the real export
+  // of /11-Paper/qa-paper-full.html; a hand-written single list with three <li> children is NOT
+  // what Google produces, and a fixture in that shape made block-counting look correct.
+  '<ul><li>alpha</li></ul><ul><li>beta</li></ul><ul><li>gamma</li></ul>',
+  '<ol><li>first</li></ol><ol><li>second</li></ol>',
+  '<ul><li>shipped</li></ul><ul><li>pending</li></ul>',
   '<img src="https://example.invalid/d.png">',
   '<a href="https://example.invalid/spec">the spec</a>',
   '<p>Totals 2 + 3 = 5 on page #4, and we shipped it &#128233;&#127881;</p>',
@@ -87,11 +90,11 @@ function testCountersAgreeOnEquivalentDocuments() {
 
   // Concrete values, so a change that breaks both counters identically still fails.
   assert.strictEqual(src.tables, 1, 'one table, not one per row');
-  // Two unordered BLOCKS — the bulleted list and the checklist — not one per item. The checklist
-  // is counted here on purpose: Google renders it as an ordinary <ul>, so excluding it on the
-  // source side would leave the destination permanently higher on any document holding both.
-  assert.strictEqual(src.bulleted, 2, 'two unordered blocks, not one per item');
-  assert.strictEqual(src.numbered, 1, 'one numbered BLOCK');
+  // Five unordered ITEMS: alpha/beta/gamma plus the two checklist items. Items, not blocks,
+  // because Google emits one list element per item — so a block count on the source side would
+  // be compared against an item count on the destination side.
+  assert.strictEqual(src.bulleted, 5, 'five unordered items');
+  assert.strictEqual(src.numbered, 2, 'two numbered items');
   assert.strictEqual(src.images, 1, 'one image');
   assert.strictEqual(src.links, 1, 'one link — the image must not be counted as one');
   console.log('  counters agree on equivalent documents: ok');
@@ -101,15 +104,20 @@ function testCountersAgreeOnEquivalentDocuments() {
  * Checklist items are counted separately for 10.11, while still counting as unordered blocks.
  *
  * Both are needed and they are not in conflict: `todo` answers "was the feature exercised at the
- * source", and `bulleted` has to include checklist blocks because the destination cannot tell them
+ * source", and `bulleted` has to include checklist items because the destination cannot tell them
  * from ordinary lists. Excluding them there was a live bug — the destination read permanently
  * higher on any document with both.
+ *
+ * Note what the REAL Dropbox export does, measured on the seeded docs: it drops checkbox syntax
+ * entirely, so `todo` came back 0 and the checklist items did not appear as bullets either. This
+ * test therefore exercises the PARSER against markdown Dropbox may not emit — deliberately, so
+ * the counting stays correct if a checklist ever does survive the export.
  */
 function testChecklistIsNotABullet() {
   const s = paperMarkdownStructure('- plain\n\n- [x] done\n- [ ] todo');
   assert.strictEqual(s.todo, 2, 'both checklist ITEMS counted, for 10.11');
-  assert.strictEqual(s.bulleted, 2,
-    'two unordered BLOCKS — the checklist counts as one, matching how Google exports it');
+  assert.strictEqual(s.bulleted, 3,
+    'three unordered ITEMS — the checklist items count as bullets too, as the destination sees them');
 
   // The destination side cannot see a checkbox at all, and must say so with null rather than 0.
   // Zero would read as "none arrived" and fail the feature against a document that has them.
@@ -341,6 +349,74 @@ function testPaperStatesAreDistinguished() {
   console.log('  none / unpaired / paired Paper states read differently: ok');
 }
 
+/**
+ * A Paper doc that produced an EMPTY destination document is ONE failure, not five.
+ *
+ * Measured on run 93b0636a. Three docs at the source; two converted perfectly, one arrived with
+ * nothing in it (the destination export was 500 bytes and zero characters of text, against
+ * 370 KB and 32 KB for the other two):
+ *
+ *   qa-paper-v2        tables 1 bulleted 3 numbered 2 images 0 links 1 emojis 2  -> identical
+ *   qa-paper-full (1)  tables 3 bulleted 3 numbered 3 images 1 links 3 emojis 3  -> identical
+ *   qa-paper-full      tables 3 bulleted 3 numbered 3 images 1 links 3 emojis 3  -> ALL ZERO
+ *
+ * Summed across all three, the empty one subtracted from every counter at once and failed 10.7,
+ * 10.9, 10.12, 10.13 and 10.16. The report then showed five content-fidelity defects and never
+ * mentioned the empty document that caused them — the reader is sent to look for five bugs that
+ * do not exist, and the one that does is invisible.
+ *
+ * So the empty doc fails 10.1 by name and leaves the construct sums, which then report on the
+ * documents that actually converted.
+ */
+function testEmptyDestinationIsOneFailure() {
+  const K = ['tables', 'bulleted', 'numbered', 'images', 'links', 'emojis'];
+  const item = (path, source, dest) => ({ path, content: { compared: true, source, dest } });
+  const zero = { tables: 0, bulleted: 0, numbered: 0, images: 0, links: 0, emojis: 0 };
+  const full = { tables: 3, bulleted: 3, numbered: 3, images: 1, links: 3, emojis: 3 };
+  const v2 = { tables: 1, bulleted: 3, numbered: 2, images: 0, links: 1, emojis: 2 };
+
+  // The predicate the validator uses.
+  const emptyAtDest = (x) => Boolean(x.content) && x.content.compared === true
+    && K.some((k) => Number(x.content.source?.[k] || 0) > 0)
+    && K.every((k) => Number(x.content.dest?.[k] || 0) === 0);
+
+  const items = [
+    item('/11-Paper/qa-paper-v2.paper', v2, { ...v2, todo: null }),
+    item('/11-Paper/qa-paper-full (1).paper', full, { ...full, todo: null }),
+    item('/11-Paper/qa-paper-full.paper', full, { ...zero, todo: null }),
+  ];
+
+  const emptied = items.filter(emptyAtDest);
+  assert.strictEqual(emptied.length, 1, 'exactly one document arrived empty');
+  assert.strictEqual(emptied[0].path, '/11-Paper/qa-paper-full.paper');
+
+  const comparable = items.filter((x) => x.content.compared && !emptyAtDest(x));
+  assert.strictEqual(comparable.length, 2, 'the two converted documents remain comparable');
+
+  // Every construct now balances across the documents that converted — the real numbers.
+  const sum = (side, k) => comparable.reduce((n, x) => n + (x.content[side][k] || 0), 0);
+  const expected = { links: 4, tables: 4, bulleted: 6, numbered: 5, emojis: 5, images: 1 };
+  for (const [k, want] of Object.entries(expected)) {
+    assert.strictEqual(sum('source', k), want, `${k}: source sums to ${want} over 2 documents`);
+    assert.strictEqual(sum('dest', k), want,
+      `${k}: destination matches, so the feature passes instead of failing on the empty doc`);
+  }
+
+  // A doc that is empty on BOTH sides is not a loss — it must not be swept up as "empty".
+  assert.strictEqual(emptyAtDest(item('/x.paper', { ...zero }, { ...zero })), false,
+    'empty source and empty destination is nothing migrated wrongly, so no 10.1 failure');
+
+  // Partial loss stays a construct-level finding: it is comparable, not excluded.
+  const partial = item('/y.paper', full, { ...full, emojis: 0, todo: null });
+  assert.strictEqual(emptyAtDest(partial), false,
+    'losing ONE construct is a fidelity defect, not an empty document');
+
+  // A failed export is a different state again and must not read as empty.
+  const notCompared = { path: '/z.paper', content: { compared: false, reason: 'export failed' } };
+  assert.strictEqual(emptyAtDest(notCompared), false,
+    'an export that failed is reported as not assessed, never as an empty destination');
+  console.log('  an empty destination document is one 10.1 failure, not five: ok');
+}
 testPaperPairsAsHtml();
 testPaperStatesAreDistinguished();
 testCountersAgreeOnEquivalentDocuments();
@@ -352,4 +428,5 @@ testLossFailsAndExcessWarns();
 testFailedExportIsNotADefect();
 testImageOriginIsNotGuessed();
 testDisputedFeaturesAreNotRuledOn();
+testEmptyDestinationIsOneFailure();
 console.log('paperContentFidelity.test.js: ok');

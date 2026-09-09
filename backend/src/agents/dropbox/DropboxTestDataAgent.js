@@ -194,6 +194,23 @@ class DropboxTestDataAgent extends BaseAgent {
       );
     }
 
+    // Row 15: Paper — FIRST, deliberately, though it is the last row in the scope document.
+    //
+    // Paper was seeded last and CloudFuze started copying 23 seconds later. On run 93b0636a the
+    // freshly created /11-Paper/qa-paper-full.paper arrived at the destination as a 500-byte Google
+    // Doc holding no text, while the two Paper docs that already existed converted perfectly. Our
+    // own export round-trip right after creation returned all 3 tables, so DROPBOX had the content
+    // — whatever CloudFuze read 23 seconds later did not.
+    //
+    // Seeding it first puts the rest of the seeding (~4 minutes: permissions, formats, links,
+    // timestamps, long paths, versions) between creation and the copy, instead of 23 seconds. That
+    // is a mitigation for a propagation delay we have not proved the mechanism of, not a fix for a
+    // known bug — so if an empty Paper doc appears again, the delay theory is wrong and the next
+    // suspect is CloudFuze caching its namespace scan.
+    //
+    // Order is otherwise irrelevant here: every step writes to its own subtree of `root`.
+    await this._seedPaper(root, opts, log, report);
+
     // Row 1–4, 6: the permission ladder — root folder, root file, sub-folders, inner files.
     await this._seedPermissionLadder(root, opts, grantees, log, report);
 
@@ -224,9 +241,7 @@ class DropboxTestDataAgent extends BaseAgent {
     // Row 13–14: version history.
     await this._seedVersions(root, opts, log, report);
 
-    // Row 15: Paper — seeded via files/paper/create. The old paper/docs/* API is retired, but that
-    // is not the same as Paper being unseedable, which is what this step used to claim.
-    await this._seedPaper(root, opts, log, report);
+    // Row 15 (Paper) is seeded FIRST — see the note at the top of this sequence.
 
     // Row 16: the user-mapping CSV is a MIGRATION input, not source data — noted, not created here.
     report.notSeeded.push({
@@ -334,9 +349,10 @@ class DropboxTestDataAgent extends BaseAgent {
    *
    * Deleting the root wholesale is still the fast path and is used whenever nothing needs keeping.
    * When DROPBOX_PRESERVE_ON_WIPE names something, the children are removed one by one instead and
-   * those names are skipped — which is what lets a hand-authored Dropbox Paper doc live inside the
-   * migration source and survive re-seeding. Paper cannot be seeded by API at all (Dropbox retired
-   * the authoring endpoints), so a doc that has to be re-created on every run would not get created.
+   * those names are skipped — which is what lets a Dropbox Paper doc live inside the migration
+   * source and survive re-seeding. Paper IS seeded by API now (`files/paper/create`, see
+   * _seedPaper), so preservation is no longer the only way a Paper doc can exist. It stays because a
+   * hand-authored doc carries structure the generated one does not, and keeping it costs nothing.
    */
   async _wipeRoot(root, opts, log, report) {
     const preserve = (env.DROPBOX_PRESERVE_ON_WIPE || []).map((s) => s.toLowerCase());
@@ -370,13 +386,13 @@ class DropboxTestDataAgent extends BaseAgent {
         }
       }
       log.info(`Cleared ${removed} item(s) under ${root}`
-        + (kept.length ? `; kept ${kept.join(', ')} (hand-authored, not seedable by API)` : ''));
+        + (kept.length ? `; kept ${kept.join(', ')} (preserved by DROPBOX_PRESERVE_ON_WIPE)` : ''));
       if (kept.length === 0 && preserve.length > 0) {
         report.notSeeded.push({
           feature: `preserved folder(s) ${preserve.join(', ')} (Dropbox Paper — 19 features)`,
           reason: `DROPBOX_PRESERVE_ON_WIPE names ${preserve.join(', ')}, but no such folder exists `
-            + `under ${root}. Paper cannot be seeded by API, so those features stay unexercised `
-            + 'until a Paper document is authored by hand in that folder.',
+            + `under ${root}. The API-seeded Paper doc (_seedPaper) still covers these features; `
+            + 'a hand-authored doc there would add structure the generated one does not.',
           manualSteps: [],
         });
       }
@@ -460,13 +476,18 @@ class DropboxTestDataAgent extends BaseAgent {
               + '(sharing/add_file_member → access_error/no_permission), while viewer on the same '
               + 'file and editor on a folder both succeed. A source-account limit, not a migration '
               + 'defect — the editing half of this position cannot be exercised here.'
-            : 'Dropbox returned cant_share_outside_team for this grant. NOTE: this is NOT the team-wide '
-              + 'admin toggle — that was checked on 03-Sep-2026 and external sharing is fully enabled '
-              + '("External sharing: Email and link"), and the shared folder itself reports member_policy '
-              + '"anyone". The likely cause is the INVITEE: DROPBOX_TEST_EXTERNAL_USER is an address in '
-              + 'another managed Dropbox team (cloudfuze.com), and a team-to-team invite can be refused by '
-              + 'either team policy — including one we do not administer. Try an address attached to no '
-              + 'Dropbox team at all before concluding scope 2.5 is untestable.',
+            : 'Dropbox returned cant_share_outside_team for this grant, and the two obvious causes '
+              + 'are both ruled out. It is NOT the team-wide admin toggle — checked 03-Sep-2026, '
+              + 'external sharing is fully enabled ("External sharing: Email and link") — and the '
+              + 'shared folder itself reports member_policy "anyone". It is also NOT the invitee '
+              + 'belonging to another managed Dropbox team, which was the standing theory while '
+              + 'DROPBOX_TEST_EXTERNAL_USER pointed at a cloudfuze.com address: run 65439ee5 used a '
+              + 'plain Gmail address and Dropbox refused it identically, on a folder, at both viewer '
+              + 'and editor. So scope 2.5 is currently untestable for a reason we have not yet '
+              + 'identified. Untried next steps, cheapest first: a Gmail address WITHOUT a "+" alias '
+              + '(Dropbox may reject sub-addressing on an invite), an address that already has its '
+              + 'own personal Dropbox account, and the admin console\'s per-member sharing '
+              + 'permissions rather than the team-wide toggle.',
           manualSteps: [],
         });
         logger.warn(`[dropbox-seed] ${label} unavailable on this account — reported as not seeded`);
@@ -1087,17 +1108,47 @@ class DropboxTestDataAgent extends BaseAgent {
   async _seedPaper(root, opts, log, report) {
     const dir = `${root}/11-Paper`;
     await this._mk(dir, opts, report);
-    const path = `${dir}/qa-paper-full.paper`;
 
-    // Remove any previous copy FIRST. files/paper/create does not overwrite — it autorenames on
-    // collision, so a second run produced "qa-paper-full (1).paper", a third would produce "(2)",
-    // and the source would accumulate one Paper document per run under names nothing can predict.
-    // Observed on run e6bdd529, whose seeded document arrived as "qa-paper-full (1).paper".
+    // The document is created at a path that has NEVER held a file, and the previous run's copies
+    // are removed separately. Both halves matter, and the reason is measured:
     //
-    // Deleting the exact target keeps the name stable across runs, which is what makes two reports
-    // comparable — and it is scoped to this one file, never the folder, so a doc a human added
-    // beside it is untouched.
-    await dropboxClient.deletePath(path, opts).catch(() => { /* absent on the first run */ });
+    //   created at a brand-new path      (e6bdd529, "qa-paper-full (1).paper")  -> full content
+    //   left untouched, already existed  (93b0636a and 65439ee5, two docs each) -> full content
+    //   DELETED and recreated at the SAME path (93b0636a, 65439ee5)             -> EMPTY at dest
+    //
+    // The empty case was a 500-byte Google Doc holding no text, while the source held 3 tables,
+    // 3 lists, 1 image, 3 links and 3 emojis — and our own export a second after creation returned
+    // all of it, so Dropbox had the content and whatever CloudFuze read did not. Seeding Paper
+    // first, ~4 minutes before the copy instead of 23 seconds, made no difference: it is not a
+    // propagation delay, it is the reused path.
+    //
+    // This previously deleted the exact target to keep the filename stable across runs, on the
+    // grounds that a stable name makes two reports comparable. That is true and it is the lesser
+    // concern: a stable name whose content silently fails to migrate is worse than a name that
+    // moves. The content counts are what the 10.x features compare, and those pair by path.
+    //
+    // Reported to CloudFuze as silent content loss, since a customer who deletes and recreates a
+    // Paper doc before migrating hits it with no error and a correct-looking filename.
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const path = `${dir}/qa-paper-full-${stamp}.paper`;
+
+    // Clear OUR OWN artifacts from previous runs — matched by the seeded prefix, so a Paper doc a
+    // human authored beside them under any other name is left alone. Done here rather than in
+    // _wipeRoot because DROPBOX_PRESERVE_ON_WIPE deliberately spares this whole folder.
+    try {
+      const existing = await dropboxClient.listFolder(dir, opts).catch(() => []);
+      const ours = (existing || []).filter((x) => /^qa-paper-.*\.papert?$/i.test(String(x.name || '')));
+      for (const doc of ours) {
+        await dropboxClient.deletePath(doc.path || `${dir}/${doc.name}`, opts)
+          .catch((delErr) => log.warn(`Could not remove old Paper doc ${doc.name}: ${delErr.message}`));
+      }
+      if (ours.length) {
+        log.info(`Cleared ${ours.length} Paper doc(s) seeded by earlier runs: `
+          + ours.map((x) => x.name).join(', '));
+      }
+    } catch (clearErr) {
+      log.warn(`Could not clear previous Paper docs (continuing): ${clearErr.message}`);
+    }
 
     try {
       const made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(), opts);
@@ -1105,8 +1156,9 @@ class DropboxTestDataAgent extends BaseAgent {
         // Dropbox still renamed it, so the delete did not take effect — say so rather than let the
         // report compare a document under a name it did not expect.
         log.warn(`Paper document was created as "${made.path}" instead of "${path}" — Dropbox `
-          + 'autorenamed it, so a previous copy still exists. The source now holds more than one '
-          + 'Paper document and the 10.x counts aggregate across all of them.');
+          + 'autorenamed it, which should be impossible now the name carries a per-run timestamp. '
+          + 'It means a file already existed at that exact path, so the clock or the clear step is '
+          + 'wrong; the 10.x counts will aggregate across every Paper doc in the folder.');
       }
       report.created.files += 1;
       log.info(`Seeded Dropbox Paper document at ${made.path} (revision ${made.revision})`);

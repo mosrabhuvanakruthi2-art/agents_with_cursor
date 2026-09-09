@@ -77,17 +77,28 @@ function paperMarkdownStructure(md) {
     // seeding a doc and reading the raw export bytes. The test fixture used the hand-written
     // form, so it agreed with the bug rather than catching it.
     tables: lines.filter((l) => /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(l)).length,
-    // Bulleted and numbered are counted as BLOCKS, not items — one per run of consecutive list
-    // lines — because Google's HTML export emits one <ul>/<ol> per block however many items it
-    // holds. Counting items here would compare 3 against 1 for a three-item list and fail the
-    // feature on a perfectly migrated document.
-    // Checklist blocks are counted here too, not excluded. Google's HTML export renders a Paper
-    // checklist as an ordinary <ul>, so excluding them on the source side left the destination
-    // count permanently higher on any document holding both a bulleted list and a checklist — a
-    // guaranteed false result rather than a measurement. A checklist IS an unordered list, and
-    // `todo` below still counts its items separately for feature 10.11.
-    bulleted: countBlocks(lines, (l) => /^\s*[-*+]\s+/.test(l)),
-    numbered: countBlocks(lines, (l) => /^\s*\d+[.)]\s+/.test(l)),
+    // Bulleted and numbered are counted as ITEMS, not blocks.
+    //
+    // This was block-counting, on the stated premise that "Google's HTML export emits one
+    // <ul>/<ol> per block however many items it holds". That premise is false. Read off the real
+    // export of /11-Paper/qa-paper-full.html, Google emits one list element per ITEM:
+    //
+    //   <ul> 1 item: ["alpha"]     <ol> 1 item: ["first"]
+    //   <ul> 1 item: ["beta"]      <ol> 1 item: ["second"]
+    //   <ul> 1 item: ["gamma"]     <ol> 1 item: ["third"]
+    //
+    // all six at nesting depth 0 — siblings, not nested. So block-counting compared 1 source
+    // block against 3 destination lists and run e6bdd529 warned "3 in the source but 9 at the
+    // destination" on three perfectly migrated lists. Counting items compares 3 against 3.
+    //
+    // Item counting also survives either exporter behaviour: if Google ever does emit one list
+    // per block, the <li> count is unchanged, whereas block counting breaks on both shapes.
+    //
+    // Checklist lines are counted here too, not excluded, so a checklist rendered as an ordinary
+    // list at the destination does not read as excess. `todo` below counts its items separately
+    // for feature 10.11.
+    bulleted: lines.filter((l) => /^\s*[-*+]\s+/.test(l)).length,
+    numbered: lines.filter((l) => /^\s*\d+[.)]\s+/.test(l)).length,
     todo: lines.filter((l) => /^\s*[-*+]\s+\[[ xX]\]/.test(l)).length,
     // Images first: an image is a link with a leading !, so links must exclude them.
     images: count(/!\[[^\]]*\]\([^)]*\)/g),
@@ -96,44 +107,52 @@ function paperMarkdownStructure(md) {
   };
 }
 
+/**
+ * <li> items inside the given list type, across every such list in the document.
+ *
+ * Google emits one <ul>/<ol> per item rather than one per list, so the element count is not a
+ * block count and must not be compared against one. Items are the stable unit.
+ *
+ * Nested lists are counted by whichever type directly encloses each item, which is what a reader
+ * comparing against the source markdown expects.
+ */
+const listBlock = (tag) => new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`, 'gi');
+
+function listItems(html, tag) {
+  const blocks = String(html || '').match(listBlock(tag)) || [];
+  let n = 0;
+  for (const b of blocks) {
+    // Strip any nested list of the OTHER type first, so its items are not attributed here.
+    const own = b.replace(listBlock(tag === 'ul' ? 'ol' : 'ul'), '');
+    n += (own.match(/<li\b/gi) || []).length;
+  }
+  return n;
+}
+
 /** The same counts from Google's HTML export of the converted Doc. */
 function googleDocStructure(html) {
   const text = String(html || '');
   const count = (re) => (text.match(re) || []).length;
+  const split = splitImages(text);
 
   return {
     tables: count(/<table[\s>]/gi),
     // <ul>/<ol> blocks, not <li> items: Paper's markdown export emits one line per item while
     // Google nests them, so item counts do not correspond. Block counts do.
-    bulleted: count(/<ul[\s>]/gi),
-    numbered: count(/<ol[\s>]/gi),
+    // <li> items, attributed to the list type that encloses them — see the note on the source
+    // side: Google emits one <ul>/<ol> per item, so counting list ELEMENTS counts items in
+    // disguise and only agrees with a source block count by accident.
+    bulleted: listItems(text, 'ul'),
+    numbered: listItems(text, 'ol'),
     // Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot be
     // recognised here. Reported as null — NOT zero, which would read as "none arrived".
     todo: null,
-    images: count(/<img[\s>]/gi),
+    // Rasterised emoji are excluded here and added to the emoji count instead,
+    // because Google exports every emoji as an <img>. See isEmojiImage.
+    images: split.images,
     links: count(/<a\s[^>]*href=/gi),
-    emojis: countEmoji(stripTags(text)),
+    emojis: countEmoji(stripTags(text)) + split.emojiImages,
   };
-}
-
-/**
- * Runs of consecutive matching lines, counted once each.
- *
- * A blank line or any non-matching line ends the run, which is how markdown delimits one list from
- * the next.
- */
-function countBlocks(lines, matches) {
-  let blocks = 0;
-  let inBlock = false;
-  for (const line of lines) {
-    if (matches(line)) {
-      if (!inBlock) blocks += 1;
-      inBlock = true;
-    } else if (String(line).trim() !== '' || inBlock) {
-      inBlock = false;
-    }
-  }
-  return blocks;
 }
 
 /** Drop tags and decode the few entities Google's exporter emits, so text-level counts are fair. */
@@ -171,6 +190,64 @@ const EMOJI_SEQUENCE = new RegExp(`${EMOJI_CORE}(?:\\u{200D}${EMOJI_CORE})*`, 'g
 
 function countEmoji(s) {
   return (String(s || '').match(EMOJI_SEQUENCE) || []).length;
+}
+
+/**
+ * Emoji that Google's exporter turned into images.
+ *
+ * Google Docs does not export an emoji as a text character. It rasterises each one to a 64x64 PNG
+ * and emits an <img> whose alt is the emoji's CLDR NAME IN WORDS. Measured on the real export of
+ * /11-Paper/qa-paper-full.html from run e6bdd529:
+ *
+ *   <img alt="party popper" src="data:image/png;base64,…">   64x64 png
+ *   <img alt="rocket"       src="data:image/png;base64,…">   64x64 png
+ *   <img alt="thumbs up"    src="data:image/png;base64,…">   64x64 png
+ *   <img alt=""             src="data:image/jpeg;base64,…">  the one genuinely inserted image
+ *
+ * That is why counting emoji from stripTags() at the destination returns 0 however well the
+ * migration ran: the characters are not in the text any more. Run e6bdd529 reported "8 in the
+ * source but only 0 at the destination — 8 lost in the conversion" and FAILED feature 10.16, while
+ * the same eight emoji simultaneously inflated the image count from 2 to 10 and pushed 10.3/10.4/
+ * 10.5 into WARN. One exporter behaviour, two wrong verdicts.
+ *
+ * Three signals identify these images. All three held on every emoji and none held on the real
+ * image, so all three are REQUIRED rather than any one of them:
+ *   - the src is a base64 data URI of a PNG,
+ *   - the PNG's IHDR declares a small square (Google uses exactly 64x64; the cap leaves room for a
+ *     future glyph size without matching a photograph),
+ *   - the alt is non-empty, because a rasterised emoji always carries its name.
+ *
+ * An <img> failing any one of them is counted as an ordinary image.
+ */
+const EMOJI_IMG_MAX_EDGE = 128;
+const IMG_TAG = new RegExp('<img[^>]*>', 'gi');
+const ALT_ATTR = new RegExp('alt="([^"]*)"', 'i');
+const PNG_DATA_URI = new RegExp('src="data:image/png;base64,([^"]+)"', 'i');
+
+function isEmojiImage(tag) {
+  const alt = (tag.match(ALT_ATTR) || [, ''])[1];
+  if (!alt.trim()) return false;
+  const src = tag.match(PNG_DATA_URI);
+  if (!src) return false;
+  // The IHDR sits in the first 24 bytes, so a short prefix is enough to read the dimensions.
+  let head;
+  try {
+    head = Buffer.from(src[1].slice(0, 120), 'base64');
+  } catch {
+    return false;
+  }
+  if (head.length < 24 || head.slice(1, 4).toString('latin1') !== 'PNG') return false;
+  const w = head.readUInt32BE(16);
+  const h = head.readUInt32BE(20);
+  return w === h && w > 0 && w <= EMOJI_IMG_MAX_EDGE;
+}
+
+/** The <img> tags of a Google HTML export, split into rasterised emoji and real images. */
+function splitImages(html) {
+  const tags = String(html || '').match(IMG_TAG) || [];
+  let emojiImages = 0;
+  for (const t of tags) if (isEmojiImage(t)) emojiImages += 1;
+  return { emojiImages, images: tags.length - emojiImages };
 }
 
 const DEFAULT_COMBINATION = 'dropbox_to_googledrive';
@@ -1069,13 +1146,32 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         push('FAIL', `${id} ${label}`, `${bad.length} of ${obs.length} link(s) differ`);
       }
     };
-    const isAnyoneLink = (o) => String(o.sourceAudience || '').toLowerCase() === 'public';
-    linkFeature('3.1', 'Shared Links (Anyone with the Link)',
-      totals.linkObservations.filter(isAnyoneLink),
+    // Each feature claims only the audience it is ABOUT. 3.2 used to take "everything that is not
+    // public", which quietly swept up audiences that are neither: Dropbox also reports 'no_one'
+    // (invite-only) and password-protected links. Copying a link in the Dropbox UI creates one with
+    // audience 'no_one', so an invite-only link appears on the source without being seeded — and it
+    // was then judged as a team link, expected to arrive as an organization link, and failed. A
+    // FAIL attributed to the wrong feature is worse than no verdict, so those are reported apart.
+    const audienceOf = (o) => String(o.sourceAudience || '').toLowerCase();
+    const anyoneLinks = totals.linkObservations.filter((o) => audienceOf(o) === 'public');
+    const teamLinks = totals.linkObservations.filter((o) => audienceOf(o) === 'team_only');
+    const otherLinks = totals.linkObservations
+      .filter((o) => !['public', 'team_only'].includes(audienceOf(o)));
+
+    linkFeature('3.1', 'Shared Links (Anyone with the Link)', anyoneLinks,
       'No source link had an "anyone with the link" audience, so this was not exercised');
-    linkFeature('3.2', 'Shared Links (Team Members)',
-      totals.linkObservations.filter((o) => !isAnyoneLink(o)),
+    linkFeature('3.2', 'Shared Links (Team Members)', teamLinks,
       'No source link had a team-only audience, so this was not exercised');
+
+    if (otherLinks.length > 0) {
+      const seen = [...new Set(otherLinks.map(audienceOf))].join(', ');
+      push('INFO', '3.x Shared Links (other audiences)',
+        `${otherLinks.length} source link(s) carry an audience that is neither "anyone with the `
+        + `link" nor team-only (${seen}), so neither 3.1 nor 3.2 covers them and no verdict is `
+        + 'claimed. An invite-only link is what the Dropbox UI creates when someone copies a link, '
+        + `so this usually means a link was added by hand: ${
+          otherLinks.slice(0, 3).map((o) => o.path).join(', ')}`);
+    }
 
     const tsCompared = itemDetails.filter((r) => r.timestamps).length;
     if (tsCompared === 0) {
@@ -1173,8 +1269,17 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const dest = (cmp.matched.get(item.path) || {}).dest;
       if (!dest) continue;
       arrived += 1;
-      if (core.normKey(dest.name) !== core.normKey(item.name)) {
-        renamed.push({ source: item.name, dest: dest.name, path: item.path });
+      // Compare against the name this item is SUPPOSED to carry, not its source name.
+      // A converted file changes extension by design, and 5.1 is about character REPLACEMENT,
+      // not about conversion. Run e6bdd529 failed it on
+      //   "qa-paper-full (1).paper" -> "qa-paper-full (1).html"
+      // which is the documented .paper -> .html conversion: not one character was replaced. The
+      // parentheses are what made the name "risky" enough to be examined, so only converted
+      // files whose names also carry a special character were ever affected — which is why this
+      // survived until Paper was first seeded.
+      const expected = core.convertName(item.name, item.mimeType);
+      if (core.normKey(dest.name) !== core.normKey(expected)) {
+        renamed.push({ source: item.name, dest: dest.name, expected, path: item.path });
       }
     }
     totals.specialChars.arrived += arrived;
@@ -1187,7 +1292,8 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       push('FAIL', '5.1 Special Characters Replacement',
         `${renamed.length} name(s) were altered at the destination, but Google accepts these `
         + `characters and no replacement was expected: `
-        + renamed.slice(0, 5).map((r) => `"${r.source}" → "${r.dest}"`).join(', '));
+        + renamed.slice(0, 5).map((r) => `"${r.source}" → "${r.dest}"`
+          + (r.expected !== r.source ? ` (expected "${r.expected}")` : '')).join(', '));
     }
   }
 
@@ -1389,20 +1495,56 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     if (papers.length === 0) {
       push('WARN', '10.x Dropbox Papers',
         'No Dropbox Paper documents in the source, so 19 of the 36 in-scope features were not '
-        + 'exercised. Paper cannot be seeded by API — see the manual steps in DropboxTestDataAgent.');
+        + 'exercised. DropboxTestDataAgent seeds Paper via files/paper/create, so an empty source '
+        + 'here means seeding did not run or was cleared.');
       return;
     }
 
     const arrived = papers.filter((p) => cmp.matched.has(p.path));
     const missing = papers.filter((p) => !cmp.matched.has(p.path));
 
-    if (missing.length === 0) {
+    // A Paper doc can produce a destination item that holds NOTHING. Observed on run 93b0636a:
+    //
+    //   qa-paper-v2        source == dest on every counter
+    //   qa-paper-full (1)  source == dest on every counter
+    //   qa-paper-full      source 3 tables / 3 lists / 3 emojis / 1 image / 3 links -> dest all 0
+    //
+    // The destination export was 500 bytes and zero characters of text, while the other two were
+    // 370 KB and 32 KB. The document did not convert.
+    //
+    // That is ONE failure — the document did not migrate — and it belongs to 10.1. Left in the
+    // per-construct sums it instead subtracted from every counter at once and failed 10.7, 10.9,
+    // 10.12, 10.13 and 10.16, so a reader saw five content-fidelity defects and no mention of the
+    // empty document that caused all five. Same shape as the emoji-as-image and small-converted-
+    // file cases: one cause wearing several verdicts, with the real finding nowhere in sight.
+    //
+    // So it fails 10.1 by name and is excluded below, letting the construct features report
+    // truthfully on the documents that actually converted.
+    const STRUCTURE_KEYS = ['tables', 'bulleted', 'numbered', 'images', 'links', 'emojis'];
+    const emptyAtDest = (x) => Boolean(x.content) && x.content.compared === true
+      && STRUCTURE_KEYS.some((k) => Number(x.content.source?.[k] || 0) > 0)
+      && STRUCTURE_KEYS.every((k) => Number(x.content.dest?.[k] || 0) === 0);
+    const emptied = (totals.paperItems || []).filter(emptyAtDest);
+
+    if (missing.length === 0 && emptied.length === 0) {
       push('PASS', '10.1 Dropbox Papers Migration',
-        `${arrived.length} Paper document(s) produced a destination item`);
+        `${arrived.length} Paper document(s) produced a destination item with content`);
     } else {
+      const parts = [];
+      if (missing.length) {
+        parts.push(`${missing.length} with no destination item: `
+          + missing.slice(0, 5).map((x) => x.path).join(', '));
+      }
+      if (emptied.length) {
+        parts.push(`${emptied.length} produced an EMPTY destination document — the item exists but `
+          + `carries none of the source content: `
+          + emptied.slice(0, 5).map((x) => `"${x.path}" (source had `
+            + STRUCTURE_KEYS.filter((k) => Number(x.content.source?.[k] || 0) > 0)
+              .map((k) => `${x.content.source[k]} ${k}`).join(', ')
+            + ', destination none)').join('; '));
+      }
       push('FAIL', '10.1 Dropbox Papers Migration',
-        `${missing.length} of ${papers.length} Paper document(s) have no destination item: `
-        + missing.slice(0, 5).map((p) => p.path).join(', '));
+        `${papers.length} Paper document(s) at the source: ` + parts.join('. ') + '.');
     }
 
     // ── Paper CONTENT, feature by feature, from the two exports ─────────────────────────
@@ -1416,7 +1558,8 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     // which is far more use to a reviewer than "open the document", and does not pretend to a
     // verdict the evidence cannot support.
     const withContent = totals.paperItems.filter((x) => x.content);
-    const comparable = withContent.filter((x) => x.content.compared);
+    // Empty-at-destination docs are judged by 10.1 above, not counted here — see the note there.
+    const comparable = withContent.filter((x) => x.content.compared && !emptyAtDest(x));
     const failedExport = withContent.filter((x) => !x.content.compared);
 
     if (comparable.length === 0) {
@@ -1428,6 +1571,12 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         + `feature was assessed.${why}`);
     } else {
       const sum = (rows, side, key) => rows.reduce((n, x) => n + (x.content[side][key] || 0), 0);
+      // Named in every construct verdict below: a count over 2 of 3 documents must never read as
+      // though it covered all 3.
+      const scope = `${comparable.length} document(s)`
+        + (emptied.length
+          ? ` (${emptied.length} excluded as empty at the destination — see 10.1)`
+          : '');
 
       /**
        * One structural feature's verdict: the same construct counted on both sides.
@@ -1445,18 +1594,18 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         }
         if (src === dst) {
           push('PASS', `${id} ${label}`,
-            `${src} in the source, ${dst} at the destination across ${comparable.length} document(s)`);
+            `${src} in the source, ${dst} at the destination across ${scope}`);
         } else if (dst < src) {
           push('FAIL', `${id} ${label}`,
-            `${src} in the source but only ${dst} at the destination across ${comparable.length} `
-            + `document(s) — ${src - dst} lost in the conversion`);
+            `${src} in the source but only ${dst} at the destination across ${scope} `
+            + `— ${src - dst} lost in the conversion`);
         } else {
           // More at the destination is NOT reported as a defect. Google's exporter adds anchors and
           // wrappers of its own, so an excess can be an artefact of how the document was read
           // rather than anything the migration did. Surfaced as a WARN so it is still visible.
           push('WARN', `${id} ${label}`,
-            `${src} in the source but ${dst} at the destination across ${comparable.length} `
-            + `document(s) — ${dst - src} more than the source. Nothing was lost; the excess may be `
+            `${src} in the source but ${dst} at the destination across ${scope} `
+            + `— ${dst - src} more than the source. Nothing was lost; the excess may be `
             + `an artefact of Google's exporter rather than the migration, so this is not called a `
             + 'defect without a human confirming it.');
         }
@@ -1767,3 +1916,4 @@ module.exports.PAPER_DISPUTED = PAPER_DISPUTED;
 module.exports.paperMarkdownStructure = paperMarkdownStructure;
 module.exports.googleDocStructure = googleDocStructure;
 module.exports.COMBINATION = DEFAULT_COMBINATION;
+module.exports.splitImages = splitImages;

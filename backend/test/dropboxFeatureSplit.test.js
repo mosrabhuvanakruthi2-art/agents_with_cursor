@@ -225,6 +225,52 @@ function testLongPathNotBlamedForOtherCauses() {
   console.log('  7.1 not blamed for an absence it ruled out: ok');
 }
 
+/**
+ * 3.1 and 3.2 each claim ONLY the audience they are about.
+ *
+ * 3.2 used to take "everything that is not public". Dropbox reports more than two audiences:
+ * 'public' (anyone with the link), 'team_only', and 'no_one' (invite-only). Copying a link in the
+ * Dropbox UI CREATES one with audience no_one, so an invite-only link can appear on the source
+ * without ever being seeded — observed on /04-Shared-Links/team-edit.txt, a file that had no link
+ * at all when the run measured it.
+ *
+ * Under the old split that link was judged as a team link, expected to arrive as an organization
+ * link, and failed 3.2. A FAIL attributed to the wrong feature is worse than no verdict, so an
+ * audience neither feature covers is reported on its own and claims nothing.
+ */
+function testLinkAudienceSplit() {
+  const audienceOf = (o) => String(o.sourceAudience || '').toLowerCase();
+  const split = (obs) => ({
+    anyone: obs.filter((o) => audienceOf(o) === 'public'),
+    team: obs.filter((o) => audienceOf(o) === 'team_only'),
+    other: obs.filter((o) => !['public', 'team_only'].includes(audienceOf(o))),
+  });
+
+  // The three seeded links plus the invite-only one the UI created by hand.
+  const observed = [
+    { path: '/04-Shared-Links/anyone-view.txt', sourceAudience: 'public' },
+    { path: '/04-Shared-Links/team-view.txt', sourceAudience: 'team_only' },
+    { path: '/09-Embedded-Links/link-target-in-scope.txt', sourceAudience: 'public' },
+    { path: '/04-Shared-Links/team-edit.txt', sourceAudience: 'no_one' },
+  ];
+  const r = split(observed);
+  assert.strictEqual(r.anyone.length, 2, '3.1 claims the two public links');
+  assert.strictEqual(r.team.length, 1, '3.2 claims only the team_only link, not the no_one one');
+  assert.strictEqual(r.other.length, 1, 'the invite-only link is reported apart from both');
+  assert.strictEqual(r.other[0].path, '/04-Shared-Links/team-edit.txt');
+
+  // Every observation lands in exactly one bucket, whatever Dropbox reports.
+  for (const audience of ['public', 'team_only', 'no_one', 'password', '', undefined, 'PUBLIC']) {
+    const one = split([{ path: `/x-${audience}`, sourceAudience: audience }]);
+    const total = one.anyone.length + one.team.length + one.other.length;
+    assert.strictEqual(total, 1, `audience ${JSON.stringify(audience)} lands in exactly one bucket`);
+  }
+
+  // Audience matching is case-insensitive, so 'PUBLIC' is still an anyone-link.
+  assert.strictEqual(split([{ sourceAudience: 'PUBLIC' }]).anyone.length, 1,
+    'audience comparison is case-insensitive');
+  console.log('  3.1/3.2 claim only their own audience, others reported apart: ok');
+}
 testInnerFileFailureDoesNotBlameTheRootFolder();
 /**
  * The checklist must match check names that carry the PER-UNIT PREFIX.
@@ -288,4 +334,5 @@ testPendingIsAttributedPerFeature();
 testExternalSharesReportsItsOwnPreconditions();
 testLinkFeaturesSplitByAudience();
 testChecklistKeepsTheFeaturesApart();
+testLinkAudienceSplit();
 console.log('dropboxFeatureSplit.test.js: ok');

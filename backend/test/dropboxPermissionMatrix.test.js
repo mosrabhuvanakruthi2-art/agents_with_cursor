@@ -13,6 +13,7 @@
  * which item — and never touch Dropbox.
  */
 const assert = require('assert');
+const fs = require('fs');
 
 const dropboxClient = require('../src/clients/dropboxClient');
 const DropboxTestDataAgent = require('../src/agents/dropbox/DropboxTestDataAgent');
@@ -417,6 +418,102 @@ async function testRefusedGrantIsNotReportedAsGranted() {
   console.log('  a refused grant is never reported as granted: ok');
 }
 
+/**
+ * Paper must be seeded BEFORE the other steps, and the reason is a real defect.
+ *
+ * Paper used to be seeded last, ~23 seconds before CloudFuze began copying. On run 93b0636a the
+ * freshly created /11-Paper/qa-paper-full.paper arrived as a 500-byte Google Doc with no text,
+ * while the two Paper docs that already existed converted perfectly on every counter. Our own
+ * export round-trip immediately after creation returned all 3 tables, so Dropbox held the content
+ * — whatever CloudFuze read seconds later did not.
+ *
+ * Seeding Paper first puts the remaining ~4 minutes of seeding between creation and the copy.
+ * This test exists because the scope document lists Paper LAST (row 15), so the ordering looks
+ * like an oversight and invites a tidy-up that would quietly bring the empty document back.
+ */
+function testPaperIsSeededFirst() {
+  const src = fs.readFileSync(
+    require.resolve('../src/agents/dropbox/DropboxTestDataAgent'), 'utf8'
+  );
+
+  const at = (needle) => {
+    const i = src.indexOf(needle);
+    assert.ok(i > -1, `${needle} still exists in the seeding sequence`);
+    return i;
+  };
+
+  const paper = at('await this._seedPaper(');
+  for (const step of [
+    'await this._seedPermissionLadder(',
+    'await this._seedPermissionMatrix(',
+    'await this._seedRootFiles(',
+    'await this._seedSharedLinks(',
+    'await this._seedVersions(',
+  ]) {
+    assert.ok(paper < at(step),
+      `_seedPaper must run before ${step.trim()} — a Paper doc created moments before the copy `
+      + 'arrived empty at the destination on run 93b0636a');
+  }
+
+  // The reason must travel with the ordering, or the next reader removes it as arbitrary.
+  assert.ok(/93b0636a/.test(src),
+    'the run that showed the empty Paper document is cited, so the ordering is not mistaken for '
+    + 'an accident');
+  console.log('  Paper is seeded before the other steps, with the reason recorded: ok');
+}
+
+/**
+ * The seeded Paper doc must be created at a path that has never held a file.
+ *
+ * Measured across three runs, and the pattern is unambiguous:
+ *
+ *   created at a brand-new path      (e6bdd529)              -> full content at the destination
+ *   left untouched, already existed  (93b0636a, 65439ee5)    -> full content
+ *   DELETED and recreated, SAME path (93b0636a, 65439ee5)    -> EMPTY at the destination
+ *
+ * The empty case was a 500-byte Google Doc with no text, against a source holding 3 tables, 3
+ * lists, 1 image, 3 links and 3 emojis — and our own export a second after creation returned all
+ * of it. Seeding Paper first (~4 min before the copy rather than 23 s) changed nothing, so it is
+ * the reused path, not a propagation delay.
+ *
+ * The earlier code deleted the exact target to keep the filename stable between runs. This test
+ * exists because that is a reasonable-sounding thing to reinstate, and doing so silently returns
+ * feature 10.1 to FAIL on every run.
+ */
+function testPaperUsesAFreshPath() {
+  const src = fs.readFileSync(
+    require.resolve('../src/agents/dropbox/DropboxTestDataAgent'), 'utf8'
+  );
+  const start = src.indexOf('async _seedPaper(');
+  assert.ok(start > -1, '_seedPaper still exists');
+  const body = src.slice(start, start + 4000);
+
+  // The created path must carry a per-run component.
+  assert.ok(/qa-paper-full-\$\{stamp\}\.paper/.test(body),
+    'the Paper path carries a per-run stamp, so it is never a path a previous run used');
+  assert.ok(/new Date\(\)\.toISOString\(\)/.test(body),
+    'the stamp comes from the clock, making the path unique per run');
+
+  // It must NOT delete the path it is about to create — that is the shape that arrived empty.
+  const createIdx = body.indexOf('createPaperDoc(path');
+  assert.ok(createIdx > -1, '_seedPaper still creates the document');
+  const beforeCreate = body.slice(0, createIdx);
+  assert.ok(!/deletePath\(path,/.test(beforeCreate),
+    'the target path must NOT be deleted before creating it — delete-then-recreate at the same '
+    + 'path is exactly what produced an empty destination document on runs 93b0636a and 65439ee5');
+
+  // Previous runs' copies are still cleared, or the source accumulates one doc per run.
+  assert.ok(/qa-paper-.*\\\.papert\?/.test(body),
+    'old seeded copies are matched by the qa-paper- prefix and removed');
+  assert.ok(/listFolder\(dir/.test(body),
+    'the folder is listed to find them, rather than guessing at names');
+
+  // And the reason must travel with the code.
+  assert.ok(/65439ee5/.test(src) && /EMPTY/.test(src),
+    'the runs that showed the empty document are cited, so the rule is not mistaken for style');
+  console.log('  Paper is seeded at a fresh path, never a recreated one: ok');
+}
+
 (async () => {
   testEnvListParsing();
   testGranteeResolutionUsesSourceEmails();
@@ -427,6 +524,8 @@ async function testRefusedGrantIsNotReportedAsGranted() {
   await testRotationIsDeterministic();
   await testMissingPrincipalsAreReported();
   await testAccessModes();
+  testPaperIsSeededFirst();
+  testPaperUsesAFreshPath();
   console.log('dropboxPermissionMatrix.test.js: ok');
 })().catch((err) => {
   console.error(err);

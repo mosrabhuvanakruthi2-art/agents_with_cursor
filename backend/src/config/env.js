@@ -530,8 +530,9 @@ module.exports = {
   /**
    * DROPBOX_PRESERVE_ON_WIPE — folders inside the seeding root that re-seeding must NOT delete.
    *
-   * Exists for Dropbox Paper, which is 19 of the 36 in-scope features and cannot be seeded at all:
-   * Dropbox retired the Paper authoring API, so a Paper doc has to be authored by hand once.
+   * Exists for Dropbox Paper, which is 19 of the 36 in-scope features. It was introduced when Paper
+   * looked unseedable — the old `paper/docs/*` endpoints are retired and return
+   * insufficient_permissions, so a doc had to be authored by hand once.
    *
    * That created a trap with no good answer. The doc has to live INSIDE the seeding root, because
    * the root is the migration source — anything outside it is never migrated and never validated.
@@ -539,8 +540,11 @@ module.exports = {
    * run. The advice to "keep it outside the wiped root" produced a document that survived and was
    * never tested, which is worse than losing it.
    *
-   * With this set, the wipe removes the root's children individually and skips these names, so the
-   * doc is authored once, sits in the migration source, and survives every re-seed.
+   * Paper IS seeded by API now: `files/paper/create` on the RPC host still works, and
+   * DropboxTestDataAgent._seedPaper uses it. So this is no longer required for Paper coverage. It
+   * stays because a hand-authored doc carries structure the generated markdown does not, and
+   * preserving it costs nothing: the wipe removes the root's children individually and skips these
+   * names, so such a doc sits in the migration source and survives every re-seed.
    *
    * Defaults to the Paper folder the manual steps name. Comma-separated for more than one.
    */

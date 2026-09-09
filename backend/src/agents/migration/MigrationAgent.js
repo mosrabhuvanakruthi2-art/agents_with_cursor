@@ -818,20 +818,43 @@ class MigrationAgent extends BaseAgent {
       log.info(`Content migration stop status "${finalStatus}" — skipping validation, returning report`);
       bump(`MigrationAgent: content migration stopped with status "${finalStatus}" — fetching report…`);
 
+      // A stop status that moved NOTHING is a failed migration, and the report has to say so.
+      //
+      // Run 27d31e8d ended CONFLICT with totalFilesAndFolders=0 ("Migration not Allowed for wrong
+      // CSV paths") and the execution still recorded migrationFailed:false. The validator then
+      // reported 77 scanned / 0 paired / 77 missing against a destination cleanup had emptied, so
+      // the run read as catastrophic data loss by a migration that "did not fail" — when in truth
+      // nothing was ever copied. It also meant the Neutara suppression below did not apply, so 77
+      // findings that only restate "the destination is empty" were eligible to be filed as content
+      // defects.
+      //
+      // Judged on the item count, not on the status name: a stop status that DID move items is a
+      // partial migration, whose findings are real and must keep reaching validation untouched.
+      const movedNothing = Number(context.migrationJobDetails.totalCount || 0) === 0
+        && Number(context.migrationJobDetails.processedCount || 0) === 0;
+      const stopReason = movedNothing
+        ? `CloudFuze ended the job ${finalStatus} having moved nothing (totalFilesAndFolders=0). `
+          + 'Nothing reached the destination, so every validation finding below is a restatement of '
+          + 'that, not a content defect.'
+        : null;
+
       const contentReport = {
         workspaceId: context.migrationJobDetails.workspaceId,
         status: finalStatus,
         totalCount: context.migrationJobDetails.totalCount,
         processedCount: context.migrationJobDetails.processedCount,
+        ...(movedNothing ? { migrationFailed: true, failureReason: stopReason } : {}),
         rawJobData: polledJobReport || null,
         stoppedAt: new Date().toISOString(),
       };
       context.contentMigrationReport = contentReport;
+      if (movedNothing) context.migrationFailureReason = stopReason;
 
       bump(`MigrationAgent: finished — content migration stopped (${finalStatus})`);
       return {
         jobId: this.jobId,
         finalStatus,
+        ...(movedNothing ? { migrationFailed: true, failureReason: stopReason } : {}),
         retriesUsed: this.retries,
         rawResponse: triggerResult.rawResponse,
         ownerValidation,
