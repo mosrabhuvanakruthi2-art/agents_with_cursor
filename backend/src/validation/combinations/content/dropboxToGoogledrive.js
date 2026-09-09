@@ -686,6 +686,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     this._checkSpecialCharacters(push, sourceTree, cmp, rules, totals);
     this._checkLongPaths(push, sourceTree, cmp, rules, totals);
     await this._checkCsvReports(push, migrated, destEmail, destRoot, totals);
+    await this._checkEmbeddedLinksContent(push, cmp, destEmail, totals);
     this._checkPaper(push, sourceTree, cmp, totals);
     this._checkNotificationSuppression(push, totals);
 
@@ -1482,6 +1483,67 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       source: paperMarkdownStructure(md),
       dest: googleDocStructure(html),
     };
+  }
+
+  /**
+   * Feature 8.1 content check — the CSV report above only confirms CloudFuze WROTE a mapping file;
+   * it never opens the migrated document to see whether the rewrite actually happened. This reads
+   * the migrated HTML itself. DropboxTestDataAgent seeds exactly one such document
+   * (09-Embedded-Links/document-with-embedded-links.html) with two links: one to a file inside the
+   * migration scope (expected to be rewritten away from Dropbox, scope 8.1) and one to a file
+   * deliberately seeded outside it (expected to still point at Dropbox — scope 10.8's stated limit
+   * on 8.1: transformation happens only when the referenced file is itself in scope).
+   */
+  async _checkEmbeddedLinksContent(push, cmp, destEmail, totals) {
+    const pair = [...cmp.matched.values()]
+      .find((p) => /document-with-embedded-links\.html$/i.test(p.source.path));
+    if (!pair) {
+      push('WARN', '8.1 Embedded Links (content)',
+        'The seeded embedded-links document did not reach the destination, so the actual link '
+        + 'rewrite could not be checked — see the structure check.');
+      return;
+    }
+
+    const text = (await this.readTextLines(pair.dest, destEmail)).join('\n');
+    if (!text) {
+      push('WARN', '8.1 Embedded Links (content)',
+        `Could not read "${pair.dest.name}" at the destination to check its links.`);
+      return;
+    }
+
+    // The seeded markup is `href="URL">label</a>` — the href attribute precedes its own link text.
+    const hrefBefore = (label) => {
+      const m = text.match(new RegExp(`href="([^"]+)">\\s*${label}`, 'i'));
+      return m ? m[1] : null;
+    };
+    const inScopeHref = hrefBefore('in-scope target');
+    const outOfScopeHref = hrefBefore('out-of-scope target');
+    const isDropboxUrl = (u) => /dropbox\.com/i.test(String(u || ''));
+
+    totals.embeddedLinks = { inScopeHref, outOfScopeHref };
+
+    if (!inScopeHref && !outOfScopeHref) {
+      push('WARN', '8.1 Embedded Links (content)',
+        `Neither seeded link could be found in "${pair.dest.name}" at the destination — its markup `
+        + 'may have changed on migration in a way this check does not anticipate.');
+      return;
+    }
+
+    const problems = [];
+    if (inScopeHref && isDropboxUrl(inScopeHref)) {
+      problems.push('the in-scope link still points at Dropbox — it was not rewritten');
+    }
+    if (outOfScopeHref && !isDropboxUrl(outOfScopeHref)) {
+      problems.push('the out-of-scope link was rewritten, but scope 10.8 says only in-scope targets should be');
+    }
+
+    if (problems.length === 0) {
+      push('PASS', '8.1 Embedded Links (content)',
+        'The in-scope link was rewritten away from Dropbox; the out-of-scope link correctly still '
+        + 'points at Dropbox, matching the documented scope-10.8 limit.');
+    } else {
+      push('FAIL', '8.1 Embedded Links (content)', problems.join('; '));
+    }
   }
 
   _checkPaper(push, sourceTree, cmp, totals) {

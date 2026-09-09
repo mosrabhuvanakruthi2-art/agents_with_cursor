@@ -393,7 +393,7 @@ class AgentOrchestrator {
     const { TestDataAgent, ValidationAgent } = agentsFor(context);
     // Some content combinations (e.g. Box→SharePoint) do register a TestDataAgent for seeding.
     const dataAgent = TestDataAgent ? new TestDataAgent() : null;
-    const migrationAgent = new MigrationAgent();
+    let migrationAgent = new MigrationAgent();
     const outlookAgent = new ValidationAgent();
 
     // Detect content migration mode: domain/mode content, OR no mail with calendar/contacts flags
@@ -902,6 +902,43 @@ class AgentOrchestrator {
         });
         log.info('Step 2: Running MigrationAgent');
         migrationResult = await migrationAgent.run(context);
+
+        // CloudFuze's own CSV path-validation rejects some content jobs with CONFLICT ("Migration
+        // not Allowed for wrong CSV paths") intermittently — the identical request, byte-for-byte,
+        // succeeds on one attempt and fails on the next with no observable difference on our side
+        // (confirmed by diffing every outbound request across four consecutive runs of the same
+        // pair: CSV payload, cloud ids, job-creation body, and all 20 job-option parameters were
+        // identical whether the run succeeded or failed). Retrying the SAME unchanged request is
+        // therefore a legitimate recovery, not a workaround for a bug in what we send — only for
+        // CONFLICT-family stop statuses, never NO_WORK_ATTACHED, which means the source genuinely
+        // had nothing to migrate and a retry would just waste CONTENT_MIGRATION_RETRY_MAX attempts
+        // restating that.
+        const retriableStopStatuses = [
+          'PROCESSED_EMPTY', 'CONFLICT', 'CONFLICTS',
+          'NOT_PROCESSED', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',
+        ];
+        const maxContentRetries = Number(env.CONTENT_MIGRATION_RETRY_MAX ?? 2);
+        if (isContentMode && migrationResult?.migrationFailed
+          && retriableStopStatuses.includes(migrationResult?.finalStatus) && maxContentRetries > 0) {
+          for (let attempt = 1;
+            attempt <= maxContentRetries && migrationResult?.migrationFailed
+              && retriableStopStatuses.includes(migrationResult?.finalStatus);
+            attempt++) {
+            log.warn(`MigrationAgent: content migration stopped with status `
+              + `"${migrationResult.finalStatus}" — retrying (attempt ${attempt}/${maxContentRetries}); `
+              + `cause: ${migrationResult.failureReason || 'unknown'}`);
+            executionService.update(context.executionId, {
+              progress: `MigrationAgent: retrying after "${migrationResult.finalStatus}" `
+                + `(attempt ${attempt}/${maxContentRetries})…`,
+            });
+            await new Promise((r) => setTimeout(r, Number(env.CONTENT_MIGRATION_RETRY_DELAY_MS ?? 10000)));
+            if (executionService.isCancelled(context.executionId)) {
+              throw new Error('Execution cancelled by user');
+            }
+            migrationAgent = new MigrationAgent();
+            migrationResult = await migrationAgent.run(context);
+          }
+        }
       } else {
         log.info('Step 2: Skipping MigrationAgent (already completed)');
         migrationResult = executionService.get(context.executionId)?.result?.migrationResult || null;
