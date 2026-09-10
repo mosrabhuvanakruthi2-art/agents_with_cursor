@@ -19,6 +19,7 @@ const env = require('../config/env');
 const tokenStore = require('../clients/oauthTokenStore');
 // Used to verify Domain-Wide Delegation actually works before registering an account as DWD.
 const driveClient = require('../clients/driveClient');
+const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -94,6 +95,7 @@ router.get('/status', (_req, res) => {
     box: tokenStore.getBoxStatus(),
     dropbox: tokenStore.getDropboxStatus(),
     sharepoint: tokenStore.getSharePointStatus(),
+    sharefile: tokenStore.getShareFileStatus(),
   });
 });
 
@@ -645,6 +647,223 @@ router.post('/dropbox/signout', (req, res) => {
   if (email) {
     tokenStore.removeDropboxToken(email);
     logger.info(`[auth] Dropbox account disconnected: ${email}`);
+  }
+  res.json({ success: true });
+});
+
+// ─── Citrix ShareFile OAuth ───────────────────────────────────────────────────
+//
+// Same popup shape as the Box and Dropbox flows above. Provider key `sharefile`, label
+// "Citrix ShareFile" — one product, and CloudFuze registers its cloud as SHAREFILE_BUSINESS.
+//
+// Endpoints per https://api.sharefile.com/gettingstarted/oauth2:
+//
+//   sign-in   GET  https://secure.sharefile.com/oauth/authorize
+//                  ?response_type=code&client_id=…&redirect_uri=…&state=…
+//   callback  the redirect_uri above, with code, state, subdomain, apicp, appcp, expires_in, h
+//   token     POST https://{subdomain}.{apicp}/oauth/token
+//                  grant_type=authorization_code&code=…&client_id=…&client_secret=…
+//
+// The authorize host is a SINGLE well-known host, not a per-account one. An earlier draft of this
+// file used https://<subdomain>.sharefile.com and required a SHAREFILE_SUBDOMAIN env var to build
+// it; both were wrong. The account subdomain is an OUTPUT of the flow — it arrives on the callback
+// together with `apicp`, the API control plane — so the token host is assembled from those two
+// values and the env var was deleted rather than left as required-looking dead config.
+//
+// `h` is an HMAC signature that the documented callback carries. The getting-started page lists the
+// parameter but does NOT publish a verification algorithm or the key to verify it with, so nothing
+// here verifies it — implementing a guessed signature check would either reject valid callbacks or
+// provide false assurance. What stands in for it: the token POST goes only to an ALLOW-LISTED
+// control plane (see below), the code is worthless without our client secret, and no account is
+// stored until both the token exchange and the profile read succeed against a ShareFile host.
+// If Citrix documents the algorithm, verifying `h` belongs here, before the token exchange.
+//
+// STILL UNVERIFIED against a live tenant (no ShareFile OAuth application exists yet —
+// requirements 003, blocker P3): every response shape. Specifically the token response field names
+// (access_token / refresh_token / expires_in / subdomain / apicp), and the profile call
+// GET /sf/v3/Users(me) → { Email, Id }. The getting-started page shows only Items(home) as an
+// example call, so Users(me) comes from the v3 API surface rather than from that page, and no
+// response from it has been observed.
+
+const SHAREFILE_AUTHORIZE_URL = 'https://secure.sharefile.com/oauth/authorize';
+// The API control plane is the host SUFFIX the callback supplies. It is allow-listed, not merely
+// pattern-checked, because the token POST carries our client_secret: a callback arriving with
+// apicp=attacker.example would otherwise make this server post the secret to that host. Every
+// documented example uses sf-api.com. A tenant on another control plane fails with the value named
+// in the log, which is a one-line addition here once it has been confirmed with Citrix — a far
+// better outcome than mailing the secret to whatever the query string asked for.
+const SHAREFILE_ALLOWED_APICP = new Set(['sf-api.com']);
+const SHAREFILE_DEFAULT_APICP = 'sf-api.com';
+// A subdomain is one host label: letters, digits and hyphens. Anything else (a dot, a slash, a
+// whole URL) would be pasted straight into a request host.
+const SHAREFILE_HOST_LABEL_RE = /^[A-Za-z0-9-]+$/;
+
+/** A validated single host label, or null when the value is absent or not a bare label. */
+function shareFileLabel(value) {
+  const s = String(value == null ? '' : value).trim();
+  return SHAREFILE_HOST_LABEL_RE.test(s) ? s : null;
+}
+
+/**
+ * The ShareFile REST/token host for a callback-supplied subdomain and control plane.
+ * Returns null when the control plane is not allow-listed — the caller must fail, not guess.
+ */
+function shareFileApiHost(subdomain, apicp) {
+  const raw = String(apicp == null ? '' : apicp).trim();
+  // Absent apicp falls back to the documented default; a PRESENT but unknown one does not.
+  const cp = raw || SHAREFILE_DEFAULT_APICP;
+  if (!SHAREFILE_ALLOWED_APICP.has(cp)) return null;
+  return `https://${subdomain}.${cp}`;
+}
+
+/**
+ * Strip the configured client secret out of anything about to be logged or redirected.
+ * ShareFile echoes the submitted form back in some token-endpoint errors, and the logger's
+ * masking covers email addresses only — a secret in a log line or in a callback query string
+ * would be a real leak, not a cosmetic one.
+ */
+function scrubShareFileSecret(text) {
+  const s = String(text == null ? '' : text);
+  const secret = env.SHAREFILE_CLIENT_SECRET;
+  if (!secret) return s;
+  return s.split(secret).join('<redacted>');
+}
+
+// The redirect URI, in one place. This exact string must be registered in Citrix's API Key
+// Generator; a mismatch makes the key unusable, and the failure surfaces at the end of sign-in
+// rather than at the start.
+const SHAREFILE_REDIRECT_URI = `${BACKEND_BASE}/api/auth/sharefile/callback`;
+
+router.get('/sharefile/url', (req, res) => {
+  // Both halves of the app credential are checked here, and named separately. The secret is not
+  // used until the callback, but starting a sign-in without it guarantees the exchange fails after
+  // the user has already typed their ShareFile password — so it is reported before the popup opens.
+  if (!env.SHAREFILE_CLIENT_ID) {
+    return res.status(400).json({ error: 'SHAREFILE_CLIENT_ID not configured' });
+  }
+  if (!env.SHAREFILE_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'SHAREFILE_CLIENT_SECRET not configured' });
+  }
+  const isPopup = req.query.source === 'popup';
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: env.SHAREFILE_CLIENT_ID,
+    redirect_uri: SHAREFILE_REDIRECT_URI,
+    state: isPopup ? 'popup' : 'default',
+  });
+  res.json({ url: `${SHAREFILE_AUTHORIZE_URL}?${params}` });
+});
+
+router.get('/sharefile/callback', async (req, res) => {
+  const { code, error, state, subdomain: cbSubdomain, apicp } = req.query;
+  const isPopup = state === 'popup';
+  const base = isPopup ? `${FRONTEND_ORIGIN}/oauth-callback` : `${FRONTEND_ORIGIN}/connect`;
+  const fail = (message) => res.redirect(
+    `${base}?error=sharefile&message=${encodeURIComponent(scrubShareFileSecret(message))}`
+  );
+
+  if (error) {
+    logger.warn(`[auth] ShareFile OAuth error: ${error}`);
+    return fail(String(error));
+  }
+  if (!code) return res.status(400).send('Missing code');
+
+  if (!env.SHAREFILE_CLIENT_ID || !env.SHAREFILE_CLIENT_SECRET) {
+    logger.error('[auth] ShareFile callback: SHAREFILE_CLIENT_ID / SHAREFILE_CLIENT_SECRET are '
+      + 'not configured, so the authorization code cannot be exchanged');
+    return fail('SHAREFILE_CLIENT_ID not configured');
+  }
+
+  // The token host comes from the callback and nowhere else. There is no env fallback by design:
+  // guessing an account host would send the code and the client secret somewhere unrelated.
+  const subdomain = shareFileLabel(cbSubdomain);
+  if (!subdomain) {
+    logger.error('[auth] ShareFile callback carried no usable `subdomain` parameter, so there is '
+      + 'no account host to exchange the code against. Expected one host label (e.g. "storefuze") '
+      + 'alongside the code; got '
+      + (cbSubdomain ? `"${String(cbSubdomain).slice(0, 40)}"` : 'nothing'));
+    return fail('ShareFile did not return an account subdomain on the callback, so the sign-in '
+      + 'could not be completed');
+  }
+  const apiHost = shareFileApiHost(subdomain, apicp);
+  if (!apiHost) {
+    logger.error('[auth] ShareFile callback asked for an unrecognised API control plane '
+      + `"${String(apicp).slice(0, 60)}". Refusing to post the client secret to it. Add the value `
+      + 'to SHAREFILE_ALLOWED_APICP in authRoutes.js once Citrix has confirmed it is theirs.');
+    return fail('ShareFile returned an unrecognised API host, so the sign-in was stopped before '
+      + 'any credential was sent');
+  }
+
+  try {
+    const params = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: String(code),
+      client_id: env.SHAREFILE_CLIENT_ID,
+      client_secret: env.SHAREFILE_CLIENT_SECRET,
+    });
+    // retryWithBackoff stops on 4xx (429 excepted), so a bad or already-spent code fails at once
+    // instead of being replayed.
+    const tokenRes = await retryWithBackoff(
+      () => axios.post(`${apiHost}/oauth/token`, params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      }),
+      { label: 'ShareFile token exchange', maxRetries: 3 }
+    );
+    const {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      expires_in: expiresIn,
+    } = tokenRes.data || {};
+    if (!accessToken) throw new Error('ShareFile returned no access token for this code');
+
+    // The token response repeats subdomain/apicp. Honoured when both are usable, because it is the
+    // more authoritative of the two — but it goes through the same allow-list as the callback.
+    const tokenSub = shareFileLabel(tokenRes.data.subdomain);
+    const host = (tokenSub && shareFileApiHost(tokenSub, tokenRes.data.apicp || apicp)) || apiHost;
+
+    const meRes = await retryWithBackoff(
+      () => axios.get(`${host}/sf/v3/Users(me)`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }),
+      { label: 'ShareFile Users(me)', maxRetries: 3 }
+    );
+    const profile = meRes.data || {};
+    const email = profile.Email || profile.email || null;
+    if (!email) throw new Error('ShareFile did not report an account email for this token');
+
+    tokenStore.setShareFileToken({
+      email,
+      accessToken,
+      refreshToken: refreshToken || null,
+      expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+      subdomain: tokenSub || subdomain,
+      apiHost: host,
+      accountId: profile.Id || null,
+    });
+    logger.info(`[auth] ShareFile account connected: ${email} (host ${host})`);
+
+    res.redirect(`${base}?connected=sharefile&email=${encodeURIComponent(email)}`);
+  } catch (err) {
+    // Name the host that was tried. A wrong subdomain fails as ENOTFOUND or 404, and without the
+    // host in the message that reads as a credential problem rather than a routing one.
+    const detail = err.response && err.response.data;
+    const body = typeof detail === 'string'
+      ? detail
+      : ((detail && (detail.error_description || detail.message)) || '');
+    const rendered = typeof body === 'string' ? body : JSON.stringify(body);
+    const msg = scrubShareFileSecret(
+      `${err.message}${rendered ? ` — ${rendered}` : ''} (host ${apiHost})`
+    );
+    logger.error(`[auth] ShareFile callback error: ${msg}`);
+    fail(msg);
+  }
+});
+
+router.post('/sharefile/signout', (req, res) => {
+  const { email } = req.body;
+  if (email) {
+    tokenStore.removeShareFileToken(email);
+    logger.info(`[auth] ShareFile account disconnected: ${email}`);
   }
   res.json({ success: true });
 });

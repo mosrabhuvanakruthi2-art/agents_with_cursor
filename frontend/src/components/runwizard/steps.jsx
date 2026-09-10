@@ -7,7 +7,7 @@ const ICONS = {
   google: GoogleIcon, microsoft: MicrosoftIcon, box: BoxIcon,
   gmail: GmailIcon, outlook: OutlookIcon,
   googledrive: DriveIcon, googleshareddrive: SharedDriveIcon, onedrive: OneDriveIcon, sharepoint: SharePointIcon,
-  dropbox: DropboxIcon, egnyte: EgnyteIcon, citrix: CitrixIcon,
+  dropbox: DropboxIcon, egnyte: EgnyteIcon, sharefile: CitrixIcon,
 };
 
 // Service-specific icon key for an account in a given product domain:
@@ -97,6 +97,14 @@ export function StepConnect({ wiz }) {
         hint="Sign in to Dropbox in the popup. Use the team admin — a Business team is needed to read members, groups and every member's files."
         onConnect={() => wiz.connectDropbox()}
         onDisconnect={(e) => wiz.disconnect('dropbox', e)}
+      />
+    );
+    if (acct === 'sharefile') return (
+      <ConnectCard key="sharefile"
+        provider="sharefile" accounts={accountsOf('sharefile')} busy={wiz.busy} popup
+        hint="Sign in to Citrix ShareFile in the popup. Use an account admin — admin access is needed to read the account's users and their files."
+        onConnect={() => wiz.connectShareFile()}
+        onDisconnect={(e) => wiz.disconnect('sharefile', e)}
       />
     );
     return null;

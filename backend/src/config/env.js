@@ -558,6 +558,27 @@ module.exports = {
    * not exercised, never as a pass.
    */
   DROPBOX_ACCESS_MODE: (process.env.DROPBOX_ACCESS_MODE || '').trim().toLowerCase(),
+
+  /**
+   * Citrix ShareFile OAuth 2.0 app credentials, for the ShareFile -> SharePoint Online combination.
+   *
+   * The provider key is `sharefile`, not `citrix`. CloudFuze registers the live cloud as
+   * SHAREFILE_BUSINESS (id 6aa10605b17d0e315c812361, account zara@storefuze.com), and findCloudId
+   * squashes that name to SHAREFILEBUSINESS — SHAREFILE is a prefix of it, no form of CITRIX is.
+   * The user-facing label stays "Citrix ShareFile".
+   *
+   * Two values only, and deliberately no SHAREFILE_SUBDOMAIN. Sign-in is a single well-known
+   * host (https://secure.sharefile.com/oauth/authorize) and the host-scoped token endpoint
+   * https://{subdomain}.{apicp}/oauth/token is assembled from the `subdomain` and `apicp` values
+   * the OAuth CALLBACK returns — so the account host is an output of the flow, never an input.
+   * Per https://api.sharefile.com/gettingstarted/oauth2. Once connected, the host is persisted
+   * with the account in oauthTokenStore, which is where a later refresh or API call reads it.
+   *
+   * Both default to empty. validateEnv() warns rather than crashes, so a developer with no
+   * ShareFile app configured still runs every other combination.
+   */
+  SHAREFILE_CLIENT_ID: cleanEnvValue(process.env.SHAREFILE_CLIENT_ID || ''),
+  SHAREFILE_CLIENT_SECRET: cleanEnvValue(process.env.SHAREFILE_CLIENT_SECRET || ''),
   /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.

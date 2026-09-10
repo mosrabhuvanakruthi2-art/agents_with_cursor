@@ -315,7 +315,17 @@ function toItem(entry, parentPath) {
     // Dropbox has no MIME type on metadata. Left null so extension-based logic in deepContentCore
     // (extensionOf/convertName) drives conversion decisions instead of a guessed type.
     mimeType: null,
-    createdAt: null, // Dropbox exposes no creation time for files.
+    // No creation time HERE, which is a property of files/get_metadata and not of Dropbox itself.
+    // The metadata call returns client_modified/server_modified only. A creation time IS
+    // obtainable:
+    // the OLDEST entry from files/list_revisions is the first upload Dropbox recorded for the file
+    // at this path — see createdTimeFromRevisions() below, which also spells out when that value is
+    // only a LOWER BOUND (a truncated revision list, retention pruning, a re-used path).
+    //
+    // Left null on the tree walk deliberately: filling it in would cost one extra API call per file
+    // during the walk. Feature 4.1's validator already reads revisions for the version counts,
+    // so it derives the created time from data it is holding anyway.
+    createdAt: null,
     modifiedAt: isFolder ? null : (entry.server_modified || null),
     createdBy: null,
     modifiedBy: null,
@@ -585,13 +595,23 @@ async function listSharedLinks(path, opts = {}) {
 // ── Versions (scope §9) ───────────────────────────────────────────────────────
 
 /**
+ * How many entries `files/list_revisions` is asked for, and the most it can return.
+ *
+ * Dropbox caps `limit` at 100 and the endpoint has NO cursor — there is no "continue" call — so a
+ * file with more than 100 retained revisions cannot be listed in full by any means. That is why a
+ * count coming back equal to this number is treated as "truncated" by createdTimeFromRevisions()
+ * rather than as "complete".
+ */
+const REVISION_LIST_LIMIT = 100;
+
+/**
  * Revisions of a file, newest first, as `[{ rev, size, modifiedAt }]`.
  *
  * Only meaningful for real files. A Paper document has no source-visible version history at all
  * (scope 10.19), so callers must skip Paper rather than read this as zero versions.
  */
 async function listRevisions(path, opts = {}) {
-  const { asMemberId = null, root = null, limit = 100 } = opts;
+  const { asMemberId = null, root = null, limit = REVISION_LIST_LIMIT } = opts;
   const data = await rpc('files/list_revisions', {
     path: dbxPath(path),
     mode: 'path',
@@ -602,6 +622,108 @@ async function listRevisions(path, opts = {}) {
     size: e.size != null ? Number(e.size) : null,
     modifiedAt: e.server_modified || null,
   }));
+}
+
+// ── Creation time (scope 4.1) ─────────────────────────────────────────────────
+
+/**
+ * Derive a file's creation time from its revision list. PURE — takes revisions, issues no call.
+ *
+ * Feature 4.1 asks for "the original timestamps, including creation and modification dates", and
+ * the item shape carries `createdAt: null` for Dropbox because `files/get_metadata` has no such
+ * field. The revision history does: revisions are returned newest-first, and the OLDEST one's
+ * `server_modified` is the first upload Dropbox recorded for the file at that path.
+ *
+ * WHAT THIS VALUE CAN AND CANNOT BE TRUSTED TO SAY — the distinction the report has to keep, since
+ * "could not determine" and "matches" must never print as the same thing:
+ *
+ *   - `exact: true` — the list came back SHORTER than the requested limit, so Dropbox returned
+ *     every revision it holds and the oldest is genuinely the first upload of this file.
+ *   - `truncated: true` — the list came back at the limit. There is no cursor on this endpoint, so
+ *     older revisions may exist and are unreachable; the timestamp is then a LOWER BOUND (the file
+ *     is at least this old), never an equality claim.
+ *
+ * Two further caveats cannot be detected from the API at all, and so are NOT reported as `exact`
+ * being false — they are documented here and in the validator's wording instead:
+ *
+ *   - Version history is subject to the account's retention window (30 days on Basic/Plus, 180 on
+ *     Business/Professional). Revisions older than that are pruned, which would make the oldest
+ *     surviving entry newer than the true creation. Irrelevant for QA-seeded data, which is minutes
+ *     old, and undetectable for anything else.
+ *   - `mode: 'path'` returns the revisions of whatever has lived at that path. If a file was deleted
+ *     and a new one uploaded to the same name, the older file's revisions can appear, making the
+ *     value EARLIER than this file's creation.
+ *
+ * @param {Array<{rev: string, size: number, modifiedAt: string}>} revisions  from listRevisions()
+ * @param {{limit?: number}} [opts]  the limit the list was fetched with
+ * @returns {{createdAt: string|null, exact: boolean, truncated: boolean, revisionCount: number,
+ *            reason: string}}
+ */
+function createdTimeFromRevisions(revisions, opts = {}) {
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : REVISION_LIST_LIMIT;
+  const rows = Array.isArray(revisions) ? revisions : [];
+  const revisionCount = rows.length;
+
+  if (revisionCount === 0) {
+    return {
+      createdAt: null,
+      exact: false,
+      truncated: false,
+      revisionCount: 0,
+      reason: 'files/list_revisions returned no revisions, so no source creation time exists to '
+        + 'compare (the read failed, or the item is not a file)',
+    };
+  }
+
+  // Take the EARLIEST parseable timestamp rather than trusting the array order. The endpoint
+  // documents newest-first, and honouring that by reading the last element would hand a wrong
+  // answer to any caller that had sorted or filtered the list on the way here.
+  let oldest = null;
+  for (const rev of rows) {
+    const t = Date.parse(rev && rev.modifiedAt);
+    if (!Number.isNaN(t) && (oldest === null || t < oldest.t)) oldest = { t, iso: rev.modifiedAt };
+  }
+
+  if (!oldest) {
+    return {
+      createdAt: null,
+      exact: false,
+      truncated: revisionCount >= limit,
+      revisionCount,
+      reason: `${revisionCount} revision(s) came back but none carried a readable server_modified, `
+        + 'so no creation time could be derived',
+    };
+  }
+
+  const truncated = revisionCount >= limit;
+  return {
+    createdAt: oldest.iso,
+    exact: !truncated,
+    truncated,
+    revisionCount,
+    reason: truncated
+      ? `the revision list came back at the ${limit}-entry maximum and files/list_revisions has no `
+        + 'cursor, so older revisions may exist: this is a LOWER BOUND on the creation time, not '
+        + 'the creation time'
+      : `oldest of ${revisionCount} revision(s), and the list was shorter than the ${limit}-entry `
+        + 'maximum, so it is complete',
+  };
+}
+
+/**
+ * Fetch a file's revisions and derive its creation time. One API call, retry-wrapped through rpc().
+ *
+ * For callers that hold no revision list. Anything that already reads revisions (feature 9.1's
+ * version counts) should call createdTimeFromRevisions() on the list it has rather than paying for
+ * a second round trip per file.
+ *
+ * @param {string} path   absolute Dropbox path
+ * @param {object} [opts] { asMemberId, root, limit }
+ */
+async function getCreatedTime(path, opts = {}) {
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : REVISION_LIST_LIMIT;
+  const revisions = await listRevisions(path, { ...opts, limit });
+  return createdTimeFromRevisions(revisions, { limit });
 }
 
 // ── Content ───────────────────────────────────────────────────────────────────
@@ -951,6 +1073,11 @@ module.exports = {
   listItemMembers,
   listSharedLinks,
   listRevisions,
+  // Feature 4.1's created half. The derivation is pure and is the part worth asserting, so it is
+  // exported separately from the call that feeds it.
+  createdTimeFromRevisions,
+  getCreatedTime,
+  REVISION_LIST_LIMIT,
   downloadFile,
   exportPaper,
   createPaperDoc,

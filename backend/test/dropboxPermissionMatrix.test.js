@@ -486,7 +486,10 @@ function testPaperUsesAFreshPath() {
   );
   const start = src.indexOf('async _seedPaper(');
   assert.ok(start > -1, '_seedPaper still exists');
-  const body = src.slice(start, start + 4000);
+  // 8000, not 4000: _seedPaper carries a lot of measured context in comments and the create call
+  // drifted past a 4000-char window, failing this assertion for a reason that had nothing to do
+  // with what it tests. The window only needs to cover the method.
+  const body = src.slice(start, start + 8000);
 
   // The created path must carry a per-run component.
   assert.ok(/qa-paper-full-\$\{stamp\}\.paper/.test(body),
@@ -495,7 +498,11 @@ function testPaperUsesAFreshPath() {
     'the stamp comes from the clock, making the path unique per run');
 
   // It must NOT delete the path it is about to create — that is the shape that arrived empty.
-  const createIdx = body.indexOf('createPaperDoc(path');
+  // `createPaperDoc(attemptPath` since the retry landed — the call now runs inside a loop that
+  // tries up to three times, because files/paper/create fails transiently and each failure costs
+  // the whole of §11 for that run. `attemptPath` is derived from `path`, so both the per-run stamp
+  // above and the no-delete-before-create rule below still apply unchanged.
+  const createIdx = Math.max(body.indexOf('createPaperDoc(path'), body.indexOf('createPaperDoc(attemptPath'));
   assert.ok(createIdx > -1, '_seedPaper still creates the document');
   const beforeCreate = body.slice(0, createIdx);
   assert.ok(!/deletePath\(path,/.test(beforeCreate),

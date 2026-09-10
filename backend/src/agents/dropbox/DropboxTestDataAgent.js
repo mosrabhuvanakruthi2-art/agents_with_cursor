@@ -100,6 +100,26 @@ const VERSION_BODIES = [
 const SPECIAL_CHARS_NAME = 'Special ~!@#$%^&()_+[]{};,.= chars';
 
 /**
+ * Names holding characters the MICROSOFT destinations replace, one character per name.
+ *
+ * One per name rather than all in one: SharePoint replaces each with `_`, so a single name holding
+ * six of them arrives as `SP-invalid ______ chars.txt` and a reader cannot tell which character was
+ * handled. Separate names make each rule individually observable — and if Dropbox refuses one, the
+ * other five are still seeded.
+ *
+ * These are inert for a Google destination, which accepts all of them unchanged.
+ */
+const MS_INVALID_CHAR_NAMES = [
+  'MS-invalid star * name.txt',
+  'MS-invalid colon : name.txt',
+  'MS-invalid lt < name.txt',
+  'MS-invalid gt > name.txt',
+  'MS-invalid question ? name.txt',
+  'MS-invalid pipe | name.txt',
+  'MS-invalid quote " name.txt',
+];
+
+/**
  * Names that are reserved on Windows/SharePoint but ordinary on Google.
  *
  * `desktop.ini` is deliberately absent. Dropbox refuses it outright — `files/upload` returns
@@ -134,7 +154,22 @@ class DropboxTestDataAgent extends BaseAgent {
       );
     }
 
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    // `sourceFolderName` is the run wizard's "Source folder base name" field. It was not read here,
+    // so a run that named a folder still seeded into DROPBOX_TEST_ROOT and the wizard's own
+    // "This run will create …" line was wrong. Every other source honours it — Box and Drive both
+    // create the named folder — so Dropbox was the odd one out.
+    //
+    // It matters beyond the label. Seeding WIPES its root, and both Dropbox combinations share this
+    // agent: with the field ignored, a dropbox → sharepoint run destroys the tree a
+    // dropbox → googleshareddrive run depends on, and neither report says which run produced what.
+    // Naming a folder per combination is the fix, and this is what makes the field do it.
+    //
+    // Precedence keeps existing runs byte-identical: an explicit sourcePath still wins, and a BLANK
+    // field still falls through to DROPBOX_TEST_ROOT (/QA-Automation). Only a filled field changes
+    // anything, and only to what the label promises.
+    const root = dropboxClient.dbxPath(
+      context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
     if (!root) {
       throw new Error(
         'Refusing to seed at the Dropbox account root. Set DROPBOX_TEST_ROOT (or the run\'s source '
@@ -310,7 +345,18 @@ class DropboxTestDataAgent extends BaseAgent {
       || mapped[0]
       || '').toLowerCase();
     const external = (env.DROPBOX_TEST_EXTERNAL_USER || '').toLowerCase();
-    const group = env.DROPBOX_TEST_GROUP || '';
+    // Falls back to the plural list, exactly as `internal` does two lines above. Without it the two
+    // vars were asymmetric in a way that silently cost coverage: env.js already resolves
+    // DROPBOX_TEST_GROUPS from DROPBOX_TEST_GROUP, but not the reverse — so a .env setting only the
+    // PLURAL (which is what ours does) left this empty.
+    //
+    // That is not cosmetic. `grantees.group` is what _seedPermissionLadder grants with, so with it
+    // empty the ladder seeded NO group grant at any of the four positions — root folder, root file,
+    // sub-folder, inner file — while _seedPermissionMatrix, which reads `groupNames`, seeded them
+    // fine. Features 2.1–2.4 (4.1–4.4 on the SharePoint scope) therefore lost their group dimension
+    // at every position, and the run reported only "No DROPBOX_TEST_GROUP … will be SKIPPED",
+    // which reads like a configuration note rather than the coverage hole it was.
+    const group = env.DROPBOX_TEST_GROUP || env.DROPBOX_TEST_GROUPS[0] || '';
 
     if (!internal) {
       log.warn(
@@ -322,7 +368,10 @@ class DropboxTestDataAgent extends BaseAgent {
       log.warn('No DROPBOX_TEST_EXTERNAL_USER — external shares (scope 2.5) will be SKIPPED.');
     }
     if (!group) {
-      log.warn('No DROPBOX_TEST_GROUP — group grants (scope 2.1–2.4, 3,866 QA cases) will be SKIPPED.');
+      log.warn(
+        'No DROPBOX_TEST_GROUP or DROPBOX_TEST_GROUPS — group grants (scope 2.1–2.4, 3,866 QA cases) '
+        + 'will be SKIPPED. Set either to the display name of an existing Dropbox team group.'
+      );
     }
     // The singular keys are unchanged, so the positional ladder behaves exactly as before. The
     // plural sets are what the breadth matrix uses, and each falls back to the singular value — a
@@ -875,6 +924,42 @@ class DropboxTestDataAgent extends BaseAgent {
     for (const name of RESERVED_STYLE_NAMES) {
       await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Reserved-on-Windows name: ${name}\n`, opts, report);
     }
+
+    // Names carrying characters the MICROSOFT destinations actually reject.
+    //
+    // SPECIAL_CHARS_NAME above is `~!@#$%^&()_+[]{};,.=` — every one of which SharePoint and
+    // OneDrive accept unchanged. So on a Microsoft destination feature 7.1 (Special Character
+    // Replacement) had nothing to exercise and reported "not assessed" on every run, while reading
+    // like coverage. The Microsoft invalid set is `" * : < > ? / \ |`.
+    //
+    // `/` and `\` are omitted deliberately: Dropbox uses them as path separators and cannot hold
+    // them in a name, so they are documented below rather than attempted. Each name is seeded
+    // individually — Dropbox rejects some of these on some accounts, and one refusal must not take
+    // the rest of the row with it.
+    //
+    // Harmless to the Google combinations that share this agent: Google accepts these characters,
+    // so the files simply arrive unchanged, which is exactly what the Google scope document says
+    // feature 5.1 should observe.
+    for (const name of MS_INVALID_CHAR_NAMES) {
+      try {
+        await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Destination-invalid characters: ${name}\n`,
+          opts, report);
+      } catch (err) {
+        report.notSeeded.push({
+          feature: `destination-invalid characters "${name}" (scope 7.1)`,
+          reason: `Dropbox refused this name (${err.message}), so the replacement rule cannot be `
+            + 'exercised with it. A limit of the source cloud, not missing coverage.',
+          manualSteps: [],
+        });
+        log.warn(`Special-character name "${name}" refused by Dropbox — reported as not seeded`);
+      }
+    }
+    report.notSeeded.push({
+      feature: 'names containing "/" or "\\" (scope 7.1, edge)',
+      reason: 'Dropbox uses both as path separators and cannot store either inside a name, so the '
+        + 'destination\'s replacement of them cannot be exercised from a Dropbox source.',
+      manualSteps: [],
+    });
     // Trailing dot/space are the two Dropbox itself rejects, so they are documented, not attempted.
     report.notSeeded.push({
       feature: 'trailing dot / trailing space names (scope 5.1, edge)',
@@ -940,6 +1025,26 @@ class DropboxTestDataAgent extends BaseAgent {
    * an in-scope link cannot distinguish "transformed correctly" from "transformed everything".
    *
    * The out-of-scope target is seeded OUTSIDE the seeding root deliberately.
+   *
+   * TWO documents are written, and only ONE of them is a fair test.
+   *
+   *   embedded_link_doc.docx        — a real Word document carrying real hyperlink relationships.
+   *                                   This is what feature 8.1 is judged on.
+   *   document-with-embedded-links.html — the same two links as plain <a href> in HTML. Kept as a
+   *                                   deliberate CONTRAST case, reported and never judged.
+   *
+   * The .docx exists because the .html cannot fail honestly. Scope 8.1 limits link rewriting to
+   * "supported file types where link rewriting is technically feasible", and plain HTML is not one
+   * of them — DriveTestDataAgent._createEmbeddedLinks makes exactly this point for the Drive pair:
+   * "A real .docx with a real hyperlink is used, not a .txt with a URL in it ... failing on it
+   * would report a defect against behaviour that was never promised." The live destination proves
+   * CloudFuze agrees: its own Erik E-EmbeddedLinks.csv carried 12 rows, every one a Paper document
+   * and not one for the .html, so the document it was failing on was never processed at all.
+   *
+   * The shared links are created FIRST, above, so the .docx embeds the real Dropbox URLs. If the
+   * in-scope link could not be created the .docx is SKIPPED and the reason recorded, rather than
+   * embedding a placeholder: a fabricated target can never be rewritten, so 8.1 would fail forever
+   * on data that was never valid — unfalsifiable, which is the bug this seeding fixes.
    */
   async _seedEmbeddedLinks(root, opts, log, report) {
     const dir = `${root}/09-Embedded-Links`;
@@ -974,9 +1079,85 @@ class DropboxTestDataAgent extends BaseAgent {
 <p>Out of scope: <a href="${outOfScopeUrl || 'https://www.dropbox.com/OUT_OF_SCOPE_LINK_UNAVAILABLE'}">out-of-scope target</a></p>
 </body></html>
 `;
-    await this._put(`${dir}/document-with-embedded-links.html`, body, opts, report);
-    report.embeddedLinks = { inScopeUrl, outOfScopeUrl };
-    log.info('Seeded embedded-link document');
+    const htmlPath = `${dir}/document-with-embedded-links.html`;
+    await this._put(htmlPath, body, opts, report);
+
+    // ── The judged artefact: a real .docx with real hyperlink relationships ──────────────
+    //
+    // Built with `docx` (already a dependency, used the same way by DriveTestDataAgent), so the
+    // links live in word/_rels/document.xml.rels as TargetMode="External" relationships — the
+    // thing a migration actually rewrites, and the thing utils/docxLinks reads back.
+    //
+    // The URLs are deliberately NOT printed as body text. Google auto-links a bare URL when it
+    // converts a document, which would add a second anchor carrying the SOURCE address as its own
+    // label and fail 8.1 on a document whose real hyperlink was rewritten correctly. That is the
+    // false-failure trap the Drive→SharePoint document is seeded to catch, and it is not repeated.
+    const docxPath = `${dir}/embedded_link_doc.docx`;
+    let docxSeeded = false;
+    let docxSkippedReason = null;
+    if (inScopeUrl === '') {
+      docxSkippedReason = 'the Dropbox shared link for the in-scope target could not be created, '
+        + 'so the document would have had to embed a placeholder URL. A target that cannot be '
+        + 'rewritten would make feature 8.1 unfalsifiable, so the .docx was skipped instead';
+      report.skipped.push({ step: 'embedded link (.docx)', reason: docxSkippedReason });
+      log.warn(`Skipped embedded_link_doc.docx: ${docxSkippedReason}`);
+    } else {
+      try {
+        const { Document, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
+        const children = [
+          new Paragraph({
+            children: [new TextRun('Embedded link test document (scope 8.1 / 10.8).')],
+          }),
+          new Paragraph({ children: [new TextRun('')] }),
+          new Paragraph({
+            children: [
+              new TextRun('Open the in-scope target here: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'in-scope target', style: 'Hyperlink' })],
+                link: inScopeUrl,
+              }),
+            ],
+          }),
+        ];
+        if (outOfScopeUrl !== '') {
+          children.push(new Paragraph({ children: [new TextRun('')] }));
+          children.push(new Paragraph({
+            children: [
+              new TextRun('And the out-of-scope target here: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'out-of-scope target', style: 'Hyperlink' })],
+                link: outOfScopeUrl,
+              }),
+            ],
+          }));
+        }
+        const buffer = await Packer.toBuffer(new Document({ sections: [{ children }] }));
+        await this._put(docxPath, buffer, opts, report);
+        docxSeeded = true;
+      } catch (err) {
+        docxSkippedReason = `building or uploading the .docx failed: ${err.message}`;
+        report.errors.push({ step: 'embedded link (.docx)', error: err.message });
+      }
+    }
+
+    // Both documents are named, so the report can tell a reader exactly which file to open and
+    // which one carries no verdict — the generic "check an embedded link" instruction nobody can
+    // act on is what left this row unverified for so long.
+    report.embeddedLinks = {
+      inScopeUrl,
+      outOfScopeUrl,
+      judgedDocument: docxSeeded ? docxPath : null,
+      judgedDocumentName: 'embedded_link_doc.docx',
+      docxSeeded,
+      docxSkippedReason,
+      contrastDocument: htmlPath,
+      contrastDocumentName: 'document-with-embedded-links.html',
+      contrastNote: 'Plain HTML is not a supported link-rewrite target under scope 8.1, so this '
+        + 'document is reported and never judged.',
+    };
+    log.info(
+      `Seeded embedded-link documents (.docx ${docxSeeded ? 'written' : 'SKIPPED'}, .html written)`
+    );
   }
 
   /**
@@ -1030,7 +1211,7 @@ class DropboxTestDataAgent extends BaseAgent {
    * The 62/63/64-column tables are the boundary the scope document names, so they are generated
    * rather than hand-written — three tables nobody would type correctly by hand.
    */
-  _paperMarkdown() {
+  _paperMarkdown(root = '/QA-Automation') {
     const table = (cols) => {
       const head = Array.from({ length: cols }, (_, i) => `c${i + 1}`);
       return [
@@ -1049,7 +1230,14 @@ class DropboxTestDataAgent extends BaseAgent {
       '## 10.7 Links', '',
       'An external [hyperlink to the spec](https://example.invalid/spec) in a sentence.', '',
       '## 10.8 Dropbox file links', '',
-      'A [link to an in-scope file](https://www.dropbox.com/home/QA-Automation/03-File-Formats)',
+      // The in-scope target must live inside THIS RUN's root, or it is not in scope at all.
+      //
+      // This was hardcoded to `/QA-Automation`, which is correct only when that happens to be the
+      // seeded root. Seeding into `/QA-dropbox-sharepoint` left the "in-scope" link pointing at a
+      // folder outside the migration, so CloudFuze could not rewrite it — and its own
+      // Erik E-EmbeddedLinks.csv said so plainly, "Parent File/Link Doesn't found", for both links.
+      // Validation then reported that as a product defect in feature 9.1/11.8. It was ours.
+      `A [link to an in-scope file](https://www.dropbox.com/home${root}/03-File-Formats)`,
       'and a [link to an out-of-scope file](https://www.dropbox.com/home/Elsewhere/other.txt).', '',
       '## 10.9 Tables — the 62 / 63 / 64 column boundary', '',
       table(62), '',
@@ -1151,7 +1339,42 @@ class DropboxTestDataAgent extends BaseAgent {
     }
 
     try {
-      const made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(), opts);
+      // Retry, because `files/paper/create` fails transiently and each failure costs the whole of
+      // §11 — nineteen of this combination's thirty-six features — for that run.
+      //
+      // Three different transient errors were observed on 2026-09-09/10 alone, all on the same
+      // account within hours: `insufficient_permissions` (409), a bare 409, and
+      // `Invalid arguments supplied` (400). Each succeeded on a plain retry minutes later, and on
+      // 10 Sep the SAME seeding pass failed on /QA-dropbox-sharepoint and succeeded on
+      // /QA-Automation moments apart. Dropbox retired the Paper authoring API, so this endpoint is
+      // not going to get more reliable.
+      //
+      // A fresh path per attempt: the note above records that reusing a path that has held a Paper
+      // doc produces an EMPTY document at the destination, so a retry must not reuse the one that
+      // just failed.
+      // Create ONCE, then verify — never retry. `files/paper/create` is not idempotent (every POST
+      // makes a document) and it reports failure while succeeding: on run f95a9bb8 all three
+      // attempts threw HTTP 400 and all three documents existed afterwards. So look before
+      // believing the error, and delete any duplicate the client's own retryWithBackoff produced.
+      let made = null;
+      try {
+        made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(root), opts);
+      } catch (err) {
+        const found = (await dropboxClient.listFolder(dir, opts).catch(() => []))
+          .filter((x) => /^qa-paper-.*\.papert?$/i.test(String(x.name || '')));
+        if (found.length === 0) throw err;
+        // Keep the first and remove any extras the client's own retry produced, or the §11 counts
+        // are summed across duplicates.
+        found.sort((x, y) => String(x.name).localeCompare(String(y.name)));
+        for (const dup of found.slice(1)) {
+          await dropboxClient.deletePath(dup.path || `${dir}/${dup.name}`, opts).catch(() => {});
+          log.warn(`Removed duplicate Paper document created by the retry: ${dup.name}`);
+        }
+        made = { path: found[0].path || `${dir}/${found[0].name}`, revision: null };
+        log.warn(`files/paper/create reported "${err.message}" but the document exists at `
+          + `${made.path} — treating as created. This endpoint is retired by Dropbox and reports `
+          + 'failure while succeeding.');
+      }
       if (made.path !== path) {
         // Dropbox still renamed it, so the delete did not take effect — say so rather than let the
         // report compare a document under a name it did not expect.
@@ -1271,7 +1494,9 @@ class DropboxTestDataAgent extends BaseAgent {
    */
   async applyDeltaChanges(context) {
     const log = logger.child({ agent: this.name, executionId: context.executionId });
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    const root = dropboxClient.dbxPath(
+      context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
     const asMemberId = await this._resolveMemberContext(context, log);
     const opts = { asMemberId };
     const changes = { renamed: [], added: [], updated: [], moved: [], unchanged: [], errors: [] };

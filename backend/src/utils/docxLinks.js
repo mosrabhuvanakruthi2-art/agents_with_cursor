@@ -129,4 +129,38 @@ function extractDocxLinks(buf) {
   return { ok: true, reason: null, targets: [...new Set(targets)], text };
 }
 
-module.exports = { extractDocxLinks };
+/**
+ * The RAW `word/document.xml` of a .docx.
+ *
+ * `extractDocxLinks` returns the visible text with tags stripped, which is right for reading a URL
+ * out of a document but loses everything structural. Comparing a migrated Dropbox Paper document
+ * against its source needs the markup itself — `<w:tbl>` for tables, `<w:numPr>` for list items,
+ * `<w:drawing>` for images — none of which survive the strip.
+ *
+ * Purely ADDITIVE: `extractDocxLinks` is untouched, so `googledriveToSharepoint.js`, the only other
+ * caller, behaves exactly as before. Added rather than reimplemented in the calling combination
+ * because the ZIP reading above is ~80 lines and duplicating it to reach the same bytes would be
+ * worse than one new export.
+ *
+ * @returns {{ ok: boolean, reason: string|null, xml: string }} `ok:false` with a reason when the
+ *   archive cannot be read — never an empty string, because "no tables" and "could not look" must
+ *   not reach a report as the same thing.
+ */
+function extractDocxXml(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 22) {
+    return { ok: false, reason: 'not a readable file', xml: '' };
+  }
+  const entries = readEntries(buf);
+  if (!entries) return { ok: false, reason: 'not a valid .docx archive', xml: '' };
+
+  const bodyEntry = entries.find((e) => e.name === 'word/document.xml');
+  if (!bodyEntry) return { ok: false, reason: 'no Word document part inside the archive', xml: '' };
+
+  const body = readEntry(buf, bodyEntry);
+  if (body === null) {
+    return { ok: false, reason: 'the document part could not be decompressed', xml: '' };
+  }
+  return { ok: true, reason: null, xml: String(body) };
+}
+
+module.exports = { extractDocxLinks, extractDocxXml };

@@ -4,6 +4,7 @@ import {
   signOutGoogle, signOutMicrosoft, getSourceUsers, getDestinationUsers,
   getBoxOAuthUrl, signOutBox,
   getDropboxOAuthUrl, signOutDropbox,
+  getShareFileOAuthUrl, signOutShareFile,
 } from '../services/api';
 import usePersistedState from './usePersistedState';
 import { DOMAINS, accountProviderFor } from '../components/runwizard/domains';
@@ -275,7 +276,7 @@ export default function useRunWizard() {
     } catch (err) { setError(err.response?.data?.error || err.message); setBusy(false); }
   }
 
-  // Box and Dropbox OAuth — the same popup → /oauth-callback → localStorage result flow as
+  // Box, Dropbox and ShareFile OAuth — the same popup → /oauth-callback → localStorage result flow as
   // Microsoft. Only the URL endpoint differs, so the flow lives here once: a second copy would
   // drift the moment one of them changed.
   async function connectViaPopup(getOAuthUrl) {
@@ -305,12 +306,17 @@ export default function useRunWizard() {
 
   const connectBox = () => connectViaPopup(getBoxOAuthUrl);
   const connectDropbox = () => connectViaPopup(getDropboxOAuthUrl);
+  // ShareFile's URL route answers 400 naming the missing setting while its OAuth app is
+  // unconfigured; connectViaPopup already puts that flat `error` string into `error` verbatim
+  // and opens no popup, which is what StepConnect renders.
+  const connectShareFile = () => connectViaPopup(getShareFileOAuthUrl);
 
   async function disconnect(provider, email) {
     try {
       if (provider === 'google') await signOutGoogle(email);
       else if (provider === 'box') await signOutBox(email);
       else if (provider === 'dropbox') await signOutDropbox(email);
+      else if (provider === 'sharefile') await signOutShareFile(email);
       else await signOutMicrosoft(email);
       if (srcEmail === email) setSrcEmail('');
       if (dstEmail === email) setDstEmail('');
@@ -663,7 +669,8 @@ export default function useRunWizard() {
     domain, setDomain,
     srcProvider, setSrcProvider, srcEmail, setSrcEmail,
     dstProvider, setDstProvider, dstEmail, setDstEmail,
-    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, connectDropbox, disconnect,
+    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, connectDropbox,
+    connectShareFile, disconnect,
     fetched, needsFetch, fetchUsers, sourceUsers, destUsers, mappings, selectedIndices,
     togglePair, selectAll, deselectAll, manualMap, removeMapping, importUserMappingsCsv, clearImportedMappings, unmappedSource, unmappedDest, resetMapping,
     migrationServerUrl, setMigrationServerUrl, migrationServerEmail, setMigrationServerEmail,

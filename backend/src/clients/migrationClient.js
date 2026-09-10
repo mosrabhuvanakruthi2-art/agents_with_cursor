@@ -855,9 +855,23 @@ function findCloudId(clouds, email, cloudNameHint) {
   // the wrong-tenant substitution described below, and it happened: 'googledrive' fell through to
   // BOX_BUSINESS by email. Mail hints ('google'/'microsoft') are deliberately excluded — they map
   // onto several cloud names and have always relied on this fallback.
+  //
+  // 'SHAREFILE' added 2026-09-09. Measured against the live qarelease cloud list
+  // (SHAREFILE_BUSINESS / zara@storefuze.com / 6aa10605b17d0e315c812361): a 'sharefile' hint with
+  // no ShareFile cloud registered resolved to BOX_BUSINESS by email — the same wrong-cloud
+  // substitution described above. SHAREFILEBUSINESS starts with SHAREFILE, so the happy path needs
+  // no HINT_ALIASES entry; this set is what makes the miss refuse instead of substitute.
+  //
+  // 'CITRIX' is a RETIRED provider key and is kept here deliberately. Nothing else in backend/src
+  // references it (grepped 2026-09-09), so it looks removable — but removing it does not make a
+  // 'citrix' hint fail, it makes it SUCCEED wrongly: with no cloud name matching CITRIX the hint
+  // falls out of this guard into the cross-type email fallback below and returns whatever cloud
+  // carries the account's address (measured: SHAREFILE_BUSINESS, with only a warning). Left in the
+  // set, a stray 'citrix' hint refuses and names the registered clouds, which is the required
+  // behaviour for a retired key.
   const CONTENT_HINTS = new Set([
     'BOX', 'DROPBOX', 'GOOGLEDRIVE', 'GOOGLESHAREDDRIVE', 'ONEDRIVE', 'SHAREPOINT',
-    'EGNYTE', 'CITRIX',
+    'EGNYTE', 'SHAREFILE', 'CITRIX',
   ]);
   const anyCloudEmailKnown = clouds.some((c) => cloudEmail(c) !== '');
   if (hint && CONTENT_HINTS.has(hint) && typedClouds.length === 0 && anyCloudEmailKnown) {
@@ -1849,7 +1863,17 @@ ${pathCsv}`);
       `notifyExternalUsers=${opt('notifyExternalUsers', false)}`,
       'fromDate=null',
       `toDate=${encodeURIComponent(toDate)}`,
-      'createdTimeForFiles=false',
+      // CloudFuze's two timestamp-preservation flags. Scope 4.1 ("maintaining the original
+      // timestamps, including creation and modification dates") needs BOTH, and this one was
+      // hardcoded false — so a validator comparing created dates could only ever report a mismatch
+      // the job had never asked to avoid.
+      //
+      // Now driven by a job option, exactly like modifiedTimeForFiles. Note the default: FALSE,
+      // i.e. today's hardcoded value, because this builder is shared by every content combination
+      // (Box→SharePoint, Drive→SharePoint, Dropbox→Google, …) and a run that names no option must
+      // send the same job it sent before. `opt()` defaults to true, so the second argument is not
+      // optional here — see notifyInternalUsers above for the same pattern.
+      `createdTimeForFiles=${opt('preserveCreatedTime', false)}`,
       `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
       // Job Options step: "Replace special characters with" + "Exclude file types"
       `specialCharacter=${encodeURIComponent(context.replaceSpecialChar || '-')}`,
