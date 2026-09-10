@@ -619,7 +619,14 @@ export default function useRunWizard() {
           // Both CSV styles are accepted. Writing the BASE on every row ("/QA/Documents") appends
           // the drive; writing the FULL path ("/QA/Documents/QA_Team1") is left alone. The append is
           // therefore idempotent — it never produces "/QA/Documents/QA_Team1/QA_Team1".
-          const drive = String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '');
+          // The drive-name destination append exists to stop TWO Google Shared Drives from
+          // colliding into the same destination folder. Dropbox (and Box) have no "shared drive"
+          // concept, so "Source drive" there is really the Dropbox team-space name — appending it
+          // built a destination CloudFuze had never seen and had no reason to accept
+          // ("/Dropbox-QA-Dest/Erik E" instead of "/Dropbox-QA-Dest"), one keystroke away from a
+          // rejected job with no indication why. Scoped to the providers the feature was built for.
+          const driveCapable = srcProvider === 'googledrive' || srcProvider === 'googleshareddrive';
+          const drive = driveCapable ? String(r.sourceDriveName || '').trim().replace(/^\/+|\/+$/g, '') : '';
           const rowBase = String(r.destinationPath || '').trim();
           const chosen = rowBase || contentPaths.destinationPath || '';
           const base = String(chosen).replace(/\/+$/, '');
@@ -631,7 +638,10 @@ export default function useRunWizard() {
           return {
             sourceEmail: r.sourceEmail || pair?.source?.email,
             destinationEmail: pair?.destination?.email,
-            sourceDriveName: r.sourceDriveName || undefined,
+            // Not sent for a non-drive-capable source: the validator's report tags a unit by
+            // sourceDriveName when present, so a Dropbox team-space name leaking through here
+            // relabels the report row "[Erik E]" instead of by its destination folder.
+            sourceDriveName: driveCapable ? (r.sourceDriveName || undefined) : undefined,
             driveAccessMode: r.driveAccessMode || undefined,
             // Same folder name in every drive — the data is identical, the drives differ.
             sourceFolderName: contentPaths.sourceFolderName || undefined,
