@@ -366,15 +366,23 @@ const PAPER_DISPUTED = {
  * The HTML document 8.1 used to be judged on, and now is NOT — the deliberate contrast case.
  *
  * Judging 8.1 on this file produced an INVALID FAIL, and that FAIL was being reported as a
- * CloudFuze defect. Scope 8.1 promises link rewriting for "supported file types where link
- * rewriting is technically feasible", and a plain <a href> in an .html file is not one of them.
- * DriveTestDataAgent._createEmbeddedLinks states the rule for the Drive pair in as many words:
- * "A real .docx with a real hyperlink is used, not a .txt with a URL in it ... failing on it would
- * report a defect against behaviour that was never promised."
+ * CloudFuze defect. What justifies not judging it is EVIDENCE FROM THIS PAIR, not a scope quote:
+ * `Erik E-EmbeddedLinks.csv` at the migrated destination carried 12 rows, every one of them a Paper
+ * document, and NOT ONE for this .html — so CloudFuze never processed the document whose
+ * unrewritten href was being failed. A feature cannot be failed on a file the migration
+ * demonstrably never touched.
  *
- * The live destination corroborates it independently. `Erik E-EmbeddedLinks.csv` on the migrated
- * Shared Drive carried 12 rows, every one of them a Paper document, and NOT ONE for this .html —
- * so CloudFuze never processed the document whose unrewritten href we were failing on.
+ * READ THIS BEFORE CITING A FILE-TYPE LIMIT. An earlier version of this comment justified the
+ * exemption by quoting scope 8.1 as promising rewriting only for "supported file types where link
+ * rewriting is technically feasible". That wording is NOT in this combination's scope: it appears
+ * only in google-shared-drive-to-sharepoint-inscope.md:190, a DIFFERENT pair.
+ * dropbox-to-google-inscope.md:159-162 states 8.1 with no file-type qualifier at all, and
+ * dropbox-to-google-outscope.md:50-54 is explicit that a limitation must be "added to the official
+ * out-of-scope document first" rather than assumed by the validator — "neither hiding a defect nor
+ * inventing one". Borrowing another combination's sentence to excuse a feature here is precisely
+ * that. So the behaviour below is unchanged and correct on the CSV evidence, but the file-type rule
+ * itself is UNDOCUMENTED FOR THIS PAIR and awaits the combination owner's ruling. If the owner
+ * confirms it, get it into dropbox-to-google-outscope.md and cite that instead.
  *
  * The file is still seeded and still read, because "HTML was not rewritten" is worth stating. It is
  * reported at INFO under EMBEDDED_CONTRAST, a name the feature checklist deliberately does not key
@@ -1452,14 +1460,24 @@ function judgeVersionHistory(versionInfo, opts = {}) {
   if (more.length > 0) {
     parts.push(`${more.length} arrived with MORE versions than the source (${list(more, 10)})`);
   }
+  // The shortfall goes FIRST, deliberately.
+  //
+  // This verdict is a WARN, which the feature checklist renders as "na" — so the status column
+  // alone reads "not applicable" next to a real version-count gap, and QA reported exactly that
+  // symptom ("versions count missing at the destination") as a defect that had gone missing from
+  // the report. The checklist also truncates this text to 400 characters and the PDF clips it to
+  // three lines, so an opening clause like "history arrived on all N files" spent the visible part
+  // of the row sounding reassuring and pushed the actual finding out of view. State the gap in the
+  // first words; keep the reasoning after it.
   return {
     status: 'WARN',
-    detail: `History arrived on all ${versioned.length} versioned file(s), but the counts do not `
-      + `match: ${parts.join('; ')}. The job requested ALL versions, and scope 9.1 asks for every `
-      + 'source version, so this is a real observation — but it is surfaced for a human rather '
-      + 'than failed, because revision merging has never been demonstrated on this pair and no '
-      + 'version limitation is recorded in dropbox-to-google-outscope.md. If merging IS confirmed '
-      + 'it belongs in that out-of-scope document; if it is not, this shortfall is a defect.',
+    detail: `VERSION COUNT MISMATCH — ${parts.join('; ')}. History did arrive on all `
+      + `${versioned.length} versioned file(s), so this is a count gap rather than a total loss. `
+      + 'The job requested ALL versions and scope 9.1 asks for every source version, so the gap is '
+      + 'a real observation. It is surfaced for a human rather than failed because revision merging '
+      + 'has never been demonstrated on this pair and no version limitation is recorded in '
+      + 'dropbox-to-google-outscope.md. If merging IS confirmed it belongs in that out-of-scope '
+      + 'document; if it is not, this shortfall is a defect and should be failed.',
   };
 }
 
@@ -1811,12 +1829,14 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     this._rollUpItemChecks(push, totals, itemDetails);
     this._checkSpecialCharacters(push, sourceTree, cmp, rules, totals);
     this._checkLongPaths(push, sourceTree, cmp, rules, totals);
+    await this._checkContentHashes(push, cmp, destEmail, dbxOpts, totals, itemDetails);
     // The 8.1 CSV is read once, here, and handed to the document check below: CloudFuze's
     // embedded-links report carries a Destination url per link, which is an expected value the
     // migrated document can be compared against. Passed explicitly rather than stashed on `this`,
     // because a validator instance is reused across units and a leftover CSV would be cross-checked
     // against the wrong user's document.
-    const csvReports = await this._checkCsvReports(push, migrated, destEmail, destRoot, totals);
+    const csvReports = await this._checkCsvReports(push, migrated, destEmail, destRoot, totals,
+      sourcePath);
     await this._checkEmbeddedLinks(push, sourceTree, cmp, destEmail, totals,
       (csvReports || {})['8.1']);
     this._checkPaper(push, sourceTree, cmp, totals);
@@ -2245,10 +2265,26 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         // sitting entirely on items CloudFuze had not finished sharing is NOT a defect. Reporting
         // it as FAIL is what filed four Neutara tickets (QT-63, QT-67, CF-30684, CF-30695)
         // against permissions that a later read showed were correct.
+        // When EVERY compared item is unshared, that is worth saying out loud as well.
+        //
+        // "A few items lag behind the copy" and "not one item received any grant" were reported in
+        // identical words, so a permissions feature that had not migrated at all read exactly like
+        // an ordinary race. The verdict stays WARN either way — deliberately, not by oversight:
+        // CloudFuze applies item sharing tens of minutes after the PROCESSED status, so a total
+        // absence genuinely cannot be told apart from an unsettled run at this moment, and FAILing
+        // it is what filed QT-63, QT-67, CF-30684 and CF-30695 against permissions that a later
+        // read showed were correct. Only the wording changes, so a human knows which to go and
+        // check.
+        const allPending = pending >= paths.size;
         push('WARN', `${id} ${label}`,
           `Not judgeable yet: ${pending} item(s) still carried only inherited drive grants when `
           + 'validation ran. CloudFuze applies item sharing AFTER the copy completes, tens of '
-          + 'minutes behind the PROCESSED status — re-validate this execution once it has settled.');
+          + 'minutes behind the PROCESSED status — re-validate this execution once it has settled.'
+          + (allPending
+            ? ` Note that this is ALL ${paths.size} item(s) compared for this feature, not a `
+              + 'subset: if a re-validation still reports it, the grants never arrived at all '
+              + 'rather than arriving late.'
+            : ''));
       } else {
         const esc = bad.filter((m) => m.escalation).length;
         push('FAIL', `${id} ${label}`,
@@ -2507,6 +2543,20 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
     totals.specialChars.arrived += arrived;
 
+    // Nothing paired, so nothing was compared — and `renamed` is empty for that reason alone.
+    //
+    // Every risky item that fails to pair hits the `continue` above, which left `arrived` at 0 and
+    // `renamed` empty, and the branch below then reported PASS reading "0 name(s) with special
+    // characters arrived UNCHANGED". A green feature off zero comparisons is the defect this
+    // project exists to catch, so the count now has to be positive for the pass to mean anything.
+    if (arrived === 0) {
+      push('WARN', '5.1 Special Characters Replacement',
+        `${risky.length} source name(s) carry special characters, but none of them paired with a `
+        + 'destination item, so not one name could be compared and this feature is UNVERIFIED. '
+        + 'The absence itself is reported by the structure check (1.1), which owns it.');
+      return;
+    }
+
     if (renamed.length === 0) {
       push('PASS', '5.1 Special Characters Replacement',
         `${arrived} name(s) with special characters arrived UNCHANGED, which is the documented `
@@ -2572,11 +2622,38 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       declaredLimit: rules.pathLengthLimit === Infinity ? 'none (Infinity)' : rules.pathLengthLimit,
     });
 
-    if (minMissing == null) {
+    // "Everything arrived" only means something once something DEEP was actually tried.
+    //
+    // The pass below fires whenever nothing is missing, which is also true of a source that never
+    // held a long path at all — a shallow fixture tree would report 7.1 green having tested
+    // nothing. DropboxTestDataAgent._seedLongPath builds a 20-level chain under 08-Long-Paths for
+    // exactly this feature (and contentTolerance's treeDepth: 25 exists so that chain is not
+    // truncated away), so a run with no deep path is a run where seeding did not happen.
+    //
+    // Depth OR raw length qualifies: a real customer source may carry one deeply-named file rather
+    // than a deliberate chain, and that exercises the feature just as well.
+    const LONG_PATH_MIN_DEPTH = 10;
+    const LONG_PATH_MIN_ENCODED = 200;
+    const deepestSourceDepth = Math.max(
+      0, ...sourceTree.map((i) => core.segmentsOf(i.path).length)
+    );
+    const longestSourceEncoded = core.encodedPathLength(longest.path);
+    const exercised = deepestSourceDepth >= LONG_PATH_MIN_DEPTH
+      || longestSourceEncoded >= LONG_PATH_MIN_ENCODED;
+
+    if (minMissing == null && !exercised) {
+      push('WARN', '7.1 Long-File/folder path',
+        `Not exercised: every item arrived, but the deepest source path is only `
+        + `${deepestSourceDepth} level(s) / ${longestSourceEncoded} encoded chars, which tests no `
+        + `path limit (the bar is ${LONG_PATH_MIN_DEPTH} levels or ${LONG_PATH_MIN_ENCODED} chars). `
+        + 'Reported rather than passed: "nothing was missing" is not evidence about long paths when '
+        + 'no long path existed. DropboxTestDataAgent._seedLongPath seeds a 20-level chain under '
+        + '08-Long-Paths, so an empty result here means seeding did not run or was cleared.');
+    } else if (minMissing == null) {
       push('PASS', '7.1 Long-File/folder path',
-        `Every item arrived, including the longest source path (${maxArrived} encoded chars). Google `
-        + 'declares no path limit, so intact deep data is the documented outcome and no placeholder '
-        + 'link was expected.');
+        `Every item arrived, including the longest source path (${maxArrived} encoded chars, `
+        + `${deepestSourceDepth} levels deep). Google declares no path limit, so intact deep data is `
+        + 'the documented outcome and no placeholder link was expected.');
     } else if (minMissing > maxArrived) {
       // Everything short arrived and everything long did not — that is the signature of a real limit.
       push('FAIL', '7.1 Long-File/folder path',
@@ -2603,13 +2680,79 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
   }
 
   /**
+   * Tier B — the actual bytes, compared by SHA-256 on both sides.
+   *
+   * This file's header has advertised "Tier B — file content hashes" since it was written, and
+   * `totals.hashedCount` / `notHashedCount` / `hashMismatches` were initialised and then never
+   * written by anything: no byte comparison ran on ANY Dropbox→Google run. A truncated or
+   * corrupted pass-through file therefore passed on its size band alone, and `convertedFileSize`
+   * bands go from 0.0 to 25.0 precisely because size cannot indicate correctness — so for
+   * converted files nothing was checking content at all.
+   *
+   * Opt-in via CONTENT_DEEP_VALIDATE_FILE_HASH because it downloads every hashable file twice, and
+   * capped by DEEP_CONTENT_MAX_FILES. `core.tierBHashes` already excludes converted and Google
+   * native files, whose destination bytes a converter produced and which can never hash equal;
+   * they come back in `notHashed` with a reason and are never counted as passes.
+   */
+  async _checkContentHashes(push, cmp, destEmail, dbxOpts, totals, itemDetails) {
+    if (!env.CONTENT_DEEP_VALIDATE_FILE_HASH) {
+      // Stated rather than skipped silently: a reader must not take the absence of a hash finding
+      // for evidence that the bytes were checked.
+      push('INFO', 'File content hashes (Tier B)',
+        'NOT run: CONTENT_DEEP_VALIDATE_FILE_HASH is not set. Byte comparison downloads every '
+        + 'hashable file twice, so it is opt-in. Structure, names, sizes, permissions, links, '
+        + 'versions and timestamps were still compared — file CONTENT was not.');
+      return;
+    }
+
+    const result = await core.tierBHashes(
+      cmp.matched.values(),
+      // The ABSOLUTE Dropbox path, not the relativized one: `path` has had the root stripped for
+      // the tree comparison and Dropbox does not know it. `dbxPath` is kept on every source item
+      // at scan time for exactly these per-item lookups.
+      (item) => dropboxClient.downloadFile(item.dbxPath || item.path, dbxOpts),
+      (item) => driveClient.downloadFile(item.id, destEmail),
+      { maxFiles: env.DEEP_CONTENT_MAX_FILES, log: logger }
+    );
+
+    totals.hashedCount += result.hashed.filter((h) => h.ok !== false).length;
+    totals.notHashedCount += result.notHashed.length;
+    for (const m of result.mismatches) totals.hashMismatches.push(m);
+
+    // Carry each hash onto its per-item row, so the report shows it beside the item rather than
+    // only as a summary count.
+    const byPath = new Map(itemDetails.map((r) => [r.path, r]));
+    for (const h of result.hashed) {
+      const row = byPath.get(h.path);
+      if (row) row.contentHash = { sha256: h.sha256, ok: h.ok !== false };
+    }
+
+    if (result.scanned === 0) {
+      push('WARN', 'File content hashes (Tier B)',
+        `Nothing could be byte-compared: ${result.notHashed.length} file(s) are converted, Google `
+        + 'native, or unreadable, and a converter\'s output can never hash equal to its input. '
+        + 'This is not a pass — no file content was verified.');
+    } else if (result.mismatches.length === 0) {
+      push('PASS', 'File content hashes (Tier B)',
+        `${result.scanned} file(s) are byte-identical at the destination (SHA-256). `
+        + `${result.notHashed.length} not hashed (converted, native, or beyond the `
+        + `${env.DEEP_CONTENT_MAX_FILES}-file cap) — reported separately and NOT counted as passes.`);
+    } else {
+      push('FAIL', `File content hashes (Tier B) — ${result.mismatches.length} file(s) differ`,
+        `The destination bytes do not match the source: `
+        + result.mismatches.slice(0, 10)
+          .map((m) => `${m.path} (${m.sourceBytes}B → ${m.destBytes}B)`).join(' | '));
+    }
+  }
+
+  /**
    * Features 3.1 / 3.2 / 8.1 — the CSV reports CloudFuze writes into the destination.
    *
    * These are ordinary files. There is no special API for them, which is worth restating: two
    * features on the sibling combination were marked "not automated — no API for the CSV" for months
    * while the files sat in the destination the whole time.
    */
-  async _checkCsvReports(push, migrated, destEmail, destRoot, totals) {
+  async _checkCsvReports(push, migrated, destEmail, destRoot, totals, sourcePath) {
     const children = await this.listChildren(migrated.id, destEmail, destRoot.driveId);
 
     // Match only CSV FILES, never folders.
@@ -2640,12 +2783,33 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       }
     }
 
+    // 3.1/3.2's CSV is SUPPORTING evidence, for the same reason 8.1's is — see the note below.
+    //
+    // This used to push PASS on the file merely existing ("present with 0 row(s)") under a name the
+    // 3.1 and 3.2 checklist patterns both matched, so a written report contributed a pass to two
+    // documented features. Two things are wrong with that. A report proves a report was written,
+    // not that a link works — `linkFeature` compares the live links and owns the verdict. And the
+    // rows are not necessarily even this run's: every combination appends to the same CSV in the
+    // destination, so the count includes other pairs' links. Rows are therefore filtered to this
+    // run's source path before anything is claimed, and the unfiltered total is stated beside it
+    // rather than hidden.
     if (found['3.1']) {
-      push('PASS', '3.x Shared Link CSV', `"${found['3.1'].name}" present with ${found['3.1'].rows} row(s)`);
+      const needle = String(sourcePath || '').toLowerCase();
+      const mine = needle
+        ? found['3.1'].lines.filter((l) => String(l).toLowerCase().includes(needle))
+        : [];
+      push('INFO', '3.x Shared Link CSV (supporting evidence)',
+        `"${found['3.1'].name}" present with ${found['3.1'].rows} row(s) total, of which `
+        + `${mine.length} mention this run's source path (${sourcePath || 'unknown'}). Supporting `
+        + 'evidence only: the CSV is shared by every combination writing into this destination, and '
+        + 'a written report says nothing about whether a link resolves. Features 3.1 and 3.2 are '
+        + 'decided by comparing the live shared links — see those rows.');
     } else {
-      push('WARN', '3.x Shared Link CSV',
+      push('WARN', '3.x Shared Link CSV (supporting evidence)',
         'No shared-link CSV found in the destination root. Scope 3.1/3.2 say CloudFuze writes one, '
-        + 'so either none was produced or it landed elsewhere.');
+        + 'so either none was produced or it landed elsewhere. Reported on its own: the feature '
+        + 'verdicts come from the live links, so a missing CSV no longer decides 3.1 or 3.2 either '
+        + 'way.');
     }
     // 8.1's CSV is SUPPORTING evidence, not the verdict.
     //
@@ -2701,13 +2865,19 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     };
     push('INFO', EMBEDDED_CONTRAST,
       `${srcHtml.path} carries the same two links as plain HTML anchors, and it is NOT judged. `
-      + 'Plain HTML is not a supported link-rewrite target under scope 8.1, which limits rewriting '
-      + 'to "supported file types where link rewriting is technically feasible" — the same rule '
-      + 'DriveTestDataAgent._createEmbeddedLinks records for the Drive pair: "A real .docx with a '
-      + 'real hyperlink is used, not a .txt with a URL in it ... failing on it would report a '
-      + 'defect against behaviour that was never promised." CloudFuze\'s own embedded-links CSV on '
-      + 'the live destination held 12 rows, every one a Paper document and none for this .html, so '
-      + `it was never processed. ${state}. Feature 8.1 is decided by embedded_link_doc.docx alone.`);
+      + 'The reason is measured, not assumed: CloudFuze\'s own embedded-links CSV at the live '
+      + 'destination held 12 rows, every one a Paper document and none for this .html, so the '
+      + 'migration never processed it — and a feature cannot be failed on a file it never touched. '
+      + 'The standing rationale is that plain HTML is not a supported link-rewrite target, as '
+      + 'DriveTestDataAgent._createEmbeddedLinks records for the Drive pair — "failing on it would '
+      + 'report a defect against behaviour that was never promised". NOTE FOR THE COMBINATION '
+      + 'OWNER: that file-type rule is NOT documented for Dropbox → Google. The wording appears '
+      + 'only in the Google-Shared-Drive-to-SharePoint scope; dropbox-to-google-inscope.md 8.1 '
+      + 'carries no file-type qualifier, and dropbox-to-google-outscope.md requires a limitation to '
+      + 'be added to the official out-of-scope document before the validator leans on it. Not '
+      + 'judging this file rests on the CSV evidence above, which is measured for THIS pair; the '
+      + `file-type rule itself awaits a ruling. ${state}. Feature 8.1 is decided by `
+      + 'embedded_link_doc.docx alone.');
   }
 
   /**
@@ -3173,8 +3343,19 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       if (rows.length === 0) return null;
       if (rows.some((r) => r.status === 'FAIL')) return 'fail';
       if (rows.some((r) => r.status === 'WARN')) return 'warn';
+      // INFO describes, it does not assert. A feature whose rows are ALL INFO has been narrated
+      // and not verified: 9.2 Selective Versions reported PASS off one INFO row whose own text
+      // read "there is no N to verify", which is the defect this whole document is written around.
+      if (rows.every((r) => r.status === 'INFO')) return 'info';
       return 'pass';
     };
+
+    // The single place a row verdict becomes a FEATURE status. Only an explicit pass passes;
+    // 'warn' and 'info' both mean "not verified", which is `na`, never a green check. This lives
+    // here because four branches below used to spell the mapping out themselves and three of them
+    // spelled it differently — 10.1 turned a WARN into a pass, and the generic path turned an
+    // INFO-only feature into one.
+    const statusFor = (v) => (v === 'fail' ? 'fail' : v === 'pass' ? 'pass' : 'na');
     const scanned = totals.scannedSourceItems || 0;
 
     return DROPBOX_FEATURES.map((f) => {
@@ -3188,7 +3369,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         const rows = byName(/(^|\] )10\.1 Dropbox Papers Migration/);
         const v = worst(rows);
         return v
-          ? { ...f, status: v === 'fail' ? 'fail' : 'pass', detail: rows[0].detail }
+          ? { ...f, status: statusFor(v), detail: rows[0].detail }
           : na((totals.paperSourceCount || 0) === 0
             ? 'No Dropbox Paper documents in the source'
             : `${totals.paperSourceCount} Paper document(s) in the source, but the migration check `
@@ -3210,7 +3391,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
             ...f,
             // A WARN here means "measured, but not assessable" — na, never a pass. Reporting an
             // unexercised feature as passing is the failure mode this checklist exists to avoid.
-            status: v === 'fail' ? 'fail' : v === 'warn' ? 'na' : 'pass',
+            status: statusFor(v),
             detail: rows[0].detail,
           };
         }
@@ -3252,8 +3433,12 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         // destination AND the shared-links CSV report. So each feature takes the worst of its
         // own audience check and the CSV check — a written CSV cannot excuse missing link
         // permissions, which is exactly the live defect on this combination today.
-        '3.1': /(^|\] )3\.1 Shared Links|(^|\] )3\.x Shared Link CSV/,
-        '3.2': /(^|\] )3\.2 Shared Links|(^|\] )3\.x Shared Link CSV/,
+        // Keyed on the LIVE link comparison only. The CSV check is named "3.x Shared Link CSV
+        // (supporting evidence)" and deliberately does not match: it once contributed a PASS to
+        // both features on a file that existed with zero rows, and its rows are shared with every
+        // other combination writing into the same destination.
+        '3.1': /(^|\] )3\.1 Shared Links/,
+        '3.2': /(^|\] )3\.2 Shared Links/,
         '4.1': /4\.1 Metadata/,
         '5.1': /5\.1 Special Characters/,
         '6.1': /6\.1 Suppressing/,
@@ -3283,7 +3468,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         if (!structure) return na('The structure comparison did not run — nothing to base this on');
         return {
           ...f,
-          status: structure === 'fail' ? 'fail' : structure === 'warn' ? 'na' : 'pass',
+          status: statusFor(structure),
           detail: isDelta
             ? 'Delta run compared against the destination'
             : 'One-time migration delivered the source tree',
@@ -3295,9 +3480,10 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const rows = byName(pattern);
       const v = worst(rows);
       if (!v) return na('Not exercised by this run');
+
       return {
         ...f,
-        status: v === 'fail' ? 'fail' : v === 'warn' ? 'na' : 'pass',
+        status: statusFor(v),
         detail: rows.map((r) => r.detail).join(' | ').slice(0, 400),
       };
     });
