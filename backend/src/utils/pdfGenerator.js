@@ -2576,9 +2576,13 @@ function drawContentItemTree(doc, items, opts = {}) {
       const srcRole = p.sourceRole ?? p.boxRole;
       const dstRoles = p.destRoles ?? p.spRoles;
       const srcLabel = it.sourceLabel || (p.boxRole !== undefined ? 'Box' : 'Source');
+      // Symmetric with sourceLabel, and defaulting to 'SP' so every existing combination renders
+      // byte-identically. Without it a Google destination read "SharePoint "write" -> SP writer",
+      // naming the wrong cloud on the half of the row that describes the destination.
+      const dstLabel = it.destLabel || 'SP';
       const via = p.viaGroup ? ' (via group)' : '';
       const who = p.principalType === 'group' ? `group ${p.user}` : p.user;
-      const pStr = `↳ ${who}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: ${srcLabel} "${srcRole}" → SP ${dstRoles && dstRoles.length ? dstRoles.join('/') : 'no access'}${via} ${p.match ? '✓' : '✗'}`;
+      const pStr = `↳ ${who}${p.mappedTo && p.mappedTo !== String(p.user).toLowerCase() ? ` → ${p.mappedTo}` : ''}: ${srcLabel} "${srcRole}" → ${dstLabel} ${dstRoles && dstRoles.length ? dstRoles.join('/') : 'no access'}${via} ${p.match ? '✓' : '✗'}`;
       const pw = CONTENT_W - indent - 14;
       ensureSpace(doc, 11);
       const py = doc.y;
@@ -2592,7 +2596,7 @@ function drawContentItemTree(doc, items, opts = {}) {
       // Counts are informational for Google sources — the API merges revisions — so no ✗ is shown
       // when the destination simply has fewer.
       const mark = it.versions.source !== undefined ? '' : (dv < sv ? ' ✗' : ' ✓');
-      extras.push(`versions ${sv} → SP ${dv}${mark}`);
+      extras.push(`versions ${sv} → ${it.destLabel || 'SP'} ${dv}${mark}`);
     }
     if (it.timestamps) extras.push(`modified ${it.timestamps.match ? 'preserved ✓' : 'changed ✗'}`);
     if (it.author) extras.push(`modifiedBy ${it.author.spModBy || '?'} ${it.author.match ? '✓' : '✗'}`);
@@ -2703,6 +2707,13 @@ function groupFailureReasons(detail) {
   const counts = new Map();
   for (const seg of segments) {
     // The reason is the text after the last em dash; without one the whole segment is the reason.
+    //
+    // This rule is why a failing content check must LEAD with its finding and must not end in an
+    // explanatory clause after an em dash: the tail becomes the "root cause" in the Key Issues
+    // panel and the PDF failure index. Messages that ignored that were summarised as fragments
+    // starting mid-sentence ("but OTHER items in this same run…"). Widening the rule here was
+    // tried and reverted — a real reason label can be 90+ characters, so any length-based guess
+    // either keeps the fragments or breaks the mail report. Fix the message, not the extractor.
     const cut = seg.lastIndexOf('—');
     const reason = (cut >= 0 ? seg.slice(cut + 1) : seg).trim() || seg.trim();
     counts.set(reason, (counts.get(reason) || 0) + 1);

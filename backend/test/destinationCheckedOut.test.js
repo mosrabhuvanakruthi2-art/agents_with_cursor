@@ -45,7 +45,10 @@ const VAL_SRC = fs.readFileSync(
       `TREE_FIELDS must include ${required} — $select drops every field it does not name`);
   }
 
-  assert.ok(/listFolderChildren\(siteId, rootPath, email, \{ select: TREE_FIELDS \}\)/.test(SP_SRC),
+  // The options object may carry more than `select` — a named document library is addressed by
+  // spreading `opts` in alongside it (SharePoint as a SOURCE, feature 15.1) — but TREE_FIELDS must
+  // still be the select, or publication is never requested and check-out state is invisible.
+  assert.ok(/listFolderChildren\(siteId, rootPath, email, \{ select: TREE_FIELDS[^}]*\}\)/.test(SP_SRC),
     'buildFolderTree must pass TREE_FIELDS, otherwise publication is never requested');
 }
 

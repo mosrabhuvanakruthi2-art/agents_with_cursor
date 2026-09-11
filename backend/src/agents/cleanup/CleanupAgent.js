@@ -240,6 +240,77 @@ async function cleanContentSides(context, log, summary) {
       log.warn(`CleanupAgent: source content cleanup failed (non-blocking): ${err.message}`);
     }
   }
+  // Source: SharePoint. EMPTY the seeded root, do not delete it — the same rule as the Google
+  // source branch above, and for the same reason: the root's item id is what CloudFuze is asked to
+  // migrate (fromRootId), and deleting the folder churns that id on every run.
+  //
+  // This branch did not exist. `sharepoint` appeared only as a DESTINATION, so the first
+  // combination with SharePoint as its SOURCE (sharepoint → googleshareddrive) would have seeded
+  // on top of the previous run forever — the exact failure this file's header records for the
+  // Google side, where it produced 70 extra / 260 misplaced items attributed to a migration that
+  // had done nothing wrong.
+  if (srcProvider === 'sharepoint' && context.sourceEmail) {
+    try {
+      const sitePath = (env.SHAREPOINT_SOURCE_SITE_PATH || env.SHAREPOINT_SITE_PATH || '').trim();
+      const hostname = (env.SHAREPOINT_SOURCE_HOSTNAME || env.SHAREPOINT_HOSTNAME || '').trim();
+      if (!sitePath) {
+        log.info('CleanupAgent: no SharePoint source site configured — skipping source content cleanup');
+      } else {
+        // resolveSiteForAccount, not getSite: a configured hostname from ANOTHER tenant answers
+        // HTTP 400, which is exactly how this branch failed on its first run — cleaned nothing while
+        // the seeder, which falls back to the account's own tenant, seeded that tenant correctly.
+        const site = { id: (await sharepointClient
+          .resolveSiteForAccount(context.sourceEmail, sitePath, hostname)).siteId };
+        // Every library the suite writes into: the default one holding the seeded root, plus the
+        // custom library behind feature 15.1. A library missed here keeps the previous run's data.
+        const libraries = [{ driveId: null, label: 'default library' }];
+        const customName = (env.SHAREPOINT_SOURCE_LIBRARY || '').trim();
+        if (customName) {
+          const drive = await sharepointClient.findDriveByName(site.id, customName, context.sourceEmail)
+            .catch(() => null);
+          if (drive) libraries.push({ driveId: drive.id, label: `library "${drive.name}"` });
+          else log.info(`CleanupAgent: custom library "${customName}" not present yet — nothing to clean there`);
+        }
+
+        for (const lib of libraries) {
+          const opts = lib.driveId ? { driveId: lib.driveId } : {};
+          // The custom library holds its content under its own folder name, which the seeding
+          // agent creates; the allowlist below covers both that and the run's root folder names.
+          const roots = [...new Set([...folderNames, 'Custom-Library-Content'])];
+          for (const name of roots) {
+            const rootPath = `/${name}`;
+            let children;
+            try {
+              children = await sharepointClient.listFolderChildren(site.id, rootPath, context.sourceEmail, opts);
+            } catch (listErr) {
+              // A root that does not exist yet is the normal case on a first run.
+              log.info(`CleanupAgent: source "${rootPath}" in the ${lib.label} not readable `
+                + `(${listErr?.response?.status || listErr.message}) — nothing to clean there`);
+              continue;
+            }
+            for (const child of children) {
+              try {
+                await sharepointClient.deleteItemByPath(
+                  site.id, `${rootPath}/${child.name}`, context.sourceEmail, opts
+                );
+                summary.sourceContent.itemsDeleted += 1;
+              } catch (err) {
+                summary.sourceContent.errors.push(`${rootPath}/${child.name}: ${err.message}`);
+              }
+            }
+            if (children.length > 0) {
+              summary.sourceContent.foldersEmptied += 1;
+              log.info(`CleanupAgent: emptied source folder "${rootPath}" in the ${lib.label} — `
+                + `${children.length} child item(s) removed, folder kept so CloudFuze keeps resolving it`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      summary.sourceContent.errors.push(err.message);
+      log.warn(`CleanupAgent: SharePoint source content cleanup failed (non-blocking): ${err.message}`);
+    }
+  }
   // Destination: Google My Drive / Shared Drive, under the same allowlist rule as SharePoint.
   //
   // This did not exist: `sharepoint` was the ONLY destination branch, so a googledrive or

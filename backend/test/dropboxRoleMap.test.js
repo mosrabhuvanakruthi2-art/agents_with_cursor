@@ -28,7 +28,11 @@ function testRegistration() {
   // than silently receive the wrong translation.
   assert.strictEqual(roleMaps.forCombination('box_to_sharepoint'), null,
     'an uncovered combination resolves to null, never to a default');
-  assert.deepStrictEqual(roleMaps.pairs(), ['dropbox_to_google']);
+  // Membership, not the whole list. The directory is loaded by scan, so pinning the exact set made
+  // every future pair break this test for the one reason that is not a defect — another
+  // combination adding its own map file, which is precisely what the scan exists to allow.
+  assert.ok(roleMaps.pairs().includes('dropbox_to_google'),
+    'the Dropbox pair is picked up by the directory scan');
   console.log('  pair registered by directory scan, no fallback: ok');
 }
 

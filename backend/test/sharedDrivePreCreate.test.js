@@ -32,12 +32,84 @@ const driveClient = require('../src/clients/driveClient');
 const src = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'orchestrator', 'AgentOrchestrator.js'), 'utf8');
 
-/** The branch that follows `} else if (… === 'googleshareddrive') {`, to its closing brace. */
+/**
+ * The PRE-CREATE branch for a Shared Drive destination.
+ *
+ * Anchored on the `CONTENT_PRECREATE_GOOGLE_DESTINATION` gate, which appears exactly once, rather
+ * than on `destinationProvider === 'googleshareddrive'`. That string is no longer unique: a
+ * destination-drive VERIFICATION block (asserted separately below) now runs earlier in the flow and
+ * tests the same provider, so the old locator sliced that block instead and reported the
+ * pre-create rules missing when they were intact a few hundred lines further down.
+ */
 function sharedDriveBranch() {
-  const start = src.indexOf("context.destinationProvider === 'googleshareddrive'");
-  assert.ok(start > -1, 'a googleshareddrive branch exists in AgentOrchestrator');
-  // Bounded by the next else-if or the end of the pre-create region; 3000 chars covers the block.
-  return src.slice(start, start + 3000);
+  const start = src.indexOf('env.CONTENT_PRECREATE_GOOGLE_DESTINATION');
+  assert.ok(start > -1, 'the Shared Drive pre-create branch exists in AgentOrchestrator');
+  // Bounded by the NEXT FLOW MARKER, not by a character count.
+  //
+  // A fixed window cannot be right for both ends of this branch: it carries ~3.7KB of comment
+  // before its first statement, so 3000 stopped mid-explanation and every assertion failed against
+  // intact code — while 6000 ran past the branch into Step 2, where `inDrivePath` legitimately
+  // appears and the "must not use inDrivePath" assertion then failed for the opposite reason.
+  // Both directions were the locator being wrong, never the orchestrator.
+  const end = src.indexOf('// Step 2: Trigger and monitor migration', start);
+  assert.ok(end > start, 'the pre-create region is followed by the Step 2 marker');
+
+  // CODE ONLY — comment lines stripped.
+  //
+  // Every assertion below is about what the branch DOES, and several are absence assertions
+  // ("must not use inDrivePath", "must not create a drive"). The branch explains those very rules
+  // in its own comments, so an unstripped slice fails on the explanation of the rule it is
+  // following. That is not a hypothetical: it is exactly what happened here.
+  const block = src.slice(start, end)
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+  assert.ok(/resolveSharedDriveByName\(/.test(block),
+    'the slice contains the branch body');
+  return block;
+}
+
+/**
+ * The destination drive is VERIFIED before any job is started — and the run stops when it is not.
+ *
+ * A separate concern from pre-creating folders, and separately gated: pre-create is an
+ * optimisation behind CONTENT_PRECREATE_GOOGLE_DESTINATION (off by default), while verification is
+ * a precondition and must always run. Without it, run 6aa1b0744f77286bb63baa93 seeded for 2.5
+ * minutes, uploaded a path CSV naming a drive that did not exist, and CloudFuze ended the job
+ * CONFLICT with totalFilesAndFolders=0 — a failure that reads as a migration defect.
+ */
+function testDestinationDriveIsVerifiedBeforeMigrating() {
+  const marker = 'Destination Shared Drive must EXIST before a job is started';
+  const start = src.indexOf(marker);
+  assert.ok(start > -1, 'the destination-drive verification block exists');
+  const block = src.slice(start, start + 3500);
+  // Comments stripped: the block's own prose explains that it is NOT gated on the pre-create flag,
+  // so a naive search for that name matches the explanation rather than the condition. Assert
+  // against CODE only — a test that can be satisfied by a comment protects nothing.
+  const code = block
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+
+  // It must NOT be gated on the pre-create flag, or it would be off by default like pre-create is.
+  assert.ok(!/CONTENT_PRECREATE_GOOGLE_DESTINATION/.test(code),
+    'verification runs unconditionally — it is a precondition, not an optimisation');
+  // A missing drive must THROW. Warning and continuing is what produced the doomed job.
+  assert.ok(/throw new Error\(/.test(code), 'an unresolvable drive stops the run');
+  assert.ok(/listSharedDrives/.test(code),
+    'the error names the drives that DO exist, so the fix is obvious');
+  // An unreadable destination account is a different problem and must say so.
+  assert.ok(/Cannot read Google Drive as the destination user/.test(block),
+    'an auth failure is reported as an access problem, not as a wrong drive name');
+
+  // It has to run BEFORE seeding, or a bad destination still costs a full seed.
+  const seedStep = src.indexOf('// Step 1: Generate test data.');
+  const migrateStep = src.indexOf('// Step 2: Trigger and monitor migration');
+  assert.ok(seedStep > -1 && migrateStep > -1, 'the flow still has its Step 1 and Step 2 markers');
+  assert.ok(start < seedStep,
+    'verification precedes seeding, so a wrong drive costs no seeding time');
+  assert.ok(start < migrateStep, 'and certainly precedes the migration');
+  console.log('  destination drive verified before seeding, and fatal when missing: ok');
 }
 
 /**
@@ -149,15 +221,19 @@ function testUsesSegmentsOfNotInDrivePath() {
 
 /** My Drive must not be reachable from this branch, or it would create folders in the wrong tree. */
 function testMyDriveIsASeparateBranch() {
-  const shared = src.indexOf("context.destinationProvider === 'googleshareddrive'");
-  const mine = src.indexOf("context.destinationProvider === 'googledrive'");
-  assert.ok(mine > -1 && shared > -1, 'both branches exist');
+  // Ordering is only meaningful INSIDE the pre-create region: the earlier verification block also
+  // tests `=== 'googleshareddrive'`, so a document-wide indexOf finds that one and the comparison
+  // becomes about two unrelated blocks.
+  const region = src.indexOf('Content destination pre-create');
+  const preCreate = region > -1 ? src.slice(region - 4000, region + 6000) : src;
+  const shared = preCreate.indexOf("context.destinationProvider === 'googleshareddrive'");
+  const mine = preCreate.indexOf("context.destinationProvider === 'googledrive'");
+  assert.ok(mine > -1 && shared > -1, 'both pre-create branches exist');
   assert.ok(mine < shared,
     'the exact googledrive test comes first, so googleshareddrive cannot fall into it');
-
   // The My Drive branch must test for equality, not a substring: 'googleshareddrive'.includes
   // ('googledrive') is false, but a /drive/ style regex would catch both and reintroduce the bug.
-  const myBlock = src.slice(mine - 60, mine + 60);
+  const myBlock = preCreate.slice(Math.max(0, mine - 60), mine + 60);
   assert.ok(/===\s*'googledrive'/.test(myBlock),
     'My Drive is matched by exact equality, not a pattern that could also match a Shared Drive');
   console.log('  My Drive and Shared Drive are separate, exactly-matched branches: ok');
@@ -165,6 +241,7 @@ function testMyDriveIsASeparateBranch() {
 
 testFirstSegmentIsTheDrive();
 testHelpersExist();
+testDestinationDriveIsVerifiedBeforeMigrating();
 testDriveIsResolvedNotCreated();
 testUnresolvableDriveIsNonBlocking();
 testUsesSegmentsOfNotInDrivePath();

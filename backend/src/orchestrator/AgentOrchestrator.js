@@ -622,6 +622,70 @@ class AgentOrchestrator {
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
       }
 
+      // ── Destination Shared Drive must EXIST before a job is started ──────────────────────────
+      //
+      // Separate from the pre-create block above, and deliberately NOT gated on
+      // CONTENT_PRECREATE_GOOGLE_DESTINATION: creating sub-folders is an optimisation, but
+      // verifying the drive is a precondition. With the flag unset — its default — nothing checked
+      // the destination at all.
+      //
+      // Measured on run 6aa1b0744f77286bb63baa93 (sharepoint → googleshareddrive): the run seeded
+      // for 2.5 minutes, uploaded a path CSV naming "/fromsharepoint", and CloudFuze accepted it,
+      // created the job, then ended it CONFLICT with totalFilesAndFolders=0. No Shared Drive of
+      // that name existed. The old comment here predicted "the migration reports a clearer failure
+      // than this step can" — it does not: CloudFuze's CONFLICT never mentions the drive, and the
+      // validator then reports an empty destination, which reads as a migration defect.
+      //
+      // So: fail here, before the job, naming the drives that DO exist. Only when the run actually
+      // names a drive — a blank destination path legitimately falls back to the configured default
+      // and is resolved later by the validator.
+      if (isContentMode && context.destinationProvider === 'googleshareddrive'
+        && !context.skipMigration) {
+        const named = [...new Set(
+          [
+            // BEFORE seeding, so read what the WIZARD sent (contentUserFolders); the
+            // userFolderMappings built by Step 1 do not exist yet, and are included for the
+            // resume path where seeding is skipped and only they are present.
+            ...(context.contentUserFolders || []).map((u) => u && u.destinationPath),
+            ...(context.userFolderMappings || []).map((u) => u && u.destinationPath),
+            context.destinationPath,
+          ]
+            .map((p) => normalizeDriveName(deepContentCore.segmentsOf(p)[0] || ''))
+            .filter(Boolean)
+        )];
+        for (const driveName of named) {
+          const driveClient = require('../clients/driveClient');
+          let drive = null;
+          try {
+            drive = await driveClient.resolveSharedDriveByName(driveName, context.destinationEmail);
+          } catch (authErr) {
+            // Reading Drive as this user failed outright — a different problem from a wrong name,
+            // and it needs a different fix, so it must not be reported as "drive not found".
+            throw new Error(
+              `Cannot read Google Drive as the destination user ${context.destinationEmail}, so the `
+              + `Shared Drive "${driveName}" could not be verified: ${authErr.message}. `
+              + 'Connect that account under Connect Clouds, or map the pair to an account that is '
+              + 'connected (Map Users) — with Domain-Wide Delegation unauthorised for its domain, a '
+              + 'stored OAuth token is the only way in. Stopping before the migration rather than '
+              + 'starting a job whose result could not be validated.'
+            );
+          }
+          if (!drive) {
+            const available = await driveClient.listSharedDrives(context.destinationEmail).catch(() => []);
+            throw new Error(
+              `Destination Shared Drive "${driveName}" does not exist for ${context.destinationEmail}. `
+              + 'CloudFuze accepts a path naming a non-existent drive and then ends the job CONFLICT '
+              + 'having moved nothing, so this stops here instead. Available drives: '
+              + (available.map((d) => d.name).slice(0, 25).join(', ') || '(none visible)')
+              + '. Set the wizard\'s "Destination Shared Drive" to one of these (its first segment '
+              + 'names the drive), or create that drive first.'
+            );
+          }
+          log.info(`Content destination: Shared Drive "${drive.name}" (${drive.id}) verified for `
+            + `${context.destinationEmail}`);
+        }
+      }
+
       // Step 1: Generate test data.
       // Skipped when: explicitly skipped on resume (skipTestData), OR no TestDataAgent registered
       // for this combination, OR useExistingSource (migrate an existing folder, no seeding).
@@ -638,12 +702,34 @@ class AgentOrchestrator {
         });
         log.info(`Step 1: Running ${dataAgent.getName()} (sourceProvider=${context.sourceProvider})`);
         sourceData = await dataAgent.run(context);
+        // What seeding actually created, on the context, for the validator.
+        //
+        // Some features are only answerable against the seed's own record of what it made: a link
+        // embedded in a document is checked against the URL the seeder put there, and a scenario
+        // that could not be seeded (a tenant blocking external sharing, say) has to reach the
+        // report as "not exercised" rather than as a defect. Nothing carried that across, so a
+        // validator asking for it always saw nothing.
+        //
+        // Additive: every existing combination ignores this field.
+        context.sourceData = sourceData;
         // For content migrations: capture source folder path AND its cloud folder ID so the
         // MigrationAgent can pass a real fromRootId (CloudFuze needs the folder ID, not a path string).
         if (sourceData?.rootFolderName) {
           context.sourceTestDataPath = `/${sourceData.rootFolderName}`;
           if (sourceData.rootFolderId) context.sourceRootId = String(sourceData.rootFolderId);
           if (sourceData.sharedDriveId) context.sourceDriveId = String(sourceData.sharedDriveId);
+          // The source cloud's OWN way of naming that folder, when it differs from ours.
+          //
+          // sourceTestDataPath stays library-relative because every Graph read uses it. CloudFuze
+          // addresses a SharePoint cloud as "/<Site>/<Library>/<folder>", so the migration needs
+          // the prefix — without it CloudFuze answers "Migration not Allowed for wrong CSV paths"
+          // with the pair attached and zero items scanned. Only the SharePoint seeder sets this;
+          // every other combination leaves it null and is unaffected.
+          if (sourceData.cloudPathPrefix) {
+            context.sourceCloudPathPrefix = sourceData.cloudPathPrefix;
+            log.info(`Content source: CloudFuze path prefix for this cloud is `
+              + `"${sourceData.cloudPathPrefix}" (Graph path stays ${context.sourceTestDataPath})`);
+          }
           log.info(`Content source captured from ${dataAgent.getName()}: path=${context.sourceTestDataPath} folderId=${context.sourceRootId || '(none)'}`);
 
           // Multi-user: one transfer unit per per-user entry. unit 0 reuses the folder Step 1

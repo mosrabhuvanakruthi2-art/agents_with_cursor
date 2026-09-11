@@ -766,6 +766,43 @@ module.exports = {
   SHAREPOINT_HOSTNAME: (process.env.SHAREPOINT_HOSTNAME || 'filefuze.sharepoint.com').trim(),
   SHAREPOINT_SITE_PATH: (process.env.SHAREPOINT_SITE_PATH || '/sites/SANITYDATAA').trim(),
 
+  /**
+   * SharePoint as a SOURCE — the site the SharePoint → Google Shared Drive suite seeds into, and
+   * the grantees its permission scenarios use.
+   *
+   * Separate from SHAREPOINT_HOSTNAME / SHAREPOINT_SITE_PATH above, which name the DESTINATION site
+   * for the Box→SharePoint and Drive→SharePoint combinations. One pair of variables cannot serve
+   * both directions: a run whose source and destination are read from the same setting would seed
+   * and validate the same place and report a perfect migration having moved nothing. Each falls
+   * back to the destination setting so a single-tenant setup still works with no extra config.
+   *
+   * SHAREPOINT_SOURCE_LIBRARY names the CUSTOM document library for feature 15.1. Blank means the
+   * custom-library scenario is not seeded, and 15.1 is reported "not exercised" rather than passed.
+   */
+  SHAREPOINT_SOURCE_HOSTNAME: (process.env.SHAREPOINT_SOURCE_HOSTNAME
+    || process.env.SHAREPOINT_HOSTNAME || '').trim(),
+  SHAREPOINT_SOURCE_SITE_PATH: (process.env.SHAREPOINT_SOURCE_SITE_PATH
+    || process.env.SHAREPOINT_SITE_PATH || '').trim(),
+  SHAREPOINT_SOURCE_LIBRARY: (process.env.SHAREPOINT_SOURCE_LIBRARY || '').trim(),
+
+  /**
+   * Grantees the SharePoint source seeds its permission scenarios with.
+   *
+   * SHAREPOINT_TEST_EDITOR_EMAIL   — an account in the SOURCE tenant, granted 'write'
+   * SHAREPOINT_TEST_VIEWER_EMAIL   — an account in the SOURCE tenant, granted 'read'
+   * SHAREPOINT_TEST_GROUP_EMAIL    — a mail-enabled M365/security group in the source tenant
+   * SHAREPOINT_TEST_EXTERNAL_EMAIL — an address OUTSIDE the source tenant (feature 8.1)
+   *
+   * Each is optional and each one left blank costs a feature: the scenario is not seeded, and the
+   * checklist reports that feature "not exercised". It is never reported as passing — an
+   * unexercised permission feature that reads as a pass is the failure mode this suite exists to
+   * prevent.
+   */
+  SHAREPOINT_TEST_EDITOR_EMAIL: (process.env.SHAREPOINT_TEST_EDITOR_EMAIL || '').trim(),
+  SHAREPOINT_TEST_VIEWER_EMAIL: (process.env.SHAREPOINT_TEST_VIEWER_EMAIL || '').trim(),
+  SHAREPOINT_TEST_GROUP_EMAIL: (process.env.SHAREPOINT_TEST_GROUP_EMAIL || '').trim(),
+  SHAREPOINT_TEST_EXTERNAL_EMAIL: (process.env.SHAREPOINT_TEST_EXTERNAL_EMAIL || '').trim(),
+
   /** Name of the Google Shared Drive holding the source test data (Shared Drive → SharePoint runs). */
   GOOGLE_SHARED_DRIVE_NAME: (process.env.GOOGLE_SHARED_DRIVE_NAME || '').trim(),
 

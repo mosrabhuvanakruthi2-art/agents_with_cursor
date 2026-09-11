@@ -1127,6 +1127,39 @@ function initiatePathCandidates(sourceCloudId) {
   return out;
 }
 
+/**
+ * The path CloudFuze needs for a SHAREPOINT source, given the library-relative path we hold.
+ *
+ * CloudFuze addresses a SharePoint cloud as `/<Site display name>/<Library>/<folder>`. Two
+ * independent pieces of evidence, gathered after every run of the SharePoint → Google Shared Drive
+ * combination failed identically:
+ *
+ *   1. Its own enumeration of the cloud (`GET /filefolder/userId/{u}/cloudId/{c}`) lists SITE
+ *      entries by display name — `objectName: "QA"` for trydemos.sharepoint.com/sites/QA.
+ *   2. A mapping that PASSES in the CloudFuze UI reads `/SS test/Documents` — site, then library.
+ *
+ * Every job this repo ever sent carried the library-relative form (`/tosharedrive`) and came back
+ * `errorDescription: "Migration not Allowed for wrong CSV paths"`, `totalFilesAndFolders: 0`, with
+ * the pair attached and the source item id supplied. The paths were the only thing wrong.
+ *
+ * Applies ONLY when the registered source cloud is SharePoint and a prefix is known, so every other
+ * combination is byte-identical. Idempotent: a path that already carries the prefix is returned
+ * unchanged, so a resumed run cannot end up with it twice.
+ *
+ * @param {object} context  needs sourceCloudName + sourceCloudPathPrefix (set by the seeder)
+ * @param {string} path     library-relative path, e.g. '/tosharedrive'
+ */
+function sharepointCloudPath(context, path) {
+  const p = String(path || '');
+  if (!/SHAREPOINT/i.test(String(context?.sourceCloudName || ''))) return p;
+  const prefix = String(context?.sourceCloudPathPrefix || '').replace(/\/+$/, '');
+  if (!prefix || !p || p === '/') return p;
+  const lower = p.toLowerCase();
+  const lowerPrefix = prefix.toLowerCase();
+  if (lower === lowerPrefix || lower.startsWith(`${lowerPrefix}/`)) return p;
+  return `${prefix}${p.startsWith('/') ? '' : '/'}${p}`;
+}
+
 async function triggerMigration(context) {
   // ── Content server (qarelease/Basic auth): Team Migration via newmultiuser API ──
   // 4-step flow matching the qarelease Team Migration UI:
@@ -1232,7 +1265,9 @@ async function triggerMigration(context) {
           // For a Shared Drive both fields describe the DRIVE; otherwise keep the caller's folder.
           // The id and the path must describe the same object — naming a subfolder here while
           // passing the drive id as the root scans nothing (see the job comparison above).
-          sourcePath: isRowSharedDrive ? `/${rowDriveName}` : (u.sourcePath || '/'),
+          sourcePath: isRowSharedDrive
+            ? `/${rowDriveName}`
+            : sharepointCloudPath(context, u.sourcePath || '/'),
           fromRootId: rowDriveId || u.sourceRootId || u.sourcePath || '/',
           folderRootId: rowDriveId || u.sourceRootId || null,
           // Kept for the report so the QA output still names the folder the run seeded.
@@ -1247,7 +1282,9 @@ async function triggerMigration(context) {
       units = [{
         sourceEmail: context.sourceEmail,
         destinationEmail: context.destinationEmail,
-        sourcePath: (sharedDriveRootId && sharedDriveName && !pathOverride) ? `/${sharedDriveName}` : sourcePath,
+        sourcePath: (sharedDriveRootId && sharedDriveName && !pathOverride)
+          ? `/${sharedDriveName}`
+          : sharepointCloudPath(context, sourcePath),
         fromRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || sourcePath,
         folderRootId: rootIdOverride || sharedDriveRootId || context.sourceRootId || null,
         seededFolderPath: sourcePath,
@@ -2798,6 +2835,9 @@ module.exports = {
   isNewServer,
   fetchCurrentJobStatus,
   getLastJobReport,
+  // Exported for the unit tests: the SharePoint path prefix is the difference between a job that
+  // scans and one CloudFuze rejects, so the rule is pinned rather than only exercised live.
+  sharepointCloudPath,
   migrationAxiosConfig,
   contentMappingVerdict,
 };
