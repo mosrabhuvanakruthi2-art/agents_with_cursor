@@ -82,7 +82,12 @@ function testDestinationDriveIsVerifiedBeforeMigrating() {
   const marker = 'Destination Shared Drive must EXIST before a job is started';
   const start = src.indexOf(marker);
   assert.ok(start > -1, 'the destination-drive verification block exists');
-  const block = src.slice(start, start + 3500);
+  // Bounded by the NEXT section rather than a magic character count. A fixed window silently
+  // stops covering the block the moment anything is added to it — which is exactly what happened
+  // when auto-create landed: `listSharedDrives` moved past character 3500 and this test failed
+  // while the code it guards was still correct.
+  const endMarker = src.indexOf('// Step 1: Generate test data', start);
+  const block = src.slice(start, endMarker > start ? endMarker : start + 3500);
   // Comments stripped: the block's own prose explains that it is NOT gated on the pre-create flag,
   // so a naive search for that name matches the explanation rather than the condition. Assert
   // against CODE only — a test that can be satisfied by a comment protects nothing.
@@ -174,9 +179,15 @@ function testDriveIsResolvedNotCreated() {
   assert.ok(/rootId: drive\.id/.test(block),
     'the folder walk is scoped to the drive, whose id doubles as its root folder id');
 
-  // Nothing in this branch may create the drive itself.
-  assert.ok(!/createSharedDrive|drives\.create/.test(block),
-    'a QA run must not bring a Shared Drive into existence as a side effect');
+  // Nothing in THIS branch may create the drive itself.
+  //
+  // Boundary worth stating, because it changed: a run CAN now create a destination Shared Drive,
+  // in the VERIFICATION block above and only there — flag-gated on CONTENT_AUTO_CREATE_SHARED_DRIVE
+  // and announced at WARN (see sharedDriveRowAndAutoCreate.test.js). The folder-walk branch guarded
+  // here must still never do it: ensureFolderPath handed a full path would create the drive's NAME
+  // as an ordinary folder in the wrong tree, which is a different and silent kind of wrong.
+  assert.ok(!/createSharedDrive|drives\.create|ensureSharedDrive/.test(block),
+    'the folder-walk branch must not bring a Shared Drive into existence as a side effect');
   console.log('  drive resolved and scoped, never created: ok');
 }
 

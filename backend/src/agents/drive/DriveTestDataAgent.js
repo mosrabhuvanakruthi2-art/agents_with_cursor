@@ -197,10 +197,49 @@ class DriveTestDataAgent extends BaseAgent {
     // Shared Drive target, when one is configured. A Shared Drive's id doubles as its root folder id,
     // so everything below is unchanged apart from where the tree is rooted. Shared Drives are also the
     // only place the Content Manager (fileOrganizer) role exists, so the permission matrix needs one.
-    const sharedDriveName = normalizeDriveName(context.sourceSharedDriveName || env.GOOGLE_SHARED_DRIVE_NAME);
+    //
+    // The ENV FALLBACK applies to a Shared Drive source only.
+    //
+    // GOOGLE_SHARED_DRIVE_NAME names the source drive for the `googleshareddrive` combinations. A
+    // `googledrive` run is My Drive by definition, so taking that fallback would seed a Shared Drive
+    // while the run, the report and the wizard all said My Drive — and where the configured drive
+    // does not exist (it currently names one that does not), the seeding step throws instead and the
+    // run dies before it starts. My Drive → My Drive is the first pair where that is unambiguous,
+    // but it was already wrong for Drive→SharePoint and Drive→OneDrive, which are My Drive sources
+    // too. A row that names a drive explicitly (context.sourceSharedDriveName) still wins for any
+    // provider — the wizard only offers that field for drive-capable sources.
+    const isSharedDriveSource = String(context.sourceProvider || '').toLowerCase() === 'googleshareddrive';
+    const sharedDriveName = normalizeDriveName(
+      context.sourceSharedDriveName || (isSharedDriveSource ? env.GOOGLE_SHARED_DRIVE_NAME : '')
+    );
     let sharedDrive = null;
     if (sharedDriveName) {
       sharedDrive = await driveClient.resolveSharedDriveByName(sharedDriveName, sourceEmail);
+      // Create it when it does not exist, so pointing a run at a NEW drive name is enough to get a
+      // seeded, migratable source — CONTENT_AUTO_CREATE_SHARED_DRIVE=false restores the old
+      // stop-and-tell-me behaviour.
+      //
+      // Announced at WARN, never quietly: creating a drive is a real, persistent change to the
+      // Workspace, and a typo silently producing a fresh empty drive is exactly the "seeds and
+      // validates the wrong location while reporting success" failure the throw below exists to
+      // prevent. A loud line in the log is what keeps the convenience honest.
+      if (!sharedDrive && env.CONTENT_AUTO_CREATE_SHARED_DRIVE !== 'false') {
+        try {
+          const made = await driveClient.ensureSharedDrive(sharedDriveName, sourceEmail);
+          sharedDrive = { id: made.id, name: made.name };
+          logger.warn(`[DriveTestDataAgent] Shared Drive "${made.name}" did not exist for `
+            + `${sourceEmail} — CREATED it (${made.id}). If that name was a typo, this run is `
+            + 'seeding an empty new drive rather than the one you meant. Set '
+            + 'CONTENT_AUTO_CREATE_SHARED_DRIVE=false to stop instead of creating.');
+        } catch (mkErr) {
+          throw new Error(
+            `Shared Drive "${sharedDriveName}" does not exist for ${sourceEmail} and could not be `
+            + `created: ${mkErr.message} Creating a Shared Drive needs the account to be allowed to `
+            + 'create them in its Workspace (admin.google.com → Apps → Google Workspace → Drive and '
+            + 'Docs → Sharing settings).'
+          );
+        }
+      }
       if (!sharedDrive) {
         // This used to warn and seed into My Drive instead. That made a wrong drive name invisible:
         // the run seeded My Drive, migrated My Drive and reported SUCCESS, while every log line and

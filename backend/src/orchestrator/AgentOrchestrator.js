@@ -400,6 +400,31 @@ class AgentOrchestrator {
     const isContentMode = isContentModeFor(context);
 
     try {
+      // ── Apply the per-row source drive/folder BEFORE anything reads them ──────────────────
+      //
+      // These used to be set ~50 lines below, AFTER CleanupAgent had already run. The effect was
+      // invisible and wrong: cleanup fell back to env.GOOGLE_SHARED_DRIVE_NAME on every run whose
+      // drive was named per row, so it cleaned a drive nobody asked for (or none at all) and left
+      // the real source drive full of the previous run's data. The log gave it away only as
+      //   content roots in play: "Agent Shared Drive"      <- row folder, already on the context
+      //   source drives in play: "QA_TeamDrive" (0 resolved) <- env fallback, row drive not applied
+      // Everything downstream (Step 1 seeding, validation) saw the right drive, which is why this
+      // survived: only the cleaning half was pointed elsewhere.
+      //
+      // Resolved here, once, so every step reads the same values.
+      const cufEntries0 = (Array.isArray(context.contentUserFolders) && context.contentUserFolders.length > 0)
+        ? context.contentUserFolders
+        : (Array.isArray(context.userEmailMappings)
+            ? context.userEmailMappings.map((m) => ({ sourceEmail: m.sourceEmail, destinationEmail: m.destinationEmail }))
+            : []);
+      if (isContentMode && cufEntries0.length > 0) {
+        if ((cufEntries0[0].sourceFolderName || '').trim()) {
+          context.sourceFolderName = cufEntries0[0].sourceFolderName.trim();
+        }
+        const rowDrive0 = normalizeDriveName(cufEntries0[0].sourceDriveName);
+        if (rowDrive0) context.sourceSharedDriveName = rowDrive0;
+      }
+
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
       // Skipped only on resume (skipCleanup). Content was excluded here on the grounds that there
       // was "no test data to clean", which was untrue: seeded folders accumulate on the source and
@@ -669,6 +694,22 @@ class AgentOrchestrator {
               + 'stored OAuth token is the only way in. Stopping before the migration rather than '
               + 'starting a job whose result could not be validated.'
             );
+          }
+          // Same rule as the source side: create a destination drive that does not exist yet, so a
+          // new destination name is enough to run. CONTENT_AUTO_CREATE_SHARED_DRIVE=false restores
+          // the stop-and-list-them behaviour below.
+          if (!drive && env.CONTENT_AUTO_CREATE_SHARED_DRIVE !== 'false') {
+            try {
+              const made = await driveClient.ensureSharedDrive(driveName, context.destinationEmail);
+              drive = { id: made.id, name: made.name };
+              log.warn(`Content destination: Shared Drive "${made.name}" did not exist for `
+                + `${context.destinationEmail} — CREATED it (${made.id}). A typo here means the `
+                + 'migration lands in a new empty drive rather than the one you meant; set '
+                + 'CONTENT_AUTO_CREATE_SHARED_DRIVE=false to stop instead of creating.');
+            } catch (mkErr) {
+              log.warn(`Content destination: could not create Shared Drive "${driveName}" `
+                + `(${mkErr.message}) — falling through to the error below`);
+            }
           }
           if (!drive) {
             const available = await driveClient.listSharedDrives(context.destinationEmail).catch(() => []);

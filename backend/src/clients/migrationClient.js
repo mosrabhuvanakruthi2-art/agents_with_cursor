@@ -1160,6 +1160,62 @@ function sharepointCloudPath(context, path) {
   return `${prefix}${p.startsWith('/') ? '' : '/'}${p}`;
 }
 
+/**
+ * The Basic credential the qarelease content API expects: base64(`${userId}:${md5(password)}`).
+ * Factored out of triggerMigration so the pre-flight below authenticates identically — a probe
+ * that failed only because it used a different credential would be worse than no probe at all.
+ */
+function contentBasicAuth() {
+  if (runtimeConfig.basicAuth) {
+    const raw = String(runtimeConfig.basicAuth).trim();
+    return raw.toLowerCase().startsWith('basic ') ? raw : `Basic ${raw}`;
+  }
+  const md5pw = require('crypto').createHash('md5').update(runtimeConfig.password || '').digest('hex');
+  const b64 = Buffer.from(`${runtimeConfig.userId}:${md5pw}`).toString('base64');
+  return `Basic ${b64}`;
+}
+
+/**
+ * Ask CloudFuze what IT can see in a cloud — `GET /filefolder/userId/{u}/cloudId/{c}`, the same
+ * endpoint the Team-Migration folder picker reads.
+ *
+ * This exists because a cloud CloudFuze cannot enumerate cannot have its CSV path resolved, and the
+ * failure is otherwise invisible until ~20 minutes later: seeding runs (4 min), the validation kick
+ * hangs to CloudFuze's 300s gateway limit, 60 status polls all read "Total Saved Count :0", a job is
+ * created, and it ends CONFLICT / "Migration not Allowed for wrong CSV paths" with 0 items — then
+ * the whole thing retries. Twenty minutes to learn what this call answers in about twenty seconds.
+ *
+ * Verdicts are deliberately three-valued. Only EMPTY is actionable; anything that merely failed to
+ * answer is UNKNOWN and must NOT block a run, because a slow or erroring probe is not evidence that
+ * the cloud is broken. (erik's GOOGLE_SHARED_DRIVES times out here while SharePoint takes ~30s.)
+ */
+async function probeCloudEnumeration(cloudId, { timeoutMs = 60000 } = {}) {
+  const userId = runtimeConfig.userId;
+  if (!userId || !cloudId) {
+    return { verdict: 'UNKNOWN', count: null, detail: 'no CloudFuze userId or cloudId available' };
+  }
+  const origin = (() => {
+    try { return new URL(runtimeConfig.baseUrl).origin; } catch { return runtimeConfig.baseUrl; }
+  })();
+  const url = `${origin}/proxyservices/v1/filefolder/userId/${encodeURIComponent(userId)}`
+    + `/cloudId/${encodeURIComponent(cloudId)}`;
+  try {
+    const res = await axios.get(url, migrationAxiosConfig({
+      headers: { Authorization: contentBasicAuth(), 'X-Requested-With': 'XMLHttpRequest' },
+      timeout: timeoutMs,
+      validateStatus: () => true,
+    }));
+    if (res.status !== 200) return { verdict: 'UNKNOWN', count: null, detail: `HTTP ${res.status}` };
+    const body = res.data;
+    const list = Array.isArray(body) ? body
+      : (Array.isArray(body?.fileFolderList) ? body.fileFolderList : null);
+    if (!Array.isArray(list)) return { verdict: 'UNKNOWN', count: null, detail: 'unrecognised body shape' };
+    return { verdict: list.length > 0 ? 'OK' : 'EMPTY', count: list.length, detail: null };
+  } catch (err) {
+    return { verdict: 'UNKNOWN', count: null, detail: err.message };
+  }
+}
+
 async function triggerMigration(context) {
   // ── Content server (qarelease/Basic auth): Team Migration via newmultiuser API ──
   // 4-step flow matching the qarelease Team Migration UI:
@@ -1176,16 +1232,34 @@ async function triggerMigration(context) {
     // endpoint resolves the user's clouds from this Basic credential; with the JWT it can't,
     // so cfMappingCachesList comes back empty (confirmed via a DevTools capture of the working
     // request). Build the same credential here and use it for all content newmultiuser calls.
-    const contentAuth = (() => {
-      if (runtimeConfig.basicAuth) {
-        const raw = String(runtimeConfig.basicAuth).trim();
-        return raw.toLowerCase().startsWith('basic ') ? raw : `Basic ${raw}`;
-      }
-      const md5pw = require('crypto').createHash('md5').update(runtimeConfig.password || '').digest('hex');
-      const b64 = Buffer.from(`${runtimeConfig.userId}:${md5pw}`).toString('base64');
-      return `Basic ${b64}`;
-    })();
+    const contentAuth = contentBasicAuth();
     logger.info(`CloudFuze content: using Basic auth for userId=${runtimeConfig.userId}`);
+
+    // ── Pre-flight: can CloudFuze see the SOURCE cloud at all? ────────────────────────
+    // Twenty seconds here replaces the twenty minutes described on probeCloudEnumeration. Only a
+    // definitive empty listing stops the run; a probe that times out or errors is inconclusive and
+    // is logged, not enforced. Set CONTENT_PREFLIGHT_SOURCE_ENUM=false to skip it entirely.
+    if (env.CONTENT_PREFLIGHT_SOURCE_ENUM !== 'false' && context.sourceCloudId) {
+      const probe = await probeCloudEnumeration(context.sourceCloudId);
+      if (probe.verdict === 'EMPTY') {
+        throw new Error(
+          `CloudFuze cannot list anything in the source cloud ${context.sourceCloudId} `
+          + `(${context.sourceCloudName || context.sourceProvider || 'source'}) — its own `
+          + '/filefolder returns 0 entries, which is also what the Team-Migration folder picker '
+          + 'shows. With nothing to enumerate it cannot resolve the CSV source path, so the job '
+          + 'would end CONFLICT with "Migration not Allowed for wrong CSV paths" having moved '
+          + 'nothing. Reconnect that cloud in CloudFuze (Manage Clouds) and confirm the folder '
+          + 'picker lists folders before re-running. Stopping now rather than seeding and then '
+          + 'waiting ~20 minutes for CloudFuze to say the same thing.'
+        );
+      }
+      if (probe.verdict === 'OK') {
+        logger.info(`CloudFuze pre-flight: source cloud enumerates ${probe.count} entry(ies) — proceeding`);
+      } else {
+        logger.warn(`CloudFuze pre-flight: could not determine whether the source cloud enumerates `
+          + `(${probe.detail}) — proceeding, but a CONFLICT for "wrong CSV paths" would point here`);
+      }
+    }
 
     // Resolve the destination path/folder-id defaults by cloud type.
     const resolveDestPath = (p) => {
@@ -1493,10 +1567,16 @@ async function triggerMigration(context) {
     // wrong the reply tells us what it wanted, which is far cheaper than guessing blind.
     let pathCsvId = null;
     let pathCsvName = null;
+    let pathRowCount = 0;
+    // How many rows CloudFuze itself saved from our CSV, off the kick's "Total Saved Count :N".
+    // null = it never told us. This is the ONE field that separates a run that migrates from one
+    // refused for "wrong CSV paths" — see the gate below.
+    let pathCsvSavedCount = null;
     try {
       const pathRows = units
         .filter((u) => u.sourcePath && u.destinationPath)
         .map((u) => `${u.sourceEmail},${u.sourcePath},${u.destinationEmail},${u.destinationPath}`);
+      pathRowCount = pathRows.length;
       if (pathRows.length > 0) {
         const pathCsv = ['Source User,Source Folder,Destination User,Destination Path', ...pathRows].join(String.fromCharCode(13,10));
         const pathUrl = `${contentOrigin}/proxyservices/v1/mapping/user/path/csv`
@@ -1552,16 +1632,50 @@ ${pathCsv}`);
           + `?${vQuery}&csvName=${encodeURIComponent(pathCsvName || '')}&first=true`;
         const kickRes = await axios.post(kickUrl, null, migrationAxiosConfig({
           headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
-          timeout: 60000,
+          timeout: CSV_VALIDATION_KICK_TIMEOUT_MS,
         }));
+        const kickBody = String(kickRes.data ?? '');
         logger.info(`CloudFuze mapping validation started (csvId=${pathCsvId}): ${JSON.stringify(kickRes.data)}`);
+        // "Total Saved Count :0" here means CloudFuze walked the path and saved nothing — the
+        // mapping will stay UNVALIDATED no matter how long the status polls run, and the job will
+        // be refused with "Migration not Allowed for wrong CSV paths". Say so now, not 5 minutes
+        // later, and say which path it could not resolve.
+        const savedCount = /Total Saved Count\s*:\s*(\d+)/i.exec(kickBody)?.[1];
+        if (savedCount != null) pathCsvSavedCount = Number(savedCount);
+        if (savedCount === '0') {
+          logger.warn(`CloudFuze saved 0 of ${pathRowCount} path mapping row(s) (csvId=${pathCsvId}). `
+            + 'CloudFuze could not resolve the source or destination folder in the CSV — check that '
+            + 'the source folder exists for that user and that the destination path is one CloudFuze '
+            + 'is allowed to create.');
+        }
       } catch (kickErr) {
-        logger.warn(`CloudFuze csvcreator/asynchronous failed (${kickErr?.response?.status || kickErr.message}) — polling anyway`);
+        // A timeout here is NOT "slow, poll anyway": the request is the thing that starts and
+        // completes validation, so aborting it guarantees the 0-count dead end described above.
+        const timedOut = /timeout/i.test(String(kickErr?.message || ''));
+        const detail = kickErr?.response?.status || kickErr.message;
+        if (timedOut) {
+          logger.error(`CloudFuze csvcreator/asynchronous timed out after `
+            + `${Math.round(CSV_VALIDATION_KICK_TIMEOUT_MS / 1000)}s (csvId=${pathCsvId}). Validation never `
+            + 'started, so the mapping will read UNVALIDATED and the job will be refused for wrong CSV '
+            + 'paths. Raise CONTENT_CSV_VALIDATION_KICK_TIMEOUT_MS if the source tree is genuinely this large.');
+        } else {
+          logger.warn(`CloudFuze csvcreator/asynchronous failed (${detail}) — polling anyway`);
+        }
       }
 
       const statusUrl = `${contentOrigin}/proxyservices/v1/mapping/check/csvvalidationstatus/${pathCsvId}?${vQuery}`;
       let ready = false;
-      for (let attempt = 1; attempt <= CSV_VALIDATION_MAX_POLLS; attempt++) {
+      // Polling is only worth doing when the kick actually saved rows. When it saved 0, or never
+      // answered, the status endpoint has read "Total Saved Count :0" on all 60 polls of every such
+      // run — five minutes to re-read a number the kick already gave us. Skip straight to the
+      // verdict, which fails the pair with the real reason.
+      const pollBudget = (pathCsvSavedCount != null && pathCsvSavedCount > 0) ? CSV_VALIDATION_MAX_POLLS : 0;
+      if (pollBudget === 0) {
+        logger.warn('CloudFuze mapping validation: not polling — the request that starts validation '
+          + `${pathCsvSavedCount === 0 ? 'saved 0 rows' : 'never answered'}, so the status endpoint `
+          + 'can only report 0 as well. Going straight to the verdict.');
+      }
+      for (let attempt = 1; attempt <= pollBudget; attempt++) {
         await new Promise((r) => setTimeout(r, CSV_VALIDATION_POLL_MS));
         let body = '';
         try {
@@ -1577,7 +1691,7 @@ ${pathCsv}`);
         logger.info(`CloudFuze mapping validation poll ${attempt}/${CSV_VALIDATION_MAX_POLLS}: ${body}`);
         if (/report is ready/i.test(body)) { ready = true; break; }
       }
-      if (!ready) {
+      if (!ready && pollBudget > 0) {
         logger.warn(`CloudFuze mapping validation did not report ready within ${CSV_VALIDATION_MAX_POLLS} `
           + `poll(s) (${Math.round((CSV_VALIDATION_MAX_POLLS * CSV_VALIDATION_POLL_MS) / 1000)}s) — reading `
           + 'whatever verdict exists. An unresolved mapping is the known precursor to a 1-item scan; '
@@ -1675,6 +1789,31 @@ ${pathCsv}`);
           + 'Informational only: the working Box combination reports the same values. Judge the job by '
           + 'the workspace totalFilesAndFolders and by what reaches the destination, not by this row.'
         );
+      }
+
+      // ── The gate that matters: did CloudFuze save our row? ────────────────────
+      // None of the fields above discriminate. The SharePoint -> Shared Drive run that migrated
+      // 58/58 reported the SAME Source/Destination Path Review: UNVALIDATED and mapped=false as the
+      // google -> google runs that CloudFuze refused; treating those as blockers would break the
+      // combination that works. The kick's saved count DOES discriminate: 1 on that run, 0 on every
+      // refused one. A 0 means CloudFuze could not resolve the folder in its own enumeration, so the
+      // job it would accept is guaranteed to end CONFLICT / "Migration not Allowed for wrong CSV
+      // paths" having moved nothing. Stop here instead of spending ~16 minutes proving it twice.
+      // pathCsvSavedCount is null when the kick never answered at all — it 502'd at CloudFuze's
+      // own 300s gateway limit, or timed out. That is not "unknown, proceed hopefully": on every
+      // run where the kick failed to answer, the polls afterwards read count 0 and the job was
+      // refused. Treat it as a blocker too, with its own wording so the log says which happened.
+      if (pathCsvSavedCount === 0 || pathCsvSavedCount === null) {
+        const how = pathCsvSavedCount === 0
+          ? 'CloudFuze saved 0 rows from the path CSV'
+          : 'CloudFuze never answered the request that validates the path CSV (it timed out or '
+            + 'returned 502)';
+        u.validated = false;
+        u.blockReason = `${how} — it cannot resolve `
+          + `"${u.sourcePath}" for ${u.sourceEmail} in its own enumeration of the source cloud. `
+          + 'Submitting anyway ends the job CONFLICT with "Migration not Allowed for wrong CSV paths" '
+          + 'and 0 items moved. Check the source cloud connection in CloudFuze (Manage Clouds → '
+          + 'reconnect), then re-run.';
       }
 
       if (u.validated) {
@@ -2279,6 +2418,10 @@ const TERMINAL_STATUSES = new Set([
 // Overridable so this can be tuned without a code change.
 const CSV_VALIDATION_POLL_MS = env.CONTENT_CSV_VALIDATION_POLL_MS;
 const CSV_VALIDATION_MAX_POLLS = env.CONTENT_CSV_VALIDATION_MAX_POLLS;
+// The kick call blocks until CloudFuze has walked the source path — see the env.js note. Its own
+// timeout is separate from the poll budget because aborting it is not a retryable hiccup: it leaves
+// validation unstarted, and every poll after it then reads "Total Saved Count :0" forever.
+const CSV_VALIDATION_KICK_TIMEOUT_MS = env.CONTENT_CSV_VALIDATION_KICK_TIMEOUT_MS;
 
 const CONTENT_TERMINAL_STATUSES = new Set([
   'PROCESSED', 'PROCESS', 'PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS',

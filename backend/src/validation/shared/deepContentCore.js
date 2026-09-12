@@ -228,6 +228,11 @@ const GOOGLE_NATIVE_NO_EXPORT = {
   'application/vnd.google-apps.fusiontable': 'Fusion Table — retired Google type',
   'application/vnd.google-apps.drawing': 'Google Drawing — exportable only as a static image, on a best-effort basis',
   'application/vnd.google-apps.shortcut': 'Drive shortcut — a pointer, not content; its target migrates on its own',
+  // Added for My Drive → My Drive, whose scope document lists Google Vids among the types that go
+  // to CONFLICT and are non-migratable. Worded without naming a destination: this type has no
+  // export on ANY destination, Google included, so the classification holds for every combination
+  // that reads a Google source. Without the entry a seeded Vid counts as a missing item.
+  'application/vnd.google-apps.vid': 'Google Vids file — no export format exists, so it cannot be migrated as content',
 };
 
 /** Legacy Office formats CloudFuze upgrades on migration. */

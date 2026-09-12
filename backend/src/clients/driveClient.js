@@ -2,6 +2,7 @@ const fs = require('fs');
 const { google } = require('googleapis');
 const env = require('../config/env');
 const tokenStore = require('./oauthTokenStore');
+const crypto = require('crypto');
 const { retryWithBackoff } = require('../utils/retry');
 const logger = require('../utils/logger');
 const { normalizeDriveName } = require('../utils/driveNames');
@@ -540,6 +541,37 @@ async function listSharedDrives(email) {
 }
 
 /**
+ * Create a Shared Drive, or return the existing one of that name.
+ *
+ * `drives.create` needs a requestId that Google uses to de-duplicate retries: sending the same one
+ * twice returns the SAME drive rather than creating a second. It is derived from the name so a
+ * retried call — ours or the caller's — cannot leave two drives with one name behind, which is the
+ * failure mode that makes `resolveSharedDriveByName` ambiguous ever after.
+ *
+ * The creating account becomes the drive's organizer, which is what seeding needs.
+ *
+ * @returns {{ id, name, created: boolean }} `created` false when it already existed, so the caller
+ *   can log the difference — silently "finding" a drive it just made is how a typo becomes a run
+ *   that seeds and validates the wrong location while reporting success.
+ */
+async function ensureSharedDrive(name, email) {
+  const wanted = normalizeDriveName(name);
+  if (!wanted) throw new Error('ensureSharedDrive: no drive name given');
+  const existing = await resolveSharedDriveByName(wanted, email);
+  if (existing) return { ...existing, created: false };
+
+  const drive = await getDriveClient(email);
+  const requestId = crypto.createHash('sha256')
+    .update(`cf-qa-shared-drive:${String(email).toLowerCase()}:${wanted.toLowerCase()}`)
+    .digest('hex').slice(0, 32);
+  const res = await retryWithBackoff(
+    () => drive.drives.create({ requestId, requestBody: { name: wanted }, fields: 'id, name' }),
+    { label: 'Drive ensureSharedDrive' }
+  );
+  return { id: res.data.id, name: res.data.name, created: true };
+}
+
+/**
  * Find a Shared Drive by name (case-insensitive). Returns { id, name } or null.
  *
  * Names arrive path-style from a CSV column or GOOGLE_SHARED_DRIVE_NAME, so both ends are
@@ -838,6 +870,7 @@ module.exports = {
   // Shared Drives
   listSharedDrives,
   resolveSharedDriveByName,
+  ensureSharedDrive,
   findFoldersByName,
   getSharedDriveById,
   // Read side, for content validation

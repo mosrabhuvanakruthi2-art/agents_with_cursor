@@ -685,6 +685,42 @@ module.exports = {
     const n = parseInt(process.env.CONTENT_CSV_VALIDATION_MAX_POLLS ?? '', 10);
     return Number.isFinite(n) && n > 0 ? n : 60;
   })(),
+  /**
+   * CONTENT_CSV_VALIDATION_KICK_TIMEOUT_MS — client timeout for the ONE request that starts
+   * path-CSV validation (POST /mapping/download/csvcreator/{csvId}/asynchronous).
+   *
+   * Despite "asynchronous" in the path, that request does not return until CloudFuze has walked the
+   * source path and saved the mapping row; its reply is "Total Saved Count :N". SharePoint answered
+   * in ~8s, so a 60s timeout was never hit and never noticed. Google My Drive does not: all three
+   * google→google runs aborted the request at 60s, CloudFuze saved nothing, every one of the 60
+   * status polls afterwards read "Total Saved Count :0", the mapping stayed UNVALIDATED, and the job
+   * was refused with "Migration not Allowed for wrong CSV paths". The wizard sets no timeout at all
+   * on this call (multiUserMapping.js fetchCsvValidationStatus), so a generous ceiling matches it.
+   */
+  /**
+   * CONTENT_PREFLIGHT_SOURCE_ENUM — ask CloudFuze whether it can enumerate the SOURCE cloud before
+   * doing any mapping work. Default ON; set to the string 'false' to skip.
+   *
+   * Only a definitive "0 entries" stops a run. A probe that times out or errors is inconclusive and
+   * never blocks, because a slow probe is not evidence of a broken cloud.
+   */
+  CONTENT_PREFLIGHT_SOURCE_ENUM: (process.env.CONTENT_PREFLIGHT_SOURCE_ENUM || '').trim().toLowerCase(),
+  /**
+   * CONTENT_AUTO_CREATE_SHARED_DRIVE — create a named Google Shared Drive that does not exist yet,
+   * on the source (seeding) and destination (pre-flight) sides. Default ON; 'false' restores the
+   * previous behaviour of stopping with the available drives listed.
+   *
+   * The trade-off is deliberate and logged at WARN every time it fires: a new drive name now just
+   * works, but a TYPO also "works" — it produces a fresh empty drive, and the run then seeds,
+   * migrates and validates that instead of the drive you meant. The warning line is what makes the
+   * difference visible; do not downgrade it to info.
+   */
+  CONTENT_AUTO_CREATE_SHARED_DRIVE:
+    (process.env.CONTENT_AUTO_CREATE_SHARED_DRIVE || '').trim().toLowerCase(),
+  CONTENT_CSV_VALIDATION_KICK_TIMEOUT_MS: (() => {
+    const n = parseInt(process.env.CONTENT_CSV_VALIDATION_KICK_TIMEOUT_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 600000;
+  })(),
 
   /**
    * How many times AgentOrchestrator re-submits a content migration job after CloudFuze's own CSV
