@@ -732,7 +732,22 @@ function scrubShareFileSecret(text) {
 // The redirect URI, in one place. This exact string must be registered in Citrix's API Key
 // Generator; a mismatch makes the key unusable, and the failure surfaces at the end of sign-in
 // rather than at the start.
-const SHAREFILE_REDIRECT_URI = `${BACKEND_BASE}/api/auth/sharefile/callback`;
+//
+// SHAREFILE_REDIRECT_URI overrides it, and exists because ShareFile appears to require an HTTPS
+// callback — every app registered on the live tenant uses one (an ngrok tunnel, or
+// https://staging.cloudfuze.com/...), never http://localhost. So local development needs a tunnel.
+//
+// The override is ShareFile-ONLY on purpose. The obvious alternative — repointing BACKEND_BASE at
+// the tunnel — would move the redirect for Google, Microsoft, Box, Dropbox and Slack too, all of
+// which are registered against http://localhost:5000. That would silently break every already
+// connected cloud to fix the one that is not.
+//
+// Set it to the tunnel URL that is registered on the ShareFile app, e.g.
+//   SHAREFILE_REDIRECT_URI=https://<your-domain>.ngrok-free.dev/api/auth/sharefile/callback
+// and point the tunnel at this backend's port. Unset, the localhost default is kept so nothing
+// changes for anyone not using ShareFile.
+const SHAREFILE_REDIRECT_URI =
+  env.SHAREFILE_REDIRECT_URI || `${BACKEND_BASE}/api/auth/sharefile/callback`;
 
 router.get('/sharefile/url', (req, res) => {
   // Both halves of the app credential are checked here, and named separately. The secret is not

@@ -580,6 +580,39 @@ module.exports = {
   SHAREFILE_CLIENT_ID: cleanEnvValue(process.env.SHAREFILE_CLIENT_ID || ''),
   SHAREFILE_CLIENT_SECRET: cleanEnvValue(process.env.SHAREFILE_CLIENT_SECRET || ''),
   /**
+   * Optional. Overrides the ShareFile OAuth callback URL, for ShareFile ALONE.
+   *
+   * ShareFile appears to require an HTTPS redirect — every app on the live tenant registers one, so
+   * local development needs a tunnel. Repointing BACKEND_BASE instead would move Google, Microsoft,
+   * Box, Dropbox and Slack too, all registered against http://localhost:5000, breaking five working
+   * connectors to fix one. Unset, authRoutes keeps the localhost default.
+   */
+  SHAREFILE_REDIRECT_URI: cleanEnvValue(process.env.SHAREFILE_REDIRECT_URI || ''),
+  /**
+   * Phase B (the sharefile → sharepoint combination itself). These are about WHAT is validated, not
+   * how to sign in — the two credentials above are the whole of the connect contract, and the
+   * account host stays an output of the flow.
+   *
+   * SHAREFILE_TEST_ROOT — the folder inside the ShareFile account that gets migrated and validated.
+   *   Never the account root: the validator compares this subtree against the destination, and
+   *   pointing it at the root would drag every unrelated file in the account into the comparison.
+   * The three grantee settings feed permission features 2.1-2.4. Each is optional, and blank means
+   *   that feature is reported as NOT EXERCISED rather than passing — the same contract as the
+   *   DROPBOX_TEST_* set above.
+   */
+  SHAREFILE_TEST_ROOT: (process.env.SHAREFILE_TEST_ROOT || '/QA-Automation').trim(),
+  SHAREFILE_TEST_INTERNAL_USERS: (() => {
+    const raw = process.env.SHAREFILE_TEST_INTERNAL_USERS || '';
+    return raw.split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.includes('@'));
+  })(),
+  SHAREFILE_TEST_EXTERNAL_USER: (process.env.SHAREFILE_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
+  /** Size of the "large size file" seeding case, in MB. The slowest step — keep modest by default. */
+  SHAREFILE_LARGE_FILE_MB: Number(process.env.SHAREFILE_LARGE_FILE_MB || 25),
+  SHAREFILE_TEST_GROUPS: (() => {
+    const raw = process.env.SHAREFILE_TEST_GROUPS || '';
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  })(),
+  /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.
    * CONTENT_MIGRATION_SERVER_URL  — e.g. https://qarelease.cloudfuze.com/

@@ -182,7 +182,11 @@ function testGoogleDestinationBranch() {
 function testOtherCombinationsUntouched() {
   for (const marker of [
     "if (dstProvider === 'sharepoint' && context.destinationEmail) {",
-    "if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {",
+    // Narrowed from the full `if (...)` line: the Drive source branch now carries a
+    // `!useExistingSource &&` guard in front of the provider test, added when cleanup was found to
+    // empty the very folder that flag exists to preserve. The branch is what this asserts is still
+    // present — not the exact condition in front of it.
+    "['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {",
   ]) {
     assert.ok(cleanupSrc.includes(marker), `pre-existing branch still present: ${marker}`);
   }

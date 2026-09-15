@@ -1859,6 +1859,20 @@ ${pathCsv}`);
       `rootFilePerms=${opt('rootFilePermissions')}`,     // Root File Permissions
       `addExternalUserAsGuest=${opt('externalShares')}`,
       `withPermissions=${opt('permissions')}`,
+      // Group Permissions. CloudFuze carries a grant made to a GROUP only if it also creates that
+      // group at the destination — without it there is no principal to grant to, so the grant is
+      // silently dropped while user grants on the same folder arrive normally.
+      //
+      // This flag was never sent, so every job ran with CloudFuze's default `createGroups: false`
+      // (visible in the job response on every run). The ShareFile→SharePoint validator then
+      // reported feature 2.3 as a product defect — ten group grants that "did not arrive" — when
+      // the job had never asked for the groups in the first place. Blaming the product for an
+      // option we did not set is the failure this line exists to stop.
+      //
+      // Default FALSE, like createdTimeForFiles above: this builder is shared by every content
+      // combination, and a run that names no option must send the job it sent before. `opt()`
+      // defaults to true, so the second argument is required here.
+      `createGroups=${opt('createGroups', false)}`,
       `notifyInternalUsers=${opt('notifyInternalUsers', false)}`,
       `notifyExternalUsers=${opt('notifyExternalUsers', false)}`,
       'fromDate=null',

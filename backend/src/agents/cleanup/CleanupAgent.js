@@ -146,6 +146,30 @@ async function cleanContentSides(context, log, summary) {
   }
   log.info(`CleanupAgent: content roots in play: ${folderNames.map((n) => `"${n}"`).join(', ')}`);
 
+  // ── useExistingSource: clean the DESTINATION, never the source ────────────────────────────────
+  //
+  // "Use existing source folder" means migrate what is already there, and seeding is skipped for
+  // the whole run. Cleanup runs BEFORE that decision is acted on, so it happily emptied the folder
+  // the flag exists to preserve — and with seeding skipped, nothing put the data back.
+  //
+  // Measured on execution 6552614f: 10 of 10 top-level items deleted at 11:57:55, seeding skipped
+  // at 11:57:58, and CloudFuze then migrated `1 item` out of an empty tree. The run reported
+  // COMPLETED. A green status over a migration that moved nothing is the worst shape a bug can
+  // take here, and the two options are offered independently in the wizard, so anyone ticking the
+  // box wipes their own source and is told it worked.
+  //
+  // The DESTINATION is still cleaned. The point of the flag is to preserve the source, not to
+  // migrate on top of the previous run's output — leaving the destination dirty would produce the
+  // extra/misplaced findings this file's header was written about.
+  const useExistingSource = context.useExistingSource === true;
+  if (useExistingSource) {
+    log.info('CleanupAgent: useExistingSource is set — NOT touching the source; the destination is '
+      + 'still cleaned so the run has something comparable to validate against');
+    summary.sourceContent.errors.push(
+      'skipped: useExistingSource is set, so the source folder was left exactly as it was'
+    );
+  }
+
   // Refuse to clean while another execution is still seeding the same source account. In run
   // f51cb73c a prior run was mid-seed when this cleanup deleted the folder underneath it, and its
   // remaining uploads failed with "File not found: <parent id>" — 9 unseeded scenarios instead of
@@ -182,7 +206,70 @@ async function cleanContentSides(context, log, summary) {
   // mapping came back mapped=false with both pathRootFolderId null against a folder that had
   // existed, untouched, for 28 minutes. No run in logs/ has ever had mapped=true. Stable ids are
   // worth having on their own; the mapping failure is a separate, still-open problem.
-  if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
+  // ── ShareFile source ───────────────────────────────────────────────────────
+  //
+  // Had no branch at all, so a ShareFile run seeded on top of the previous seed every time. The
+  // damage is not cosmetic for this combination: ShareFileTestDataAgent creates version history by
+  // uploading the SAME filename repeatedly, so a re-run does not replace ten versions — it ADDS ten
+  // more. After four runs `ten-versions.docx` carried roughly forty, and the QA case is named
+  // "Verify 10 versions on root files". The folder's item count read 128 for two files.
+  //
+  // The seeding root is EMPTIED, not deleted. Its CHILDREN go; the folder itself stays.
+  //
+  // It used to be deleted outright, because that is one API call instead of one per child. Two
+  // reasons outweigh the saving. The folder is the thing the user named in the wizard — deleting it
+  // makes the run destroy its own input, and a seeding failure then leaves the account with no
+  // folder at all rather than an empty one. And the Shared Drive field report measured that
+  // delete-and-recreate at the SAME path produced an EMPTY destination twice, where seeding into a
+  // folder that was never removed worked every time; the cause is unestablished, but emptying costs
+  // one request per child and removes the risk entirely.
+  if (!useExistingSource && srcProvider === 'sharefile' && context.sourceEmail) {
+    try {
+      const sharefileClient = require('../../clients/sharefileClient');
+      const core = require('../../validation/shared/deepContentCore');
+      // Clean EVERY folder the run names, from `folderNames` above — the same context-derived list
+      // the Drive/Box/Dropbox branches use. Reading a setting instead would clean one fixed folder
+      // no matter which account or folder the wizard actually selected.
+      const home = await sharefileClient.getRoot(context.sourceEmail);
+      const top = await sharefileClient.listChildren(context.sourceEmail, home.id, '');
+      let removed = 0;
+      for (const raw of folderNames) {
+        const wanted = String(raw).replace(/^\/+/, '');
+        const found = top.find((i) => i.type === 'folder' && core.namesMatch(i.name, wanted));
+        if (!found) {
+          log.info(`CleanupAgent: ShareFile source "${wanted}" not present — nothing to clean`);
+          continue;
+        }
+        const kids = await sharefileClient.listChildren(context.sourceEmail, found.id, `/${found.name}`);
+        let gone = 0;
+        for (const kid of kids) {
+          try {
+            // Deleting a folder takes its whole subtree with it, so only the TOP level is walked.
+            await sharefileClient.deleteItem(context.sourceEmail, kid.id);
+            gone += 1;
+          } catch (kidErr) {
+            // Per child, not per folder: one undeletable item must not leave the rest of the
+            // previous run's data in place for the seeder to pile on top of.
+            summary.sourceContent.errors.push(`ShareFile "/${found.name}/${kid.name}": ${kidErr.message}`);
+          }
+        }
+        log.info(`CleanupAgent: ShareFile source "/${found.name}" emptied — ${gone} of ${kids.length} `
+          + 'top-level item(s) deleted, the folder itself kept');
+        summary.sourceContent.foldersEmptied += 1;
+        summary.sourceContent.itemsDeleted += gone;
+        removed += 1;
+      }
+      if (removed === 0) log.info('CleanupAgent: ShareFile source had nothing to remove');
+    } catch (err) {
+      // Non-blocking, like every other cleanup branch: failing to clean is not a reason to abandon
+      // the run, but it IS reported, because seeding on top of old data is what produces the
+      // "extra"/"misplaced" findings that get blamed on the migration.
+      log.warn(`CleanupAgent: ShareFile source cleanup failed (non-blocking): ${err.message}`);
+      summary.sourceContent.errors.push(`ShareFile source cleanup: ${err.message}`);
+    }
+  }
+
+  if (!useExistingSource && ['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
     try {
       // EVERY drive the run touches, not just GOOGLE_SHARED_DRIVE_NAME.
       //
@@ -339,7 +426,23 @@ async function cleanContentSides(context, log, summary) {
   if (dstProvider === 'sharepoint' && context.destinationEmail) {
     try {
       const deepContentCore = require('../../validation/shared/deepContentCore');
-      const site = await sharepointClient.getSite(env.SHAREPOINT_HOSTNAME, env.SHAREPOINT_SITE_PATH, context.destinationEmail);
+      // Derive the host from the DESTINATION ACCOUNT, not from the fixed setting.
+      //
+      // This passed env.SHAREPOINT_HOSTNAME unconditionally, so a run whose destination account
+      // lives in a different tenant asked Graph for a site that account cannot see — the call
+      // returned HTTP 400 and cleanup silently did nothing, leaving the previous run's data in
+      // place for the next migration to pile onto. Observed with destination granger@gajha.com
+      // while the setting still read filefuze.sharepoint.com.
+      let destHost = context.sharepointHostname || env.SHAREPOINT_HOSTNAME;
+      try {
+        const derived = await sharepointClient.resolveTenantHostname(context.destinationEmail);
+        if (derived && derived !== destHost) {
+          log.info(`CleanupAgent: destination ${context.destinationEmail} is on ${derived}, not `
+            + `${destHost || '(unset)'} — cleaning the account's own tenant`);
+          destHost = derived;
+        }
+      } catch { /* keep the configured host; getSite below reports the real failure */ }
+      const site = await sharepointClient.getSite(destHost, context.sharepointSitePath || env.SHAREPOINT_SITE_PATH, context.destinationEmail);
 
       // A multi-drive run puts each source drive in its own destination sub-folder, so the seeded
       // tree is no longer at the library root — it is at "/QA_Team1/Agent Shared Drive". Scanning
@@ -372,6 +475,15 @@ async function cleanContentSides(context, log, summary) {
         // run with unrelated content. Only names on the seeded allowlist are removed.
         for (const t of targets) {
           const path = `${base === '/' ? '' : base}/${t.name}`;
+          // A folder the RUN NAMES as its destination is emptied, never removed. Without this it was
+          // deleted here as a seeded name and then re-created by the pre-create step — the user's
+          // own input destroyed and rebuilt on every run. Its contents are still cleared, because
+          // that same path is its own entry in destRoots and gets its own pass.
+          if (destRoots.includes(path)) {
+            log.info(`CleanupAgent: destination "${path}" is this run's destination folder — `
+              + 'emptied in its own pass, the folder itself kept');
+            continue;
+          }
           try {
             await sharepointClient.deleteItemByPath(site.id, path, context.destinationEmail);
             summary.destContent.foldersDeleted += 1;
@@ -518,3 +630,8 @@ module.exports = CleanupAgent;
 // Exported for tests: this predicate decides what content cleanup DELETES, so it is pinned.
 module.exports.isSeededContentName = isSeededContentName;
 module.exports.SEEDED_CONTENT_NAMES = SEEDED_CONTENT_NAMES;
+/**
+ * Exported for the test that pins useExistingSource. The guard prevents DATA LOSS — it must be
+ * exercised against the real function, not asserted against the source text.
+ */
+module.exports.cleanContentSides = cleanContentSides;

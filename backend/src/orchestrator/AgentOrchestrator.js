@@ -69,6 +69,49 @@ function isContentProvidersFor(context) {
   );
 }
 
+/**
+ * Refuse to start a second run against a source account that already has one in flight.
+ *
+ * CleanupAgent already DETECTS this and skips cleaning, so it does not delete the other run's data
+ * mid-flight. What it could not do is stop the run: execution d2222ede started while 23e4d09f was
+ * still RUNNING on the same ShareFile account, cleanup stood down as designed, and the run then
+ * seeded on top of a live tree, migrated it, and reported "68 of 201 source items not found at the
+ * destination" — a red FAIL that looked exactly like a CloudFuze data-loss defect.
+ *
+ * Every number in that report was accurate and none of it meant anything: CloudFuze scanned a source
+ * two runs were writing to, saw 179 of 201 items, and finished in 2m50s where the clean run took
+ * 15m21s. The three folders it missed were simply the three seeded last.
+ *
+ * So the check moves to the START of the flow, where refusing costs ten seconds instead of ten
+ * minutes and a misleading verdict. Matching CleanupAgent exactly — same source account, status
+ * RUNNING, excluding this execution — so the two cannot disagree about what a clash is.
+ *
+ * A failure to CHECK is not a failure to run: if the execution store cannot be read the run
+ * proceeds, because blocking every migration on the health of a bookkeeping lookup would be worse
+ * than the overlap it prevents.
+ */
+function assertNoConcurrentRun(context, log) {
+  let clash = [];
+  try {
+    clash = executionService.getAll().filter((e) => e.executionId !== context.executionId
+      && e.status === 'RUNNING'
+      && String((e.context && e.context.sourceEmail) || '').toLowerCase()
+        === String(context.sourceEmail || '').toLowerCase());
+  } catch (err) {
+    log.warn(`Could not check for concurrent executions (${err.message}) — continuing`);
+    return;
+  }
+  if (clash.length === 0) return;
+
+  const ids = clash.map((e) => e.executionId).join(', ');
+  log.error(`Refusing to start: ${clash.length} execution(s) already RUNNING on ${context.sourceEmail} (${ids})`);
+  throw new Error(
+    `Another run is already in progress on ${context.sourceEmail} (execution ${ids}). `
+    + 'Two runs on one source account overwrite each other\'s test data and produce a report that '
+    + 'looks like a migration defect. Wait for that run to finish, or cancel it, then start this one.'
+  );
+}
+
 class AgentOrchestrator {
   /**
    * Phased bulk flow for multiple pairs:
@@ -403,6 +446,10 @@ class AgentOrchestrator {
     const isContentMode = isContentModeFor(context);
 
     try {
+      // BEFORE anything touches an account. Throwing here lands in this method's own catch, which
+      // already records the failure, updates the execution and tears down the log handler.
+      assertNoConcurrentRun(context, log);
+
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
       // Skipped only on resume (skipCleanup). Content was excluded here on the grounds that there
       // was "no test data to clean", which was untrue: seeded folders accumulate on the source and
@@ -431,6 +478,31 @@ class AgentOrchestrator {
             ? context.userEmailMappings.map((m) => ({ sourceEmail: m.sourceEmail, destinationEmail: m.destinationEmail }))
             : []);
       if (isContentMode) log.info(`Content: useExistingSource=${context.useExistingSource} (true = skip seeding, migrate existing folder)`);
+
+      // Job options a COMBINATION requires, which the run wizard has no field for.
+      //
+      // The job-options builder in migrationClient is shared by every content pair, so a flag one
+      // pair needs cannot simply be defaulted on there without changing the job every other pair
+      // sends. But leaving it off silently is worse: ShareFile→SharePoint ran for weeks with
+      // `createGroups: false` while its own in-scope feature 2.3 is Group Permissions, and the
+      // validator reported the dropped group grants as a CloudFuze defect — a defect raised
+      // against an option the job never asked for.
+      //
+      // A combination declares what it needs; the user's own options still win, so a run that
+      // explicitly turns something off is not overridden here.
+      const comboDefaults = agentsFor(context).contentOptionDefaults;
+      if (isContentMode && comboDefaults) {
+        const before = context.contentOptions || {};
+        const merged = { ...comboDefaults, ...before };
+        const applied = Object.keys(comboDefaults)
+          .filter((k) => before[k] === undefined)
+          .map((k) => `${k}=${comboDefaults[k]}`);
+        context.contentOptions = merged;
+        if (applied.length > 0) {
+          log.info(`Content: combination job option(s) applied — ${applied.join(', ')} `
+            + '(required by this pair; not offered by the run wizard)');
+        }
+      }
       if (isContentMode && cufEntries.length > 0) {
         // Resolve each entry's SOURCE email → Box user id so we seed As-User into that user's
         // OWN account (not the connected admin). Requires the OAuth app's as-user header + the
@@ -507,6 +579,64 @@ class AgentOrchestrator {
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
+      } else if (isContentMode && context.useExistingSource && useExistingProvider === 'sharefile' && cufEntries.length > 0) {
+        // ShareFile equivalent of the Box and Dropbox branches.
+        //
+        // Without it a ShareFile source fell through every case and left userFolderMappings empty,
+        // which migrationClient turns into sourcePath '/' — the WHOLE ShareFile account rather than
+        // the QA folder. That is not theoretical: run 543546e5 migrated "/" for alex@filefuze.co,
+        // whose root is empty, and CloudFuze correctly returned PROCESSED_EMPTY with
+        // totalFilesAndFolders=0. The run looked entirely normal while doing it.
+        //
+        // ShareFile has no path-based lookup: /Items resolves the CALLER's home and children are
+        // walked by id, so the named folder is resolved by listing the seeding account's home and
+        // matching on name. namesMatch is used rather than === so a folder the source stored under a
+        // sanitised name still resolves.
+        log.info(`Content: useExistingSource — skipping data creation, resolving ${cufEntries.length} existing ShareFile folder(s)`);
+        const sharefileClient = require('../clients/sharefileClient');
+        const core = require('../validation/shared/deepContentCore');
+        context.userFolderMappings = [];
+        for (const e of cufEntries) {
+          const wanted = (e.sourceFolderName || env.SHAREFILE_TEST_ROOT || '/QA-Automation')
+            .trim().replace(/^\/+/, '');
+          try {
+            const home = await sharefileClient.getRoot(e.sourceEmail);
+            const top = await sharefileClient.listChildren(e.sourceEmail, home.id, '');
+            const found = top.find((i) => i.type === 'folder' && core.namesMatch(i.name, wanted));
+            if (!found) {
+              log.warn(`Content useExistingSource: ShareFile folder "${wanted}" not found for `
+                + `${e.sourceEmail} — skipping. Present: ${top.filter((i) => i.type === 'folder')
+                  .map((i) => i.name).slice(0, 8).join(', ')}`);
+              continue;
+            }
+            context.userFolderMappings.push({
+              sourceEmail: e.sourceEmail,
+              destinationEmail: e.destinationEmail,
+              sourcePath: `/${found.name}`,
+              sourceRootId: String(found.id),
+              destinationPath: e.destinationPath || context.destinationPath || '',
+            });
+            log.info(`Content useExistingSource: ${e.sourceEmail} → existing "/${found.name}" (id=${found.id})`);
+          } catch (resErr) {
+            log.warn(`Content useExistingSource: resolve ShareFile "${wanted}" for ${e.sourceEmail} `
+              + `failed (${resErr.message}) — skipping`);
+          }
+        }
+        if (context.userFolderMappings[0]) {
+          context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
+          context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        // Refuse rather than fall back, exactly as the Dropbox branch does: migrating with no
+        // resolved folder means migrating the account root, which is never what was asked for.
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing ShareFile folder could be resolved — refusing to '
+            + 'run. Migrating with no resolved folder falls back to the account root, which is never '
+            + 'what was asked for. Check the source folder name and that it belongs to the mapped '
+            + 'source user, or untick "use existing source folder" to seed it instead.'
+          );
+        }
+        log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing ShareFile folder(s) ready to migrate`);
       } else if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
         // Dropbox equivalent of the Box branch above.
         //
@@ -808,12 +938,31 @@ class AgentOrchestrator {
             .filter((p) => p && p !== '/')
         )];
         if (wanted.length > 0) {
+          const sitePath = context.sharepointSitePath || env.SHAREPOINT_SITE_PATH;
+          const configuredHost = context.sharepointHostname || env.SHAREPOINT_HOSTNAME;
           try {
-            const site = await sharepointClient.getSite(
-              context.sharepointHostname || env.SHAREPOINT_HOSTNAME,
-              context.sharepointSitePath || env.SHAREPOINT_SITE_PATH,
-              context.destinationEmail
-            );
+            // The configured hostname belongs to whichever tenant was last written into the
+            // settings; the destination account belongs to whatever tenant the user connected. When
+            // they differ Graph answers an opaque 400, this whole block was skipped with a
+            // non-blocking warning, and the destination folder was never created — so a run using
+            // any account outside the configured tenant silently lost its pre-create.
+            //
+            // SharePointValidationAgent.resolveSite already solves this by asking Graph for the
+            // account's OWN hostname and retrying; the same call is used here so the side that
+            // CREATES the folder and the side that READS it agree on the tenant. Without that, one
+            // could resolve while the other did not, and the report would blame the migration.
+            let site = null;
+            try {
+              site = await sharepointClient.getSite(configuredHost, sitePath, context.destinationEmail);
+            } catch (hostErr) {
+              const discovered = await sharepointClient.resolveTenantHostname(context.destinationEmail);
+              if (!discovered || discovered === configuredHost) throw hostErr;
+              site = await sharepointClient.getSite(discovered, sitePath, context.destinationEmail);
+              log.info(`Content destination: configured hostname "${configuredHost}" does not serve `
+                + `${context.destinationEmail}; used that account's own tenant "${discovered}".`);
+            }
+            if (!site?.id) throw new Error(`site ${sitePath} did not resolve`);
+
             for (const p of wanted) {
               const made = await sharepointClient.ensureFolderPath(site.id, p, context.destinationEmail);
               log.info(`Content destination: "${p}" ready${made.length ? ` (created ${made.join(', ')})` : ' (already existed)'}`);
@@ -1182,3 +1331,7 @@ module.exports = new AgentOrchestrator();
 // listed — which is why `googleshareddrive` went unnoticed.
 module.exports.CONTENT_PROVIDERS = CONTENT_PROVIDERS;
 module.exports.isContentProvidersFor = isContentProvidersFor;
+// Exported so a test can prove the concurrency guard both fires and stays out of the way. It is the
+// difference between a second run being refused in ten seconds and it producing a ten-minute report
+// that reads as a migration defect.
+module.exports.assertNoConcurrentRun = assertNoConcurrentRun;

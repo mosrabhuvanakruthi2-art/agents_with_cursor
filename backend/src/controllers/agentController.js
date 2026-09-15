@@ -360,6 +360,10 @@ const USER_LISTING_PROVIDER = {
   // Dropbox lists its own team members (dropboxClient.listTeamMembers) rather than mapping to a
   // Google/Graph account — same arrangement as Box.
   dropbox: 'dropbox',
+  // ShareFile likewise lists its own account users. Without this entry the wizard's Map Users step
+  // showed "0 source" for a sharefile → sharepoint run: the raw provider matched no branch, so the
+  // live fetch was skipped entirely and the empty data/users.json fallback was returned.
+  sharefile: 'sharefile',
 };
 
 async function getSourceUsers(req, res) {
@@ -451,6 +455,33 @@ async function getSourceUsers(req, res) {
           };
         });
       return res.json({ adminEmail, users, source: 'dropbox' });
+    }
+
+    // ShareFile — the account's own users. No Graph/Gmail fallback, for the same reason as Dropbox:
+    // a ShareFile account has no counterpart in either directory, so falling back would list people
+    // who cannot be a ShareFile source at all and invite a mapping that silently migrates nothing.
+    if (provider === 'sharefile') {
+      const sharefileClient = require('../clients/sharefileClient');
+      logger.info(`getSourceUsers: fetching ShareFile account users (admin: ${adminEmail})`);
+      // adminEmail selects WHICH connected ShareFile account to read as. The client resolves the
+      // single connected account when the address does not name one, so a mismatch between the
+      // wizard's admin field and the connected account still lists users rather than failing.
+      const raw = await sharefileClient.listUsers(
+        sharefileClient.resolveAccount(adminEmail) ? adminEmail : undefined
+      );
+      const users = raw
+        .filter((u) => u.email)
+        .map((u) => {
+          const name = u.name || u.email;
+          return {
+            id: u.id || u.email,
+            email: u.email,
+            displayName: name,
+            firstName: name.split(' ')[0] || '',
+            lastName: name.split(' ').slice(1).join(' ') || '',
+          };
+        });
+      return res.json({ adminEmail, users, source: 'sharefile' });
     }
 
     if (provider === 'sharepoint') {

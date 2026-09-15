@@ -161,9 +161,25 @@ async function run() {
 
   // Rule 5 of the Citrix setup, and the value the user must paste into the API Key Generator:
   // a mismatch makes the key unusable, and it fails at the END of sign-in.
+  //
+  // Asserted against the DEFAULT unless SHAREFILE_REDIRECT_URI overrides it. The override exists
+  // because ShareFile appears to require an HTTPS callback — every app registered on the live tenant
+  // uses one (an ngrok tunnel, or https://staging.cloudfuze.com/oauth/oauth.html), never
+  // http://localhost — so local development cannot use the default at all. It is ShareFile-only on
+  // purpose: repointing BACKEND_BASE would move the redirect for Google, Microsoft, Box, Dropbox and
+  // Slack too, all registered against localhost, breaking five working connectors to fix one.
+  //
+  // This asserted the default unconditionally and therefore failed the moment the override was set,
+  // reporting a configuration choice as a defect. What the rule actually requires is that the URI we
+  // send matches the one registered with Citrix — which is the override when present.
   const redirectUri = url.searchParams.get('redirect_uri');
-  assert.strictEqual(redirectUri, `${BACKEND_BASE}/api/auth/sharefile/callback`,
-    'the redirect must be BACKEND_BASE + /api/auth/sharefile/callback, verbatim');
+  const expectedRedirect = env.SHAREFILE_REDIRECT_URI || `${BACKEND_BASE}/api/auth/sharefile/callback`;
+  assert.strictEqual(redirectUri, expectedRedirect,
+    'the redirect must be SHAREFILE_REDIRECT_URI when set, else BACKEND_BASE + /api/auth/sharefile/callback');
+  if (env.SHAREFILE_REDIRECT_URI) {
+    assert.ok(redirectUri.startsWith('https://'),
+      'an overridden redirect must be HTTPS — ShareFile rejects a plain-HTTP callback');
+  }
   console.log(`  redirect_uri to register with Citrix: ${redirectUri}`);
 
   // Rule 7 — the secret is a token-exchange credential and belongs nowhere near the browser.

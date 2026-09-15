@@ -947,7 +947,11 @@ function drawCloudFuzeFolderBreakdown(doc, migJob) {
     doc.save().strokeColor(C.border).lineWidth(0.3).rect(MARGIN, ty, CONTENT_W, 15).stroke().restore();
 
     doc.fontSize(7).font(F_REGULAR).fillColor(C.text);
-    cell(`${r.subFolder ? '  ' : ''}${r.folder}`, X1 + 6, COL_F, ty + 3.5);
+    // `|| '—'` like every other cell in this row. A template literal renders a missing value as the
+    // word "undefined", and this was the only cell without a fallback — so a breakdown row whose
+    // folder name came through empty printed "undefined" in the report while the folder itself was
+    // perfectly correct.
+    cell(`${r.subFolder ? '  ' : ''}${r.folder || '—'}`, X1 + 6, COL_F, ty + 3.5);
     doc.fillColor(C.subtle);
     cell(r.destPath || '—', X2 + 4, COL_D, ty + 3.5);
     doc.fillColor(C.darkAlt);
@@ -2340,6 +2344,34 @@ function drawContentSummaryCards(doc, checks) {
   doc.y = startY + cardH + 10;
 }
 
+/**
+ * How an out-of-scope row is LABELLED.
+ *
+ * PASS and FAIL mean opposite things in the two halves of a content report, and printing the same
+ * two words in both is how a reader ends up believing a green "PASS" beside "Shared Links" means
+ * shared links migrated. In scope, FAIL means the feature did not arrive. Out of scope, FAIL means
+ * it did — the product doing more than the document describes.
+ *
+ * So out-of-scope rows never print PASS or FAIL. They print what actually happened, which needs no
+ * key to read: STAYED OUT, or MIGRATED. The colour still carries whether that is good or bad.
+ *
+ * Both the checks table and the out-of-scope rollup call this, so the two can never disagree.
+ */
+// Checks 9 and 10 judge documented out-of-scope FEATURES and use the migrated/not-migrated
+// wording. Check 8 is a boundary control over content that was never requested for migration
+// at all, so it keeps a plain PASS/FAIL and is deliberately not listed here.
+const OUT_OF_SCOPE_CHECK = /^(9|10)\. Out-of-scope/i;
+
+function outOfScopeTagText(status) {
+  // FAIL means the same thing here as everywhere else in the report: it did not reach the
+  // destination. For an out-of-scope feature that is the documented outcome, which the row's own
+  // detail says under "Expected:" — the tag states the fact, the detail states whether it is a
+  // defect.
+  if (status === 'FAIL') return 'NOT MIGRATED';
+  if (status === 'PASS') return 'MIGRATED';
+  return status;
+}
+
 function drawContentChecksTable(doc, checks) {
   const COL_CHECK = 170;
   const COL_STATUS = 60;
@@ -2373,7 +2405,11 @@ function drawContentChecksTable(doc, checks) {
     doc.fontSize(8).font(F_BOLD).fillColor(C.text).text(String(c.name || ''), MARGIN + 6, y + 5, { width: COL_CHECK - 12 });
     const tagW = COL_STATUS - 12;
     doc.save().fillColor(tag.bg).roundedRect(MARGIN + COL_CHECK + 6, y + 5, tagW, 14, 3).fill().restore();
-    doc.fontSize(7).font(F_BOLD).fillColor(tag.fg).text(c.status, MARGIN + COL_CHECK + 6, y + 8, { width: tagW, align: 'center', lineBreak: false });
+    const isOos = OUT_OF_SCOPE_CHECK.test(String(c.name || ''));
+    const tagTxt = isOos ? outOfScopeTagText(c.status) : c.status;
+    // "STAYED OUT" does not fit the column at 7pt; the status words do.
+    doc.fontSize(tagTxt.length > 8 ? 5.6 : 7).font(F_BOLD).fillColor(tag.fg)
+      .text(tagTxt, MARGIN + COL_CHECK + 6, y + (tagTxt.length > 8 ? 9 : 8), { width: tagW, align: 'center', lineBreak: false });
     doc.fontSize(8).font(F_REGULAR).fillColor(C.darkAlt).text(detail, MARGIN + COL_CHECK + COL_STATUS + 6, y + 5, { width: COL_DETAIL - 12 });
 
     doc.save().strokeColor(C.border).lineWidth(0.3).moveTo(MARGIN, y + rowH).lineTo(MARGIN + CONTENT_W, y + rowH).stroke().restore();
@@ -2634,17 +2670,30 @@ function drawContentItemTree(doc, items, opts = {}) {
  * "Not assessed" rows are printed too, with the reason — a feature the run could not exercise must
  * be visible as such rather than quietly missing from the report.
  */
-function drawContentFeatureChecklist(doc, checklist, summary) {
-  drawSectionHeader(doc, 'Feature Checklist — documented features for this combination');
+function drawContentFeatureChecklist(doc, checklist, summary, opts = {}) {
+  drawSectionHeader(doc, opts.header
+    || 'Feature Checklist — documented features for this combination');
 
-  if (summary?.line) {
+  // The out-of-scope table reads backwards from the in-scope one — a green row there means the
+  // feature did NOT migrate — so the caller supplies a sentence saying so. Without it a reader
+  // sees "PASS" beside "Shared Links" and concludes shared links migrated.
+  if (opts.note) {
+    ensureSpace(doc, 20);
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.subtle)
+      .text(opts.note, MARGIN, doc.y, { width: CONTENT_W });
+    doc.moveDown(0.3);
+  }
+
+  // The in-scope rollup passes an object with `.line`; the out-of-scope one is already a sentence.
+  const summaryLine = typeof summary === 'string' ? summary : summary?.line;
+  if (summaryLine) {
     ensureSpace(doc, 14);
     doc.fontSize(8.5).font(F_BOLD).fillColor(C.text)
-      .text(summary.line, MARGIN, doc.y, { width: CONTENT_W });
+      .text(summaryLine, MARGIN, doc.y, { width: CONTENT_W });
     doc.moveDown(0.4);
   }
 
-  const STATE = {
+  const STATE = opts.states || {
     pass: { bg: C.passBg, fg: C.pass, txt: 'PASS' },
     fail: { bg: C.failBg, fg: C.fail, txt: 'FAIL' },
     na: { bg: C.subtleBg || C.passBg, fg: C.subtle, txt: 'N/A' },
@@ -2661,10 +2710,12 @@ function drawContentFeatureChecklist(doc, checklist, summary) {
       doc.moveDown(0.15);
     }
     const st = STATE[row.status] || STATE.na;
+    // The out-of-scope tags are words, not four-letter codes, so the box has to hold them.
+    const tagFont = st.txt.length > 6 ? 5.2 : 6.5;
     // Measure the row BEFORE reserving space. A flat 20pt was reserved while the title and detail
     // below wrap freely, so a long detail starting near the page bottom drew its status tag on one
     // page and its text on the next — the overlap seen in the report.
-    const tagW = 30;
+    const tagW = Math.max(30, ...Object.values(STATE).map((x) => x.txt.length * 4.2 + 6));
     const textW0 = CONTENT_W - tagW - 6;
     const titleH = doc.fontSize(8).font(F_BOLD)
       .heightOfString(`${row.id}  ${row.feature}`, { width: textW0 });
@@ -2674,8 +2725,8 @@ function drawContentFeatureChecklist(doc, checklist, summary) {
     ensureSpace(doc, titleH + detailH + 8);
     const y = doc.y;
     doc.save().fillColor(st.bg).roundedRect(MARGIN, y + 1, tagW, 11, 2).fill().restore();
-    doc.fontSize(6.5).font(F_BOLD).fillColor(st.fg)
-      .text(st.txt, MARGIN, y + 3.5, { width: tagW, align: 'center', lineBreak: false });
+    doc.fontSize(tagFont).font(F_BOLD).fillColor(st.fg)
+      .text(st.txt, MARGIN, y + 4, { width: tagW, align: 'center', lineBreak: false });
 
     const textX = MARGIN + tagW + 6;
     const textW = textW0;
@@ -2833,7 +2884,10 @@ function generateContentValidationPdf(execution, stream) {
       drawContentUserHeader(doc, i + 1, u);
       drawContentChecksTable(doc, u.checks || []);
       if (u.folderStructure) {
-        drawSectionHeader(doc, `Folder structure validation — ${u.folderStructure.status}`);
+        // Same reason as the breakdown cell above: an absent status printed "— undefined" in the
+        // header of an otherwise correct section. A combination that supplies no status has not
+        // failed — it has not said — so the header says that instead of naming a verdict.
+        drawSectionHeader(doc, `Folder structure validation — ${u.folderStructure.status || 'not stated'}`);
         drawFolderStructureSection(doc, u.folderStructure);
       }
       if ((u.items || []).length > 0) {
@@ -2851,6 +2905,32 @@ function generateContentValidationPdf(execution, stream) {
   // produced one. This is the section that answers "which documented features actually work".
   if (Array.isArray(v.featureChecklist) && v.featureChecklist.length > 0) {
     drawContentFeatureChecklist(doc, v.featureChecklist, v.featureSummary);
+  }
+
+  // The out-of-scope rollup. The validator has produced this list for some time, but nothing ever
+  // drew it, so a run that seeded out-of-scope controls and judged them correctly still showed the
+  // reader nothing — the report looked as though out-of-scope had never been tested at all.
+  //
+  // Its verdicts are INVERTED relative to the list above: a feature the document excludes is
+  // correct when it stays behind, so the tags read OUT (stayed out) rather than PASS, and RAN
+  // (migrated anyway — a defect) rather than FAIL.
+  if (Array.isArray(v.outOfScopeChecklist) && v.outOfScopeChecklist.length > 0) {
+    drawContentFeatureChecklist(doc, v.outOfScopeChecklist, v.outOfScopeSummary, {
+      header: 'Out-of-Scope Checklist — features the document says do NOT migrate',
+      note: 'FAIL means the same thing here as everywhere else in this report: the feature did '
+        + 'not reach the destination. The job requests every one of these features, so the tool '
+        + 'accepted the request and did not deliver it. Because they are documented OUT OF SCOPE '
+        + 'for this combination, that failure is EXPECTED and raises no CloudFuze ticket — each '
+        + 'row says so under "Expected:". A row reading MIGRATED is the opposite case: the product '
+        + 'did more than the document describes, and that one IS raised. N/A marks a feature this '
+        + 'run could not exercise, with the reason given.',
+      states: {
+        pass: { bg: C.warnBg, fg: C.warn, txt: outOfScopeTagText('PASS') },
+        fail: { bg: C.failBg, fg: C.fail, txt: outOfScopeTagText('FAIL') },
+        na: { bg: C.subtleBg || C.passBg, fg: C.subtle, txt: 'N/A' },
+        info: { bg: C.passBg, fg: C.subtle, txt: 'INFO' },
+      },
+    });
   }
 
   drawFooter(doc, context);
