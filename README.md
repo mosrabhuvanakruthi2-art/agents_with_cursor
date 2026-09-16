@@ -40,6 +40,17 @@ npm run dev
 
 The dashboard opens at `http://localhost:3000` (proxies API calls to the backend).
 
+### 3. Server deployment (Docker)
+
+```bash
+docker compose up -d --build
+```
+
+Builds the backend (Node 22 + Playwright/Chromium) and serves the built SPA through nginx,
+which proxies `/api` to the backend. The root `.env` and `backend/config/` are mounted at
+runtime rather than baked into the images. Full instructions, including OAuth redirect URIs and
+the MongoDB options, are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## API Endpoints
 
 | Method | Endpoint                          | Description              |

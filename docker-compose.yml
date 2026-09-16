@@ -1,0 +1,75 @@
+# Migration QA Agent System — server deployment.
+#
+#   docker compose up -d --build
+#
+# Prerequisites on the server (see DEPLOYMENT.md):
+#   - the repo checkout, including a real root .env (gitignored, copy it across)
+#   - backend/config/<service-account>.json for Google DWD
+#   - MONGODB_URI reachable from the server (Atlas IP allow-list, or the
+#     bundled mongo service via `--profile local-mongo`)
+#
+# The root .env is both the compose variable file AND the file the backend reads
+# at runtime — it is mounted read-only at /app/.env, which is exactly where
+# backend/src/config/env.js looks for it. Nothing secret is baked into an image.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    image: migration-qa-backend:latest
+    container_name: qa-agent-backend
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+    volumes:
+      # The one file env.js resolves as ../../../.env from src/config.
+      - ./.env:/app/.env:ro
+      # Service-account keys — read-only, referenced as ./config/*.json (CWD = /app/backend).
+      - ./backend/config:/app/backend/config:ro
+      # Seeded test-case catalogs plus runtime state (executions, oauth tokens, caches).
+      - ./backend/data:/app/backend/data
+      # Winston app.log + one log file per execution.
+      - ./backend/logs:/app/backend/logs
+    ports:
+      # Bound to loopback: browsers reach the API through nginx on the frontend
+      # service. Publish it wider only if an external OAuth callback needs it.
+      - '127.0.0.1:5000:5000'
+    networks: [qa-agent]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Build-time only — Vite inlines these. Values come from the root .env.
+        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID:-}
+        VITE_AZURE_TENANT_ID: ${VITE_AZURE_TENANT_ID:-common}
+    image: migration-qa-frontend:latest
+    container_name: qa-agent-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Host port 3000 keeps the Azure redirect URI the app already registers.
+      - '${FRONTEND_PORT:-3000}:80'
+    networks: [qa-agent]
+
+  # Opt-in local database: `docker compose --profile local-mongo up -d`.
+  # Only useful when MONGODB_URI points at mongodb://mongo:27017 instead of Atlas.
+  # Leaving MONGODB_URI empty is also valid — the app falls back to backend/data/*.json.
+  mongo:
+    image: mongo:7
+    container_name: qa-agent-mongo
+    restart: unless-stopped
+    profiles: [local-mongo]
+    volumes:
+      - mongo-data:/data/db
+    networks: [qa-agent]
+
+networks:
+  qa-agent:
+    driver: bridge
+
+volumes:
+  mongo-data:
