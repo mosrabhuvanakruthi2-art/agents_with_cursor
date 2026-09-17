@@ -4,8 +4,9 @@
 **Combination:** Dropbox to Google (My Drive & Shared Drive)
 **Scope:** Out of Scope
 **Total Features:** 1
-**Last Updated:** 2026-09-01
-**Source:** `Content_DropboxtoGoogle(MyDrive&SharedDrive)_(01-09-2026) (1).pdf`
+**Last Updated:** 2026-09-16
+**Source:** `Content_DropboxtoGoogle(MyDrive&SharedDrive)_(16-09-2026).pdf` (re-confirmed from the
+`01-09-2026` version — content unchanged: still exactly one out-of-scope feature, in-line comments)
 
 > Companion file: `dropbox-to-google-inscope.md` — the 36 features that must be validated.
 >
@@ -44,8 +45,16 @@ GIFs (10.6), section breaks (10.14), code block formatting (10.15), mentions (10
 (10.18).
 
 **They are deliberately NOT listed in this file**, because the official out-of-scope document does not
-list them. Adding them here would silently convert six potential defects into accepted behaviour on
-a validator author's judgement, which is not a call this file gets to make.
+list them — confirmed again in the `16-09-2026` re-issue, fifteen days after the original: still
+exactly one out-of-scope feature (in-line comments), Paper's six limitations still absent. Two
+independent document versions omitting them is stronger evidence this is not an oversight, not weaker
+grounds to add them ourselves. Adding them here would silently convert six potential defects into
+accepted behaviour on a validator author's judgement, which is not a call this file gets to make.
+
+The same reissue is also silent on Dropbox Papers Migration itself (in-scope feature 10.1) — it is not
+named anywhere in either out-of-scope version. Total non-migration of a Paper document (as opposed to
+a documented partial-fidelity loss) has no textual basis for treatment as accepted behaviour and must
+keep failing when it happens.
 
 Until the combination owner rules on them, the validator reports each at INFO carrying the
 document's own wording — neither hiding a defect nor inventing one. If the owner confirms they are

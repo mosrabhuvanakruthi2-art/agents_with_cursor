@@ -38,13 +38,30 @@ const boxRefreshLocks = new Map(); // email → Promise<string>
 /**
  * Refresh a Box OAuth token, serialized per account. Re-reads the latest stored token first
  * (another caller may have just refreshed), then rotates exactly once and persists the new pair.
+ *
+ * `boxRefreshLocks` only serializes callers WITHIN THIS PROCESS. Box's refresh token is single-use
+ * and rotates on redemption (confirmed live 2026-09-15) — the same failure mode this repo already
+ * documents for Dropbox — but unlike a single long-running server, this repo routinely has SEVERAL
+ * separate `node` processes touching the same account at once: the backend server plus any number of
+ * one-off diagnostic/seeding scripts. Two processes racing to redeem the SAME stored refresh token
+ * both send it to Box; Box honours the first and 400s the second with invalid_grant, and the losing
+ * process's in-process lock does nothing to prevent that because it has no idea the other process
+ * exists. Measured directly: repeated `OAuth refresh failed … 400` errors while a hand-run diagnostic
+ * script and the running server were both calling `getValidToken` around the same time.
+ *
+ * The fix is not a cross-process mutex (a real one needs a shared lock service this repo doesn't
+ * have) — it is to make LOSING the race recoverable: on a 400, wait briefly and re-read the shared
+ * token store once more. If another process won the race and already rotated the token, its result
+ * is sitting there now, and the loser can just use it instead of surfacing a failure that was never
+ * really an expired/invalid credential — only a redemption that arrived a few hundred milliseconds
+ * late.
  */
 async function refreshBoxToken(email, tokenStore) {
   const key = String(email).toLowerCase();
   if (boxRefreshLocks.has(key)) return boxRefreshLocks.get(key);
 
   const p = (async () => {
-    // A concurrent caller may have refreshed while we were queued — use that result.
+    // A concurrent caller (in this process, or another one) may have refreshed already.
     const latest = tokenStore.getBoxToken(email);
     if (latest?.accessToken && latest.expiresAt && Date.now() < latest.expiresAt - 60_000) {
       return latest.accessToken;
@@ -57,13 +74,29 @@ async function refreshBoxToken(email, tokenStore) {
       client_id: process.env.BOX_CLIENT_ID,
       client_secret: process.env.BOX_CLIENT_SECRET,
     });
-    const res = await axios.post(BOX_TOKEN_URL, params.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-    const { access_token, refresh_token, expires_in } = res.data;
-    tokenStore.setBoxToken({ email, accessToken: access_token, refreshToken: refresh_token, expiresAt: Date.now() + expires_in * 1000 });
-    logger.info(`[boxClient] Token refreshed for ${email}`);
-    return access_token;
+    try {
+      const res = await axios.post(BOX_TOKEN_URL, params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      const { access_token, refresh_token, expires_in } = res.data;
+      tokenStore.setBoxToken({ email, accessToken: access_token, refreshToken: refresh_token, expiresAt: Date.now() + expires_in * 1000 });
+      logger.info(`[boxClient] Token refreshed for ${email}`);
+      return access_token;
+    } catch (err) {
+      // A 400 here is exactly what Box returns for "this refresh token was already redeemed" —
+      // give whichever OTHER process won the race a moment to persist its result, then use it
+      // instead of failing on a token that was never actually invalid, just already spent.
+      if (err?.response?.status === 400) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const afterWait = tokenStore.getBoxToken(email);
+        if (afterWait?.accessToken && afterWait.refreshToken !== refreshToken) {
+          logger.info(`[boxClient] Refresh for ${email} lost a cross-process race — another process `
+            + 'already rotated the token; using its result instead of failing.');
+          return afterWait.accessToken;
+        }
+      }
+      throw err;
+    }
   })().finally(() => boxRefreshLocks.delete(key));
 
   boxRefreshLocks.set(key, p);
@@ -218,13 +251,75 @@ async function uploadVersion(fileId, name, fileBuffer, token, asUserId = null) {
   return res.data.entries[0];
 }
 
+// ─── Box Notes ─────────────────────────────────────────────────────────────────
+
+/**
+ * Create a REAL Box Note from Markdown via Box's Notes API (`POST /2.0/notes/convert`, released
+ * May 2026 — Box API version 2026.0+, requires the `box-version: 2026.0` request header on every
+ * call). Converts Markdown into a genuine `.boxnote` file uploaded directly to the target folder —
+ * this is the box-notes equivalent of Dropbox's `files/paper/create`.
+ *
+ * Superseded assumption: earlier code in this repo (BoxToGoogledriveTestDataAgent's original
+ * `_seedBoxNotes`) uploaded a plain JSON placeholder through the generic `files/content` endpoint on
+ * the belief that Box had no public Notes-authoring API at all. Confirmed live (2026-09-15): a file
+ * uploaded that way carries only generic `extracted_text`/`embedded_metadata` representations — Box
+ * does not recognise it as an actual Note. This endpoint is the real one.
+ *
+ * No new OAuth scope is required — ordinary file-upload permission on the target folder is enough.
+ * Known limits from Box's own docs: content must be Markdown, capped at 1 MB, and conversion can take
+ * up to ~30s server-side (the request may legitimately be slow).
+ *
+ * @param {string} markdown — Markdown content, max 1 MB
+ * @param {string} parentId — destination folder id
+ * @param {string} token
+ * @param {string|null} asUserId
+ * @param {string} [name] — filename for the resulting .boxnote file (Box appends .boxnote itself if
+ *   omitted from the name)
+ * @returns {Promise<{id: string, type: string}>}
+ */
+async function createNote(markdown, parentId, token, asUserId = null, name) {
+  // NOT `parent_id` — the API rejects that with "should NOT have additional properties" /
+  // "should have required property 'parent'" (confirmed live 2026-09-15). It wants the same
+  // `parent: { id }` shape every other Box create call uses (see createFolder above).
+  const body = {
+    content: markdown,
+    parent: { id: String(parentId), type: 'folder' },
+    content_format: 'markdown',
+    ...(name ? { name } : {}),
+  };
+  const res = await axios.post(`${BOX_API}/notes/convert`, body, {
+    headers: {
+      ...authHeaders(token, asUserId),
+      'Content-Type': 'application/json',
+      'box-version': '2026.0',
+    },
+    timeout: 45000, // conversion can take up to ~30s per Box's own documented limit
+  });
+  return res.data;
+}
+
 // ─── Shared links ─────────────────────────────────────────────────────────────
 
-async function createSharedLink(itemType, itemId, token, asUserId = null) {
+/**
+ * Create (or replace) a shared link on a Box file or folder.
+ *
+ * `access` defaults to `'open'` — unchanged from every existing caller (BoxTestDataAgent's public
+ * "anyone with the link" scenarios) — but accepts Box's other two shared_link.access values:
+ *   'open'          — anyone with the link (Dropbox/Google's "anyone" audience)
+ *   'company'       — anyone in the enterprise (Box's "people in your company" link; the Google
+ *                      equivalent of a domain-scope link)
+ *   'collaborators' — only people who already have collaborator access on the item
+ *
+ * Box's shared_link has NO edit-vs-view axis — only `can_download` / `can_preview`, never `can_edit`.
+ * Editing always requires a real collaboration; a shared link only ever grants viewing/downloading,
+ * regardless of `access`. See validation/roleMaps/box_to_google.js's `expectedLinkType`, which is
+ * always `'view'` for exactly this reason.
+ */
+async function createSharedLink(itemType, itemId, token, asUserId = null, access = 'open') {
   const endpoint = itemType === 'file' ? 'files' : 'folders';
   const body = {
     shared_link: {
-      access: 'open',
+      access,
       ...(itemType === 'file' ? { permissions: { can_download: true, can_preview: true } } : {}),
     },
   };
@@ -232,6 +327,22 @@ async function createSharedLink(itemType, itemId, token, asUserId = null) {
     headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
   });
   return res.data.shared_link?.url || null;
+}
+
+/**
+ * Update a Box file or folder's own attributes — rename (`{ name }`) or move (`{ parent: { id } }`).
+ *
+ * Added for BoxToGoogledriveTestDataAgent.applyDeltaChanges (content scope 1.3 — delta migration),
+ * which needs to rename and move items that already migrated in a prior one-time pass. Box addresses
+ * everything by id, so a rename/move is the same PUT either way; no path arithmetic is needed the way
+ * Dropbox's `movePath` requires.
+ */
+async function updateItem(itemType, itemId, updates, token, asUserId = null) {
+  const base = itemType === 'folder' ? 'folders' : 'files';
+  const res = await axios.put(`${BOX_API}/${base}/${itemId}`, updates, {
+    headers: { ...authHeaders(token, asUserId), 'Content-Type': 'application/json' },
+  });
+  return res.data;
 }
 
 // ─── Comments ─────────────────────────────────────────────────────────────────
@@ -557,11 +668,12 @@ async function listComments(fileId, token, asUserId = null) {
 
 module.exports = {
   getValidToken, getMe, getUsers,
-  createFolder, uploadFile, uploadVersion,
+  createFolder, uploadFile, uploadVersion, createNote,
   createSharedLink, addComment, createCollaboration,
   createGroup, addGroupMember, createGroupCollaboration,
   getBoxContentStats, cleanBoxContent, cleanBoxFiles, cleanBoxFolders,
   getFolderItems, buildFolderTree, resolveFolderByPath,
   getCollaborations, getFileVersions, getItemSharing,
   getItemMetadata, listComments, getBoxUserByEmail,
+  updateItem, deleteBoxItem,
 };

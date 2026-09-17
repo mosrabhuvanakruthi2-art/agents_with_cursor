@@ -842,6 +842,27 @@ async function addFolderMember(sharedFolderId, member, role, opts = {}) {
   }, { asMemberId, root, label: 'sharing/add_folder_member' });
 }
 
+/**
+ * Change the role of a member ALREADY on a shared folder.
+ *
+ * `sharing/add_folder_member` only adds — measured on a nested shared folder created inside an
+ * already-shared parent (Dropbox copies the parent's current membership into the new folder at
+ * creation time), asking it to LOWER an already-present member's role is a silent no-op: no error,
+ * no change. Raising an existing member's role through `add_folder_member` does work, which is why
+ * only the downgrade direction needs this separate call.
+ */
+async function updateFolderMember(sharedFolderId, member, role, opts = {}) {
+  const { asMemberId = null, root = null } = opts;
+  const selector = member.groupId
+    ? { '.tag': 'dropbox_id', dropbox_id: member.groupId }
+    : { '.tag': 'email', email: member.email };
+  return rpc('sharing/update_folder_member', {
+    shared_folder_id: sharedFolderId,
+    member: selector,
+    access_level: role,
+  }, { asMemberId, root, label: 'sharing/update_folder_member' });
+}
+
 /** Grant a user or group access to a file. */
 async function addFileMember(fileIdOrPath, member, role, opts = {}) {
   const { asMemberId = null, root = null, quiet = true } = opts;
@@ -886,6 +907,23 @@ async function createSharedLink(path, opts = {}) {
     }
     throw err;
   }
+}
+
+/**
+ * Delete a shared link outright.
+ *
+ * Exists for one reason: `create_shared_link_with_settings` can SUCCEED while silently granting a
+ * WIDER audience than requested — measured directly on this account, a `team`+`editor` request came
+ * back `resolved_visibility: public` with no error at all, so the caller has no exception to catch.
+ * A team-only link editable by the whole team is a mis-scoped test fixture; a public, publicly
+ * EDITABLE one left sitting in the seeded folder is worse. The caller is expected to check
+ * `createSharedLink`'s returned `type` against what it asked for and revoke on a mismatch rather
+ * than trust the request succeeded just because it did not throw.
+ */
+async function revokeSharedLink(url, opts = {}) {
+  const { asMemberId = null, root = null } = opts;
+  return rpc('sharing/revoke_shared_link', { url },
+    { asMemberId, root, label: 'sharing/revoke_shared_link' });
 }
 
 /**
@@ -959,8 +997,10 @@ module.exports = {
   uploadFile,
   shareFolder,
   addFolderMember,
+  updateFolderMember,
   addFileMember,
   createSharedLink,
+  revokeSharedLink,
   movePath,
   deletePath,
 };

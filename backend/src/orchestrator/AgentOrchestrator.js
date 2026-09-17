@@ -503,6 +503,20 @@ class AgentOrchestrator {
           context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
+        // Same guard as the Drive branch below. Without it, 0 resolved folders (Box auth failure,
+        // a mistyped path, or a folder that was never seeded) left userFolderMappings empty and the
+        // flow fell through silently to migrating "/" — the entire Box account — instead of refusing.
+        // Measured live: two separate runs did exactly this and CloudFuze either CONFLICTed
+        // ("Migration not Allowed for wrong CSV paths") or, worse, actually started copying the
+        // whole account before being cancelled by hand.
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing Box source folder could be resolved — refusing '
+            + 'to run. Migrating with no resolved folder falls back to the Box account root, which is '
+            + 'never what was asked for. Check Box auth (a stale OAuth token or expired developer '
+            + 'token both surface here as "not found") and confirm the named folder actually exists.'
+          );
+        }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
       } else if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
         // Dropbox equivalent of the Box branch above.
@@ -549,6 +563,15 @@ class AgentOrchestrator {
         if (context.userFolderMappings[0]) {
           context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
+        }
+        // Same guard as the Box and Drive branches — see the comment on the Box branch above for the
+        // two ways this silent fallback was observed to actually run.
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing Dropbox source folder could be resolved — refusing '
+            + 'to run. Migrating with no resolved folder falls back to the Dropbox account root, which '
+            + 'is never what was asked for.'
+          );
         }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing Dropbox folder(s) ready to migrate`);
       } else if (isContentMode && context.useExistingSource && useExistingIsDrive && cufEntries.length > 0) {

@@ -558,6 +558,55 @@ module.exports = {
    * not exercised, never as a pass.
    */
   DROPBOX_ACCESS_MODE: (process.env.DROPBOX_ACCESS_MODE || '').trim().toLowerCase(),
+
+  /**
+   * Box test-data grantees, for the Box → Google My Drive combination
+   * (BoxToGoogledriveTestDataAgent / box_to_googledrive). This repo had no BOX_TEST_* vars before —
+   * box→sharepoint and box→onedrive read collaborators off whatever the source account already has,
+   * rather than seeding grants themselves.
+   *
+   * Resolution order is the OPPOSITE of Dropbox's: BoxToGoogledriveTestDataAgent prefers a real
+   * managed user resolved live via boxClient.getUsers(adminEmail) (the same call
+   * BoxTestDataAgent._seedLongPathFiles already makes to find "another managed user"), and falls back
+   * to these env vars only when that lookup fails or returns nobody else. Dropbox has no enterprise
+   * user-listing call that is this cheap, so its agent goes the other way — env first.
+   *
+   * BOX_TEST_INTERNAL_USER(S)  — override/fallback for the internal grantee(s), comma-separated for
+   *                              the plural form. Only used when getUsers() finds no other managed user.
+   * BOX_TEST_EXTERNAL_USER     — an address OUTSIDE the enterprise, for external shares. Box has no
+   *                              directory of non-managed users to pick one from automatically, so
+   *                              this one has no dynamic fallback — set it, or external shares (scope
+   *                              2.5) are skipped with a warning rather than failing the run.
+   * BOX_TEST_GROUP(S)          — Box GROUP ID(s) (not a display name) for group-collaboration grants,
+   *                              comma-separated for the plural form. boxClient has no group-listing
+   *                              endpoint (unlike dropboxClient.listTeamGroups), so a name cannot be
+   *                              resolved here the way Dropbox's group grantee is — create the group in
+   *                              the Box admin console once and paste its numeric id in. Left blank,
+   *                              group grants are skipped with a warning rather than guessed at.
+   * BOX_TEST_EVERYONE_GROUP   — a Box GROUP ID standing in for "everyone", for the team-wide vs
+   *                              restricted access-mode scenario (BOX_TEST_ACCESS_MODE=open). Box has
+   *                              no automatic all-enterprise group the way Dropbox's Business teams do,
+   *                              so this must be a real, pre-created group containing everyone the run
+   *                              wants covered.
+   */
+  BOX_TEST_INTERNAL_USER: (process.env.BOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
+  BOX_TEST_EXTERNAL_USER: (process.env.BOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
+  BOX_TEST_GROUP: (process.env.BOX_TEST_GROUP || '').trim(),
+  BOX_TEST_INTERNAL_USERS: (() => {
+    const raw = process.env.BOX_TEST_INTERNAL_USERS || process.env.BOX_TEST_INTERNAL_USER || '';
+    return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  })(),
+  BOX_TEST_GROUPS: (() => {
+    const raw = process.env.BOX_TEST_GROUPS || process.env.BOX_TEST_GROUP || '';
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  })(),
+  BOX_TEST_EVERYONE_GROUP: (process.env.BOX_TEST_EVERYONE_GROUP || '').trim(),
+  /**
+   * BOX_TEST_ACCESS_MODE — 'open' or 'restricted', the Box equivalent of DROPBOX_ACCESS_MODE. Blank
+   * seeds neither and reports the scenario as not exercised, never as a pass.
+   */
+  BOX_TEST_ACCESS_MODE: (process.env.BOX_TEST_ACCESS_MODE || '').trim().toLowerCase(),
+
   /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.

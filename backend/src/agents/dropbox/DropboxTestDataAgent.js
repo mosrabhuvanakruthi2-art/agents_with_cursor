@@ -134,7 +134,14 @@ class DropboxTestDataAgent extends BaseAgent {
       );
     }
 
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    // context.sourceFolderName is what the Run Agent UI's "Source folder base name" field actually
+    // sends (MigrationContext.js:56-57) — the same field Box and Drive's test-data agents already
+    // key on. This agent read context.sourcePath instead, which nothing in the orchestrator ever
+    // assigns for the seeding path (only useExistingSource resolves a folder from sourceFolderName),
+    // so a typed folder name was silently ignored and every run fell back to DROPBOX_TEST_ROOT —
+    // confirmed live 2026-09-11: a run with "Dropbox-to-Mydrive-QA-drive" typed in still logged
+    // "Seeding Dropbox test data under /QA-MyDrive-lavanya".
+    const root = dropboxClient.dbxPath(context.sourceFolderName || context.sourcePath || env.DROPBOX_TEST_ROOT);
     if (!root) {
       throw new Error(
         'Refusing to seed at the Dropbox account root. Set DROPBOX_TEST_ROOT (or the run\'s source '
@@ -437,6 +444,42 @@ class DropboxTestDataAgent extends BaseAgent {
         const sharedFolderId = await dropboxClient.shareFolder(item.path, opts);
         if (!sharedFolderId) throw new Error('folder could not be shared');
         await dropboxClient.addFolderMember(sharedFolderId, member, role, opts);
+
+        // Verify the role actually landed. A nested shared folder created inside an already-shared
+        // parent starts with the PARENT's current membership copied in (measured directly: a fresh
+        // Sub-Level-1 came back with the root's ben=editor already present before this method ever
+        // ran), and `add_folder_member` on an existing member only ever RAISES their role — asking
+        // it to lower one is a silent no-op, no error, member unchanged.
+        const after = await dropboxClient.listFolderMembers(sharedFolderId, opts);
+        const who = member.groupId
+          ? after.find((m) => m.groupId === member.groupId)
+          : after.find((m) => m.email === String(member.email || '').toLowerCase());
+        if (who && who.role !== role) {
+          const updateRes = await dropboxClient.updateFolderMember(sharedFolderId, member, role, opts);
+          const achieved = updateRes?.access_level?.['.tag'] || null;
+          if (achieved !== role) {
+            // Dropbox itself refuses this, and says exactly why: permissions are additive up the
+            // folder tree, so nobody can be granted LESS at a sub-folder than they already hold at
+            // an ancestor. Confirmed verbatim on 2026-09-11 —
+            //   update_folder_member on ben@filefuze.co (root editor) → Sub-Level-1 "viewer" returned
+            //   { access_level: "editor", warning: "Ben B can still edit this folder as a member of
+            //   a higher-level folder." }
+            // This is a platform rule, not a bug: reported as NOT SEEDED rather than counted as a
+            // grant that never actually took effect, the same way the other three Dropbox sharing
+            // limits below are (file-editor, outside-team, automatic-group).
+            report.notSeeded.push({
+              feature: label,
+              reason: `Dropbox will not grant "${role}" here — ${member.email || member.displayName} `
+                + `already has "${achieved}" via a higher-level folder, and Dropbox's own API refuses `
+                + 'to narrow access below an ancestor grant for the same principal '
+                + `(sharing/update_folder_member: "${updateRes?.warning || 'no warning text returned'}"). `
+                + 'Use a principal with no grant on any ancestor folder to exercise a genuinely '
+                + 'narrower role at this position.',
+              manualSteps: [],
+            });
+            return false;
+          }
+        }
       } else {
         await dropboxClient.addFileMember(item.id || item.path, member, role, opts);
       }
@@ -798,10 +841,37 @@ class DropboxTestDataAgent extends BaseAgent {
       await this._put(path, `${SAMPLE_TXT}Link audience: ${t.audience}, access: ${t.access}\n`, opts, report);
       try {
         const link = await dropboxClient.createSharedLink(path, { ...opts, audience: t.audience, access: t.access });
-        if (link) {
-          report.created.links += 1;
-          report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
+        if (!link) continue;
+
+        // Verify what Dropbox ACTUALLY granted, not just that the call didn't throw. Measured
+        // directly on this account: a team/editor request returns HTTP 200 with no error at all,
+        // and its own resolved_visibility comes back "public" — Dropbox silently WIDENED the
+        // audience instead of rejecting the combination. A public, EDITABLE link sitting in seeded
+        // test data is a real exposure, not a cosmetic mismatch, so this is revoked immediately
+        // rather than left in place and reported as a pass.
+        const expectedType = t.audience === 'team' ? 'team_only' : 'public';
+        if (link.type && link.type !== expectedType) {
+          await dropboxClient.revokeSharedLink(link.url, opts).catch((revokeErr) => {
+            log.warn(`Could not revoke the mis-scoped link at ${path} `
+              + `(resolved "${link.type}" instead of "${expectedType}"): ${revokeErr.message} — `
+              + 'a wrongly-scoped link may still be live, check it manually');
+          });
+          report.notSeeded.push({
+            feature: `shared link ${t.audience}/${t.access} (scope ${t.scope})`,
+            reason: `Dropbox accepted the request but resolved it to "${link.type}" instead of the `
+              + `requested "${expectedType}" — this account silently widens a ${t.audience}/${t.access} `
+              + `link's audience rather than rejecting it. Revoked rather than left in place; this `
+              + 'access level cannot be exercised from this source account, so it must not be '
+              + 'reported as a pass.',
+            manualSteps: [],
+          });
+          log.warn(`Shared link ${t.audience}/${t.access} resolved to "${link.type}" instead of `
+            + `"${expectedType}" — revoked, reported as not seeded`);
+          continue;
         }
+
+        report.created.links += 1;
+        report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
       } catch (err) {
         // `settings_error/invalid_settings` on an EDITOR link is the account refusing edit links at
         // all, not a bad request: measured on this team, viewer links succeed on both files and
@@ -933,50 +1003,128 @@ class DropboxTestDataAgent extends BaseAgent {
   }
 
   /**
-   * Test-data row 12 — embedded links (scope 8.1 and 10.8).
+   * Test-data row 12 — embedded links (scope 8.1).
    *
-   * Two links in one document: one to a file that IS in the migration scope, one to a file that is
-   * not. Scope 10.8 says transformation happens only for in-scope targets, so a document with only
-   * an in-scope link cannot distinguish "transformed correctly" from "transformed everything".
+   * Two links in one document, to two real files sitting in this SAME folder — both in the
+   * migration scope, so both are expected to be rewritten away from Dropbox at the destination.
+   * Both targets are created and shared BEFORE the document itself, so neither hyperlink field is
+   * ever built from a placeholder — a real, working Dropbox shared link every time link creation
+   * succeeds, and the step is recorded as an error (not silently swallowed into a fake URL) on the
+   * rare occasion it does not.
    *
-   * The out-of-scope target is seeded OUTSIDE the seeding root deliberately.
+   * A real .docx with real hyperlink fields is used, not an .html file with `<a href>` markup —
+   * matching the reasoning already applied on the Drive→SharePoint combination
+   * (DriveTestDataAgent._createEmbeddedLinks): CloudFuze's link-rewrite scope is "supported file
+   * types where link rewriting is technically feasible", and .html was never confirmed to be one of
+   * them. Testing on it risked reporting a defect against a file type link-rewriting was never
+   * promised to touch, rather than against the real feature.
    */
   async _seedEmbeddedLinks(root, opts, log, report) {
     const dir = `${root}/09-Embedded-Links`;
     await this._mk(dir, opts, report);
 
-    const inScopePath = `${dir}/link-target-in-scope.txt`;
-    await this._put(inScopePath, `${SAMPLE_TXT}I am the IN-SCOPE link target.\n`, opts, report);
+    const target1Path = `${dir}/link-target-1.txt`;
+    const target2Path = `${dir}/link-target-2.txt`;
+    await this._put(target1Path, `${SAMPLE_TXT}I am link target 1.\n`, opts, report);
+    await this._put(target2Path, `${SAMPLE_TXT}I am link target 2.\n`, opts, report);
 
-    let inScopeUrl = '';
-    let outOfScopeUrl = '';
+    let target1Url = '';
+    let target2Url = '';
     try {
-      inScopeUrl = (await dropboxClient.createSharedLink(inScopePath, { ...opts, audience: 'public', access: 'viewer' }))?.url || '';
+      target1Url = (await dropboxClient.createSharedLink(target1Path, { ...opts, audience: 'public', access: 'viewer' }))?.url || '';
+      if (!target1Url) throw new Error('createSharedLink returned no url');
     } catch (err) {
-      report.errors.push({ step: 'embedded link (in-scope target link)', error: err.message });
+      report.errors.push({ step: 'embedded link (target 1 shared link)', error: err.message });
+    }
+    try {
+      target2Url = (await dropboxClient.createSharedLink(target2Path, { ...opts, audience: 'public', access: 'viewer' }))?.url || '';
+      if (!target2Url) throw new Error('createSharedLink returned no url');
+    } catch (err) {
+      report.errors.push({ step: 'embedded link (target 2 shared link)', error: err.message });
     }
 
-    // Out-of-scope sibling: alongside the seeding root, so a migration of `root` cannot include it.
-    const outsideDir = `${dropboxClient.dbxPath(root).replace(/\/[^/]+$/, '')}/QA-Out-Of-Scope`;
-    try {
-      await dropboxClient.createFolder(outsideDir, opts);
-      const outPath = `${outsideDir}/link-target-out-of-scope.txt`;
-      await dropboxClient.uploadFile(outPath, Buffer.from(`${SAMPLE_TXT}I am OUT OF SCOPE.\n`), opts);
-      outOfScopeUrl = (await dropboxClient.createSharedLink(outPath, { ...opts, audience: 'public', access: 'viewer' }))?.url || '';
-      report.items.push({ type: 'file', path: outPath, outOfScope: true });
-    } catch (err) {
-      report.errors.push({ step: 'embedded link (out-of-scope target)', error: err.message });
+    // Neither link is written at all if its shared link could not be created — a placeholder URL
+    // would silently test a link that was never real, and the validator would judge it anyway.
+    if (!target1Url || !target2Url) {
+      report.notSeeded.push({
+        feature: '8.1 Embedded Links',
+        reason: `could not create ${!target1Url && !target2Url ? 'either' : 'one'} shared link for `
+          + 'the embedded-links document — see report.errors for the underlying Dropbox failure. '
+          + 'No document was written rather than seed one with a fake link.',
+        manualSteps: [],
+      });
+      log.warn('Embedded-links document NOT seeded — one or both target shared links failed');
+      return;
     }
 
-    const body = `${SAMPLE_HTML.replace('</body>', '')}
-<h2>Embedded links</h2>
-<p>In scope: <a href="${inScopeUrl || 'https://www.dropbox.com/IN_SCOPE_LINK_UNAVAILABLE'}">in-scope target</a></p>
-<p>Out of scope: <a href="${outOfScopeUrl || 'https://www.dropbox.com/OUT_OF_SCOPE_LINK_UNAVAILABLE'}">out-of-scope target</a></p>
-</body></html>
-`;
-    await this._put(`${dir}/document-with-embedded-links.html`, body, opts, report);
-    report.embeddedLinks = { inScopeUrl, outOfScopeUrl };
-    log.info('Seeded embedded-link document');
+    const { Document, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
+    const doc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({ children: [new TextRun('Embedded links test document (scope 8.1).')] }),
+          new Paragraph({ children: [new TextRun('')] }),
+          new Paragraph({
+            children: [
+              new TextRun('Link 1: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'link target 1', style: 'Hyperlink' })],
+                link: target1Url,
+              }),
+            ],
+          }),
+          new Paragraph({
+            children: [
+              new TextRun('Link 2: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'link target 2', style: 'Hyperlink' })],
+                link: target2Url,
+              }),
+            ],
+          }),
+        ],
+      }],
+    });
+    const buffer = await Packer.toBuffer(doc);
+    await this._put(`${dir}/document-with-embedded-links.docx`, buffer, opts, report);
+
+    // Same two targets, same text labels, same real-hyperlink-field principle — .pdf and .xlsx are
+    // both formats the scope document's "supported file types" promise plausibly covers, and each
+    // stores a hyperlink completely differently (a PDF /Link annotation vs an OOXML relationship),
+    // so each is worth its own seeded document rather than assuming a .docx result generalizes.
+    const PDFDocument = require('pdfkit');
+    const pdfDoc = new PDFDocument();
+    const pdfChunks = [];
+    pdfDoc.on('data', (c) => pdfChunks.push(c));
+    const pdfDone = new Promise((resolve) => pdfDoc.on('end', () => resolve(Buffer.concat(pdfChunks))));
+    pdfDoc.fontSize(14).text('Embedded links test document (scope 8.1).');
+    pdfDoc.moveDown();
+    const y1 = pdfDoc.y;
+    pdfDoc.fillColor('blue').text('link target 1', { underline: true });
+    pdfDoc.link(pdfDoc.page.margins.left, y1, 200, 20, target1Url);
+    pdfDoc.moveDown();
+    const y2 = pdfDoc.y;
+    pdfDoc.fillColor('blue').text('link target 2', { underline: true });
+    pdfDoc.link(pdfDoc.page.margins.left, y2, 200, 20, target2Url);
+    pdfDoc.end();
+    await this._put(`${dir}/document-with-embedded-links.pdf`, await pdfDone, opts, report);
+
+    const XLSX = require('xlsx');
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Embedded links test document (scope 8.1)'],
+      ['link target 1'],
+      ['link target 2'],
+    ]);
+    // Cell refs are fixed by aoa_to_sheet's row order, so the validator can key off A2/A3 directly
+    // instead of needing to resolve a shared-strings table to recover each cell's visible text.
+    ws.A2.l = { Target: target1Url };
+    ws.A3.l = { Target: target2Url };
+    XLSX.utils.book_append_sheet(wb, ws, 'Links');
+    const xlsxBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    await this._put(`${dir}/document-with-embedded-links.xlsx`, xlsxBuffer, opts, report);
+
+    report.embeddedLinks = { target1Url, target2Url };
+    log.info('Seeded embedded-link documents (.docx, .pdf, .xlsx)');
   }
 
   /**

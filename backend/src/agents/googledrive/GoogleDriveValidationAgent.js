@@ -129,7 +129,8 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
    *   as an empty destination rather than throwing, because "the migration created nothing" is a
    *   real and reportable outcome.
    */
-  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email) {
+  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email, callOpts = {}) {
+    const { expectSourceFolderWrapper = false } = callOpts;
     let base = String(destBase || '').trim();
     // True when the destination path named nothing but the Shared Drive, i.e. the run targeted the
     // drive root. Distinguishes that from a named subpath that genuinely does not exist.
@@ -160,9 +161,47 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
     }
 
     // An explicit destination path wins when it resolves.
+    //
+    // EXCEPT: when the caller says this combination does not send `pickInsideFolder: true` to
+    // CloudFuze (`expectSourceFolderWrapper` — true for Box→Google, unset/false for Dropbox→Google),
+    // CloudFuze copies the SOURCE FOLDER ITSELF into the destination path instead of just its
+    // contents, so the migrated content lands one level deeper than the configured destination —
+    // e.g. destBase "/box-Direct-Test-1" ends up holding "/box-Direct-Test-1/<sourceFolderName>/…",
+    // not the migrated items directly.
+    //
+    // Returning `hit` unconditionally here compared the DESTINATION ROOT against the source tree.
+    // Measured live on a real Box→Google run: source 83 / dest 81, matched 0, misplaced 79 — every
+    // single item that migrated correctly was reported as one directory level "misplaced", because
+    // the comparison root was one level too shallow. CloudFuze had reported PROCESSED 82/82 and the
+    // two trees were structurally identical once the extra wrapper folder is accounted for.
+    //
+    // Gated behind `expectSourceFolderWrapper` rather than made unconditional: Dropbox→Google relies
+    // on an explicit destination SUBPATH winning outright even when a same-named folder exists
+    // elsewhere (see driveMigratedRoot.test.js's testExplicitSubpathWins) — Dropbox's
+    // pickInsideFolder migrations never create this wrapper, so second-guessing an explicit subpath
+    // there would be wrong, not just unnecessary.
     if (base && base !== '/') {
       const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
-      if (hit) return hit;
+      if (hit) {
+        const nestedName = expectSourceFolderWrapper ? String(sourceFolderName || '').trim() : '';
+        if (nestedName) {
+          const nestedCandidates = [nestedName];
+          for (let i = 1; i <= DEDUP_MAX; i++) nestedCandidates.push(`${nestedName} ${i}`, `${nestedName} (${i})`);
+          for (const candidate of nestedCandidates) {
+            const nested = await driveClient.findByName(candidate, hit.id, email).catch(() => null);
+            if (nested) {
+              logger.info(
+                `[GoogleDriveValidationAgent] "${base}" resolved, and a folder named "${nested.name}" `
+                + `exists inside it — using that as the migrated root instead of "${base}" itself, `
+                + 'since CloudFuze copied the source folder rather than its contents here '
+                + '(no pickInsideFolder).'
+              );
+              return { id: nested.id, name: nested.name, path: `/${nested.name}` };
+            }
+          }
+        }
+        return hit;
+      }
     }
 
     const name = String(sourceFolderName || '').trim();

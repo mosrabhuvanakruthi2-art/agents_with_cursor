@@ -639,7 +639,12 @@ const CONTENT_PERMS = [
   ['versionHistory', 'Version History'],
   ['preserveTimestamp', 'Preserve Timestamp'],
   ['customMetadata', 'Custom Metadata'],
-  ['workbookLinks', 'Workbook Links'],
+  // Internal key stays 'workbookLinks' (wire format the backend already maps to CloudFuze's
+  // own `embeddedLinks` job option) — only the label changes. The old label described this as an
+  // Excel-only setting when it actually gates embedded-link rewriting for every content
+  // combination (scope 8.1: docx/pdf/xlsx hyperlinks alike), so unchecking it for "unrelated
+  // spreadsheet stuff" silently disabled the feature CloudFuze was asked to test.
+  ['workbookLinks', 'Embedded Links'],
   ['comments', 'Comments'],
 ];
 // Per-user folder mapping table for multi-user content migration. One row per selected user

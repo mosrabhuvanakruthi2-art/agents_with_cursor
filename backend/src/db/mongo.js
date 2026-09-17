@@ -19,6 +19,20 @@ function buildMongoClientOptions() {
   const opts = {
     serverSelectionTimeoutMS: 20_000,
     connectTimeoutMS: 20_000,
+    // Without this, an operation on an ALREADY-open socket that stalls mid-request (a flaky
+    // network dropping packets after the handshake, not refusing the connection outright) has no
+    // bound at all — the driver just waits. serverSelectionTimeoutMS/connectTimeoutMS only cover
+    // establishing the connection, which is why `client.connect()` + the initial ping kept
+    // succeeding fine while later operations (the executions hydration's find().toArray(), and
+    // its per-item backfill writes) hung indefinitely. Measured live 2026-09-16: three consecutive
+    // fresh server restarts each connected successfully within seconds and then hung for 4+
+    // minutes with zero progress on `executionService.hydrateFromMongo()` — no error, no timeout,
+    // just silence, because nothing was bounding that socket's read. Set to match the other two so
+    // a stalled operation surfaces as a catchable error within a bounded time instead of hanging
+    // the whole startup path — hydrateFromMongo already wraps its Mongo calls in try/catch and
+    // logs+continues on failure, so this turns a silent hang into the graceful "hydrate failed"
+    // warning path that already exists but could never be reached before.
+    socketTimeoutMS: 20_000,
     serverApi: {
       version: ServerApiVersion.v1,
       strict: false,

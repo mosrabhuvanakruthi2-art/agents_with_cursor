@@ -39,6 +39,136 @@ const roleMaps = require('../../roleMaps');
 const tolerance = require('../../../utils/contentTolerance');
 const env = require('../../../config/env');
 const logger = require('../../../utils/logger');
+const zlib = require('zlib');
+
+/**
+ * Read one entry out of a .docx (a ZIP container) without a new dependency.
+ *
+ * No zip-reading library is a dependency of this project, and adding one for a single validator
+ * check is not worth it. A .docx built by the `docx` package (JSZip underneath) is a plain ZIP with
+ * no data descriptors and no ZIP64 — small enough that a minimal End-Of-Central-Directory + Central
+ * Directory walk is safe to hand-roll. `zlib.inflateRawSync` (built into Node) does the decompression
+ * that a zip library would otherwise wrap.
+ */
+function readZipEntry(buf, entryName) {
+  const EOCD_SIG = 0x06054b50;
+  let eocdOffset = -1;
+  const searchFloor = Math.max(0, buf.length - 22 - 65557);
+  for (let i = buf.length - 22; i >= searchFloor; i--) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('not a valid zip (no End-Of-Central-Directory record found)');
+
+  const totalEntries = buf.readUInt16LE(eocdOffset + 10);
+  let offset = buf.readUInt32LE(eocdOffset + 16);
+
+  for (let i = 0; i < totalEntries; i++) {
+    if (buf.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error(`bad central directory entry signature at entry ${i}`);
+    }
+    const compMethod = buf.readUInt16LE(offset + 10);
+    const compSize = buf.readUInt32LE(offset + 20);
+    const nameLen = buf.readUInt16LE(offset + 28);
+    const extraLen = buf.readUInt16LE(offset + 30);
+    const commentLen = buf.readUInt16LE(offset + 32);
+    const localHeaderOffset = buf.readUInt32LE(offset + 42);
+    const name = buf.toString('utf8', offset + 46, offset + 46 + nameLen);
+
+    if (name === entryName) {
+      const lhNameLen = buf.readUInt16LE(localHeaderOffset + 26);
+      const lhExtraLen = buf.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + lhNameLen + lhExtraLen;
+      const raw = buf.subarray(dataStart, dataStart + compSize);
+      return compMethod === 0 ? raw : zlib.inflateRawSync(raw);
+    }
+    offset += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
+
+/**
+ * Hyperlinks inside a .docx, keyed by their visible text — e.g. `{ 'link target 1': 'https://…' }`.
+ *
+ * Word stores a hyperlink as two halves that have to be joined: `word/document.xml` has the visible
+ * run wrapped in `<w:hyperlink r:id="rIdN">`, and the actual URL lives in `word/_rels/document.xml.rels`
+ * keyed by that same rIdN — the document body never contains the URL directly.
+ */
+function extractDocxHyperlinks(buf) {
+  const doc = readZipEntry(buf, 'word/document.xml');
+  const rels = readZipEntry(buf, 'word/_rels/document.xml.rels');
+  if (!doc || !rels) return {};
+
+  const relMap = {};
+  const relText = rels.toString('utf8');
+  const relRe = /<Relationship[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"/g;
+  let m;
+  while ((m = relRe.exec(relText))) relMap[m[1]] = m[2];
+
+  const docText = doc.toString('utf8');
+  const out = {};
+  const hlRe = /<w:hyperlink[^>]*\br:id="([^"]+)"[^>]*>([\s\S]*?)<\/w:hyperlink>/g;
+  while ((m = hlRe.exec(docText))) {
+    const rId = m[1];
+    const textMatch = m[2].match(/<w:t[^>]*>([^<]*)<\/w:t>/);
+    if (textMatch) out[textMatch[1]] = relMap[rId] || null;
+  }
+  return out;
+}
+
+/**
+ * Hyperlinks inside an .xlsx worksheet, keyed by FIXED cell ref rather than visible text —
+ * DropboxTestDataAgent always writes "link target 1" to A2 and "link target 2" to A3, so the
+ * validator can key off the cell coordinate directly instead of resolving the shared-strings table
+ * a cell's text may or may not be indexed through (SheetJS writes some cells inline, some shared,
+ * and nothing here depends on knowing which).
+ *
+ * The split is the same shape as Word's: `xl/worksheets/sheet1.xml` has `<hyperlink ref="A2"
+ * r:id="rIdN"/>`, and the URL itself lives in `xl/worksheets/_rels/sheet1.xml.rels` keyed by rIdN.
+ */
+function extractXlsxHyperlinks(buf) {
+  const sheet = readZipEntry(buf, 'xl/worksheets/sheet1.xml');
+  const rels = readZipEntry(buf, 'xl/worksheets/_rels/sheet1.xml.rels');
+  if (!sheet || !rels) return {};
+
+  const relMap = {};
+  const relText = rels.toString('utf8');
+  const relRe = /<Relationship[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"/g;
+  let m;
+  while ((m = relRe.exec(relText))) relMap[m[1]] = m[2];
+
+  const sheetText = sheet.toString('utf8');
+  const cellToLabel = { A2: 'link target 1', A3: 'link target 2' };
+  const out = {};
+  const hlRe = /<hyperlink[^>]*\bref="([^"]+)"[^>]*\br:id="([^"]+)"/g;
+  while ((m = hlRe.exec(sheetText))) {
+    const [, ref, rId] = m;
+    const label = cellToLabel[ref];
+    if (label) out[label] = relMap[rId] || null;
+  }
+  return out;
+}
+
+/**
+ * Hyperlinks inside a .pdf, keyed by CREATION ORDER rather than visible text — a PDF's visible text
+ * is drawn with `Tj`/`TJ` operators inside a (usually Flate-compressed) content stream, and
+ * correlating a glyph run back to a specific /Link annotation's rectangle is a much bigger parsing
+ * job than this needs. DropboxTestDataAgent always creates target 1's link annotation before
+ * target 2's, and pdfkit writes /Annots in that same creation order, so the first `/URI (...)` found
+ * in byte order is target 1 and the second is target 2 — verified directly against a pdfkit-built
+ * PDF before this was wired in.
+ *
+ * Unlike .docx/.xlsx, a PDF's annotation dictionaries are ordinary uncompressed PDF objects even
+ * when pdfkit compresses page content streams, so a plain byte-level regex is enough — no zip/object
+ * stream parsing required.
+ */
+function extractPdfHyperlinks(buf) {
+  const text = buf.toString('latin1');
+  const uris = [...text.matchAll(/\/URI\s*\(([^)]*)\)/g)].map((m) => m[1]);
+  const out = {};
+  if (uris[0]) out['link target 1'] = uris[0];
+  if (uris[1]) out['link target 2'] = uris[1];
+  return out;
+}
 
 /**
  * Structural element counts from a Dropbox Paper markdown export.
@@ -737,6 +867,17 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // reader was not updated.
       items: itemDetails,
       itemDetails,
+      // The UI's "Source Items / Found at Destination / Missing" cards used to be derived from
+      // `items.length` and `folderStructure.missing.length` — but `items` only ever contains items
+      // that PAIRED with something at the destination (a missing item has no pair, so it is never
+      // added), and `folderStructure` is a FOLDER-only compare, so a missing FILE inside an
+      // otherwise-matched folder is invisible to both. Measured on execution 8c5f2c6b: the cards
+      // read "73 / 73 / 0 missing" (a false full match) while the real, complete comparison (`cmp`,
+      // the same one the 1.1 Data Migration check reports) says "source 74, dest 73, missing 1".
+      // These three carry that authoritative total instead.
+      totalSourceItems: cmp.totalSource,
+      totalMatchedItems: cmp.matchedCount,
+      totalMissingItems: cmp.missing.length,
     };
   }
 
@@ -1143,8 +1284,28 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const bad = obs.filter((o) => !o.match);
       if (bad.length === 0) {
         push('PASS', `${id} ${label}`, `${obs.length} link(s) compared, all matched`);
+        return;
+      }
+      // A destination with NO link at all (actual.length === 0) is the same signature as a
+      // permission grant that "still carries only inherited drive grants" — CloudFuze applies
+      // sharing (links included) asynchronously, after the copy completes, sometimes tens of
+      // minutes behind PROCESSED. 2.1-2.4 already treat that as "not yet judgeable" rather than a
+      // FAIL; this treated an absent link as a hard mismatch instead, which is the same false
+      // positive on a fresher run. A link that DOES exist at the destination but with the wrong
+      // scope/type (actual.length > 0) is a genuine mismatch and still fails immediately.
+      const pending = bad.filter((o) => (o.actual || []).length === 0);
+      const wrong = bad.filter((o) => (o.actual || []).length > 0);
+      if (wrong.length === 0) {
+        push('WARN', `${id} ${label}`,
+          `Not judgeable yet: ${pending.length} of ${obs.length} link(s) have no shared link at the `
+          + 'destination at all. CloudFuze applies sharing (links included) AFTER the copy completes, '
+          + 'tens of minutes behind the PROCESSED status — re-validate this execution once it has '
+          + 'settled.');
       } else {
-        push('FAIL', `${id} ${label}`, `${bad.length} of ${obs.length} link(s) differ`);
+        push('FAIL', `${id} ${label}`,
+          `${wrong.length} of ${obs.length} link(s) differ`
+          + (pending.length > 0
+            ? ` (${pending.length} more link(s) not yet shared by CloudFuze — not counted)` : ''));
       }
     };
     // Each feature claims only the audience it is ABOUT. 3.2 used to take "everything that is not
@@ -1487,63 +1648,125 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
 
   /**
    * Feature 8.1 content check — the CSV report above only confirms CloudFuze WROTE a mapping file;
-   * it never opens the migrated document to see whether the rewrite actually happened. This reads
-   * the migrated HTML itself. DropboxTestDataAgent seeds exactly one such document
-   * (09-Embedded-Links/document-with-embedded-links.html) with two links: one to a file inside the
-   * migration scope (expected to be rewritten away from Dropbox, scope 8.1) and one to a file
-   * deliberately seeded outside it (expected to still point at Dropbox — scope 10.8's stated limit
-   * on 8.1: transformation happens only when the referenced file is itself in scope).
+   * it never opens the migrated documents to see whether the rewrite actually happened. This reads
+   * the migrated documents themselves. DropboxTestDataAgent seeds three such documents
+   * (09-Embedded-Links/document-with-embedded-links.{docx,pdf,xlsx}), each with two hyperlink FIELDS
+   * (not plain-text URLs, not `<a href>` markup) to the SAME two real files sitting in the same
+   * folder — both inside the migration scope, so both are expected to be rewritten away from Dropbox
+   * at the destination, in every format.
+   *
+   * Three formats rather than one: the scope document promises rewriting only for "supported file
+   * types where link rewriting is technically feasible" (the same reasoning DriveTestDataAgent's
+   * equivalent check applies on Drive→SharePoint, which is why it uses a real .docx rather than
+   * .html), and a pass on .docx alone says nothing about whether CloudFuze's rewriter also covers a
+   * PDF /Link annotation or an XLSX hyperlink relationship — each stores a hyperlink in a completely
+   * different structure and there is no reason to assume all three are wired up identically on
+   * CloudFuze's side.
+   *
+   * CloudFuze's Dropbox→Google jobs have no flag that converts a plain .docx/.xlsx to a native
+   * Google Doc/Sheet (unlike Paper, which has `papertoGDoc`), so the destination copy is expected to
+   * stay in its original format. Handled either way regardless for .docx (the one Google is most
+   * likely to auto-open natively): raw bytes are parsed directly if it stayed a real .docx; if
+   * CloudFuze ever does convert it, the native Google Doc is exported as HTML instead, whose anchor
+   * tags carry the same hrefs. .xlsx and .pdf have no such fallback — a native conversion of either
+   * is reported at WARN rather than guessed at, since Sheets' native hyperlink model and a PDF
+   * annotation have nothing in common to translate between.
    */
   async _checkEmbeddedLinksContent(push, cmp, destEmail, totals) {
-    const pair = [...cmp.matched.values()]
-      .find((p) => /document-with-embedded-links\.html$/i.test(p.source.path));
-    if (!pair) {
-      push('WARN', '8.1 Embedded Links (content)',
-        'The seeded embedded-links document did not reach the destination, so the actual link '
-        + 'rewrite could not be checked — see the structure check.');
-      return;
-    }
+    const formats = [
+      { ext: 'docx', read: (pair) => this._readDocxLinks(pair, destEmail) },
+      { ext: 'pdf', read: (pair) => this._readPdfLinks(pair, destEmail) },
+      { ext: 'xlsx', read: (pair) => this._readXlsxLinks(pair, destEmail) },
+    ];
+    totals.embeddedLinks = {};
 
-    const text = (await this.readTextLines(pair.dest, destEmail)).join('\n');
-    if (!text) {
-      push('WARN', '8.1 Embedded Links (content)',
-        `Could not read "${pair.dest.name}" at the destination to check its links.`);
-      return;
-    }
+    for (const { ext, read } of formats) {
+      const label = `8.1 Embedded Links (content, .${ext})`;
+      const pair = [...cmp.matched.values()]
+        .find((p) => new RegExp(`document-with-embedded-links\\.${ext}$`, 'i').test(p.source.path));
+      if (!pair) {
+        push('WARN', label,
+          `The seeded .${ext} embedded-links document did not reach the destination, so the actual `
+          + 'link rewrite could not be checked — see the structure check.');
+        continue;
+      }
 
-    // The seeded markup is `href="URL">label</a>` — the href attribute precedes its own link text.
-    const hrefBefore = (label) => {
-      const m = text.match(new RegExp(`href="([^"]+)">\\s*${label}`, 'i'));
-      return m ? m[1] : null;
-    };
-    const inScopeHref = hrefBefore('in-scope target');
-    const outOfScopeHref = hrefBefore('out-of-scope target');
-    const isDropboxUrl = (u) => /dropbox\.com/i.test(String(u || ''));
+      let links;
+      try {
+        links = await read(pair);
+      } catch (err) {
+        push('WARN', label,
+          `Could not read "${pair.dest.name}" at the destination to check its links (${err.message}).`);
+        continue;
+      }
 
-    totals.embeddedLinks = { inScopeHref, outOfScopeHref };
+      const target1Href = links['link target 1'] || null;
+      const target2Href = links['link target 2'] || null;
+      const isDropboxUrl = (u) => /dropbox\.com/i.test(String(u || ''));
 
-    if (!inScopeHref && !outOfScopeHref) {
-      push('WARN', '8.1 Embedded Links (content)',
-        `Neither seeded link could be found in "${pair.dest.name}" at the destination — its markup `
-        + 'may have changed on migration in a way this check does not anticipate.');
-      return;
-    }
+      totals.embeddedLinks[ext] = { target1Href, target2Href };
 
-    const problems = [];
-    if (inScopeHref && isDropboxUrl(inScopeHref)) {
-      problems.push('the in-scope link still points at Dropbox — it was not rewritten');
-    }
-    if (outOfScopeHref && !isDropboxUrl(outOfScopeHref)) {
-      problems.push('the out-of-scope link was rewritten, but scope 10.8 says only in-scope targets should be');
-    }
+      if (!target1Href && !target2Href) {
+        push('WARN', label,
+          `Neither seeded link could be found in "${pair.dest.name}" at the destination — its `
+          + 'structure may have changed on migration in a way this check does not anticipate.');
+        continue;
+      }
 
-    if (problems.length === 0) {
-      push('PASS', '8.1 Embedded Links (content)',
-        'The in-scope link was rewritten away from Dropbox; the out-of-scope link correctly still '
-        + 'points at Dropbox, matching the documented scope-10.8 limit.');
-    } else {
-      push('FAIL', '8.1 Embedded Links (content)', problems.join('; '));
+      const problems = [];
+      if (target1Href && isDropboxUrl(target1Href)) {
+        problems.push('link target 1 still points at Dropbox — it was not rewritten');
+      }
+      if (target2Href && isDropboxUrl(target2Href)) {
+        problems.push('link target 2 still points at Dropbox — it was not rewritten');
+      }
+
+      if (problems.length === 0) {
+        push('PASS', label,
+          'Both embedded links were rewritten away from Dropbox to the destination copies of their '
+          + 'targets.');
+      } else {
+        push('FAIL', label, problems.join('; '));
+      }
     }
+  }
+
+  /** .docx: parse hyperlink fields directly, or export-as-HTML if CloudFuze converted it. */
+  async _readDocxLinks(pair, destEmail) {
+    if (core.isGoogleNative(pair.dest.mimeType)) {
+      // NOT this.readTextLines: it hardcodes a 'text/csv' export for every native file (built for
+      // the 3.1/3.2/8.1 CSV reports), which is the wrong export type for a Doc and would return
+      // garbage here.
+      const htmlBuf = await driveClient.exportNativeFile(pair.dest.id, 'text/html', destEmail);
+      const html = htmlBuf.toString('utf8');
+      if (!html) throw new Error('exported HTML was empty');
+      const hrefBefore = (label) => {
+        const m = html.match(new RegExp(`href="([^"]+)">(?:<[^>]+>)*\\s*${label}`, 'i'));
+        return m ? m[1] : null;
+      };
+      return {
+        'link target 1': hrefBefore('link target 1'),
+        'link target 2': hrefBefore('link target 2'),
+      };
+    }
+    const buf = await this.readContent(pair.dest, destEmail);
+    return extractDocxHyperlinks(buf);
+  }
+
+  /** .xlsx: parse the worksheet's hyperlink relationships directly, keyed by fixed cell refs. */
+  async _readXlsxLinks(pair, destEmail) {
+    if (core.isGoogleNative(pair.dest.mimeType)) {
+      throw new Error('converted to a native Google Sheet — no cross-format check implemented for '
+        + 'that case (Sheets has no comparable hyperlink-relationship export)');
+    }
+    const buf = await this.readContent(pair.dest, destEmail);
+    return extractXlsxHyperlinks(buf);
+  }
+
+  /** .pdf: parse /URI annotations directly. PDF has no Google-native equivalent to convert to. */
+  async _readPdfLinks(pair, destEmail) {
+    const buf = await this.readContent(pair.dest, destEmail);
+    return extractPdfHyperlinks(buf);
   }
 
   _checkPaper(push, sourceTree, cmp, totals) {
@@ -1844,7 +2067,12 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         '5.1': /5\.1 Special Characters/,
         '6.1': /6\.1 Suppressing/,
         '7.1': /7\.1 Long-File/,
-        '8.1': /8\.1 Embedded Links CSV/,
+        // The CSV check only confirms CloudFuze wrote a report; the real verdict is whether each
+        // format's link actually got rewritten. Missing the second alternative here silently
+        // dropped all three `8.1 Embedded Links (content, .ext)` checks from this row — the
+        // Feature Checklist showed only "CSV present/absent" and never surfaced that .docx fails
+        // while .pdf/.xlsx pass, even though the underlying checks already computed exactly that.
+        '8.1': /8\.1 Embedded Links CSV|8\.1 Embedded Links \(content/,
         // Separate patterns now that 9.1 and 9.2 are separate checks. Sharing one pattern meant
         // both features inherited whichever check matched first, so a real 9.1 verdict could not
         // reach the checklist independently of 9.2's informational note.
