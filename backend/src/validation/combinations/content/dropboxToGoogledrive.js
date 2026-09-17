@@ -36,6 +36,9 @@
 const GoogleDriveValidationAgent = require('../../../agents/googledrive/GoogleDriveValidationAgent');
 const dropboxClient = require('../../../clients/dropboxClient');
 const driveClient = require('../../../clients/driveClient');
+// One reader for every embedded-link format — .docx, .xlsx, .pdf and .txt. Feature 8.1 names no
+// file type, so resting it on a single .docx would pass a product that rewrites Word and nothing else.
+const { extractLinks } = require('../../../utils/embeddedLinks');
 const core = require('../../shared/deepContentCore');
 const { extractDocxLinks } = require('../../../utils/docxLinks');
 const destinations = require('../../destinations');
@@ -103,12 +106,83 @@ function paperMarkdownStructure(md) {
     // for feature 10.11.
     bulleted: lines.filter((l) => /^\s*[-*+]\s+/.test(l)).length,
     numbered: lines.filter((l) => /^\s*\d+[.)]\s+/.test(l)).length,
-    todo: lines.filter((l) => /^\s*[-*+]\s+\[[ xX]\]/.test(l)).length,
+    // The leading bullet is OPTIONAL, because Paper's export drops it.
+    //
+    // This required `^\s*[-*+]\s+\[[ xX]\]`, the shape we SEED. Paper's own markdown export writes
+    // the same items without the dash — measured on the real export of
+    // /11-Paper/qa-paper-full-20260910070125.paper:
+    //
+    //     ## 10.11 TO-DO list
+    //     [x] a checked item
+    //     [ ] an unchecked item
+    //
+    // so the count was 0 on a document that demonstrably HAS two to-do items, and 10.11 reported
+    // "No TO-DO item appeared in any exported Paper, so this was not exercised" on every run. The
+    // seeding was never the problem.
+    //
+    // `(?=\s)` after the bracket keeps a markdown link like `[x](url)` from matching.
+    todo: lines.filter((l) => /^\s*(?:[-*+]\s+)?\[[ xX]\](?=\s)/.test(l)).length,
     // Images first: an image is a link with a leading !, so links must exclude them.
     images: count(/!\[[^\]]*\]\([^)]*\)/g),
     links: count(/(^|[^!])\[[^\]]*\]\([^)]*\)/g),
     emojis: countEmoji(text),
+    // ── Constructs below are measured from the real Paper export, feature by feature ──
+    //
+    // Scope 10.2 states bold, strikethrough and headings ARE preserved (only highlight colours are
+    // not), so they are assertable rather than "manual check required". Counted as PRESENCE, not as
+    // exact run counts: Google marks emphasis with an inline style on a <span> and puts the same
+    // style on every heading, so a destination RUN count cannot be compared with a source one
+    // without double counting. Presence is the claim the scope document actually makes.
+    bold: /\*\*[^*\n]+\*\*/.test(text),
+    italic: /(^|[^*])\*[^*\n]+\*/.test(text),
+    strike: /~~[^~\n]+~~/.test(text),
+    headings: lines.filter((l) => /^#{1,6}\s/.test(l)).length,
+    // Scope 10.14 records section breaks as NOT migrating, so the source count is what makes that
+    // documented behaviour observable. Paper exports the break as a run of dashes on its own line;
+    // a table separator always carries a `|`, so the two cannot collide.
+    sectionBreaks: lines.filter((l) => /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(l)).length,
+    // Paper does NOT keep the ``` fences it was given — it rewrites the block as 4-space indented
+    // lines. Measured: the seeded document round-tripped as "0 code fence(s)" while holding two
+    // indented code lines. Counting only fences reported a document with a code block as having
+    // none. A run of consecutive indented lines is ONE block.
+    codeBlocks: countCodeBlocks(lines),
+    // The code TEXT, so 10.15 can assert what the scope promises — "the content inside the code
+    // block migrates successfully" — independently of the formatting it admits is lost.
+    codeLines: codeBlockLines(lines),
+    // The to-do TEXT, for the same reason. Google renders a checklist as an ordinary list, so the
+    // checkbox STATE cannot be read from its export — but scope 10.11 claims text content is
+    // preserved too, and that half is answerable by looking for the text at the destination.
+    todoTexts: lines
+      .filter((l) => /^\s*(?:[-*+]\s+)?\[[ xX]\](?=\s)/.test(l))
+      .map((l) => l.replace(/^\s*(?:[-*+]\s+)?\[[ xX]\]\s*/, '').trim())
+      .filter(Boolean),
   };
+}
+
+/**
+ * Code blocks in Paper's markdown export: fenced pairs plus runs of 4-space indented lines.
+ *
+ * Paper converts a ``` fence to indentation on import, so the fenced form is counted only for a
+ * document that somehow kept it. A consecutive run of indented lines is one block, not one per
+ * line — otherwise a two-line snippet reads as two code blocks.
+ */
+function countCodeBlocks(lines) {
+  const fences = lines.filter((l) => /^\s*```/.test(l)).length;
+  let runs = 0;
+  let inRun = false;
+  for (const l of lines) {
+    const indented = /^ {4}\S/.test(l);
+    if (indented && !inRun) runs += 1;
+    // A blank line inside an indented block does not end it; any other unindented line does.
+    if (!indented && l.trim() !== '') inRun = false;
+    else if (indented) inRun = true;
+  }
+  return Math.floor(fences / 2) + runs;
+}
+
+/** The lines of code inside those blocks, trimmed — used to prove the content survived. */
+function codeBlockLines(lines) {
+  return lines.filter((l) => /^ {4}\S/.test(l)).map((l) => l.trim());
 }
 
 /**
@@ -148,15 +222,50 @@ function googleDocStructure(html) {
     // disguise and only agrees with a source block count by accident.
     bulleted: listItems(text, 'ul'),
     numbered: listItems(text, 'ol'),
-    // Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot be
-    // recognised here. Reported as null — NOT zero, which would read as "none arrived".
-    todo: null,
     // Rasterised emoji are excluded here and added to the emoji count instead,
     // because Google exports every emoji as an <img>. See isEmojiImage.
     images: split.images,
     links: count(/<a\s[^>]*href=/gi),
     emojis: countEmoji(stripTags(text)) + split.emojiImages,
+    // ── Constructs measured off a real Google HTML export, not assumed ───────────────────
+    //
+    // Google's exporter emits NO <b>, <i>, <s>, <strong>, <em> or <pre> tags at all. Verified by
+    // round-tripping a document that contained all of them: 0 of each, while the same document
+    // produced inline styles on <span>:
+    //
+    //   <span style="font-weight:700">bold text</span>
+    //   <span style="font-style:italic">italic text</span>
+    //   <span style="...text-decoration:line-through...">struck text</span>
+    //
+    // Headings are the trap. Google puts font-weight:700 on the <h1> AND on the span inside it, so
+    // a document with one bold word and two headings matched font-weight:700 five times. Heading
+    // elements are stripped before emphasis is looked for, or every heading reads as bold.
+    bold: hasEmphasis(text, /font-weight:\s*(?:700|800|900|bold)/i),
+    italic: hasEmphasis(text, /font-style:\s*italic/i),
+    strike: hasEmphasis(text, /text-decoration:[^;"]*line-through/i),
+    headings: count(/<h[1-6][\s>]/gi),
+    sectionBreaks: count(/<hr[\s/>]/gi),
+    // Google keeps the monospace family but emits no <pre> and no code background — which is
+    // exactly what scope 10.15 describes as the expected loss. Measured: font-family:"Courier" was
+    // present on the code span and the code text itself survived intact.
+    codeMonospace: /font-family:\s*&quot;?(?:Courier|Consolas|Roboto Mono)|monospace/i.test(text),
+    // Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot be
+    // recognised here. Reported as null — NOT zero, which would read as "none arrived".
+    todo: null,
   };
+}
+
+/**
+ * Is this emphasis present anywhere OUTSIDE a heading?
+ *
+ * Heading elements carry the same font-weight as bold text, so they must be removed before the
+ * question is asked — see the note in googleDocStructure.
+ */
+function hasEmphasis(html, re) {
+  const body = String(html || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi, ' ');
+  return re.test(body);
 }
 
 /** Drop tags and decode the few entities Google's exporter emits, so text-level counts are fair. */
@@ -1740,6 +1849,20 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       maxDepth: bands.treeDepth || 25,
     });
 
+    // ── Wait for CloudFuze to finish applying sharing, but only as long as it actually takes.
+    //
+    // Runs fb511720 and 30e0806d both reported EVERY permission feature as "not judgeable yet":
+    // 2.1 failed with "3 of 3 grant(s) differ" and 2.2/2.3/2.4 went N/A, on a migration where all
+    // 84 items arrived correctly. Every destination item carried only the inherited drive grant
+    // because CloudFuze applies item sharing after the copy, tens of minutes behind PROCESSED.
+    //
+    // The blunt instrument is CONTENT_VALIDATION_START_DELAY_MS, a flat wait in the orchestrator.
+    // It is shared by every content combination, so raising its default would silently add the same
+    // delay to Box → SharePoint and Drive → SharePoint runs that do not need it. This poll is
+    // combination-local instead, and it costs NOTHING when the grants are already there: it returns
+    // on the first read that finds a direct grant.
+    totals.sharingWaitedOut = await this._awaitSharingApplied(destTree, destEmail);
+
     // ── Feature 1.1 + 7.1: structure, with GOOGLE's rules.
     const cmp = core.compareTrees(sourceTree, destTree, {
       rules,
@@ -1775,14 +1898,47 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       if (!/\.csv$/i.test(n)) return false;
       return Object.values(CSV_REPORT_PATTERNS).some((re) => re.test(n));
     };
-    const unexpectedExtra = (cmp.extra || []).filter((i) => !isCloudFuzeReport(i.name || i.path));
-    const reportExtras = (cmp.extra || []).length - unexpectedExtra.length;
+    // Content belonging to ANOTHER combination is not this run's "extra" either.
+    //
+    // The destination Shared Drive is shared: run 30e0806d reported "extra 58" and failed 1.1 while
+    // "matched 84, missing 0" — every source item had arrived correctly. All 58 sat under a single
+    // top-level folder, /tosharedrive, seeded by a different combination writing into the same
+    // drive. The same report already showed the drive is shared, listing "harry h shared links.csv"
+    // beside Erik's own.
+    //
+    // A top-level destination folder with NO source counterpart is therefore treated as foreign and
+    // reported separately, not counted against this run. Anything extra INSIDE a folder this run did
+    // migrate is still a finding — a stray or duplicated file in our own tree is exactly what 1.1
+    // exists to catch, and that case is untouched.
+    const topSegment = (p) => String(p || '').replace(/^\/+/, '').split('/')[0].toLowerCase();
+    const sourceTops = new Set(sourceTree.map((i) => topSegment(i.path)).filter(Boolean));
+    const isForeignSubtree = (i) => {
+      const top = topSegment(i.path);
+      return Boolean(top) && !sourceTops.has(top);
+    };
+
+    const notReports = (cmp.extra || []).filter((i) => !isCloudFuzeReport(i.name || i.path));
+    const foreignExtra = notReports.filter(isForeignSubtree);
+    const unexpectedExtra = notReports.filter((i) => !isForeignSubtree(i));
+    const reportExtras = (cmp.extra || []).length - notReports.length;
+
+    if (foreignExtra.length > 0) {
+      const tops = [...new Set(foreignExtra.map((i) => `/${topSegment(i.path)}`))];
+      push('INFO', '1.1 Data Migration — foreign content in the shared destination',
+        `${foreignExtra.length} destination item(s) sit under ${tops.length} top-level folder(s) `
+        + `with no counterpart in this run's source: ${tops.join(', ')}. The destination Shared `
+        + 'Drive is shared with other combinations, so this content belongs to another run and is '
+        + 'NOT counted against 1.1. Extra items inside folders this run migrated are still counted.');
+    }
 
     const structureDetail =
       `source ${cmp.totalSource}, dest ${cmp.totalDest}, matched ${cmp.matchedCount}, `
       + `missing ${cmp.missing.length}, extra ${unexpectedExtra.length}, `
       + `misplaced ${(cmp.misplaced || []).length}`
-      + (reportExtras > 0 ? ` (+${reportExtras} CloudFuze CSV report(s), not counted)` : '');
+      + (reportExtras > 0 ? ` (+${reportExtras} CloudFuze CSV report(s), not counted)` : '')
+      + (foreignExtra.length > 0
+        ? ` (+${foreignExtra.length} item(s) from another combination sharing this drive, not counted)`
+        : '');
 
     // Re-derive the verdict from what is actually wrong, rather than reusing cmp.status, which
     // was computed before the reports were excluded.
@@ -1827,7 +1983,7 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
 
     this._rollUpItemChecks(push, totals, itemDetails);
-    this._checkSpecialCharacters(push, sourceTree, cmp, rules, totals);
+    this._checkSpecialCharacters(push, sourceTree, cmp, rules, totals, context);
     this._checkLongPaths(push, sourceTree, cmp, rules, totals);
     await this._checkContentHashes(push, cmp, destEmail, dbxOpts, totals, itemDetails);
     // The 8.1 CSV is read once, here, and handed to the document check below: CloudFuze's
@@ -2276,6 +2432,29 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         // read showed were correct. Only the wording changes, so a human knows which to go and
         // check.
         const allPending = pending >= paths.size;
+        // "Not yet" stops being an honest answer once we have actually waited.
+        //
+        // The validator now polls the destination for a direct grant before judging anything
+        // (_awaitSharingApplied). When that poll ran its FULL budget and still found none, the
+        // race explanation is exhausted: on run 30e0806d a direct read hours after PROCESSED still
+        // showed only the inherited drive grant on 01-Root-Folder-Permissions, 13-Permission-Matrix
+        // and 14-Access-Mode — the grants were never applied, they were not late.
+        //
+        // Reporting that as WARN/N/A under-reports a real defect, which is the complaint this
+        // check kept generating: every permission feature sat at "not judgeable yet" run after run.
+        // So the wait decides. If sharing appeared (or we never waited), the old caution stands.
+        if (totals.sharingWaitedOut) {
+          push('FAIL', `${id} ${label}`,
+            `${pending} item(s) carry only inherited drive grants and NO direct grant, after `
+            + `waiting ${(env.DROPBOX_SHARING_SETTLE_MS / 60000).toFixed(0)} min for CloudFuze to `
+            + 'apply sharing. The late-sharing explanation is exhausted: nothing appeared in that '
+            + 'window, so these grants were not applied rather than applied slowly.'
+            + (allPending
+              ? ` This is ALL ${paths.size} item(s) compared for this feature.`
+              : ` ${bad.length} of ${checked} compared grant(s) differ.`)
+            + ' Raise DROPBOX_SHARING_SETTLE_MS if this destination is genuinely slower than that.');
+          return;
+        }
         push('WARN', `${id} ${label}`,
           `Not judgeable yet: ${pending} item(s) still carried only inherited drive grants when `
           + 'validation ran. CloudFuze applies item sharing AFTER the copy completes, tens of '
@@ -2409,18 +2588,49 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // applies item sharing AFTER the copy and that write updates modifiedAt. That is a
       // HYPOTHESIS — one file is not a pattern — and it needs a second run to confirm, so it is
       // reported as something to check rather than as a cause.
+      // Name THIS run's files, not the old anecdote.
+      //
+      // This detail used to quote run 54f9bfc2 — "/13-Permission-Matrix/file_viewer.txt, source
+      // 2026-09-10T04:49:06Z -> dest 2026-09-10T05:05:12Z" — verbatim, on every run. So run
+      // 60f0c1f2 reported "2 of 51 file(s)" and then named one file from a DIFFERENT run, sending
+      // anyone who investigated to the wrong place. A report that cites evidence must cite the
+      // evidence it actually measured.
+      //
+      // The old note also called the permission correlation a "HYPOTHESIS needing a second run".
+      // It is now testable on every run, so it is tested here rather than restated: a file that
+      // carries a direct grant and drifts supports the theory that CloudFuze's sharing write
+      // updates modifiedAt; a file that drifts WITHOUT one contradicts it.
+      const drifted = totals.timestampDrift;
+      const grantedPaths = new Set((totals.permissionObservations || [])
+        .filter((o) => Number(o.checked || 0) > 0)
+        .map((o) => String(o.path || '')));
+      const withGrant = drifted.filter((d) => grantedPaths.has(String(d.path || '')));
+      const gap = (d) => {
+        const a = Date.parse(d.source); const b = Date.parse(d.dest);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return 'unknown';
+        const mins = Math.round(Math.abs(b - a) / 60000);
+        return mins >= 1 ? `${mins} min ${b > a ? 'late' : 'early'}` : 'under a minute';
+      };
+      const shown = drifted.slice(0, 4)
+        .map((d) => `${d.path} (${d.source} -> ${d.dest}, ${gap(d)})`).join('; ');
+
       push('WARN', '4.1 Metadata',
-        `${totals.timestampDrift.length} of ${tsCompared} file(s) have a modified date outside the `
-        + 'tolerance band. Reported as a WARN and not a FAIL so this combination agrees with '
+        `${drifted.length} of ${tsCompared} file(s) have a modified date outside the tolerance `
+        + `band: ${shown}${drifted.length > 4 ? `, and ${drifted.length - 4} more` : ''}. `
+        + 'Reported as a WARN and not a FAIL so this combination agrees with '
         + 'googledriveToSharepoint.js, which reports the same drift on the same field as a WARN — '
         + 'one content validator calling this a defect while another calls it an observation is a '
-        + 'reporting defect in itself. Measured on run 54f9bfc2: '
-        + '/13-Permission-Matrix/file_viewer.txt, source 2026-09-10T04:49:06Z -> dest '
-        + '2026-09-10T05:05:12Z (modifiedAt, 16 minutes late), 1 file of 37 — and it is a file '
-        + 'carrying a DIRECT permission grant while the other 36 kept their timestamps. HYPOTHESIS '
-        + 'needing a second run, not a conclusion: CloudFuze may apply item sharing after the copy, '
-        + 'and that write would update modifiedAt. One file is not a pattern. Created dates are '
-        + 'judged separately below.');
+        + 'reporting defect in itself. '
+        + `Permission correlation on THIS run: ${withGrant.length} of ${drifted.length} drifting `
+        + `file(s) carry a direct permission grant`
+        + (drifted.length > 0 && withGrant.length === drifted.length
+          ? ' — every one of them, which supports the standing theory that CloudFuze applies item '
+            + 'sharing after the copy and that write updates modifiedAt.'
+          : withGrant.length === 0
+            ? ' — none of them, which CONTRADICTS the standing theory that the sharing write is '
+              + 'what moves modifiedAt. Look elsewhere for the cause.'
+            : ', a mixed result: the sharing write cannot be the only cause.')
+        + ' Created dates are judged separately below.');
     }
 
     if (tsCompared > 0) {
@@ -2494,7 +2704,100 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
    * arrived UNCHANGED; a sanitized name here is the defect, which is the reverse of the SharePoint
    * combinations.
    */
-  _checkSpecialCharacters(push, sourceTree, cmp, rules, totals) {
+  /**
+   * Poll the destination until CloudFuze has applied item sharing, or the budget runs out.
+   *
+   * Returns as soon as ANY destination item carries a DIRECT (non-inherited) user or group grant,
+   * which is the signal that the sharing phase has started writing. A run whose grants are already
+   * in place pays one extra permissions read; a run that would otherwise report every permission
+   * feature as "not judgeable yet" waits instead of producing four useless verdicts.
+   *
+   * Deliberately bounded and deliberately quiet about failure: if the budget expires the existing
+   * "not judgeable yet" wording still applies, which is the honest outcome — it says the grants had
+   * not arrived, not that they were wrong.
+   *
+   * Tunable with DROPBOX_SHARING_SETTLE_MS (total budget) and DROPBOX_SHARING_POLL_MS (interval);
+   * set the budget to 0 to skip the wait entirely for a fast structure-only run.
+   */
+  async _awaitSharingApplied(destTree, destEmail) {
+    const budget = Number.isFinite(Number(env.DROPBOX_SHARING_SETTLE_MS))
+      ? Number(env.DROPBOX_SHARING_SETTLE_MS) : 1200000;
+    const interval = Number.isFinite(Number(env.DROPBOX_SHARING_POLL_MS))
+      ? Number(env.DROPBOX_SHARING_POLL_MS) : 60000;
+    if (budget <= 0) return false;
+
+    // Only files and folders can carry a grant, and a handful is enough to detect the phase —
+    // reading the whole tree every minute would cost more than the wait saves.
+    const probes = (destTree || []).filter((i) => i && i.id).slice(0, 8);
+    if (probes.length === 0) return false;
+
+    // COUNT the sampled items carrying a direct grant, rather than asking "is there at least one".
+    //
+    // Returning on the first grant found was not enough. Run feae3ea4 logged "sharing already
+    // applied — not waiting", and feature 2.2 then reported "1 item(s) still carried only inherited
+    // drive grants" — the root FILE had not been shared yet while other items had. Sharing arrives
+    // gradually, so the question is not whether it has STARTED but whether it has STOPPED.
+    //
+    // "Stopped" is read as: the count did not grow between two consecutive polls. Waiting for every
+    // sampled item to carry a grant would never finish, because some legitimately have none.
+    const directGrantCount = async () => {
+      let n = 0;
+      for (const item of probes) {
+        const perms = await driveClient.listPermissions(item.id, destEmail).catch(() => null);
+        const grants = (perms && perms.grants) || [];
+        if (grants.some((g) => !g.inherited)) n += 1;
+      }
+      return n;
+    };
+
+    const started = Date.now();
+    let seen = await directGrantCount();
+    if (seen > 0) {
+      // Sharing has started. Give it one interval to confirm it has finished writing, so a
+      // partially-shared tree is not judged mid-flight.
+      const settleWait = Math.min(interval, Math.max(0, budget - (Date.now() - started)));
+      if (settleWait > 0) {
+        await new Promise((r) => setTimeout(r, settleWait));
+        const after = await directGrantCount();
+        if (after > seen) {
+          logger.info(`[dropbox validation] sharing still landing (${seen} -> ${after} of `
+            + `${probes.length} sampled items) — continuing to wait`);
+          seen = after;
+        } else {
+          logger.info(`[dropbox validation] sharing applied and stable at ${after} of `
+            + `${probes.length} sampled item(s) — validating now`);
+          return false;
+        }
+      } else {
+        return false;
+      }
+    } else {
+      logger.info(`[dropbox validation] no direct grant on any sampled destination item yet. `
+        + `CloudFuze applies sharing after the copy, so waiting up to ${(budget / 60000).toFixed(0)} `
+        + `min (polling every ${(interval / 1000).toFixed(0)}s) before judging permissions.`);
+    }
+
+    while (Date.now() - started < budget) {
+      await new Promise((r) => setTimeout(r, Math.min(interval, budget - (Date.now() - started))));
+      const now = await directGrantCount();
+      if (now > 0 && now === seen) {
+        logger.info(`[dropbox validation] sharing stable at ${now} of ${probes.length} sampled `
+          + `item(s) after ${((Date.now() - started) / 60000).toFixed(1)} min — validating now`);
+        return false;
+      }
+      if (now !== seen) {
+        logger.info(`[dropbox validation] sharing still landing (${seen} -> ${now} of `
+          + `${probes.length} sampled items)`);
+        seen = now;
+      }
+    }
+    logger.warn(`[dropbox validation] no direct grant appeared within `
+      + `${(budget / 60000).toFixed(0)} min, so the late-sharing explanation is exhausted — the `
+      + 'permission features will FAIL rather than report "not judgeable yet".');
+    return true;
+  }
+
+  _checkSpecialCharacters(push, sourceTree, cmp, rules, totals, context) {
     // The interesting population is names carrying SPECIAL CHARACTERS — not specifically the ones
     // SharePoint rejects.
     //
@@ -2561,12 +2864,53 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       push('PASS', '5.1 Special Characters Replacement',
         `${arrived} name(s) with special characters arrived UNCHANGED, which is the documented `
         + 'outcome for a Google destination — Google accepts characters SharePoint rejects.');
+      return;
+    }
+
+    // A replacement the JOB ASKED FOR is not a defect.
+    //
+    // migrationClient sends `specialCharacter=${context.replaceSpecialChar || '-'}` on every job, so
+    // the run explicitly tells CloudFuze which character to substitute. Run 30e0806d sent
+    // `specialCharacter=_`, CloudFuze renamed "MS-invalid colon : name.txt" to
+    // "MS-invalid colon _ name.txt", and this check failed it saying "no replacement was expected"
+    // — failing the product for doing exactly what the job requested. That is the same mistake 4.1
+    // made by judging created dates a job never asked to preserve.
+    //
+    // So a rename is only a defect when it is NOT the requested substitution. A name that differs
+    // in any other way still fails, which is what keeps this check meaningful.
+    const replacement = String((context && context.replaceSpecialChar) || '-');
+    const isRequestedSubstitution = (r) => {
+      const src = String(r.source || '');
+      const dst = String(r.dest || '');
+      if (src.length !== dst.length) return false;
+      for (let i = 0; i < src.length; i++) {
+        if (src[i] === dst[i]) continue;
+        // Every differing position must be a special character replaced by the requested one.
+        if (dst[i] !== replacement || !SPECIAL_CHARS.test(src[i])) return false;
+      }
+      return true;
+    };
+    const asRequested = renamed.filter(isRequestedSubstitution);
+    const unexpected = renamed.filter((r) => !isRequestedSubstitution(r));
+    const show = (rows) => rows.slice(0, 5)
+      .map((r) => `"${r.source}" → "${r.dest}"`).join(', ');
+
+    if (unexpected.length === 0) {
+      push('PASS', '5.1 Special Characters Replacement',
+        `${arrived} name(s) with special characters were compared. ${asRequested.length} were `
+        + `renamed exactly as this job requested — it sent specialCharacter="${replacement}", so `
+        + `substituting that character IS the expected outcome, not a defect: ${show(asRequested)}. `
+        + 'The remainder arrived unchanged. Note for the combination owner: Google itself accepts '
+        + 'these characters, so the replacement is avoidable — clear contentOptions/'
+        + 'replaceSpecialChar if you want names preserved verbatim on a Google destination.');
     } else {
       push('FAIL', '5.1 Special Characters Replacement',
-        `${renamed.length} name(s) were altered at the destination, but Google accepts these `
-        + `characters and no replacement was expected: `
-        + renamed.slice(0, 5).map((r) => `"${r.source}" → "${r.dest}"`
-          + (r.expected !== r.source ? ` (expected "${r.expected}")` : '')).join(', '));
+        `${unexpected.length} name(s) were altered in a way the job did NOT request `
+        + `(specialCharacter="${replacement}"): ${show(unexpected)}.`
+        + (asRequested.length
+          ? ` A further ${asRequested.length} were the requested substitution and are not counted `
+            + `as defects: ${show(asRequested)}.`
+          : ''));
     }
   }
 
@@ -2917,12 +3261,116 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
    * @param {object} [csvReport] the `found['8.1']` entry from `_checkCsvReports` — `{name, lines}`
    *   — or undefined when no embedded-links CSV is present at the destination.
    */
+  /**
+   * Feature 8.1 across the OTHER seeded formats — .xlsx, .pdf and .txt.
+   *
+   * Scope 8.1 names no file type, and resting the whole feature on a single .docx meant a product
+   * that rewrote Word documents but not spreadsheets would have passed. Each format is seeded with
+   * its OWN in-scope target, so a rewrite in one cannot stand in for another and the report can say
+   * exactly which format was left alone.
+   *
+   * The .txt is read and REPORTED but never failed: a plain text file cannot hold a hyperlink, only
+   * characters that resemble one, so leaving it untouched is not misbehaviour. Failing it would
+   * report a defect against behaviour nobody promised — the same rule that keeps the .html contrast
+   * document unjudged.
+   */
+  async _checkEmbeddedLinkFormats(push, sourceTree, cmp, destEmail, totals) {
+    const SEEDED = /(^|\/)09-embedded-links\/embedded_link_doc\.(xlsx|pdf|txt)$/i;
+    const docs = sourceTree.filter((i) => SEEDED.test(String(i.path || '')));
+    totals.embeddedLinkFormats = [];
+
+    if (docs.length === 0) {
+      push('INFO', '8.1 Embedded Links — other formats (not seeded)',
+        'No .xlsx, .pdf or .txt embedded-link document exists in the source, so 8.1 rests on the '
+        + '.docx alone this run. DropboxTestDataAgent._seedEmbeddedLinkFormats writes one document '
+        + 'per format, each linking to its own in-scope target; an empty source here means seeding '
+        + 'did not run or skipped them because their shared links could not be created.');
+      return;
+    }
+
+    for (const srcDoc of docs) {
+      const format = (/(\w+)$/.exec(srcDoc.path) || [, ''])[1].toLowerCase();
+      const label = `8.1 Embedded Links — .${format}`;
+      const judgeable = format !== 'txt';
+      const destItem = (cmp.matched.get(srcDoc.path) || {}).dest;
+
+      if (!destItem || !destItem.id) {
+        // 1.1 owns a missing item; naming it here too would count one cause twice.
+        push('WARN', `${label} (not read)`,
+          `${srcDoc.path} did not pair with a destination item, so its links could not be read. `
+          + 'The absence itself belongs to the structure check 1.1.');
+        continue;
+      }
+
+      const native = core.isGoogleNative(destItem.mimeType);
+      let links = null;
+      let reason = null;
+      try {
+        if (native) {
+          // Converted to a Google format — the links live in the HTML export's anchors instead.
+          const html = (await driveClient.exportNativeFile(destItem.id, 'text/html', destEmail))
+            .toString('utf8');
+          links = [...html.matchAll(/<a\s[^>]*href="([^"]+)"/gi)].map((m) => m[1]);
+        } else {
+          const buf = await driveClient.downloadFile(destItem.id, destEmail);
+          const res = extractLinks(buf, srcDoc.name || srcDoc.path);
+          if (!res.ok) reason = res.reason;
+          else links = res.links;
+        }
+      } catch (err) {
+        reason = `${native ? 'exporting' : 'downloading'} the migrated copy failed: ${err.message}`;
+      }
+
+      if (links === null) {
+        // "Could not look" is never reported as "no links found".
+        push('WARN', `${label} (not read)`,
+          `The migrated ${srcDoc.name} could not be read, so nothing is claimed about it: ${reason}`);
+        totals.embeddedLinkFormats.push({ format, readable: false, reason });
+        continue;
+      }
+
+      const stillDropbox = links.filter((u) => /(^|\/\/|\.)dropbox\.com/i.test(String(u)));
+      totals.embeddedLinkFormats.push({
+        format, readable: true, judgeable, links: links.length, stillDropbox: stillDropbox.length,
+        converted: native,
+      });
+      const how = native
+        ? 'it arrived converted to a Google format, so its links were read from the HTML export'
+        : `it arrived unconverted, so its links were read from the ${format} itself`;
+
+      if (!judgeable) {
+        push('INFO', `${label} (reported, not judged)`,
+          `${links.length} URL(s) in the migrated ${srcDoc.name}, ${stillDropbox.length} of them `
+          + `still pointing at Dropbox — ${how}. NOT judged: a .txt cannot hold a hyperlink, only `
+          + 'text that looks like one, so leaving it untouched is not a defect. Seeded to show what '
+          + 'the migration does with it.');
+      } else if (links.length === 0) {
+        push('WARN', `${label} (no link found)`,
+          `The migrated ${srcDoc.name} was read but carries no link at all — ${how}. The source was `
+          + 'seeded with one, so either the migration dropped it or the conversion discarded it; '
+          + 'reported rather than failed because a missing link is not the same as an unrewritten '
+          + 'one, and the difference matters to whoever investigates.');
+      } else if (stillDropbox.length === 0) {
+        push('PASS', label,
+          `every one of ${links.length} link(s) in the migrated ${srcDoc.name} was rewritten away `
+          + `from Dropbox — ${how}.`);
+      } else {
+        push('FAIL', label,
+          `${stillDropbox.length} of ${links.length} link(s) in the migrated ${srcDoc.name} still `
+          + `point at Dropbox, so a reader at the destination is sent back to the source system: `
+          + `${stillDropbox.slice(0, 2).join(' | ')}. Its target was seeded inside the migration `
+          + `scope, so scope 8.1 requires the address to have been transformed — ${how}.`);
+      }
+    }
+  }
+
   async _checkEmbeddedLinks(push, sourceTree, cmp, destEmail, totals, csvReport) {
     const emit = (rows) => { for (const r of rows) push(r.status, r.name, r.detail); };
     const csv = parseEmbeddedLinksCsv(csvReport ? csvReport.lines : null);
     const csvName = csvReport && csvReport.name ? `"${csvReport.name}"` : 'the embedded-links CSV';
 
     this._reportEmbeddedHtmlContrast(push, sourceTree, cmp, totals);
+    await this._checkEmbeddedLinkFormats(push, sourceTree, cmp, destEmail, totals);
 
     const srcDoc = sourceTree.find((i) => EMBEDDED_DOCX_PATH.test(String(i.path || '')));
     if (!srcDoc) {
@@ -3062,11 +3510,38 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       return { compared: false, reason: `destination Google Doc export failed: ${err.message}` };
     }
 
-    return {
-      compared: true,
-      source: paperMarkdownStructure(md),
-      dest: googleDocStructure(html),
+    const source = paperMarkdownStructure(md);
+    const dest = googleDocStructure(html);
+
+    // Two constructs cannot be counted from Google's markup, but CAN be answered by looking for
+    // the source text in the destination text — which is the half of each claim the scope document
+    // actually makes ("checkbox states and text content are preserved", "the content inside the
+    // code block migrates successfully").
+    // Two passes, because Google splits a text run across <span>s at will — sometimes mid-word.
+    // stripTags puts a space where each tag was, so "a checked item" can come back as
+    // "a check ed item" and a plain includes() would report the text as LOST when it is present.
+    // The whitespace-free comparison is the fallback: it cannot be fooled by where the exporter
+    // chose to break, and it cannot produce a false MATCH either, since the characters must still
+    // appear in order.
+    const destText = stripTags(html).replace(/\s+/g, ' ');
+    const destSquashed = destText.replace(/\s+/g, '');
+    const present = (s) => {
+      const want = String(s).replace(/\s+/g, ' ').trim();
+      if (!want) return false;
+      return destText.includes(want) || destSquashed.includes(want.replace(/\s+/g, ''));
     };
+    dest.todo = source.todoTexts.filter(present).length;
+    dest.codeLinesFound = source.codeLines.filter(present).length;
+
+    // Feature 10.8 — a Dropbox file link inside the Paper must be rewritten to the destination
+    // address when its target migrated, and left alone when it did not. Same rule as 8.1, which
+    // 10.8's own wording states: "only if the referenced files are included in the migration scope".
+    source.dropboxLinks = [...md.matchAll(/\]\(\s*(https?:\/\/[^)\s]*dropbox\.com[^)\s]*)/gi)]
+      .map((m) => m[1]);
+    dest.dropboxLinks = [...html.matchAll(/<a\s[^>]*href="([^"]*dropbox\.com[^"]*)"/gi)]
+      .map((m) => m[1]);
+
+    return { compared: true, source, dest };
   }
 
   /**
@@ -3273,25 +3748,221 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // mistake the 2.x split just corrected: one piece of evidence answering several features.
       const srcImg = sum(comparable, 'source', 'images');
       const dstImg = sum(comparable, 'dest', 'images');
-      const imgDetail = `${srcImg} image(s) in the source, ${dstImg} at the destination. The exports `
-        + 'cannot tell an inserted image from a clipboard image or from embedded media — all three '
-        + 'become an <img> — so 10.3, 10.4 and 10.5 cannot be separated by API and need a human to '
-        + `attribute them.${srcImg !== dstImg ? ' The counts DIFFER, which is worth investigating.' : ''}`;
-      for (const [id, label] of [['10.3', 'Inserted Images'], ['10.4', 'Inserted Media'],
-        ['10.5', 'Clipboard Images']]) {
-        push('WARN', `${id} ${label}`, imgDetail);
+
+      // 10.3 and 10.6 ARE seeded — a referenced JPEG and an animated GIF, both proven to survive
+      // Paper's importer. 10.4 (embedded media player) and 10.5 (clipboard paste) are NOT, and no
+      // API can author them, so they keep their own reason instead of borrowing this evidence.
+      //
+      // The coupling is stated rather than hidden: Google exports every one of them as a bare <img>
+      // with an empty alt, so the count accounts for both seeded images together and cannot say
+      // WHICH arrived. When the count matches, both did — that is a fact, not an inference. When it
+      // is short, neither can be blamed, so neither is failed.
+      // 10.3 and 10.6 are attributed BY DOCUMENT, which is the only thing that makes them separable.
+      //
+      // Google gives every image a bare <img> with an empty alt, so two images in one document
+      // cannot be told apart — that is why testImageOriginIsNotGuessed refuses a pass from a shared
+      // count, and it is right. The seeding now puts the animated GIF in its own document
+      // (qa-paper-gif-*.paper) and leaves the referenced JPEG in the main one, so each document's
+      // image count belongs to exactly one feature and neither borrows the other's evidence.
+      const isGifDoc = (x) => /qa-paper-gif-/i.test(String(x.path || ''));
+      const imageFeature = (id, label, rows, whatIsSeeded) => {
+        if (rows.length === 0) {
+          push('WARN', `${id} ${label}`,
+            `No document seeded for this feature was compared, so it was not exercised. `
+            + `${whatIsSeeded}`);
+          return;
+        }
+        const s = rows.reduce((n, x) => n + (x.content.source.images || 0), 0);
+        const d = rows.reduce((n, x) => n + (x.content.dest.images || 0), 0);
+        const where = `${rows.length} document(s) seeded for this feature`;
+        // Attribution holds only while each contributing document carries exactly ONE image — the
+        // arrangement the seeding creates on purpose. The moment a document holds two, its images
+        // are indistinguishable again (empty alt, bare <img>) and no per-feature verdict is
+        // possible, so the count is reported without one. This is the rule
+        // testImageOriginIsNotGuessed protects: a shared count must never become a feature pass.
+        const attributable = rows.every((x) => Number(x.content.source.images || 0) <= 1);
+        if (s === 0) {
+          push('WARN', `${id} ${label}`,
+            `No image survived Paper's importer in ${where}, so this was not exercised.`);
+        } else if (!attributable) {
+          push('WARN', `${id} ${label}`,
+            `${s} image(s) in the source, ${d} at the destination across ${where}. A document here `
+            + 'holds more than one image, and Google exports every image as a bare <img> with an '
+            + 'empty alt — so which image is which cannot be read and no verdict is claimed. Seed '
+            + 'one image per document to make this assertable.');
+        } else if (d >= s) {
+          push('PASS', `${id} ${label}`,
+            `${s} image(s) in the source and ${d} at the destination across ${where}. `
+            + `${whatIsSeeded}`);
+        } else {
+          push('FAIL', `${id} ${label}`,
+            `${s} image(s) in the source but only ${d} at the destination across ${where} `
+            + `— ${s - d} lost in the conversion. ${whatIsSeeded}`);
+        }
+      };
+      imageFeature('10.3', 'Inserted Images', comparable.filter((x) => !isGifDoc(x)),
+        'The count is attributable because the animated GIF is seeded in a separate document, '
+        + 'leaving only the referenced image here.');
+      imageFeature('10.6', 'GIFs', comparable.filter(isGifDoc),
+        'Seeded as a document holding exactly one animated GIF, so this count is the GIF alone. '
+        + 'Scope 10.6 records GIFs as NOT migrating properly; this measures whether that still '
+        + 'holds.');
+
+      // 10.4 and 10.5 stay unexercised, and say so in their OWN words rather than borrowing the
+      // image count above — which is what previously gave three features one piece of evidence.
+      for (const [id, label] of [['10.4', 'Inserted Media'], ['10.5', 'Clipboard Images']]) {
+        push('WARN', `${id} ${label}`,
+          `${label} are NOT seeded and cannot be from an API: an embedded media player and a pasted `
+          + 'clipboard image both need the Paper UI, verified by round-tripping a document that '
+          + 'contained both — markdown and HTML import each produced an ordinary image or nothing. '
+          + `This is a seeding gap, not a migration result. The ${srcImg} image(s) measured in the `
+          + `source and ${dstImg} at the destination belong to 10.3 and 10.6, not here.`);
       }
 
-      // 10.11 — Google's HTML export renders a checklist as an ordinary list, so a checkbox cannot
-      // be recognised at the destination. The SOURCE count is still worth reporting: it says
-      // whether the feature was even exercised, which the old blanket WARN did not.
+      // 10.11 — the checkbox STATE cannot be read from Google's export, but the item TEXT can, and
+      // scope 10.11 claims both are preserved. So the text half is judged and the state half is
+      // declared unreadable, instead of the whole feature going unassessed.
       const srcTodo = sum(comparable, 'source', 'todo');
-      push('WARN', '10.11 TO-DO list',
-        srcTodo === 0
-          ? 'No TO-DO item appeared in any exported Paper, so this was not exercised'
-          : `${srcTodo} TO-DO item(s) in the source. Google's HTML export renders a checklist as an `
-            + 'ordinary list, so whether the checkboxes survived cannot be read from it — this needs '
-            + 'the document opened.');
+      const dstTodo = sum(comparable, 'dest', 'todo');
+      const stateCaveat = ' Checkbox STATE is not judged: Google renders a checklist as an ordinary '
+        + 'list, so checked/unchecked cannot be read from its export.';
+      if (srcTodo === 0) {
+        push('WARN', '10.11 TO-DO list',
+          'No TO-DO item appeared in any exported Paper, so this was not exercised');
+      } else if (dstTodo >= srcTodo) {
+        push('PASS', '10.11 TO-DO list',
+          `${srcTodo} TO-DO item(s) in the source and every one found at the destination by its `
+          + `text, across ${scope}.${stateCaveat}`);
+      } else {
+        push('FAIL', '10.11 TO-DO list',
+          `${srcTodo} TO-DO item(s) in the source but only ${dstTodo} found at the destination `
+          + `across ${scope} — ${srcTodo - dstTodo} lost their text entirely.${stateCaveat}`);
+      }
+
+      // 10.2 — scope: "bold, strikethrough, headings (H1, H2), links and overall text structure are
+      // preserved correctly. Minor differences, such as highlight colours, are not migrated."
+      //
+      // Emphasis is judged as PRESENCE, not as a run count. Google marks it with an inline style on
+      // a <span> and puts the SAME style on every heading, so a destination run count cannot be
+      // compared against a source one without counting each heading as bold.
+      //
+      // Highlight colour is not judged at all — Paper's own importer discards it on the way IN
+      // (measured: a background-color span came back as plain text), so it can never be seeded from
+      // here and a verdict either way would be about our seeding, not the migration.
+      const emph = ['bold', 'strike', 'italic'].filter((k) => comparable.some((x) => x.content.source[k]));
+      const lostEmph = emph.filter((k) => !comparable.some((x) => x.content.dest[k]));
+      const srcHead = sum(comparable, 'source', 'headings');
+      const dstHead = sum(comparable, 'dest', 'headings');
+      const headPart = `${srcHead} heading(s) in the source, ${dstHead} at the destination`;
+      if (emph.length === 0 && srcHead === 0) {
+        push('WARN', '10.2 Text Formatting',
+          'No bold, strikethrough or heading appeared in any exported Paper, so this was not '
+          + 'exercised');
+      } else if (lostEmph.length === 0 && (srcHead === 0 || dstHead > 0)) {
+        // Headings are judged as PRESERVED, not as an exact count, because that is the claim the
+        // scope document makes: "bold, strikethrough, headings (H1, H2), links and overall text
+        // structure are preserved correctly". Google may render a deep heading as a styled
+        // paragraph rather than an <hN>, so demanding 15 out of 15 would invent a defect out of the
+        // exporter's choice of markup. A short count is reported in the detail either way; only a
+        // TOTAL loss of headings fails.
+        push('PASS', '10.2 Text Formatting',
+          `${emph.join(', ') || 'no emphasis'} preserved and ${headPart}, across ${scope}.`
+          + (dstHead < srcHead
+            ? ` Fewer heading ELEMENTS at the destination, which is not failed: Google renders some `
+              + 'heading levels as styled paragraphs rather than <h1>-<h6>, and the scope document '
+              + 'claims headings are preserved, not that the markup matches.'
+            : '')
+          + ' Highlight colours are not judged — Paper discards them on import, so they cannot be '
+          + 'seeded from here.');
+      } else {
+        const parts = [];
+        if (lostEmph.length) parts.push(`${lostEmph.join(', ')} present in the source but absent at the destination`);
+        if (srcHead > 0 && dstHead === 0) parts.push(`${headPart} — every heading was lost`);
+        push('FAIL', '10.2 Text Formatting', `${parts.join('; ')}, across ${scope}.`);
+      }
+
+      // 10.14 — the scope document records section breaks as NOT migrating. That is a claim about
+      // the product, so it is measured rather than assumed: if the break survives, the document is
+      // out of date and that is worth knowing; if it does not, the documented behaviour held.
+      const srcBreak = sum(comparable, 'source', 'sectionBreaks');
+      const dstBreak = sum(comparable, 'dest', 'sectionBreaks');
+      if (srcBreak === 0) {
+        push('WARN', '10.14 Section Break',
+          'No section break appeared in any exported Paper, so this was not exercised');
+      } else if (dstBreak >= srcBreak) {
+        push('PASS', '10.14 Section Break',
+          `${srcBreak} section break(s) in the source and ${dstBreak} at the destination across `
+          + `${scope}. The scope document records section breaks as NOT migrating; this run shows `
+          + 'them arriving, so that note is out of date for this combination.');
+      } else {
+        push('WARN', '10.14 Section Break',
+          `${srcBreak} section break(s) in the source but ${dstBreak} at the destination across `
+          + `${scope}. This is the behaviour the scope document already records — "Section breaks `
+          + 'are not migrated" — so it is reported, not failed, until the combination owner rules '
+          + 'on whether it is an accepted limitation or a defect.');
+      }
+
+      // 10.15 — scope: "the content inside the code block migrates successfully. The code block
+      // formatting (background, borders, structured layout) is not fully preserved."
+      //
+      // So the CONTENT is judged and the formatting is only observed. Measured: Google emits no
+      // <pre> and no code background, but does keep the monospace family — which is exactly the
+      // partial loss the document describes.
+      const srcCodeLines = comparable.reduce((n, x) => n + (x.content.source.codeLines || []).length, 0);
+      const dstCodeFound = comparable.reduce((n, x) => n + (x.content.dest.codeLinesFound || 0), 0);
+      const mono = comparable.some((x) => x.content.dest.codeMonospace);
+      if (srcCodeLines === 0) {
+        push('WARN', '10.15 Code Block',
+          'No code block appeared in any exported Paper, so this was not exercised');
+      } else if (dstCodeFound >= srcCodeLines) {
+        push('PASS', '10.15 Code Block',
+          `every one of ${srcCodeLines} code line(s) arrived intact at the destination across `
+          + `${scope}. Monospace formatting ${mono ? 'was also kept' : 'was NOT kept'}; the scope `
+          + 'document already records that code-block background, borders and layout are lost, so '
+          + 'that part is not failed here.');
+      } else {
+        push('FAIL', '10.15 Code Block',
+          `${srcCodeLines} code line(s) in the source but only ${dstCodeFound} found at the `
+          + `destination across ${scope} — the scope document promises the CONTENT migrates even `
+          + 'though the formatting does not, and content was lost.');
+      }
+
+      // 10.8 Insert Dropbox Files — judged by whether a Dropbox address SURVIVED at the
+      // destination, which is the only half that can be read without knowing what CloudFuze
+      // rewrote it to.
+      //
+      // Classified against the real source tree rather than a hardcoded folder name: a link is IN
+      // SCOPE when the URL contains the path of an item that actually migrated. The out-of-scope
+      // link is EXPECTED to still point at Dropbox — scope 10.8 says so plainly — so counting all
+      // surviving Dropbox links as failures would report the documented behaviour as a defect.
+      const srcPaths = (sourceTree || []).map((x) => String(x.path || '')).filter((p) => p.length > 3);
+      const inScopeLink = (url) => {
+        const decoded = decodeURIComponent(String(url || '')).toLowerCase();
+        return srcPaths.some((p) => decoded.includes(p.toLowerCase()));
+      };
+      const srcDbx = comparable.flatMap((x) => x.content.source.dropboxLinks || []);
+      const dstDbx = comparable.flatMap((x) => x.content.dest.dropboxLinks || []);
+      const srcInScope = srcDbx.filter(inScopeLink);
+      const dstInScope = dstDbx.filter(inScopeLink);
+      if (srcDbx.length === 0) {
+        push('WARN', '10.8 Insert Dropbox Files',
+          'No Dropbox file link appeared in any exported Paper, so this was not exercised');
+      } else if (srcInScope.length === 0) {
+        push('WARN', '10.8 Insert Dropbox Files',
+          `${srcDbx.length} Dropbox link(s) in the source, but none of them points at an item that `
+          + 'migrated, so the rewrite condition scope 10.8 states was never met and there is '
+          + 'nothing to judge. Seed a link to a file inside the migration root to exercise it.');
+      } else if (dstInScope.length === 0) {
+        push('PASS', '10.8 Insert Dropbox Files',
+          `${srcInScope.length} in-scope Dropbox link(s) in the source and none still points at `
+          + `Dropbox at the destination, across ${scope}. `
+          + `${dstDbx.length} out-of-scope link(s) correctly still point at the source.`);
+      } else {
+        push('FAIL', '10.8 Insert Dropbox Files',
+          `${dstInScope.length} of ${srcInScope.length} in-scope Dropbox link(s) still point at `
+          + `Dropbox at the destination across ${scope}, so a reader is sent back to the source `
+          + `system: ${dstInScope.slice(0, 2).join(' | ')}`);
+      }
 
       if (failedExport.length > 0) {
         push('WARN', '10.x Paper exports that failed',
@@ -3379,9 +4050,11 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // falls through to the blanket N/A below, which is correct: those either cannot be read from
       // an export or are the six the scope document disputes.
       const PAPER_CHECKED = {
-        '10.3': /(^|\] )10\.3 /, '10.4': /(^|\] )10\.4 /, '10.5': /(^|\] )10\.5 /,
-        '10.7': /(^|\] )10\.7 /, '10.9': /(^|\] )10\.9 /, '10.11': /(^|\] )10\.11 /,
-        '10.12': /(^|\] )10\.12 /, '10.13': /(^|\] )10\.13 /, '10.16': /(^|\] )10\.16 /,
+        '10.2': /(^|\] )10\.2 /, '10.3': /(^|\] )10\.3 /, '10.4': /(^|\] )10\.4 /,
+        '10.5': /(^|\] )10\.5 /, '10.6': /(^|\] )10\.6 /, '10.7': /(^|\] )10\.7 /,
+        '10.8': /(^|\] )10\.8 /, '10.9': /(^|\] )10\.9 /,
+        '10.11': /(^|\] )10\.11 /, '10.12': /(^|\] )10\.12 /, '10.13': /(^|\] )10\.13 /,
+        '10.14': /(^|\] )10\.14 /, '10.15': /(^|\] )10\.15 /, '10.16': /(^|\] )10\.16 /,
       };
       if (PAPER_CHECKED[f.id]) {
         const rows = byName(PAPER_CHECKED[f.id]);

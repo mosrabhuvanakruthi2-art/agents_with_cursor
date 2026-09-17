@@ -164,3 +164,7 @@ function extractDocxXml(buf) {
 }
 
 module.exports = { extractDocxLinks, extractDocxXml };
+// Exported so sibling readers (xlsx) can reuse the ZIP machinery instead of duplicating it —
+// an .xlsx is the same container shape with its relationships under xl/ rather than word/.
+module.exports.readEntries = readEntries;
+module.exports.readEntry = readEntry;

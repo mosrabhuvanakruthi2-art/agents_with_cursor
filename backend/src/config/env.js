@@ -492,6 +492,30 @@ module.exports = {
   DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),
 
   /**
+   * How long the Dropbox → Google validator waits for CloudFuze to apply item sharing.
+   *
+   * CloudFuze writes permissions AFTER the copy, tens of minutes behind the PROCESSED status. Runs
+   * fb511720 and 30e0806d both reported every permission feature as "not judgeable yet" — 2.1
+   * failing and 2.2/2.3/2.4 going N/A — on migrations where all items had arrived correctly.
+   *
+   * This is deliberately SEPARATE from CONTENT_VALIDATION_START_DELAY_MS, which is a flat wait in
+   * the shared orchestrator: raising that default would add the same delay to Box → SharePoint and
+   * Drive → SharePoint runs that do not need it. The validator polls instead, so a run whose grants
+   * are already applied pays one extra permissions read and nothing more.
+   *
+   * SETTLE_MS is the total budget, POLL_MS the interval between checks. Set SETTLE_MS to 0 for a
+   * fast structure-only run that does not care about permission verdicts.
+   */
+  DROPBOX_SHARING_SETTLE_MS: (() => {
+    const n = parseInt(process.env.DROPBOX_SHARING_SETTLE_MS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 1200000;
+  })(),
+  DROPBOX_SHARING_POLL_MS: (() => {
+    const n = parseInt(process.env.DROPBOX_SHARING_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 60000;
+  })(),
+
+  /**
    * DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS — the FULL grantee sets, comma-separated.
    *
    * The singular vars above seed one internal user and one group, which covered about two of the

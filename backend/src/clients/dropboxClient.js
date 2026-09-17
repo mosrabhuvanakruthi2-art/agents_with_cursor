@@ -964,19 +964,66 @@ async function addFolderMember(sharedFolderId, member, role, opts = {}) {
   }, { asMemberId, root, label: 'sharing/add_folder_member' });
 }
 
-/** Grant a user or group access to a file. */
+/**
+ * Grant a user or group access to a file.
+ *
+ * `sharing/add_file_member` reports a refusal INSIDE a 200 response, per member, and returning that
+ * array unread made every refusal look like a success. Measured against the QA account:
+ *
+ *   HTTP 200
+ *   [{ "member": { ".tag": "email", "email": "…@gmail.com" },
+ *      "result": { ".tag": "member_error", "member_error": { ".tag": "no_permission" } } }]
+ *
+ * Nothing threw, the seeding log recorded no failure, and validation then reported "No grant to
+ * …@gmail.com was found on any source item" — so feature 2.5 read as NOT EXERCISED when the truth
+ * was that Dropbox had refused the grant. The same silence would hide a refused INTERNAL grant,
+ * which would show up as a permission feature quietly not being exercised.
+ *
+ * Note the error differs by target: a FOLDER invite outside the team fails loudly with
+ * cant_share_outside_team (an HTTP error), while a FILE invite fails quietly with
+ * member_error/no_permission. Both are refusals; only one of them used to be visible.
+ */
 async function addFileMember(fileIdOrPath, member, role, opts = {}) {
   const { asMemberId = null, root = null, quiet = true } = opts;
   const selector = member.groupId
     ? { '.tag': 'dropbox_id', dropbox_id: member.groupId }
     : { '.tag': 'email', email: member.email };
-  return rpc('sharing/add_file_member', {
+  const res = await rpc('sharing/add_file_member', {
     file: fileIdOrPath.startsWith('id:') ? fileIdOrPath : dbxPath(fileIdOrPath),
     members: [selector],
     access_level: role,
     quiet,
     add_message_as_comment: false,
   }, { asMemberId, root, label: 'sharing/add_file_member' });
+
+  const refusal = memberActionRefusal(res);
+  if (refusal) {
+    const err = new Error(`sharing/add_file_member refused the grant: ${refusal}`);
+    // Named like a thrown Dropbox error so the seeding agent's existing classification — which
+    // reads dropboxSummary — treats it the same way as a loud failure.
+    err.dropboxSummary = refusal;
+    throw err;
+  }
+  return res;
+}
+
+/**
+ * The first per-member refusal in an add_*_member response, or null when every member was added.
+ *
+ * The response is an array of MemberActionResult. A successful entry carries `result` tagged
+ * `success`; a refused one carries `member_error` (or `access_error`) with the reason nested inside.
+ */
+function memberActionRefusal(res) {
+  const rows = Array.isArray(res) ? res : [];
+  for (const row of rows) {
+    const tag = row?.result?.['.tag'];
+    if (!tag || tag === 'success') continue;
+    const inner = row.result[tag];
+    const reason = typeof inner === 'string' ? inner : inner?.['.tag'] || 'unspecified';
+    const who = row.member?.email || row.member?.dropbox_id || 'the member';
+    return `${tag}/${reason} for ${who}`;
+  }
+  return null;
 }
 
 /**
@@ -1087,6 +1134,7 @@ module.exports = {
   shareFolder,
   addFolderMember,
   addFileMember,
+  memberActionRefusal,
   createSharedLink,
   movePath,
   deletePath,
