@@ -45,8 +45,11 @@ function agentsFor(context) {
 // googleshareddrive→sharepoint matches on its DESTINATION, dropbox→googleshareddrive on its
 // SOURCE — so a Shared-Drive-to-Shared-Drive or Shared-Drive-to-Drive pair would be the first to
 // fall out, and `hasDeepValidation` was the only thing keeping the omission invisible.
+// 'sharefile' is listed for the same reason, before it can bite. This pair is masked today:
+// sharefile→sharepoint matches on its DESTINATION, so omitting the key changes nothing for it.
+// A sharefile→sharefile or sharefile→egnyte pair would be the one to fall out.
 const CONTENT_PROVIDERS = [
-  'box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive', 'googleshareddrive',
+  'box', 'dropbox', 'sharepoint', 'onedrive', 'googledrive', 'googleshareddrive', 'sharefile',
 ];
 
 /** True when this run is a content (files/folders) migration rather than mail. */
@@ -564,13 +567,16 @@ class AgentOrchestrator {
           context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
-        // Same guard as the Box and Drive branches — see the comment on the Box branch above for the
-        // two ways this silent fallback was observed to actually run.
+        // The Drive branch below refuses when nothing resolved; this one did not, and the difference
+        // is not cosmetic. With no mapping, migrationClient falls back to sourcePath '/' — the WHOLE
+        // Dropbox account, not the named folder — and the run looks entirely normal while doing it.
+        // A mistyped folder name is enough to trigger it.
         if (context.userFolderMappings.length === 0) {
           throw new Error(
-            'Content useExistingSource: no existing Dropbox source folder could be resolved — refusing '
-            + 'to run. Migrating with no resolved folder falls back to the Dropbox account root, which '
-            + 'is never what was asked for.'
+            'Content useExistingSource: no existing Dropbox folder could be resolved — refusing to run. '
+            + 'Migrating with no resolved folder falls back to the account root, which is never what '
+            + 'was asked for. Check the source folder name, or untick "use existing source folder" to '
+            + 'seed it instead.'
           );
         }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing Dropbox folder(s) ready to migrate`);

@@ -897,9 +897,23 @@ function findCloudId(clouds, email, cloudNameHint) {
   // the wrong-tenant substitution described below, and it happened: 'googledrive' fell through to
   // BOX_BUSINESS by email. Mail hints ('google'/'microsoft') are deliberately excluded — they map
   // onto several cloud names and have always relied on this fallback.
+  //
+  // 'SHAREFILE' added 2026-09-09. Measured against the live qarelease cloud list
+  // (SHAREFILE_BUSINESS / zara@storefuze.com / 6aa10605b17d0e315c812361): a 'sharefile' hint with
+  // no ShareFile cloud registered resolved to BOX_BUSINESS by email — the same wrong-cloud
+  // substitution described above. SHAREFILEBUSINESS starts with SHAREFILE, so the happy path needs
+  // no HINT_ALIASES entry; this set is what makes the miss refuse instead of substitute.
+  //
+  // 'CITRIX' is a RETIRED provider key and is kept here deliberately. Nothing else in backend/src
+  // references it (grepped 2026-09-09), so it looks removable — but removing it does not make a
+  // 'citrix' hint fail, it makes it SUCCEED wrongly: with no cloud name matching CITRIX the hint
+  // falls out of this guard into the cross-type email fallback below and returns whatever cloud
+  // carries the account's address (measured: SHAREFILE_BUSINESS, with only a warning). Left in the
+  // set, a stray 'citrix' hint refuses and names the registered clouds, which is the required
+  // behaviour for a retired key.
   const CONTENT_HINTS = new Set([
     'BOX', 'DROPBOX', 'GOOGLEDRIVE', 'GOOGLESHAREDDRIVE', 'ONEDRIVE', 'SHAREPOINT',
-    'EGNYTE', 'CITRIX',
+    'EGNYTE', 'SHAREFILE', 'CITRIX',
   ]);
   const anyCloudEmailKnown = clouds.some((c) => cloudEmail(c) !== '');
   if (hint && CONTENT_HINTS.has(hint) && typedClouds.length === 0 && anyCloudEmailKnown) {
@@ -1604,6 +1618,7 @@ ${pathCsv}`);
       // on a working Box job. Retried with backoff before falling through to poll blind.
       const kickUrl = `${contentOrigin}/proxyservices/v1/mapping/download/csvcreator/${pathCsvId}/asynchronous`
         + `?${vQuery}&csvName=${encodeURIComponent(pathCsvName || '')}&first=true`;
+      let validationStarted = true;
       try {
         const kickRes = await retryWithBackoff(
           () => axios.post(kickUrl, null, migrationAxiosConfig({
@@ -1614,11 +1629,19 @@ ${pathCsv}`);
         );
         logger.info(`CloudFuze mapping validation started (csvId=${pathCsvId}): ${JSON.stringify(kickRes.data)}`);
       } catch (kickErr) {
-        logger.warn(`CloudFuze csvcreator/asynchronous failed after retries (${kickErr?.response?.status || kickErr.message}) — polling anyway, but expect "Total Saved Count :0" throughout since the mapping was never actually kicked off`);
+        // Step 1 not starting is not a warning to walk past — see the sequence note above: "Calling
+        // step 2 without step 1 returns 'Total Saved Count :0' and validates nothing". Recorded so
+        // the poll loop can stop early and the run can refuse to submit a job that would migrate
+        // nothing, instead of spending the whole validation window proving it.
+        validationStarted = false;
+        logger.warn(`CloudFuze csvcreator/asynchronous failed (${kickErr?.response?.status || kickErr.message}) `
+          + '— validation was never STARTED, so the status poll below can only answer "Total Saved '
+          + 'Count :0". Confirming briefly rather than polling the full window.');
       }
 
       const statusUrl = `${contentOrigin}/proxyservices/v1/mapping/check/csvvalidationstatus/${pathCsvId}?${vQuery}`;
       let ready = false;
+      let zeroSavedPolls = 0;
       for (let attempt = 1; attempt <= CSV_VALIDATION_MAX_POLLS; attempt++) {
         await new Promise((r) => setTimeout(r, CSV_VALIDATION_POLL_MS));
         let body = '';
@@ -1634,6 +1657,43 @@ ${pathCsv}`);
         }
         logger.info(`CloudFuze mapping validation poll ${attempt}/${CSV_VALIDATION_MAX_POLLS}: ${body}`);
         if (/report is ready/i.test(body)) { ready = true; break; }
+        // Validation never started AND the status keeps answering zero saved rows. That pair of
+        // facts cannot resolve itself: run 003eec1b spent 60 polls (300s) on it and then submitted
+        // a job that ended CONFLICT having moved nothing. A few confirming polls are kept in case
+        // the 500 was transient and CloudFuze picks the validation up on its own.
+        if (!validationStarted && /Total Saved Count\s*:\s*0\b/i.test(body)) {
+          zeroSavedPolls += 1;
+          if (zeroSavedPolls >= 3) {
+            logger.error('CloudFuze mapping validation: csvcreator never started and the status has '
+              + `answered "Total Saved Count :0" on ${zeroSavedPolls} consecutive polls. Nothing is `
+              + 'being validated, so polling the remaining '
+              + `${CSV_VALIDATION_MAX_POLLS - attempt} time(s) would change nothing.`);
+            break;
+          }
+        }
+      }
+      // Refuse the job rather than submit one that cannot move anything.
+      //
+      // A timeout on its own is survivable and stays a warning: fb511720 timed out at poll 60,
+      // still held a usable mapping, and migrated 83/83. The unsurvivable combination is step 1
+      // never STARTING and the validation never becoming ready — then, by this endpoint's own
+      // documented behaviour, nothing was validated at all. Run 003eec1b proved what follows:
+      // csvcreator 500, "Total Saved Count :0" for 60 polls, a job created anyway, PROCESSED with
+      // totalFilesAndFolders=0 and status CONFLICT, then 35 minutes of validation against an empty
+      // destination whose findings only restated that it was empty. Failing here costs 30 seconds
+      // and names the cause; continuing costs the whole run and reports nothing usable.
+      if (!ready && !validationStarted) {
+        throw new Error(
+          'CloudFuze never validated the path mapping for this run, so a migration job would move '
+          + `nothing. The validation start call (csvcreator, csvId=${pathCsvId}) failed, and the `
+          + 'status endpoint then reported "Total Saved Count :0" '
+          + '— meaning no source/destination path pair was registered. Refusing to '
+          + 'create the job. This is a CloudFuze-side condition, not a data problem: it has been '
+          + 'seen when a cloud has just been re-registered and has not finished its initial scan. '
+          + 'Check the source and destination clouds in CloudFuze (Manage Clouds) and re-run once '
+          + 'they are scanned, or pin known-good registrations with CONTENT_SOURCE_CLOUD_ID / '
+          + 'CONTENT_DEST_CLOUD_ID.'
+        );
       }
       if (!ready) {
         logger.warn(`CloudFuze mapping validation did not report ready within ${CSV_VALIDATION_MAX_POLLS} `
@@ -1953,15 +2013,19 @@ ${pathCsv}`);
       `notifyExternalUsers=${opt('notifyExternalUsers', false)}`,
       'fromDate=null',
       `toDate=${encodeURIComponent(toDate)}`,
-      // Was hardcoded false unconditionally, independent of the "Preserve Timestamp" toggle that
-      // modifiedTimeForFiles already respects. That silently asked CloudFuze to never preserve
-      // creation time on ANY content combination — invisible on Dropbox→Google (Dropbox exposes no
-      // creation time to compare in the first place) but a real, measured defect on Box→Google,
-      // which does have a comparable content_created_at on both sides: feature 4.1 reported "4 of 32
-      // file(s) drifted beyond the tolerance" purely because creation time was never requested.
-      // Tied to the same option as modifiedTimeForFiles — this can only ask CloudFuze to preserve
-      // MORE than before, never less, so it cannot turn an existing pass into a failure anywhere.
-      `createdTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp (created half)
+      // CloudFuze's two timestamp-preservation flags. Scope 4.1 ("maintaining the original
+      // timestamps, including creation and modification dates") needs BOTH, and this one was
+      // hardcoded false — so a validator comparing created dates could only ever report a mismatch
+      // the job had never asked to avoid. Measured as a real, live defect on Box→Google (which has a
+      // comparable content_created_at on both sides): feature 4.1 reported "4 of 32 file(s) drifted
+      // beyond the tolerance" purely because creation time was never requested.
+      //
+      // Now driven by a job option, exactly like modifiedTimeForFiles. Note the default: FALSE,
+      // i.e. today's hardcoded value, because this builder is shared by every content combination
+      // (Box→SharePoint, Drive→SharePoint, Dropbox→Google, …) and a run that names no option must
+      // send the same job it sent before. `opt()` defaults to true, so the second argument is not
+      // optional here — see notifyInternalUsers above for the same pattern.
+      `createdTimeForFiles=${opt('preserveCreatedTime', false)}`,
       `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
       // Job Options step: "Replace special characters with" + "Exclude file types"
       `specialCharacter=${encodeURIComponent(context.replaceSpecialChar || '-')}`,

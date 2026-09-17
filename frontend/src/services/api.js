@@ -273,6 +273,21 @@ export function signOutDropbox(email) {
   return api.post('/auth/dropbox/signout', { email });
 }
 
+// Citrix ShareFile — provider key `sharefile` (the label stays "Citrix ShareFile"). Same
+// popup OAuth shape as Box/Dropbox. Until the ShareFile OAuth app is configured the URL
+// route answers 400 with a flat { error } naming the missing setting; callers must show
+// that string as-is rather than a generic failure.
+export function getShareFileOAuthUrl(source) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  const qs = params.toString();
+  return api.get('/auth/sharefile/url' + (qs ? `?${qs}` : ''));
+}
+
+export function signOutShareFile(email) {
+  return api.post('/auth/sharefile/signout', { email });
+}
+
 export function connectSharePointAccount(email) {
   return api.post('/auth/sharepoint/connect', { email });
 }

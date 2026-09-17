@@ -315,7 +315,17 @@ function toItem(entry, parentPath) {
     // Dropbox has no MIME type on metadata. Left null so extension-based logic in deepContentCore
     // (extensionOf/convertName) drives conversion decisions instead of a guessed type.
     mimeType: null,
-    createdAt: null, // Dropbox exposes no creation time for files.
+    // No creation time HERE, which is a property of files/get_metadata and not of Dropbox itself.
+    // The metadata call returns client_modified/server_modified only. A creation time IS
+    // obtainable:
+    // the OLDEST entry from files/list_revisions is the first upload Dropbox recorded for the file
+    // at this path — see createdTimeFromRevisions() below, which also spells out when that value is
+    // only a LOWER BOUND (a truncated revision list, retention pruning, a re-used path).
+    //
+    // Left null on the tree walk deliberately: filling it in would cost one extra API call per file
+    // during the walk. Feature 4.1's validator already reads revisions for the version counts,
+    // so it derives the created time from data it is holding anyway.
+    createdAt: null,
     modifiedAt: isFolder ? null : (entry.server_modified || null),
     createdBy: null,
     modifiedBy: null,
@@ -585,13 +595,23 @@ async function listSharedLinks(path, opts = {}) {
 // ── Versions (scope §9) ───────────────────────────────────────────────────────
 
 /**
+ * How many entries `files/list_revisions` is asked for, and the most it can return.
+ *
+ * Dropbox caps `limit` at 100 and the endpoint has NO cursor — there is no "continue" call — so a
+ * file with more than 100 retained revisions cannot be listed in full by any means. That is why a
+ * count coming back equal to this number is treated as "truncated" by createdTimeFromRevisions()
+ * rather than as "complete".
+ */
+const REVISION_LIST_LIMIT = 100;
+
+/**
  * Revisions of a file, newest first, as `[{ rev, size, modifiedAt }]`.
  *
  * Only meaningful for real files. A Paper document has no source-visible version history at all
  * (scope 10.19), so callers must skip Paper rather than read this as zero versions.
  */
 async function listRevisions(path, opts = {}) {
-  const { asMemberId = null, root = null, limit = 100 } = opts;
+  const { asMemberId = null, root = null, limit = REVISION_LIST_LIMIT } = opts;
   const data = await rpc('files/list_revisions', {
     path: dbxPath(path),
     mode: 'path',
@@ -602,6 +622,108 @@ async function listRevisions(path, opts = {}) {
     size: e.size != null ? Number(e.size) : null,
     modifiedAt: e.server_modified || null,
   }));
+}
+
+// ── Creation time (scope 4.1) ─────────────────────────────────────────────────
+
+/**
+ * Derive a file's creation time from its revision list. PURE — takes revisions, issues no call.
+ *
+ * Feature 4.1 asks for "the original timestamps, including creation and modification dates", and
+ * the item shape carries `createdAt: null` for Dropbox because `files/get_metadata` has no such
+ * field. The revision history does: revisions are returned newest-first, and the OLDEST one's
+ * `server_modified` is the first upload Dropbox recorded for the file at that path.
+ *
+ * WHAT THIS VALUE CAN AND CANNOT BE TRUSTED TO SAY — the distinction the report has to keep, since
+ * "could not determine" and "matches" must never print as the same thing:
+ *
+ *   - `exact: true` — the list came back SHORTER than the requested limit, so Dropbox returned
+ *     every revision it holds and the oldest is genuinely the first upload of this file.
+ *   - `truncated: true` — the list came back at the limit. There is no cursor on this endpoint, so
+ *     older revisions may exist and are unreachable; the timestamp is then a LOWER BOUND (the file
+ *     is at least this old), never an equality claim.
+ *
+ * Two further caveats cannot be detected from the API at all, and so are NOT reported as `exact`
+ * being false — they are documented here and in the validator's wording instead:
+ *
+ *   - Version history is subject to the account's retention window (30 days on Basic/Plus, 180 on
+ *     Business/Professional). Revisions older than that are pruned, which would make the oldest
+ *     surviving entry newer than the true creation. Irrelevant for QA-seeded data, which is minutes
+ *     old, and undetectable for anything else.
+ *   - `mode: 'path'` returns the revisions of whatever has lived at that path. If a file was deleted
+ *     and a new one uploaded to the same name, the older file's revisions can appear, making the
+ *     value EARLIER than this file's creation.
+ *
+ * @param {Array<{rev: string, size: number, modifiedAt: string}>} revisions  from listRevisions()
+ * @param {{limit?: number}} [opts]  the limit the list was fetched with
+ * @returns {{createdAt: string|null, exact: boolean, truncated: boolean, revisionCount: number,
+ *            reason: string}}
+ */
+function createdTimeFromRevisions(revisions, opts = {}) {
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : REVISION_LIST_LIMIT;
+  const rows = Array.isArray(revisions) ? revisions : [];
+  const revisionCount = rows.length;
+
+  if (revisionCount === 0) {
+    return {
+      createdAt: null,
+      exact: false,
+      truncated: false,
+      revisionCount: 0,
+      reason: 'files/list_revisions returned no revisions, so no source creation time exists to '
+        + 'compare (the read failed, or the item is not a file)',
+    };
+  }
+
+  // Take the EARLIEST parseable timestamp rather than trusting the array order. The endpoint
+  // documents newest-first, and honouring that by reading the last element would hand a wrong
+  // answer to any caller that had sorted or filtered the list on the way here.
+  let oldest = null;
+  for (const rev of rows) {
+    const t = Date.parse(rev && rev.modifiedAt);
+    if (!Number.isNaN(t) && (oldest === null || t < oldest.t)) oldest = { t, iso: rev.modifiedAt };
+  }
+
+  if (!oldest) {
+    return {
+      createdAt: null,
+      exact: false,
+      truncated: revisionCount >= limit,
+      revisionCount,
+      reason: `${revisionCount} revision(s) came back but none carried a readable server_modified, `
+        + 'so no creation time could be derived',
+    };
+  }
+
+  const truncated = revisionCount >= limit;
+  return {
+    createdAt: oldest.iso,
+    exact: !truncated,
+    truncated,
+    revisionCount,
+    reason: truncated
+      ? `the revision list came back at the ${limit}-entry maximum and files/list_revisions has no `
+        + 'cursor, so older revisions may exist: this is a LOWER BOUND on the creation time, not '
+        + 'the creation time'
+      : `oldest of ${revisionCount} revision(s), and the list was shorter than the ${limit}-entry `
+        + 'maximum, so it is complete',
+  };
+}
+
+/**
+ * Fetch a file's revisions and derive its creation time. One API call, retry-wrapped through rpc().
+ *
+ * For callers that hold no revision list. Anything that already reads revisions (feature 9.1's
+ * version counts) should call createdTimeFromRevisions() on the list it has rather than paying for
+ * a second round trip per file.
+ *
+ * @param {string} path   absolute Dropbox path
+ * @param {object} [opts] { asMemberId, root, limit }
+ */
+async function getCreatedTime(path, opts = {}) {
+  const limit = Number(opts.limit) > 0 ? Number(opts.limit) : REVISION_LIST_LIMIT;
+  const revisions = await listRevisions(path, { ...opts, limit });
+  return createdTimeFromRevisions(revisions, { limit });
 }
 
 // ── Content ───────────────────────────────────────────────────────────────────
@@ -863,19 +985,66 @@ async function updateFolderMember(sharedFolderId, member, role, opts = {}) {
   }, { asMemberId, root, label: 'sharing/update_folder_member' });
 }
 
-/** Grant a user or group access to a file. */
+/**
+ * Grant a user or group access to a file.
+ *
+ * `sharing/add_file_member` reports a refusal INSIDE a 200 response, per member, and returning that
+ * array unread made every refusal look like a success. Measured against the QA account:
+ *
+ *   HTTP 200
+ *   [{ "member": { ".tag": "email", "email": "…@gmail.com" },
+ *      "result": { ".tag": "member_error", "member_error": { ".tag": "no_permission" } } }]
+ *
+ * Nothing threw, the seeding log recorded no failure, and validation then reported "No grant to
+ * …@gmail.com was found on any source item" — so feature 2.5 read as NOT EXERCISED when the truth
+ * was that Dropbox had refused the grant. The same silence would hide a refused INTERNAL grant,
+ * which would show up as a permission feature quietly not being exercised.
+ *
+ * Note the error differs by target: a FOLDER invite outside the team fails loudly with
+ * cant_share_outside_team (an HTTP error), while a FILE invite fails quietly with
+ * member_error/no_permission. Both are refusals; only one of them used to be visible.
+ */
 async function addFileMember(fileIdOrPath, member, role, opts = {}) {
   const { asMemberId = null, root = null, quiet = true } = opts;
   const selector = member.groupId
     ? { '.tag': 'dropbox_id', dropbox_id: member.groupId }
     : { '.tag': 'email', email: member.email };
-  return rpc('sharing/add_file_member', {
+  const res = await rpc('sharing/add_file_member', {
     file: fileIdOrPath.startsWith('id:') ? fileIdOrPath : dbxPath(fileIdOrPath),
     members: [selector],
     access_level: role,
     quiet,
     add_message_as_comment: false,
   }, { asMemberId, root, label: 'sharing/add_file_member' });
+
+  const refusal = memberActionRefusal(res);
+  if (refusal) {
+    const err = new Error(`sharing/add_file_member refused the grant: ${refusal}`);
+    // Named like a thrown Dropbox error so the seeding agent's existing classification — which
+    // reads dropboxSummary — treats it the same way as a loud failure.
+    err.dropboxSummary = refusal;
+    throw err;
+  }
+  return res;
+}
+
+/**
+ * The first per-member refusal in an add_*_member response, or null when every member was added.
+ *
+ * The response is an array of MemberActionResult. A successful entry carries `result` tagged
+ * `success`; a refused one carries `member_error` (or `access_error`) with the reason nested inside.
+ */
+function memberActionRefusal(res) {
+  const rows = Array.isArray(res) ? res : [];
+  for (const row of rows) {
+    const tag = row?.result?.['.tag'];
+    if (!tag || tag === 'success') continue;
+    const inner = row.result[tag];
+    const reason = typeof inner === 'string' ? inner : inner?.['.tag'] || 'unspecified';
+    const who = row.member?.email || row.member?.dropbox_id || 'the member';
+    return `${tag}/${reason} for ${who}`;
+  }
+  return null;
 }
 
 /**
@@ -989,6 +1158,11 @@ module.exports = {
   listItemMembers,
   listSharedLinks,
   listRevisions,
+  // Feature 4.1's created half. The derivation is pure and is the part worth asserting, so it is
+  // exported separately from the call that feeds it.
+  createdTimeFromRevisions,
+  getCreatedTime,
+  REVISION_LIST_LIMIT,
   downloadFile,
   exportPaper,
   createPaperDoc,
@@ -999,6 +1173,7 @@ module.exports = {
   addFolderMember,
   updateFolderMember,
   addFileMember,
+  memberActionRefusal,
   createSharedLink,
   revokeSharedLink,
   movePath,

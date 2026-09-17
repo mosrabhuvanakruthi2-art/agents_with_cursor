@@ -28,10 +28,15 @@ function testRegistration() {
   // than silently receive the wrong translation.
   assert.strictEqual(roleMaps.forCombination('box_to_sharepoint'), null,
     'an uncovered combination resolves to null, never to a default');
-  // Not an exact-list assertion: other pairs (e.g. 'box_to_google') register from their own files in
-  // the same directory, and this test must not break every time one is added. It only needs to prove
-  // THIS pair is one of them.
-  assert.ok(roleMaps.pairs().includes('dropbox_to_google'), 'dropbox_to_google is registered');
+  // This asserted `pairs()` was exactly ['dropbox_to_google'] — a snapshot of the WHOLE directory,
+  // which any added pair breaks even though nothing about Dropbox → Google has changed. Narrowed to
+  // what this test actually owns: that its own pair is registered, and that no other pair has
+  // claimed either Google destination. `dropbox_to_sharepoint` was added alongside it (a separate
+  // scope document with different feature numbering and inverted destination rules) and must not
+  // appear here.
+  assert.ok(roleMaps.pairs().includes('dropbox_to_google'), 'the Dropbox → Google pair is registered');
+  assert.strictEqual(roleMaps.forCombination('dropbox_to_googleshareddrive').pair, 'dropbox_to_google');
+  assert.strictEqual(roleMaps.forCombination('dropbox_to_googledrive').pair, 'dropbox_to_google');
   console.log('  pair registered by directory scan, no fallback: ok');
 }
 

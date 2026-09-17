@@ -492,6 +492,30 @@ module.exports = {
   DROPBOX_TEST_GROUP: (process.env.DROPBOX_TEST_GROUP || '').trim(),
 
   /**
+   * How long the Dropbox → Google validator waits for CloudFuze to apply item sharing.
+   *
+   * CloudFuze writes permissions AFTER the copy, tens of minutes behind the PROCESSED status. Runs
+   * fb511720 and 30e0806d both reported every permission feature as "not judgeable yet" — 2.1
+   * failing and 2.2/2.3/2.4 going N/A — on migrations where all items had arrived correctly.
+   *
+   * This is deliberately SEPARATE from CONTENT_VALIDATION_START_DELAY_MS, which is a flat wait in
+   * the shared orchestrator: raising that default would add the same delay to Box → SharePoint and
+   * Drive → SharePoint runs that do not need it. The validator polls instead, so a run whose grants
+   * are already applied pays one extra permissions read and nothing more.
+   *
+   * SETTLE_MS is the total budget, POLL_MS the interval between checks. Set SETTLE_MS to 0 for a
+   * fast structure-only run that does not care about permission verdicts.
+   */
+  DROPBOX_SHARING_SETTLE_MS: (() => {
+    const n = parseInt(process.env.DROPBOX_SHARING_SETTLE_MS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 1200000;
+  })(),
+  DROPBOX_SHARING_POLL_MS: (() => {
+    const n = parseInt(process.env.DROPBOX_SHARING_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 60000;
+  })(),
+
+  /**
    * DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS — the FULL grantee sets, comma-separated.
    *
    * The singular vars above seed one internal user and one group, which covered about two of the
@@ -607,6 +631,26 @@ module.exports = {
    */
   BOX_TEST_ACCESS_MODE: (process.env.BOX_TEST_ACCESS_MODE || '').trim().toLowerCase(),
 
+  /**
+   * Citrix ShareFile OAuth 2.0 app credentials, for the ShareFile -> SharePoint Online combination.
+   *
+   * The provider key is `sharefile`, not `citrix`. CloudFuze registers the live cloud as
+   * SHAREFILE_BUSINESS (id 6aa10605b17d0e315c812361, account zara@storefuze.com), and findCloudId
+   * squashes that name to SHAREFILEBUSINESS — SHAREFILE is a prefix of it, no form of CITRIX is.
+   * The user-facing label stays "Citrix ShareFile".
+   *
+   * Two values only, and deliberately no SHAREFILE_SUBDOMAIN. Sign-in is a single well-known
+   * host (https://secure.sharefile.com/oauth/authorize) and the host-scoped token endpoint
+   * https://{subdomain}.{apicp}/oauth/token is assembled from the `subdomain` and `apicp` values
+   * the OAuth CALLBACK returns — so the account host is an output of the flow, never an input.
+   * Per https://api.sharefile.com/gettingstarted/oauth2. Once connected, the host is persisted
+   * with the account in oauthTokenStore, which is where a later refresh or API call reads it.
+   *
+   * Both default to empty. validateEnv() warns rather than crashes, so a developer with no
+   * ShareFile app configured still runs every other combination.
+   */
+  SHAREFILE_CLIENT_ID: cleanEnvValue(process.env.SHAREFILE_CLIENT_ID || ''),
+  SHAREFILE_CLIENT_SECRET: cleanEnvValue(process.env.SHAREFILE_CLIENT_SECRET || ''),
   /**
    * Content migration server credentials (qarelease).
    * Used as fallback when the Migration Server password field is left empty in the form.
