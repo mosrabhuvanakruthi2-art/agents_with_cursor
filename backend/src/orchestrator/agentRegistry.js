@@ -39,9 +39,18 @@ function resolve(domain, sourceProvider, destinationProvider) {
  * a restart — an error that lists the loaded combinations makes that obvious immediately.
  */
 function list() {
-  return [...registry.keys()].map((k) => {
+  return [...registry.entries()].map(([k, handlers]) => {
     const [domain, sourceProvider, destinationProvider] = k.split(':');
-    return { domain, sourceProvider, destinationProvider };
+    // `seedsTestData` is what lets a caller tell "this combination creates its own source data"
+    // from "this one has to be pointed at a folder that already exists". Without it the run wizard
+    // could only find out by running: a combination with no TestDataAgent and no useExistingSource
+    // seeds nothing, and the migration used to fall back to the drive root.
+    return {
+      domain,
+      sourceProvider,
+      destinationProvider,
+      seedsTestData: Boolean(handlers && handlers.TestDataAgent),
+    };
   });
 }
 

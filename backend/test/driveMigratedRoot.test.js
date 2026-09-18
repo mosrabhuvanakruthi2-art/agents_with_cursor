@@ -105,18 +105,53 @@ async function testMissingSubpathStillNull() {
   console.log('  missing named subpath still returns null: ok');
 }
 
-/** An explicit destination subpath that DOES resolve wins over everything. */
-async function testExplicitSubpathWins() {
+/**
+ * An explicit destination subpath that resolves and holds NO wrapper folder is the comparison root.
+ *
+ * This used to assert that the subpath won over everything, findByName included. That rule read the
+ * wrapper's PARENT whenever CloudFuze did create one — see testWrapperInsideExplicitSubpath below,
+ * which is the run d95ab388 shape. The subpath still wins; it just no longer beats a wrapper that
+ * sits inside it.
+ */
+async function testExplicitSubpathWinsWhenEmpty() {
   const root = await withStubs({
     ...driveStub,
     resolveFolderByPath: async (base) => (base === 'Some-Subfolder'
       ? { id: 'SUB1', name: 'Some-Subfolder', path: '/Some-Subfolder' } : null),
-    findByName: async () => ({ id: 'SHOULD_NOT_WIN', name: 'qa-automation' }),
+    findByName: async () => null,
   }, () => new Agent().findMigratedRoot(
     DRIVE_ID, DRIVE_ID, `/${DRIVE_NAME}/Some-Subfolder`, 'qa-automation', EMAIL));
 
-  assert.strictEqual(root.id, 'SUB1', 'the resolved destination subpath wins');
-  console.log('  explicit destination subpath wins: ok');
+  assert.strictEqual(root.id, 'SUB1', 'the resolved destination subpath is used when it holds no wrapper');
+  console.log('  explicit destination subpath wins when it holds no wrapper: ok');
+}
+
+/**
+ * Run d95ab388 (googledrive → googledrive): CloudFuze migrated 91/91 items into
+ * "/mydrive-mydrive-qa-agent/qa-src-mydrive", and the validator compared against
+ * "/mydrive-mydrive-qa-agent" — pairing 0 of 90 items and reporting "MIGRATION MOVED NOTHING"
+ * for a migration that had moved everything.
+ *
+ * Unlike Dropbox → Google, this pair does not send pickInsideFolder, so the wrapper folder named
+ * after the SOURCE root is always created. It has to be found INSIDE the destination path.
+ */
+async function testWrapperInsideExplicitSubpath() {
+  const root = await withStubs({
+    ...driveStub,
+    // My Drive, so the Shared-Drive segment strip never runs and the leading slash survives —
+    // match the way the real resolver does, rather than assuming a normalised value.
+    resolveFolderByPath: async (base) => (String(base).replace(/^\/+/, '') === 'mydrive-mydrive-qa-agent'
+      ? { id: 'DESTBASE', name: 'mydrive-mydrive-qa-agent', path: '/mydrive-mydrive-qa-agent' } : null),
+    findByName: async (candidate, parentId) => (candidate === 'qa-src-mydrive' && parentId === 'DESTBASE'
+      ? { id: 'WRAPPER', name: 'qa-src-mydrive' } : null),
+  }, () => new Agent().findMigratedRoot(
+    'root', null, '/mydrive-mydrive-qa-agent', 'qa-src-mydrive', EMAIL));
+
+  assert.strictEqual(root.id, 'WRAPPER',
+    'the migrated tree sits inside the destination path, so that folder is the comparison root');
+  assert.strictEqual(root.path, '/mydrive-mydrive-qa-agent/qa-src-mydrive',
+    'and the reported path is the full one, so the report names where it actually looked');
+  console.log('  wrapper inside an explicit destination subpath is found: ok');
 }
 
 /** My Drive (no driveId) is untouched by the change. */
@@ -138,7 +173,8 @@ async function testMyDriveUnaffected() {
   await testWrapperFolderStillPreferred();
   await testDedupVariant();
   await testMissingSubpathStillNull();
-  await testExplicitSubpathWins();
+  await testExplicitSubpathWinsWhenEmpty();
+  await testWrapperInsideExplicitSubpath();
   await testMyDriveUnaffected();
   console.log('driveMigratedRoot.test.js: ok');
 })().catch((err) => {

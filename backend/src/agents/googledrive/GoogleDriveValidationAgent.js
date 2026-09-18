@@ -159,21 +159,50 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
       }
     }
 
-    // An explicit destination path wins when it resolves.
-    if (base && base !== '/') {
-      const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
-      if (hit) return hit;
-    }
-
     const name = String(sourceFolderName || '').trim();
-    if (!name) {
-      // No name to look for: the destination root itself is the comparison root.
-      return { id: rootId, name: '(destination root)', path: '/' };
-    }
 
     const candidates = [name];
     for (let i = 1; i <= DEDUP_MAX; i++) {
       candidates.push(`${name} ${i}`, `${name} (${i})`);
+    }
+
+    /** The folder named after the SOURCE root directly under `parentId`, if CloudFuze made one. */
+    const wrapperUnder = async (parentId) => {
+      if (!name) return null;
+      for (const candidate of candidates) {
+        const found = await driveClient.findByName(candidate, parentId, email).catch(() => null);
+        if (found) return { id: found.id, name: found.name, path: `/${found.name}` };
+      }
+      return null;
+    };
+
+    // An explicit destination path wins when it resolves — but the migrated tree may sit one level
+    // INSIDE it, in a folder named after the source root.
+    //
+    // Which shape you get depends on pickInsideFolder. Dropbox → Google sends it true, so the
+    // CONTENTS land directly in the named path and there is no wrapper. googledrive → googledrive
+    // does not, so CloudFuze creates "<destPath>/<sourceFolderName>" and puts everything there.
+    // Returning the named path unconditionally read the wrapper's PARENT: run d95ab388 migrated
+    // 91/91 items into "/mydrive-mydrive-qa-agent/qa-src-mydrive" and the validator compared
+    // against "/mydrive-mydrive-qa-agent", pairing 0 of 90 items and reporting "MIGRATION MOVED
+    // NOTHING" for a migration that had moved everything.
+    //
+    // Looking inside first is safe for both shapes: where there is no wrapper the search finds
+    // nothing and the named path is used exactly as before.
+    if (base && base !== '/') {
+      const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
+      if (hit) {
+        const wrapper = await wrapperUnder(hit.id);
+        if (wrapper) {
+          return { ...wrapper, path: `${String(hit.path || `/${base}`).replace(/\/+$/, '')}/${wrapper.name}` };
+        }
+        return hit;
+      }
+    }
+
+    if (!name) {
+      // No name to look for: the destination root itself is the comparison root.
+      return { id: rootId, name: '(destination root)', path: '/' };
     }
 
     for (const candidate of candidates) {

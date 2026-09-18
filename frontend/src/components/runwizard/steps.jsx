@@ -872,6 +872,21 @@ function ContentOptions({ wiz }) {
           <input type="checkbox" checked={wiz.useExistingSource} onChange={(e) => wiz.setUseExistingSource(e.target.checked)} className="w-4 h-4 text-indigo-600 rounded" />
           <span><strong>Use existing source folder</strong> — skip data creation and migrate the folder(s) that already exist at the paths below.</span>
         </label>
+        {/* This combination cannot seed its own source data, and the box above is unticked — so the
+            run would start with no source folder at all. The backend refuses that outright now, but
+            it can only do so after Cleanup has already run against the accounts, so say it here
+            while it still costs nothing to fix. Driven by the registry's `seedsTestData`, not by a
+            provider list, so it disappears on its own once the combination gains a seeding agent. */}
+        {wiz.contentSourceMissing && (
+          <div className="sm:col-span-2 -mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-800">
+            <p className="font-semibold mb-1">This run has no source folder.</p>
+            <p>
+              {wiz.srcProvider} → {wiz.dstProvider} cannot create its own test data, so nothing would be
+              seeded and there would be nothing to migrate. Tick <strong>Use existing source folder</strong> above
+              and name a folder that already exists at the source. The run is refused until you do.
+            </p>
+          </div>
+        )}
         <Field label={wiz.useExistingSource ? 'Existing source folder path' : 'Source folder base name'}>
           <input value={wiz.contentPaths.sourceFolderName} onChange={(e) => wiz.setContentPath('sourceFolderName', e.target.value)}
             placeholder={wiz.useExistingSource ? 'e.g. /NEWDATA or /Projects/Q1' : 'e.g. NEWDATA (default: Agent Box Data)'} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono" />
