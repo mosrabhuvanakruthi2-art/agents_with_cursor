@@ -516,6 +516,35 @@ module.exports = {
   })(),
 
   /**
+   * How long a content validator may wait for CLOUDFUZE'S PERMISSION PHASE before judging.
+   *
+   * Permissions are not applied by the file movers. They move the file and queue an entry in
+   * `CollabarationDetails`; `StatusModuleScheduler` then generates the PermissionQueue once the
+   * copy is complete, and `InvitePermissionScheduler` applies the grants on its own cron, with
+   * conflicted entries retrying on exponential backoff (5, 15, 45 min). So a job reporting
+   * `PROCESSED  99/99` means the FILES are done and the grants are still queued.
+   *
+   * THIS IS A CEILING, NOT A SLEEP. The poll returns as soon as grants appear and stop changing
+   * across two consecutive reads, so a healthy run pays only what the phase actually costs. A
+   * flat delay was rejected precisely because it charges every good run for the worst case.
+   *
+   * Set to 0 for a fast structure-only run that does not care about permission verdicts; the
+   * permission features then report what is there at the moment the copy ended.
+   */
+  SHAREDDRIVE_PERMISSION_SETTLE_MS: (() => {
+    const n = parseInt(process.env.SHAREDDRIVE_PERMISSION_SETTLE_MS ?? '', 10);
+    // 10 minutes, not 20. Measured across runs 27a74447, 708f4eca and 8bacd461, no item grant
+    // appeared at ANY point in ~50 minutes of post-copy polling, so a longer ceiling buys
+    // nothing while charging every run for it. Raise it only if the permission phase is known
+    // to be working and merely slow.
+    return Number.isFinite(n) && n >= 0 ? n : 600000;
+  })(),
+  SHAREDDRIVE_PERMISSION_POLL_MS: (() => {
+    const n = parseInt(process.env.SHAREDDRIVE_PERMISSION_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 30000;
+  })(),
+
+  /**
    * DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS — the FULL grantee sets, comma-separated.
    *
    * The singular vars above seed one internal user and one group, which covered about two of the
