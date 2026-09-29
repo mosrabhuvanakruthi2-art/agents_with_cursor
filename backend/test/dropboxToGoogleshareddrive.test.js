@@ -51,12 +51,27 @@ function testMyDrivePairUnaffected() {
   assert.strictEqual(hers.ValidationAgent, mine.ValidationAgent, 'both pairs share one validator');
   assert.strictEqual(hers.TestDataAgent, mine.TestDataAgent, 'both pairs share one seeding agent');
 
+  // This asserted the Dropbox destinations were EXACTLY ['googledrive', 'googleshareddrive'] — a
+  // snapshot of the whole registry, so adding any Dropbox pair broke it even though nothing about
+  // these two had changed. What the test actually owns is that the two GOOGLE destinations are both
+  // present and still share one validator, which the assertions above already prove.
+  //
+  // `dropbox → sharepoint` was added later and deliberately does NOT share this validator: the
+  // destination agents have incompatible signatures, and the two scope documents number their
+  // features differently. Assert that separation rather than the directory's total contents.
   const pairs = registry.list()
     .filter((p) => p.domain === 'content' && p.sourceProvider === 'dropbox')
     .map((p) => p.destinationProvider)
     .sort();
-  assert.deepStrictEqual(pairs, ['googledrive', 'googleshareddrive'],
-    'exactly the two Dropbox content pairs are registered');
+  for (const expected of ['googledrive', 'googleshareddrive']) {
+    assert.ok(pairs.includes(expected), `the Dropbox → ${expected} pair is registered`);
+  }
+  const sharepoint = registry.resolve('content', 'dropbox', 'sharepoint');
+  if (sharepoint) {
+    assert.notStrictEqual(sharepoint.ValidationAgent, mine.ValidationAgent,
+      'the SharePoint pair must have its own validator — sharing one would let a change to either '
+      + 'scope document move the other pair\'s verdicts');
+  }
 
   console.log('  My Drive pair unaffected: ok');
 }

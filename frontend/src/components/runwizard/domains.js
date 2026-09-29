@@ -19,14 +19,16 @@ export const PROVIDER_META = {
   sharepoint:        { label: 'SharePoint',         short: 'SharePoint',   account: 'microsoft' },
   dropbox:           { label: 'Dropbox',            short: 'Dropbox',      account: 'dropbox' },
   egnyte:            { label: 'Egnyte',             short: 'Egnyte',       account: 'egnyte' },
-  citrix:            { label: 'Citrix ShareFile',   short: 'ShareFile',    account: 'citrix' },
+  sharefile:         { label: 'Citrix ShareFile',   short: 'ShareFile',    account: 'sharefile' },
 };
 
 // Every content service, usable as BOTH source and destination. Accounts only appear
-// once their cloud is connected (Connect Clouds); Dropbox/Egnyte/Citrix show after their
-// connectors are wired. Whether a specific source→destination pair actually migrates is
+// once their cloud is connected (Connect Clouds); Egnyte appears once its connector is wired.
+// ShareFile's provider key is `sharefile`, never `citrix`, so it matches the CloudFuze cloud
+// name SHAREFILE_BUSINESS the backend resolves against; the label stays "Citrix ShareFile".
+// Whether a specific source→destination pair actually migrates is
 // validated by the backend combination registry at run time.
-const CONTENT_SERVICES = ['box', 'dropbox', 'egnyte', 'citrix', 'googledrive', 'googleshareddrive', 'onedrive', 'sharepoint'];
+const CONTENT_SERVICES = ['box', 'dropbox', 'egnyte', 'sharefile', 'googledrive', 'googleshareddrive', 'onedrive', 'sharepoint'];
 
 export const DOMAINS = {
   mail: {
@@ -43,7 +45,7 @@ export const DOMAINS = {
     key: 'content',
     label: 'Content',
     mode: 'content',
-    connectAccounts: ['box', 'google', 'microsoft', 'dropbox', 'egnyte', 'citrix'],
+    connectAccounts: ['box', 'google', 'microsoft', 'dropbox', 'egnyte', 'sharefile'],
     sourceProviders: CONTENT_SERVICES,
     destProviders: CONTENT_SERVICES,
     defaultSrc: 'box',

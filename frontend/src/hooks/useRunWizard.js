@@ -4,6 +4,8 @@ import {
   signOutGoogle, signOutMicrosoft, getSourceUsers, getDestinationUsers,
   getBoxOAuthUrl, signOutBox,
   getDropboxOAuthUrl, signOutDropbox,
+  getShareFileOAuthUrl, signOutShareFile,
+  getCombinations,
 } from '../services/api';
 import usePersistedState from './usePersistedState';
 import { DOMAINS, accountProviderFor } from '../components/runwizard/domains';
@@ -102,6 +104,29 @@ export default function useRunWizard() {
   // When true: the source folder(s) already exist — skip the data-creation agent and migrate
   // the folder at the given path directly. The "Source folder" fields become existing paths.
   const [useExistingSource, setUseExistingSource] = usePersistedState('rw-useExistingSource', false);
+
+  // Which combinations can seed their own source data. A combination without a TestDataAgent
+  // (today: googledrive → googledrive) creates nothing, so with "Use existing source folder"
+  // unticked a run has no folder to migrate and the backend refuses it. Fetched from the registry
+  // rather than hardcoded here, so a combination that later gains a seeding agent needs no frontend
+  // change. Unknown (fetch failed, or an unregistered pair) is treated as "can seed" — the backend
+  // guard is the authority, and a warning on every run would train people to ignore it.
+  const [combinations, setCombinations] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    getCombinations()
+      .then((res) => { if (alive) setCombinations(res.data.combinations || []); })
+      .catch(() => { if (alive) setCombinations([]); });
+    return () => { alive = false; };
+  }, []);
+  const combinationSeedsTestData = (() => {
+    if (!combinations || combinations.length === 0) return true;
+    const hit = combinations.find((c) => c.domain === domain
+      && c.sourceProvider === srcProvider && c.destinationProvider === dstProvider);
+    return hit ? hit.seedsTestData !== false : true;
+  })();
+  /** True when this run would start with no source folder at all — the backend refuses it. */
+  const contentSourceMissing = domain === 'content' && !combinationSeedsTestData && !useExistingSource;
   // Per-row folder mapping for multi-user / multi-drive content migration.
   //
   // This was an object keyed by source email: { [sourceEmail]: { sourceFolderName, destinationPath } }.
@@ -275,7 +300,7 @@ export default function useRunWizard() {
     } catch (err) { setError(err.response?.data?.error || err.message); setBusy(false); }
   }
 
-  // Box and Dropbox OAuth — the same popup → /oauth-callback → localStorage result flow as
+  // Box, Dropbox and ShareFile OAuth — the same popup → /oauth-callback → localStorage result flow as
   // Microsoft. Only the URL endpoint differs, so the flow lives here once: a second copy would
   // drift the moment one of them changed.
   async function connectViaPopup(getOAuthUrl) {
@@ -305,12 +330,17 @@ export default function useRunWizard() {
 
   const connectBox = () => connectViaPopup(getBoxOAuthUrl);
   const connectDropbox = () => connectViaPopup(getDropboxOAuthUrl);
+  // ShareFile's URL route answers 400 naming the missing setting while its OAuth app is
+  // unconfigured; connectViaPopup already puts that flat `error` string into `error` verbatim
+  // and opens no popup, which is what StepConnect renders.
+  const connectShareFile = () => connectViaPopup(getShareFileOAuthUrl);
 
   async function disconnect(provider, email) {
     try {
       if (provider === 'google') await signOutGoogle(email);
       else if (provider === 'box') await signOutBox(email);
       else if (provider === 'dropbox') await signOutDropbox(email);
+      else if (provider === 'sharefile') await signOutShareFile(email);
       else await signOutMicrosoft(email);
       if (srcEmail === email) setSrcEmail('');
       if (dstEmail === email) setDstEmail('');
@@ -673,7 +703,8 @@ export default function useRunWizard() {
     domain, setDomain,
     srcProvider, setSrcProvider, srcEmail, setSrcEmail,
     dstProvider, setDstProvider, dstEmail, setDstEmail,
-    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, connectDropbox, disconnect,
+    accounts, accountsLoading, loadAccounts, connectGoogle, connectMicrosoft, connectBox, connectDropbox,
+    connectShareFile, disconnect,
     fetched, needsFetch, fetchUsers, sourceUsers, destUsers, mappings, selectedIndices,
     togglePair, selectAll, deselectAll, manualMap, removeMapping, importUserMappingsCsv, clearImportedMappings, unmappedSource, unmappedDest, resetMapping,
     migrationServerUrl, setMigrationServerUrl, migrationServerEmail, setMigrationServerEmail,
@@ -684,7 +715,7 @@ export default function useRunWizard() {
     contentPaths, setContentPath,
     contentFolderRows, effectiveFolderRows, addContentFolderRow, updateContentFolderRow,
     removeContentFolderRow, clearContentFolderRows, importContentUserFoldersCsv,
-    useExistingSource, setUseExistingSource,
+    useExistingSource, setUseExistingSource, combinationSeedsTestData, contentSourceMissing,
     selectedPairs, buildPayload, reset,
     busy, error, setError,
   };

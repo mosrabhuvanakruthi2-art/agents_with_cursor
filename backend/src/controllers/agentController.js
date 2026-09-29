@@ -3,6 +3,7 @@ const executionService = require('../services/executionService');
 const { ownsExecution } = require('../middleware/authUser');
 const MigrationContext = require('../models/MigrationContext');
 const logger = require('../utils/logger');
+const { list: listCombinations } = require('../orchestrator/agentRegistry');
 const fs = require('fs');
 const path = require('path');
 
@@ -1665,8 +1666,26 @@ async function updateDriveVersions(req, res) {
   }
 }
 
+/**
+ * GET /api/agents/combinations — every registered (domain, source, destination) combination and
+ * whether it can seed its own test data.
+ *
+ * The run wizard needs `seedsTestData` to warn BEFORE a run: a combination without a TestDataAgent
+ * seeds nothing, so unless "Use existing source folder" is ticked the orchestrator now refuses the
+ * run. Surfacing it here keeps that knowledge in the registry instead of duplicating a provider
+ * list in the frontend, which would drift the moment a combination gains a seeding agent.
+ */
+function getCombinations(_req, res) {
+  try {
+    res.json({ combinations: listCombinations() });
+  } catch (err) {
+    logger.error(`getCombinations failed: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
-  runAgents, getExecutions, getExecution, getExecutionLogs, getStats,
+  runAgents, getExecutions, getExecution, getExecutionLogs, getStats, getCombinations,
   testConnections, getSourceUsers, getDestinationUsers, getMailboxStats, cleanDestination,
   generatePdf, getSourceMailboxStats, cleanSource,
   cleanSourceEmails, cleanSourceFolders, cleanSourceCalendars,

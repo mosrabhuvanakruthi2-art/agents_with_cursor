@@ -50,6 +50,8 @@ function migrateIfNeeded(data) {
   if (!data.dropbox.accounts) data.dropbox.accounts = {};
   if (!data.sharepoint) data.sharepoint = { accounts: {} };
   if (!data.sharepoint.accounts) data.sharepoint.accounts = {};
+  if (!data.sharefile) data.sharefile = { accounts: {} };
+  if (!data.sharefile.accounts) data.sharefile.accounts = {};
   if (!data.slack) data.slack = { accounts: {} };
   if (!data.slack.accounts) data.slack.accounts = {};
   return data;
@@ -135,6 +137,15 @@ async function loadFromMongo() {
         data.sharepoint.accounts[email.toLowerCase()] = {
           accessToken: rest.accessToken, refreshToken: rest.refreshToken,
           expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+        };
+        loaded++;
+      } else if (provider === 'sharefile') {
+        // `subdomain` must survive the round trip: ShareFile's API is host-scoped, so an entry
+        // without it holds a token that cannot be spent anywhere.
+        data.sharefile.accounts[email.toLowerCase()] = {
+          accessToken: rest.accessToken, refreshToken: rest.refreshToken,
+          expiresAt: rest.expiresAt, connectedAt: rest.connectedAt,
+          subdomain: rest.subdomain, apiHost: rest.apiHost, accountId: rest.accountId,
         };
         loaded++;
       }
@@ -387,6 +398,52 @@ function getDropboxStatus() {
   return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
 }
 
+// ─── Citrix ShareFile ────────────────────────────────────────────────────────────────────────────
+//
+// Stored under the provider key `sharefile` (the label shown to users stays "Citrix ShareFile").
+// Two fields more than the others: `subdomain` and `apiHost`. ShareFile's API is host-scoped and
+// the account host is an OUTPUT of sign-in — the OAuth callback returns `subdomain` and `apicp`,
+// and https://{subdomain}.{apicp} is the only place this account's calls can go. There is no env
+// var holding it, so this record is it: an entry carrying a token and no host is unusable, and the
+// failure would surface much later as a DNS or 404 error mid-run instead of at connect time.
+
+function getShareFileToken(email) {
+  const data = read();
+  return data.sharefile.accounts[String(email || '').toLowerCase()] || null;
+}
+
+function setShareFileToken({
+  email, accessToken, refreshToken, expiresAt, subdomain, apiHost, accountId,
+}) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  const existing = data.sharefile.accounts[key];
+  const entry = {
+    accessToken, refreshToken, expiresAt,
+    subdomain: subdomain || existing?.subdomain || null,
+    apiHost: apiHost || existing?.apiHost || null,
+    accountId: accountId || existing?.accountId || null,
+    connectedAt: existing?.connectedAt || new Date().toISOString(),
+  };
+  data.sharefile.accounts[key] = entry;
+  write(data);
+  syncToMongo('sharefile', key, { email: key, ...entry });
+}
+
+function removeShareFileToken(email) {
+  const data = read();
+  const key = String(email).toLowerCase();
+  delete data.sharefile.accounts[key];
+  write(data);
+  removeFromMongo('sharefile', key);
+}
+
+function getShareFileStatus() {
+  const data = read();
+  const emails = Object.keys(data.sharefile.accounts);
+  return { connected: emails.length > 0, emails, email: emails[0] || null, count: emails.length };
+}
+
 // ─── SharePoint Online ────────────────────────────────────────────────────────
 
 function getSharePointToken(email) {
@@ -438,6 +495,11 @@ function getAllConnectedAccounts() {
   }
   for (const [email, entry] of Object.entries(data.sharepoint.accounts)) {
     accounts.push({ provider: 'sharepoint', email, connectedAt: entry.connectedAt });
+  }
+  // Deliberately provider/email/connectedAt only. No token, refresh token or host is exposed —
+  // this payload is read by the browser, and the subdomain names the customer's ShareFile host.
+  for (const [email, entry] of Object.entries(data.sharefile.accounts)) {
+    accounts.push({ provider: 'sharefile', email, connectedAt: entry.connectedAt });
   }
   for (const [email, entry] of Object.entries(data.slack.accounts)) {
     accounts.push({ provider: 'slack', email, connectedAt: entry.connectedAt, teamName: entry.teamName });
@@ -512,6 +574,11 @@ module.exports = {
   setSharePointToken,
   removeSharePointToken,
   getSharePointStatus,
+  // Citrix ShareFile
+  getShareFileToken,
+  setShareFileToken,
+  removeShareFileToken,
+  getShareFileStatus,
   // Slack (message product)
   getSlackToken,
   setSlackToken,

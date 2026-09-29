@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   getConnectedAccounts, addDwdAccount, getMicrosoftAdminConsentUrl, getBoxOAuthUrl, getDropboxOAuthUrl,
-  signOutGoogle, signOutMicrosoft, signOutBox, signOutDropbox,
+  getShareFileOAuthUrl,
+  signOutGoogle, signOutMicrosoft, signOutBox, signOutDropbox, signOutShareFile,
   getMicrosoftOAuthUrl, getGoogleOAuthUrl, getSlackOAuthUrl, signOutSlack,
 } from '../services/api';
 
@@ -18,7 +19,9 @@ const CATALOG = {
     { key: 'box', name: 'Box', account: 'box' },
     { key: 'dropbox', name: 'Dropbox', account: 'dropbox' },
     { key: 'egnyte', name: 'Egnyte' },                   // connector pending
-    { key: 'citrix', name: 'Citrix ShareFile' },         // connector pending
+    // Citrix ShareFile: the label users recognise, but the provider key is `sharefile` so it
+    // matches the CloudFuze cloud name SHAREFILE_BUSINESS the backend resolves against.
+    { key: 'sharefile', name: 'Citrix ShareFile', account: 'sharefile' },
     { key: 'googledrive', name: 'Google Drive', account: 'google' },
     { key: 'googleshareddrive', name: 'Google Shared Drive', account: 'google' },
     { key: 'onedrive', name: 'OneDrive', account: 'microsoft' },
@@ -40,7 +43,10 @@ const DOMAIN_TABS = [
   { key: 'message', label: 'Message' },
 ];
 
-const ACCOUNT_NAME = { google: 'Google', microsoft: 'Microsoft', box: 'Box', dropbox: 'Dropbox', slack: 'Slack' };
+const ACCOUNT_NAME = {
+  google: 'Google', microsoft: 'Microsoft', box: 'Box', dropbox: 'Dropbox', slack: 'Slack',
+  sharefile: 'Citrix ShareFile',
+};
 
 function openPopup(url) {
   const w = 520, h = 680;
@@ -55,6 +61,10 @@ export default function ConnectClouds() {
   const [accounts, setAccounts] = useState([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  // Toasts self-dismiss after 3.5s; a connect failure also stays here verbatim (e.g. the
+  // backend's "<SETTING> not configured" for an unconfigured ShareFile OAuth app) so it can
+  // be read and acted on rather than guessed at.
+  const [connectError, setConnectError] = useState(null);
   const [googleFor, setGoogleFor] = useState(null); // cloud awaiting a DWD admin email
   const [dwdBlocked, setDwdBlocked] = useState(null); // why DWD failed, so the modal can offer OAuth
   const [googleEmail, setGoogleEmail] = useState('');
@@ -81,6 +91,7 @@ export default function ConnectClouds() {
 
   function runPopupFlow(getUrl, label) {
     setBusy(true);
+    setConnectError(null);
     getUrl()
       .then((res) => {
         popupRef.current = openPopup(res.data.url);
@@ -92,7 +103,7 @@ export default function ConnectClouds() {
               const result = JSON.parse(raw);
               localStorage.removeItem(POPUP_KEY);
               stopPolling(); popupRef.current?.close(); popupRef.current = null;
-              if (result.error) showToast(result.message || result.error, 'error');
+              if (result.error) { setConnectError(result.message || result.error); showToast(result.message || result.error, 'error'); }
               else { showToast(`${label} connected`); loadAccounts(); setView('manage'); }
             } catch { /* ignore */ }
             setBusy(false);
@@ -102,7 +113,11 @@ export default function ConnectClouds() {
         }, 500);
         setTimeout(() => { stopPolling(); setBusy(false); }, 300_000);
       })
-      .catch((err) => { showToast(err.response?.data?.error || err.message, 'error'); setBusy(false); });
+      .catch((err) => {
+        // Flat { error } from the backend, shown as-is — never flattened into "connection failed".
+        const msg = err.response?.data?.error || err.message;
+        setConnectError(msg); showToast(msg, 'error'); setBusy(false);
+      });
   }
 
   function handleTile(cloud) {
@@ -118,6 +133,7 @@ export default function ConnectClouds() {
     if (cloud.account === 'microsoft') { runPopupFlow(() => getMicrosoftAdminConsentUrl(), cloud.name); return; }
     if (cloud.account === 'box') { runPopupFlow(() => getBoxOAuthUrl('popup'), cloud.name); return; }
     if (cloud.account === 'dropbox') { runPopupFlow(() => getDropboxOAuthUrl('popup'), cloud.name); return; }
+    if (cloud.account === 'sharefile') { runPopupFlow(() => getShareFileOAuthUrl('popup'), cloud.name); return; }
     showToast(`${cloud.name} is not implemented yet`, 'error');
   }
 
@@ -160,6 +176,7 @@ export default function ConnectClouds() {
       if (acct.provider === 'google') await signOutGoogle(acct.email);
       else if (acct.provider === 'box') await signOutBox(acct.email);
       else if (acct.provider === 'dropbox') await signOutDropbox(acct.email);
+      else if (acct.provider === 'sharefile') await signOutShareFile(acct.email);
       else if (acct.provider === 'slack') await signOutSlack(acct.email);
       else await signOutMicrosoft(acct.email);
       showToast(`${acct.email} disconnected`);
@@ -228,6 +245,12 @@ export default function ConnectClouds() {
             })}
           </div>
           {busy && <p className="text-xs text-gray-400">Waiting for connection…</p>}
+          {connectError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex items-start gap-3">
+              <span className="flex-1">{connectError}</span>
+              <button type="button" onClick={() => setConnectError(null)} className="text-red-400 hover:text-red-600 text-xs font-semibold">Dismiss</button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -397,8 +420,8 @@ function Glyph({ cloud, size = 36 }) {
       );
     default: {
       const BADGES = {
-        egnyte: { c: '#00AEC7', t: 'E' }, citrix: { c: '#452D82', t: 'C' },
-        sharefile: { c: '#1E7B6F', t: 'S' }, webex: { c: '#00BCEB', t: 'W' },
+        egnyte: { c: '#00AEC7', t: 'E' }, sharefile: { c: '#452D82', t: 'C' },
+        webex: { c: '#00BCEB', t: 'W' },
         workplace: { c: '#1877F2', t: 'W' }, viva: { c: '#0078D4', t: 'V' },
       };
       const b = BADGES[cloud] || { c: '#64748B', t: (cloud[0] || '?').toUpperCase() };

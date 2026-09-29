@@ -36,9 +36,13 @@ module.exports = {
 
   // Created/modified drift still counted as preserved (feature 4.1).
   //
-  // Only the MODIFIED half is comparable: Dropbox exposes no creation time on file metadata, so
-  // there is no source created-date to compare and the validator must report that as not comparable
-  // rather than as a mismatch.
+  // BOTH halves are comparable now. Dropbox exposes no creation time on file metadata, which is why
+  // this once said only the modified half could be checked — but the oldest entry in
+  // `files/list_revisions` IS the file's creation time, and the validator already fetches that list
+  // for the 9.1 version count, so the created half is derived without an extra call. It is judged
+  // against the job flag that asked for it (`createdTimeForFiles`, from
+  // contentOptions.preserveCreatedTime): a run that never requested preservation gets an INFO,
+  // never a pass and never a mismatch.
   timestampDriftMs: 5 * 60 * 1000,
 
   // Google imposes NO total-path limit and no 255-char segment limit (a name may be 32,767 chars).

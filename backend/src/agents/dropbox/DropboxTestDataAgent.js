@@ -100,6 +100,26 @@ const VERSION_BODIES = [
 const SPECIAL_CHARS_NAME = 'Special ~!@#$%^&()_+[]{};,.= chars';
 
 /**
+ * Names holding characters the MICROSOFT destinations replace, one character per name.
+ *
+ * One per name rather than all in one: SharePoint replaces each with `_`, so a single name holding
+ * six of them arrives as `SP-invalid ______ chars.txt` and a reader cannot tell which character was
+ * handled. Separate names make each rule individually observable — and if Dropbox refuses one, the
+ * other five are still seeded.
+ *
+ * These are inert for a Google destination, which accepts all of them unchanged.
+ */
+const MS_INVALID_CHAR_NAMES = [
+  'MS-invalid star * name.txt',
+  'MS-invalid colon : name.txt',
+  'MS-invalid lt < name.txt',
+  'MS-invalid gt > name.txt',
+  'MS-invalid question ? name.txt',
+  'MS-invalid pipe | name.txt',
+  'MS-invalid quote " name.txt',
+];
+
+/**
  * Names that are reserved on Windows/SharePoint but ordinary on Google.
  *
  * `desktop.ini` is deliberately absent. Dropbox refuses it outright — `files/upload` returns
@@ -134,7 +154,22 @@ class DropboxTestDataAgent extends BaseAgent {
       );
     }
 
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    // `sourceFolderName` is the run wizard's "Source folder base name" field. It was not read here,
+    // so a run that named a folder still seeded into DROPBOX_TEST_ROOT and the wizard's own
+    // "This run will create …" line was wrong. Every other source honours it — Box and Drive both
+    // create the named folder — so Dropbox was the odd one out.
+    //
+    // It matters beyond the label. Seeding WIPES its root, and both Dropbox combinations share this
+    // agent: with the field ignored, a dropbox → sharepoint run destroys the tree a
+    // dropbox → googleshareddrive run depends on, and neither report says which run produced what.
+    // Naming a folder per combination is the fix, and this is what makes the field do it.
+    //
+    // Precedence keeps existing runs byte-identical: an explicit sourcePath still wins, and a BLANK
+    // field still falls through to DROPBOX_TEST_ROOT (/QA-Automation). Only a filled field changes
+    // anything, and only to what the label promises.
+    const root = dropboxClient.dbxPath(
+      context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
     if (!root) {
       throw new Error(
         'Refusing to seed at the Dropbox account root. Set DROPBOX_TEST_ROOT (or the run\'s source '
@@ -310,7 +345,18 @@ class DropboxTestDataAgent extends BaseAgent {
       || mapped[0]
       || '').toLowerCase();
     const external = (env.DROPBOX_TEST_EXTERNAL_USER || '').toLowerCase();
-    const group = env.DROPBOX_TEST_GROUP || '';
+    // Falls back to the plural list, exactly as `internal` does two lines above. Without it the two
+    // vars were asymmetric in a way that silently cost coverage: env.js already resolves
+    // DROPBOX_TEST_GROUPS from DROPBOX_TEST_GROUP, but not the reverse — so a .env setting only the
+    // PLURAL (which is what ours does) left this empty.
+    //
+    // That is not cosmetic. `grantees.group` is what _seedPermissionLadder grants with, so with it
+    // empty the ladder seeded NO group grant at any of the four positions — root folder, root file,
+    // sub-folder, inner file — while _seedPermissionMatrix, which reads `groupNames`, seeded them
+    // fine. Features 2.1–2.4 (4.1–4.4 on the SharePoint scope) therefore lost their group dimension
+    // at every position, and the run reported only "No DROPBOX_TEST_GROUP … will be SKIPPED",
+    // which reads like a configuration note rather than the coverage hole it was.
+    const group = env.DROPBOX_TEST_GROUP || env.DROPBOX_TEST_GROUPS[0] || '';
 
     if (!internal) {
       log.warn(
@@ -322,7 +368,10 @@ class DropboxTestDataAgent extends BaseAgent {
       log.warn('No DROPBOX_TEST_EXTERNAL_USER — external shares (scope 2.5) will be SKIPPED.');
     }
     if (!group) {
-      log.warn('No DROPBOX_TEST_GROUP — group grants (scope 2.1–2.4, 3,866 QA cases) will be SKIPPED.');
+      log.warn(
+        'No DROPBOX_TEST_GROUP or DROPBOX_TEST_GROUPS — group grants (scope 2.1–2.4, 3,866 QA cases) '
+        + 'will be SKIPPED. Set either to the display name of an existing Dropbox team group.'
+      );
     }
     // The singular keys are unchanged, so the positional ladder behaves exactly as before. The
     // plural sets are what the breadth matrix uses, and each falls back to the singular value — a
@@ -437,6 +486,42 @@ class DropboxTestDataAgent extends BaseAgent {
         const sharedFolderId = await dropboxClient.shareFolder(item.path, opts);
         if (!sharedFolderId) throw new Error('folder could not be shared');
         await dropboxClient.addFolderMember(sharedFolderId, member, role, opts);
+
+        // Verify the role actually landed. A nested shared folder created inside an already-shared
+        // parent starts with the PARENT's current membership copied in (measured directly: a fresh
+        // Sub-Level-1 came back with the root's ben=editor already present before this method ever
+        // ran), and `add_folder_member` on an existing member only ever RAISES their role — asking
+        // it to lower one is a silent no-op, no error, member unchanged.
+        const after = await dropboxClient.listFolderMembers(sharedFolderId, opts);
+        const who = member.groupId
+          ? after.find((m) => m.groupId === member.groupId)
+          : after.find((m) => m.email === String(member.email || '').toLowerCase());
+        if (who && who.role !== role) {
+          const updateRes = await dropboxClient.updateFolderMember(sharedFolderId, member, role, opts);
+          const achieved = updateRes?.access_level?.['.tag'] || null;
+          if (achieved !== role) {
+            // Dropbox itself refuses this, and says exactly why: permissions are additive up the
+            // folder tree, so nobody can be granted LESS at a sub-folder than they already hold at
+            // an ancestor. Confirmed verbatim on 2026-09-11 —
+            //   update_folder_member on ben@filefuze.co (root editor) → Sub-Level-1 "viewer" returned
+            //   { access_level: "editor", warning: "Ben B can still edit this folder as a member of
+            //   a higher-level folder." }
+            // This is a platform rule, not a bug: reported as NOT SEEDED rather than counted as a
+            // grant that never actually took effect, the same way the other three Dropbox sharing
+            // limits below are (file-editor, outside-team, automatic-group).
+            report.notSeeded.push({
+              feature: label,
+              reason: `Dropbox will not grant "${role}" here — ${member.email || member.displayName} `
+                + `already has "${achieved}" via a higher-level folder, and Dropbox's own API refuses `
+                + 'to narrow access below an ancestor grant for the same principal '
+                + `(sharing/update_folder_member: "${updateRes?.warning || 'no warning text returned'}"). `
+                + 'Use a principal with no grant on any ancestor folder to exercise a genuinely '
+                + 'narrower role at this position.',
+              manualSteps: [],
+            });
+            return false;
+          }
+        }
       } else {
         await dropboxClient.addFileMember(item.id || item.path, member, role, opts);
       }
@@ -456,12 +541,20 @@ class DropboxTestDataAgent extends BaseAgent {
       const summary = String(err.dropboxSummary || err.message || '');
       const fileEditorBlocked = /no_permission/.test(summary) && item.type !== 'folder' && role === 'editor';
       const outsideTeamBlocked = /cant_share_outside_team/.test(summary);
+      // An EXTERNAL grant on a FILE is refused as member_error/no_permission, at BOTH roles — not
+      // as cant_share_outside_team, which is what the folder call returns. Measured directly:
+      // sharing/add_file_member answered HTTP 200 with that member_error in the body, so until the
+      // client learned to read per-member results this refusal was invisible and scope 2.5 reported
+      // "no grant found" instead of "Dropbox refused". Classified with the other documented account
+      // limits rather than as a run error.
+      const externalBlocked = /external/i.test(String(label || ''))
+        && /no_permission|cant_share_outside_team/.test(summary);
       // Dropbox refuses to add an AUTOMATIC group (the team-wide "Everyone at <team>") as a folder
       // member: sharing/add_folder_member returns bad_member/automatic_group. That is a platform
       // rule, not a defect and not a configuration mistake, so it belongs with the other documented
       // limitations rather than in report.errors where it made a healthy run look broken.
       const automaticGroupBlocked = /automatic_group/.test(summary);
-      if (fileEditorBlocked || outsideTeamBlocked || automaticGroupBlocked) {
+      if (fileEditorBlocked || outsideTeamBlocked || automaticGroupBlocked || externalBlocked) {
         report.notSeeded.push({
           feature: label,
           reason: automaticGroupBlocked
@@ -476,18 +569,23 @@ class DropboxTestDataAgent extends BaseAgent {
               + '(sharing/add_file_member → access_error/no_permission), while viewer on the same '
               + 'file and editor on a folder both succeed. A source-account limit, not a migration '
               + 'defect — the editing half of this position cannot be exercised here.'
-            : 'Dropbox returned cant_share_outside_team for this grant, and the two obvious causes '
-              + 'are both ruled out. It is NOT the team-wide admin toggle — checked 03-Sep-2026, '
-              + 'external sharing is fully enabled ("External sharing: Email and link") — and the '
-              + 'shared folder itself reports member_policy "anyone". It is also NOT the invitee '
-              + 'belonging to another managed Dropbox team, which was the standing theory while '
-              + 'DROPBOX_TEST_EXTERNAL_USER pointed at a cloudfuze.com address: run 65439ee5 used a '
-              + 'plain Gmail address and Dropbox refused it identically, on a folder, at both viewer '
-              + 'and editor. So scope 2.5 is currently untestable for a reason we have not yet '
-              + 'identified. Untried next steps, cheapest first: a Gmail address WITHOUT a "+" alias '
-              + '(Dropbox may reject sub-addressing on an invite), an address that already has its '
-              + 'own personal Dropbox account, and the admin console\'s per-member sharing '
-              + 'permissions rather than the team-wide toggle.',
+            : 'Dropbox refuses every external grant from this account, and the cause is now narrowed '
+              + 'to a PER-MEMBER sharing permission rather than anything about the invitee or the '
+              + 'folder. Measured directly against the QA account:\n'
+              + '  - FOLDER invite -> HTTP error cant_share_outside_team\n'
+              + '  - FILE invite   -> HTTP 200 with member_error/no_permission in the body, at BOTH '
+              + 'viewer and editor\n'
+              + 'Ruled out by test, not by assumption: the "+" sub-address alias is irrelevant '
+              + '(srinidhperla2004+dbxqa@gmail.com and srinidhperla2004@gmail.com are refused '
+              + 'identically); the team space is irrelevant (a folder in the member\'s PERSONAL '
+              + 'namespace is refused the same way); and the team-wide toggle is enabled ("External '
+              + 'sharing: Email and link", checked 03-Sep-2026) with the shared folder reporting '
+              + 'member_policy "anyone". An INTERNAL grant on the same file in the same call '
+              + 'succeeds and reads back, so the code path is sound.\n'
+              + 'What remains: the Dropbox admin console\'s per-member or group sharing permission '
+              + 'for this member (erik@filefuze.co) — the one control not yet inspected. Scope 2.5 '
+              + 'stays unexercised until an admin changes it; it is a source-account limit, not a '
+              + 'migration defect.',
           manualSteps: [],
         });
         logger.warn(`[dropbox-seed] ${label} unavailable on this account — reported as not seeded`);
@@ -798,10 +896,37 @@ class DropboxTestDataAgent extends BaseAgent {
       await this._put(path, `${SAMPLE_TXT}Link audience: ${t.audience}, access: ${t.access}\n`, opts, report);
       try {
         const link = await dropboxClient.createSharedLink(path, { ...opts, audience: t.audience, access: t.access });
-        if (link) {
-          report.created.links += 1;
-          report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
+        if (!link) continue;
+
+        // Verify what Dropbox ACTUALLY granted, not just that the call didn't throw. Measured
+        // directly on this account: a team/editor request returns HTTP 200 with no error at all,
+        // and its own resolved_visibility comes back "public" — Dropbox silently WIDENED the
+        // audience instead of rejecting the combination. A public, EDITABLE link sitting in seeded
+        // test data is a real exposure, not a cosmetic mismatch, so this is revoked immediately
+        // rather than left in place and reported as a pass.
+        const expectedType = t.audience === 'team' ? 'team_only' : 'public';
+        if (link.type && link.type !== expectedType) {
+          await dropboxClient.revokeSharedLink(link.url, opts).catch((revokeErr) => {
+            log.warn(`Could not revoke the mis-scoped link at ${path} `
+              + `(resolved "${link.type}" instead of "${expectedType}"): ${revokeErr.message} — `
+              + 'a wrongly-scoped link may still be live, check it manually');
+          });
+          report.notSeeded.push({
+            feature: `shared link ${t.audience}/${t.access} (scope ${t.scope})`,
+            reason: `Dropbox accepted the request but resolved it to "${link.type}" instead of the `
+              + `requested "${expectedType}" — this account silently widens a ${t.audience}/${t.access} `
+              + `link's audience rather than rejecting it. Revoked rather than left in place; this `
+              + 'access level cannot be exercised from this source account, so it must not be '
+              + 'reported as a pass.',
+            manualSteps: [],
+          });
+          log.warn(`Shared link ${t.audience}/${t.access} resolved to "${link.type}" instead of `
+            + `"${expectedType}" — revoked, reported as not seeded`);
+          continue;
         }
+
+        report.created.links += 1;
+        report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
       } catch (err) {
         // `settings_error/invalid_settings` on an EDITOR link is the account refusing edit links at
         // all, not a bad request: measured on this team, viewer links succeed on both files and
@@ -875,6 +1000,42 @@ class DropboxTestDataAgent extends BaseAgent {
     for (const name of RESERVED_STYLE_NAMES) {
       await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Reserved-on-Windows name: ${name}\n`, opts, report);
     }
+
+    // Names carrying characters the MICROSOFT destinations actually reject.
+    //
+    // SPECIAL_CHARS_NAME above is `~!@#$%^&()_+[]{};,.=` — every one of which SharePoint and
+    // OneDrive accept unchanged. So on a Microsoft destination feature 7.1 (Special Character
+    // Replacement) had nothing to exercise and reported "not assessed" on every run, while reading
+    // like coverage. The Microsoft invalid set is `" * : < > ? / \ |`.
+    //
+    // `/` and `\` are omitted deliberately: Dropbox uses them as path separators and cannot hold
+    // them in a name, so they are documented below rather than attempted. Each name is seeded
+    // individually — Dropbox rejects some of these on some accounts, and one refusal must not take
+    // the rest of the row with it.
+    //
+    // Harmless to the Google combinations that share this agent: Google accepts these characters,
+    // so the files simply arrive unchanged, which is exactly what the Google scope document says
+    // feature 5.1 should observe.
+    for (const name of MS_INVALID_CHAR_NAMES) {
+      try {
+        await this._put(`${dir}/${name}`, `${SAMPLE_TXT}Destination-invalid characters: ${name}\n`,
+          opts, report);
+      } catch (err) {
+        report.notSeeded.push({
+          feature: `destination-invalid characters "${name}" (scope 7.1)`,
+          reason: `Dropbox refused this name (${err.message}), so the replacement rule cannot be `
+            + 'exercised with it. A limit of the source cloud, not missing coverage.',
+          manualSteps: [],
+        });
+        log.warn(`Special-character name "${name}" refused by Dropbox — reported as not seeded`);
+      }
+    }
+    report.notSeeded.push({
+      feature: 'names containing "/" or "\\" (scope 7.1, edge)',
+      reason: 'Dropbox uses both as path separators and cannot store either inside a name, so the '
+        + 'destination\'s replacement of them cannot be exercised from a Dropbox source.',
+      manualSteps: [],
+    });
     // Trailing dot/space are the two Dropbox itself rejects, so they are documented, not attempted.
     report.notSeeded.push({
       feature: 'trailing dot / trailing space names (scope 5.1, edge)',
@@ -940,6 +1101,26 @@ class DropboxTestDataAgent extends BaseAgent {
    * an in-scope link cannot distinguish "transformed correctly" from "transformed everything".
    *
    * The out-of-scope target is seeded OUTSIDE the seeding root deliberately.
+   *
+   * TWO documents are written, and only ONE of them is a fair test.
+   *
+   *   embedded_link_doc.docx        — a real Word document carrying real hyperlink relationships.
+   *                                   This is what feature 8.1 is judged on.
+   *   document-with-embedded-links.html — the same two links as plain <a href> in HTML. Kept as a
+   *                                   deliberate CONTRAST case, reported and never judged.
+   *
+   * The .docx exists because the .html cannot fail honestly. Scope 8.1 limits link rewriting to
+   * "supported file types where link rewriting is technically feasible", and plain HTML is not one
+   * of them — DriveTestDataAgent._createEmbeddedLinks makes exactly this point for the Drive pair:
+   * "A real .docx with a real hyperlink is used, not a .txt with a URL in it ... failing on it
+   * would report a defect against behaviour that was never promised." The live destination proves
+   * CloudFuze agrees: its own Erik E-EmbeddedLinks.csv carried 12 rows, every one a Paper document
+   * and not one for the .html, so the document it was failing on was never processed at all.
+   *
+   * The shared links are created FIRST, above, so the .docx embeds the real Dropbox URLs. If the
+   * in-scope link could not be created the .docx is SKIPPED and the reason recorded, rather than
+   * embedding a placeholder: a fabricated target can never be rewritten, so 8.1 would fail forever
+   * on data that was never valid — unfalsifiable, which is the bug this seeding fixes.
    */
   async _seedEmbeddedLinks(root, opts, log, report) {
     const dir = `${root}/09-Embedded-Links`;
@@ -974,9 +1155,210 @@ class DropboxTestDataAgent extends BaseAgent {
 <p>Out of scope: <a href="${outOfScopeUrl || 'https://www.dropbox.com/OUT_OF_SCOPE_LINK_UNAVAILABLE'}">out-of-scope target</a></p>
 </body></html>
 `;
-    await this._put(`${dir}/document-with-embedded-links.html`, body, opts, report);
-    report.embeddedLinks = { inScopeUrl, outOfScopeUrl };
-    log.info('Seeded embedded-link document');
+    const htmlPath = `${dir}/document-with-embedded-links.html`;
+    await this._put(htmlPath, body, opts, report);
+
+    // ── The judged artefact: a real .docx with real hyperlink relationships ──────────────
+    //
+    // Built with `docx` (already a dependency, used the same way by DriveTestDataAgent), so the
+    // links live in word/_rels/document.xml.rels as TargetMode="External" relationships — the
+    // thing a migration actually rewrites, and the thing utils/docxLinks reads back.
+    //
+    // The URLs are deliberately NOT printed as body text. Google auto-links a bare URL when it
+    // converts a document, which would add a second anchor carrying the SOURCE address as its own
+    // label and fail 8.1 on a document whose real hyperlink was rewritten correctly. That is the
+    // false-failure trap the Drive→SharePoint document is seeded to catch, and it is not repeated.
+    const docxPath = `${dir}/embedded_link_doc.docx`;
+    let docxSeeded = false;
+    let docxSkippedReason = null;
+    if (inScopeUrl === '') {
+      docxSkippedReason = 'the Dropbox shared link for the in-scope target could not be created, '
+        + 'so the document would have had to embed a placeholder URL. A target that cannot be '
+        + 'rewritten would make feature 8.1 unfalsifiable, so the .docx was skipped instead';
+      report.skipped.push({ step: 'embedded link (.docx)', reason: docxSkippedReason });
+      log.warn(`Skipped embedded_link_doc.docx: ${docxSkippedReason}`);
+    } else {
+      try {
+        const { Document, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
+        const children = [
+          new Paragraph({
+            children: [new TextRun('Embedded link test document (scope 8.1 / 10.8).')],
+          }),
+          new Paragraph({ children: [new TextRun('')] }),
+          new Paragraph({
+            children: [
+              new TextRun('Open the in-scope target here: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'in-scope target', style: 'Hyperlink' })],
+                link: inScopeUrl,
+              }),
+            ],
+          }),
+        ];
+        if (outOfScopeUrl !== '') {
+          children.push(new Paragraph({ children: [new TextRun('')] }));
+          children.push(new Paragraph({
+            children: [
+              new TextRun('And the out-of-scope target here: '),
+              new ExternalHyperlink({
+                children: [new TextRun({ text: 'out-of-scope target', style: 'Hyperlink' })],
+                link: outOfScopeUrl,
+              }),
+            ],
+          }));
+        }
+        const buffer = await Packer.toBuffer(new Document({ sections: [{ children }] }));
+        await this._put(docxPath, buffer, opts, report);
+        docxSeeded = true;
+      } catch (err) {
+        docxSkippedReason = `building or uploading the .docx failed: ${err.message}`;
+        report.errors.push({ step: 'embedded link (.docx)', error: err.message });
+      }
+    }
+
+    // Both documents are named, so the report can tell a reader exactly which file to open and
+    // which one carries no verdict — the generic "check an embedded link" instruction nobody can
+    // act on is what left this row unverified for so long.
+    // ── One document per FORMAT, each pointing at its OWN target ─────────────────────────
+    //
+    // Scope 8.1 says nothing about file types, and resting the whole feature on a single .docx
+    // meant a product that rewrites Word documents but not spreadsheets would have passed. So a
+    // .xlsx, a .pdf and a .txt are seeded beside it.
+    //
+    // Each gets a DIFFERENT target file, deliberately. Sharing one target would let a single
+    // rewrite satisfy every format at once — the "one piece of evidence answering several
+    // features" defect — and would make it impossible to say WHICH format was left alone.
+    const formats = await this._seedEmbeddedLinkFormats(dir, opts, log, report);
+
+    report.embeddedLinks = {
+      inScopeUrl,
+      outOfScopeUrl,
+      judgedDocument: docxSeeded ? docxPath : null,
+      judgedDocumentName: 'embedded_link_doc.docx',
+      docxSeeded,
+      docxSkippedReason,
+      contrastDocument: htmlPath,
+      contrastDocumentName: 'document-with-embedded-links.html',
+      contrastNote: 'Plain HTML is not a supported link-rewrite target under scope 8.1, so this '
+        + 'document is reported and never judged.',
+      formats,
+    };
+    const wrote = formats.filter((f) => f.seeded).map((f) => `.${f.format}`).join(', ');
+    log.info(
+      `Seeded embedded-link documents (.docx ${docxSeeded ? 'written' : 'SKIPPED'}, .html written`
+      + `${wrote ? `, ${wrote} written` : ''})`
+    );
+  }
+
+  /**
+   * A .xlsx, a .pdf and a .txt, each carrying a hyperlink to its OWN in-scope target.
+   *
+   * Returns one row per format describing what was seeded, so the validator can judge each
+   * separately and name the ones it could not exercise.
+   *
+   * The .txt is seeded but marked `judgeable: false`. A plain text file cannot hold a hyperlink —
+   * only characters that look like one — so a migration leaving it untouched is not misbehaving,
+   * and failing it would report a defect against behaviour nobody promised. It is there to show
+   * what happens, which is a different and still useful thing.
+   *
+   * Every format is independent: a failure building one is recorded against that format alone and
+   * never stops the others, because losing all of 8.1 to one bad dependency is exactly the
+   * all-or-nothing trap the Paper seeding already had to be rescued from.
+   */
+  async _seedEmbeddedLinkFormats(dir, opts, log, report) {
+    const specs = [
+      { format: 'xlsx', judgeable: true, target: 'link-target-for-xlsx.txt', doc: 'embedded_link_doc.xlsx' },
+      { format: 'pdf', judgeable: true, target: 'link-target-for-pdf.txt', doc: 'embedded_link_doc.pdf' },
+      { format: 'txt', judgeable: false, target: 'link-target-for-txt.txt', doc: 'embedded_link_doc.txt' },
+    ];
+    const rows = [];
+
+    for (const spec of specs) {
+      const row = { format: spec.format, judgeable: spec.judgeable, seeded: false, reason: null };
+      try {
+        const targetPath = `${dir}/${spec.target}`;
+        await this._put(targetPath,
+          `${SAMPLE_TXT}I am the in-scope link target for the .${spec.format} document.\n`,
+          opts, report);
+
+        const link = await dropboxClient.createSharedLink(targetPath,
+          { ...opts, audience: 'public', access: 'viewer' });
+        const url = (link && link.url) || '';
+        if (!url) {
+          // Same rule as the .docx: a document embedding a placeholder URL makes 8.1
+          // unfalsifiable, so it is skipped rather than seeded with something unrewritable.
+          row.reason = 'the Dropbox shared link for this format\'s target could not be created, so '
+            + 'the document would have had to embed a placeholder URL — skipped rather than make '
+            + 'the feature unfalsifiable';
+          report.skipped.push({ step: `embedded link (.${spec.format})`, reason: row.reason });
+          rows.push(row);
+          continue;
+        }
+        row.targetPath = targetPath;
+        row.url = url;
+
+        const docPath = `${dir}/${spec.doc}`;
+        const buffer = await this._buildEmbeddedLinkFile(spec.format, url);
+        await this._put(docPath, buffer, opts, report);
+        row.documentPath = docPath;
+        row.documentName = spec.doc;
+        row.seeded = true;
+      } catch (err) {
+        row.reason = `building or uploading the .${spec.format} failed: ${err.message}`;
+        report.errors.push({ step: `embedded link (.${spec.format})`, error: err.message });
+        log.warn(`Embedded-link .${spec.format} not seeded: ${err.message}`);
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * Build one embedded-link document.
+   *
+   * The URL is never written as visible body text in the Office and PDF cases. A converter that
+   * auto-links a bare URL would add a second anchor carrying the SOURCE address as its own label,
+   * and 8.1 would fail on a document whose real hyperlink had been rewritten correctly — the same
+   * false-failure trap the .docx is deliberately built to avoid.
+   */
+  async _buildEmbeddedLinkFile(format, url) {
+    if (format === 'xlsx') {
+      // exceljs is already a dependency (report generation uses it). A cell hyperlink lands in
+      // xl/worksheets/_rels/sheet1.xml.rels as TargetMode="External" — the same relationship shape
+      // a .docx uses, which is why one reader can serve both.
+      const ExcelJS = require('exceljs');
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('EmbeddedLinks');
+      ws.getCell('A1').value = 'Embedded link test workbook (scope 8.1 / 10.8).';
+      ws.getCell('A3').value = { text: 'in-scope target', hyperlink: url };
+      return Buffer.from(await wb.xlsx.writeBuffer());
+    }
+    if (format === 'pdf') {
+      // pdfkit is already a dependency (utils/pdfGenerator). `link()` writes a real /URI link
+      // annotation, which is what a migration would have to rewrite.
+      const PDFDocument = require('pdfkit');
+      return await new Promise((resolve, reject) => {
+        const doc = new PDFDocument({ margin: 50 });
+        const chunks = [];
+        doc.on('data', (c) => chunks.push(c));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+        doc.fontSize(12).text('Embedded link test document (scope 8.1 / 10.8).');
+        doc.moveDown();
+        const label = 'in-scope target';
+        const x = doc.x; const y = doc.y;
+        doc.fillColor('blue').text(label, { underline: true });
+        doc.link(x, y, doc.widthOfString(label), doc.currentLineHeight(), url);
+        doc.end();
+      });
+    }
+    // Plain text: the URL as characters, which is all a .txt can carry.
+    return Buffer.from(
+      'Embedded link test file (scope 8.1 / 10.8).\n\n'
+      + 'A .txt cannot hold a hyperlink, only text that looks like one. This file is seeded to\n'
+      + 'show what the migration does with it, and is reported rather than judged.\n\n'
+      + `In-scope target: ${url}\n`
+    );
   }
 
   /**
@@ -1030,7 +1412,7 @@ class DropboxTestDataAgent extends BaseAgent {
    * The 62/63/64-column tables are the boundary the scope document names, so they are generated
    * rather than hand-written — three tables nobody would type correctly by hand.
    */
-  _paperMarkdown() {
+  _paperMarkdown(root = '/QA-Automation') {
     const table = (cols) => {
       const head = Array.from({ length: cols }, (_, i) => `c${i + 1}`);
       return [
@@ -1049,7 +1431,14 @@ class DropboxTestDataAgent extends BaseAgent {
       '## 10.7 Links', '',
       'An external [hyperlink to the spec](https://example.invalid/spec) in a sentence.', '',
       '## 10.8 Dropbox file links', '',
-      'A [link to an in-scope file](https://www.dropbox.com/home/QA-Automation/03-File-Formats)',
+      // The in-scope target must live inside THIS RUN's root, or it is not in scope at all.
+      //
+      // This was hardcoded to `/QA-Automation`, which is correct only when that happens to be the
+      // seeded root. Seeding into `/QA-dropbox-sharepoint` left the "in-scope" link pointing at a
+      // folder outside the migration, so CloudFuze could not rewrite it — and its own
+      // Erik E-EmbeddedLinks.csv said so plainly, "Parent File/Link Doesn't found", for both links.
+      // Validation then reported that as a product defect in feature 9.1/11.8. It was ours.
+      `A [link to an in-scope file](https://www.dropbox.com/home${root}/03-File-Formats)`,
       'and a [link to an out-of-scope file](https://www.dropbox.com/home/Elsewhere/other.txt).', '',
       '## 10.9 Tables — the 62 / 63 / 64 column boundary', '',
       table(62), '',
@@ -1084,7 +1473,43 @@ class DropboxTestDataAgent extends BaseAgent {
       'Emoji line: 🎉 🚀 👍 — and page #4, 2 + 3 = 5, item 7* which are NOT emojis.', '',
       '## 10.3 Inserted image', '',
       '![a referenced image](https://www.gstatic.com/webp/gallery/1.jpg)', '',
+      // The GIF for 10.6 is deliberately NOT here — it lives in its own document, see
+      // _paperGifMarkdown. Google exports every image as a bare <img> with an empty alt, so two
+      // images in ONE document cannot be told apart and 10.3 and 10.6 would have to share a single
+      // count. One image per document makes each count attributable to exactly one feature.
       'End of document.', '',
+    ].join('\n');
+  }
+
+  /**
+   * A Paper document holding ONE animated GIF and nothing else — feature 10.6.
+   *
+   * Separate from the main document on purpose. Google's HTML export gives every image a bare
+   * <img> with an empty alt, so two images in one document are indistinguishable and 10.3 and 10.6
+   * would have to share one count — the "one piece of evidence answering several features" defect
+   * that testImageOriginIsNotGuessed exists to block. One image per document makes each count
+   * belong to exactly one feature.
+   *
+   * A GIF IS seedable: verified by creating a throwaway Paper doc and exporting it back, where the
+   * animated GIF survived the import as an image exactly like a JPEG. Scope 10.6 records GIFs as
+   * NOT migrating properly, so seeding one is what makes that claim checkable rather than assumed.
+   */
+  _paperGifMarkdown() {
+    return [
+      '# QA Paper — GIF only (feature 10.6)',
+      '',
+      'Seeded by DropboxTestDataAgent. This document holds exactly ONE image, an animated GIF, so',
+      'the destination image count belongs to feature 10.6 alone. Do not add another image here.',
+      '',
+      '![an animated gif](https://upload.wikimedia.org/wikipedia/commons/2/2c/Rotating_earth_%28large%29.gif)',
+      '',
+      // A second, non-image element on purpose. Without it, a document holding ONLY the GIF would
+      // count as "empty at the destination" the moment the GIF is dropped — and the empty-document
+      // rule hands that to 10.1 by name and excludes the document from every construct feature, so
+      // 10.6 would report "not compared" exactly when it had something to say. One link keeps the
+      // document non-empty, letting a lost GIF fail 10.6 on its own evidence.
+      'A [reference link](https://example.invalid/gif-spec) so this document is not image-only.',
+      '',
     ].join('\n');
   }
 
@@ -1151,7 +1576,42 @@ class DropboxTestDataAgent extends BaseAgent {
     }
 
     try {
-      const made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(), opts);
+      // Retry, because `files/paper/create` fails transiently and each failure costs the whole of
+      // §11 — nineteen of this combination's thirty-six features — for that run.
+      //
+      // Three different transient errors were observed on 2026-09-09/10 alone, all on the same
+      // account within hours: `insufficient_permissions` (409), a bare 409, and
+      // `Invalid arguments supplied` (400). Each succeeded on a plain retry minutes later, and on
+      // 10 Sep the SAME seeding pass failed on /QA-dropbox-sharepoint and succeeded on
+      // /QA-Automation moments apart. Dropbox retired the Paper authoring API, so this endpoint is
+      // not going to get more reliable.
+      //
+      // A fresh path per attempt: the note above records that reusing a path that has held a Paper
+      // doc produces an EMPTY document at the destination, so a retry must not reuse the one that
+      // just failed.
+      // Create ONCE, then verify — never retry. `files/paper/create` is not idempotent (every POST
+      // makes a document) and it reports failure while succeeding: on run f95a9bb8 all three
+      // attempts threw HTTP 400 and all three documents existed afterwards. So look before
+      // believing the error, and delete any duplicate the client's own retryWithBackoff produced.
+      let made = null;
+      try {
+        made = await dropboxClient.createPaperDoc(path, this._paperMarkdown(root), opts);
+      } catch (err) {
+        const found = (await dropboxClient.listFolder(dir, opts).catch(() => []))
+          .filter((x) => /^qa-paper-.*\.papert?$/i.test(String(x.name || '')));
+        if (found.length === 0) throw err;
+        // Keep the first and remove any extras the client's own retry produced, or the §11 counts
+        // are summed across duplicates.
+        found.sort((x, y) => String(x.name).localeCompare(String(y.name)));
+        for (const dup of found.slice(1)) {
+          await dropboxClient.deletePath(dup.path || `${dir}/${dup.name}`, opts).catch(() => {});
+          log.warn(`Removed duplicate Paper document created by the retry: ${dup.name}`);
+        }
+        made = { path: found[0].path || `${dir}/${found[0].name}`, revision: null };
+        log.warn(`files/paper/create reported "${err.message}" but the document exists at `
+          + `${made.path} — treating as created. This endpoint is retired by Dropbox and reports `
+          + 'failure while succeeding.');
+      }
       if (made.path !== path) {
         // Dropbox still renamed it, so the delete did not take effect — say so rather than let the
         // report compare a document under a name it did not expect.
@@ -1180,13 +1640,70 @@ class DropboxTestDataAgent extends BaseAgent {
         const kept = {
           tables: (back.match(/^[^\S\n]*\|?[^\S\n]*:?-+:?[^\S\n]*(\|[^\S\n]*:?-+:?[^\S\n]*)+\|?[^\S\n]*$/gm) || []).length,
           codeFences: (back.match(/```/g) || []).length,
+          // Paper does NOT keep the ``` it was given — it rewrites the block as 4-space indented
+          // lines. Measured on the real export of qa-paper-full-20260910070125.paper: 0 fences and
+          // 2 indented code lines, for a document seeded with one fenced block. Logging only the
+          // fence count said "0 code fence(s) survived" about a code block that survived fine.
+          codeLines: (back.match(/^ {4}\S.*$/gm) || []).length,
+          // Paper also drops the leading `- ` from a `- [x]` item, exporting it as `[x] text`.
+          // Counted here so the seeding log shows the to-do items really are in the document.
+          todo: (back.match(/^[^\S\n]*(?:[-*+][^\S\n]+)?\[[ xX]\](?=\s)/gm) || []).length,
           links: (back.match(/\[[^\]]*\]\([^)]*\)/g) || []).length,
         };
         // Fences reported as a raw count, not divided into "blocks": Paper may export a code block
         // without fences at all, and halving an odd number would invent a fraction of a block.
-        log.info(`Paper round trip: ${kept.tables} table(s), ${kept.codeFences} code fence(s), `
-          + `${kept.links} link(s) survived the import`);
+        log.info(`Paper round trip: ${kept.tables} table(s), ${kept.codeLines} code line(s) `
+          + `(${kept.codeFences} fence marker(s) — Paper converts fences to indentation), `
+          + `${kept.todo} TO-DO item(s), ${kept.links} link(s) survived the import`);
         report.paperSeeded = { path: made.path, revision: made.revision, kept };
+
+        // An EMPTY document is worse than no document, and the recovery above could produce one.
+        //
+        // On run 30e0806d files/paper/create threw, the catch found a file at the path, and the
+        // document was treated as created — but it was a 0-byte shell. The round trip then read
+        // "0 table(s), 0 code line(s), 0 TO-DO item(s), 0 link(s)" for a document seeded with three
+        // tables, a code block, two to-do items and three links, and every §10 construct feature
+        // was excluded from the run as "empty at the destination".
+        //
+        // So existence is not the test — CONTENT is. When the export comes back with nothing, the
+        // shell is deleted and the document is created once more at a fresh path. Fresh, because
+        // the measured rule still holds: a path that has held a Paper document produces an empty
+        // one when reused.
+        const survived = kept.tables + kept.codeLines + kept.todo + kept.links;
+        if (survived === 0) {
+          log.warn(`The Paper document at ${made.path} came back EMPTY on export — files/paper/create `
+            + 'left a shell rather than a document. Deleting it and creating the document once more '
+            + 'at a fresh path.');
+          await dropboxClient.deletePath(made.path, opts).catch((delErr) =>
+            log.warn(`Could not delete the empty Paper shell: ${delErr.message}`));
+          const retryPath = `${dir}/qa-paper-full-${stamp}-r2.paper`;
+          try {
+            const again = await dropboxClient.createPaperDoc(retryPath, this._paperMarkdown(root), opts);
+            const back2 = (await dropboxClient.exportPaper(again.path, 'markdown', opts)).toString('utf8');
+            const ok = /\S/.test(back2) && back2.length > 200;
+            log.info(`Second attempt at ${again.path}: ${back2.length} byte(s) exported back`);
+            if (ok) {
+              report.paperSeeded = { path: again.path, revision: again.revision, retried: true };
+            } else {
+              report.notSeeded.push({
+                feature: 'Dropbox Paper document content (scope 10.2-10.19)',
+                reason: 'files/paper/create produced an EMPTY document twice, so the Paper content '
+                  + 'features cannot be exercised this run. The document exists but holds nothing; '
+                  + 'this is a Dropbox endpoint failure, not a migration result.',
+                manualSteps: [],
+              });
+              log.warn('Second attempt was also empty — Paper content features are not exercised.');
+            }
+          } catch (retryErr) {
+            report.notSeeded.push({
+              feature: 'Dropbox Paper document content (scope 10.2-10.19)',
+              reason: `The first Paper document came back empty and the retry failed: `
+                + `${retryErr.message}. Paper content features are not exercised this run.`,
+              manualSteps: [],
+            });
+            log.warn(`Retry of the Paper document failed: ${retryErr.message}`);
+          }
+        }
       } catch (exportErr) {
         log.warn(`Paper created but could not be exported back (${exportErr.message}) — content `
           + 'was not verified, so the destination comparison may measure something unexpected');
@@ -1195,6 +1712,43 @@ class DropboxTestDataAgent extends BaseAgent {
       report.errors.push({ step: 'Dropbox Paper document', error: err.message });
       log.warn(`Could not seed the Paper document: ${err.message}`);
       return;
+    }
+
+    // The GIF document — feature 10.6. Created SECOND and in its own try/catch, so a transient
+    // files/paper/create failure (this endpoint is retired and fails intermittently — three
+    // different errors were seen on one account in a day) costs 10.6 alone instead of taking the
+    // other eighteen §10 features with it.
+    try {
+      const gifPath = `${dir}/qa-paper-gif-${stamp}.paper`;
+      let gif;
+      try {
+        gif = await dropboxClient.createPaperDoc(gifPath, this._paperGifMarkdown(), opts);
+      } catch (gifErr) {
+        // Same "reports failure while succeeding" behaviour as the main document — look before
+        // believing the error, or the retry leaves a duplicate that doubles the 10.6 image count.
+        const found = (await dropboxClient.listFolder(dir, opts).catch(() => []))
+          .filter((x) => /^qa-paper-gif-.*\.papert?$/i.test(String(x.name || '')));
+        if (found.length === 0) throw gifErr;
+        found.sort((x, y) => String(x.name).localeCompare(String(y.name)));
+        for (const dup of found.slice(1)) {
+          await dropboxClient.deletePath(dup.path || `${dir}/${dup.name}`, opts).catch(() => {});
+          log.warn(`Removed duplicate GIF Paper document created by the retry: ${dup.name}`);
+        }
+        gif = { path: found[0].path || `${dir}/${found[0].name}`, revision: null };
+        log.warn(`files/paper/create reported "${gifErr.message}" but the GIF document exists at `
+          + `${gif.path} — treating as created.`);
+      }
+      report.created.files += 1;
+      log.info(`Seeded the GIF-only Paper document for feature 10.6 at ${gif.path}`);
+    } catch (gifErr) {
+      report.notSeeded.push({
+        feature: 'Dropbox Paper GIF document (scope 10.6)',
+        reason: `files/paper/create failed for the GIF-only document: ${gifErr.message}. Feature `
+          + '10.6 is therefore not exercised this run; every other §10 feature is unaffected '
+          + 'because the main document was created separately and succeeded.',
+        manualSteps: [],
+      });
+      log.warn(`Could not seed the GIF Paper document (10.6 not exercised): ${gifErr.message}`);
     }
 
     // Only the genuinely UI-only elements remain manual.
@@ -1271,7 +1825,9 @@ class DropboxTestDataAgent extends BaseAgent {
    */
   async applyDeltaChanges(context) {
     const log = logger.child({ agent: this.name, executionId: context.executionId });
-    const root = dropboxClient.dbxPath(context.sourcePath || env.DROPBOX_TEST_ROOT);
+    const root = dropboxClient.dbxPath(
+      context.sourcePath || context.sourceFolderName || env.DROPBOX_TEST_ROOT
+    );
     const asMemberId = await this._resolveMemberContext(context, log);
     const opts = { asMemberId };
     const changes = { renamed: [], added: [], updated: [], moved: [], unchanged: [], errors: [] };

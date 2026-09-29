@@ -30,6 +30,14 @@ export function runAgents(payload) {
   return api.post('/agents/run', payload);
 }
 
+/**
+ * Registered (domain, source, destination) combinations and whether each can seed its own test
+ * data. The wizard uses `seedsTestData` to warn before a run that would have nothing to migrate.
+ */
+export function getCombinations() {
+  return api.get('/agents/combinations');
+}
+
 export function getExecutions() {
   return api.get('/agents/executions');
 }
@@ -271,6 +279,21 @@ export function getDropboxOAuthUrl(source) {
 
 export function signOutDropbox(email) {
   return api.post('/auth/dropbox/signout', { email });
+}
+
+// Citrix ShareFile — provider key `sharefile` (the label stays "Citrix ShareFile"). Same
+// popup OAuth shape as Box/Dropbox. Until the ShareFile OAuth app is configured the URL
+// route answers 400 with a flat { error } naming the missing setting; callers must show
+// that string as-is rather than a generic failure.
+export function getShareFileOAuthUrl(source) {
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  const qs = params.toString();
+  return api.get('/auth/sharefile/url' + (qs ? `?${qs}` : ''));
+}
+
+export function signOutShareFile(email) {
+  return api.post('/auth/sharefile/signout', { email });
 }
 
 export function connectSharePointAccount(email) {

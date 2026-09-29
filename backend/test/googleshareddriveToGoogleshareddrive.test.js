@@ -132,7 +132,11 @@ check('roles translate as the identity, and Manager is excluded with a stated re
   // vanishing. See the open question in google-shared-drive-to-shared-drive-inscope.md.
   assert.strictEqual(map.isComparableDriveRole('organizer'), false,
     'Manager is currently not compared — if this changes, the scope doc note must change with it');
-  assert.ok(/owner/i.test(map.nonComparableReason('organizer')),
+  // The reason's WORDING is theirs and is better than ours was: "Shared Drive membership
+  // (organizer) is not a per-item grant" is more accurate here than our "the source owner is not
+  // re-granted". What matters is that a reason EXISTS, so the grant is visible in the report
+  // rather than silently dropped — assert that, not a particular phrase.
+  assert.ok(String(map.nonComparableReason('organizer')).trim().length > 20,
     'the report says WHY a Manager grant was not compared, so it is visible rather than dropped');
   assert.ok(map.driveRoleLevel('fileOrganizer') >= map.driveRoleLevel('writer'),
     'Content manager outranks Editor');
@@ -149,9 +153,12 @@ check('the five non-migratable Google types are not counted as missing', () => {
     'application/vnd.google-apps.script',
     'application/vnd.google-apps.vid',
   ]) {
-    assert.ok(core.isUnmigratableNative(mime),
+    // Classified by THIS combination, not by deepContentCore's shared table. The shared table is
+    // Microsoft-oriented and predates Google Vids; googledriveToGoogledrive.test.js pins that it
+    // stays ignorant of Vids, so a combination that needs the classification owns it locally.
+    assert.ok(ValidationAgent.isConflictType(mime),
       `${mime} is documented as non-migratable — counting it missing invents a defect`);
-    assert.ok(core.unmigratableReason(mime),
+    assert.ok(ValidationAgent.conflictReason(mime),
       `${mime} carries a reason, so the report can say why it is absent`);
   }
 });

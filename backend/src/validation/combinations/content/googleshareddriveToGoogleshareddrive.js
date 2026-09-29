@@ -102,6 +102,41 @@ const CF_CONFLICTS = ['PROCESSED_WITH_CONFLICTS', 'PROCESS_WITH_CONFLICTS'];
  * Orbit" wording) which does not describe this pair, and editing it would change both live
  * SharePoint-destination combinations — which CONTRIBUTING forbids.
  */
+/**
+ * Types this combination documents as non-migratable, with ITS OWN reasons.
+ *
+ * Kept here rather than added to deepContentCore's GOOGLE_NATIVE_NO_EXPORT, which is shared by every
+ * content combination and whose reason strings are Microsoft-oriented ("no Microsoft 365
+ * equivalent") — true for a SharePoint destination, wrong for a Google one. Google Vids is the one
+ * that matters: the shared table predates it, so without this table every seeded Vid would be
+ * reported MISSING against a scope document that calls it an expected conflict.
+ *
+ * Mirrors googledriveToGoogledrive.js's NATIVE_CONFLICT_TYPES deliberately: same problem, same
+ * shape, and neither combination edits the shared module to solve it.
+ */
+const NATIVE_CONFLICT_TYPES = {
+  'application/vnd.google-apps.vid':
+    'Google Vids — out-of-scope 3.1: goes into conflict and is non-migratable',
+  'application/vnd.google-apps.form':
+    'Google Forms — out-of-scope 4.1: goes into conflict and is non-migratable',
+  'application/vnd.google-apps.map':
+    'Google My Maps — out-of-scope 5.1: goes into conflict and is non-migratable',
+  'application/vnd.google-apps.script':
+    'Google Apps Script — out-of-scope 6.1: goes into conflict and is non-migratable',
+  'application/vnd.google-apps.site':
+    'Google Sites — out-of-scope 7.1: goes into conflict and is non-migratable',
+};
+
+/** True when this item is one of the five types documented to go into conflict. */
+function isConflictType(mimeType) {
+  return Object.prototype.hasOwnProperty.call(NATIVE_CONFLICT_TYPES, String(mimeType || ''));
+}
+
+/** This combination's own reason, not the shared table's Microsoft-oriented one. */
+function conflictReason(mimeType) {
+  return NATIVE_CONFLICT_TYPES[String(mimeType || '')] || null;
+}
+
 const SHAREDDRIVE_FEATURES = [
   { id: '1.1', category: 'Migration', feature: 'Onetime' },
   { id: '1.2', category: 'Migration', feature: 'Delta' },
@@ -1564,4 +1599,7 @@ module.exports = GoogleshareddriveToGoogleshareddriveValidationAgent;
 module.exports.SHAREDDRIVE_FEATURES = SHAREDDRIVE_FEATURES;
 module.exports.OUT_OF_SCOPE_NOTES = OUT_OF_SCOPE_NOTES;
 module.exports.COMBINATION = DEFAULT_COMBINATION;
+module.exports.NATIVE_CONFLICT_TYPES = NATIVE_CONFLICT_TYPES;
+module.exports.isConflictType = isConflictType;
+module.exports.conflictReason = conflictReason;
 module.exports.combinationFor = combinationFor;
