@@ -309,10 +309,20 @@ function testModifiedDriftNowReachable() {
   assert.notStrictEqual(driftCheck.status, 'PASS', 'and it is never swallowed into a pass');
   assert.ok(/googledriveToSharepoint\.js/.test(driftCheck.detail),
     'the note says which validator it was aligned with');
-  assert.ok(/file_viewer\.txt/.test(driftCheck.detail),
-    'and quotes the measured case from run 54f9bfc2');
-  assert.ok(/HYPOTHESIS/.test(driftCheck.detail),
-    'the permission-write mechanism is stated as a hypothesis, not a conclusion');
+  // The detail must quote THIS run's evidence. It used to quote run 54f9bfc2 verbatim — this
+  // fixture drifts /a.txt, yet the assertion here passed on the words "file_viewer.txt", which
+  // could only have come from the hardcoded anecdote. Run 60f0c1f2 then reported "2 of 51 file(s)"
+  // and named a file from a different run, sending anyone who investigated to the wrong place.
+  assert.ok(/\/a\.txt/.test(driftCheck.detail),
+    `the detail names the file that actually drifted, got: ${driftCheck.detail}`);
+  assert.ok(!/54f9bfc2|file_viewer\.txt/.test(driftCheck.detail),
+    'and never an older run\'s file');
+  // The permission-write mechanism is still not presented as settled — but it is now COMPUTED from
+  // the run's own data instead of restated as a standing hypothesis.
+  assert.ok(/carry a direct permission grant/.test(driftCheck.detail),
+    'the permission correlation is measured on this run');
+  assert.ok(/CONTRADICTS the standing theory/.test(driftCheck.detail),
+    'and with no grants in this fixture it contradicts the mechanism rather than repeating it');
 
   // …unless the job switched modified preservation off, which is the mirror of the created rule.
   const notAsked = rollUp({

@@ -145,7 +145,8 @@ async function testWrapperInsideExplicitSubpath() {
     findByName: async (candidate, parentId) => (candidate === 'qa-src-mydrive' && parentId === 'DESTBASE'
       ? { id: 'WRAPPER', name: 'qa-src-mydrive' } : null),
   }, () => new Agent().findMigratedRoot(
-    'root', null, '/mydrive-mydrive-qa-agent', 'qa-src-mydrive', EMAIL));
+    'root', null, '/mydrive-mydrive-qa-agent', 'qa-src-mydrive', EMAIL,
+    { expectSourceFolderWrapper: true }));
 
   assert.strictEqual(root.id, 'WRAPPER',
     'the migrated tree sits inside the destination path, so that folder is the comparison root');

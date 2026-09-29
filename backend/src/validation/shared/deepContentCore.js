@@ -253,9 +253,25 @@ const LEGACY_OFFICE_CONVERSION = { '.doc': '.docx', '.xls': '.xlsx', '.ppt': '.p
  */
 const DROPBOX_PAPER_CONVERSION = { '.paper': '.html', '.papert': '.html' };
 
+/**
+ * Box Notes: CloudFuze converts a `.boxnote` to a real Word document and renames it `.docx`.
+ *
+ * Measured directly: source `/12-Box-Notes/qa-note.boxnote` (created via `boxClient.createNote`)
+ * landed at the destination as `qa-note.docx`, mimeType
+ * application/vnd.openxmlformats-officedocument.wordprocessingml.document — a genuine Office file,
+ * not a bare-named native Google Doc the way Dropbox Paper arrives. Same failure shape as the Paper
+ * case without this mapping: the pairing looked for the `.boxnote` name, found nothing, and reported
+ * the note "missing" — cascading into 1.1 Data Migration counting it as "missing 1, extra 1" and
+ * 10.1 Box Notes Migration failing on a note that had migrated correctly the whole time.
+ *
+ * Kept as its own map for the same reason as DROPBOX_PAPER_CONVERSION: a `.boxnote` is not a legacy
+ * Office format, and this is inert for every source that never creates one.
+ */
+const BOX_NOTE_CONVERSION = { '.boxnote': '.docx' };
+
 /** Every extension rewrite a migration performs, in one place. */
 function convertedExtension(ext) {
-  return LEGACY_OFFICE_CONVERSION[ext] || DROPBOX_PAPER_CONVERSION[ext] || null;
+  return LEGACY_OFFICE_CONVERSION[ext] || DROPBOX_PAPER_CONVERSION[ext] || BOX_NOTE_CONVERSION[ext] || null;
 }
 
 /** Formats migrated byte-for-byte, so Tier B applies to them. */
@@ -386,7 +402,27 @@ function notHashableReason(item) {
  */
 function destNameCandidatesFor(item) {
   const converted = convertName(item.name, item.mimeType);
-  return converted === item.name ? [item.name] : [converted, item.name];
+  const candidates = converted === item.name ? [item.name] : [converted, item.name];
+
+  // A Dropbox Paper doc lands at the Google destination as a bare-named native Google Doc — NO
+  // extension at all, not the `.html` DROPBOX_PAPER_CONVERSION predicts. Measured directly: source
+  // "qa-paper-full-20260916044230.paper" arrived as "qa-paper-full-20260916044230"
+  // (mimeType application/vnd.google-apps.document), which matched neither the `.html` candidate
+  // nor the raw `.paper` name above — so a document that migrated correctly, with content, BEFORE
+  // validation ever ran, was reported "missing" on this item and "extra" on the real one, which
+  // cascaded into 10.1 Dropbox Papers Migration, 1.1 Data Migration and 7.1 Long-File/folder path
+  // all failing from the same single non-bug. Added as an extra candidate rather than replacing
+  // `.html`: the file this repo's own history measured as landing `.html`-suffixed (run 85a41244,
+  // see the comment on DROPBOX_PAPER_CONVERSION) may still occur elsewhere or on another CloudFuze
+  // version, and this only ever matches a name that already exists at the destination — it cannot
+  // introduce a false pair.
+  const ext = extensionOf(item.name);
+  if (ext === '.paper' || ext === '.papert') {
+    const bare = item.name.slice(0, item.name.length - ext.length);
+    if (!candidates.includes(bare)) candidates.push(bare);
+  }
+
+  return candidates;
 }
 
 function compareTrees(sourceItems, destItems, opts = {}) {

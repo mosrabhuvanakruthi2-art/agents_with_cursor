@@ -26,6 +26,8 @@ function harness(groupsOnAccount = ['QA-Automation', 'Regression_Company-managed
     shareFolder: dropboxClient.shareFolder,
     addFolderMember: dropboxClient.addFolderMember,
     addFileMember: dropboxClient.addFileMember,
+    listFolderMembers: dropboxClient.listFolderMembers,
+    updateFolderMember: dropboxClient.updateFolderMember,
   };
   dropboxClient.listTeamGroups = async () =>
     groupsOnAccount.map((n, i) => ({ groupId: `g${i}`, name: n }));
@@ -34,13 +36,21 @@ function harness(groupsOnAccount = ['QA-Automation', 'Regression_Company-managed
     grants.push({ kind: 'folder', who: m.email || m.displayName, role });
   dropboxClient.addFileMember = async (id, m, role) =>
     grants.push({ kind: 'file', who: m.email || m.displayName, role });
+  // _grant reads the member back after adding them, to catch a nested shared folder that copied
+  // an ancestor's membership in at a role the call never asked for. An empty member list here
+  // means "nobody found yet", so _grant's `who` lookup misses and the update-verification branch
+  // is skipped entirely — the same behaviour this test suite already asserted on before that
+  // verification step existed. updateFolderMember is stubbed too in case a future scenario needs
+  // the update branch reachable, but no seeded case here exercises it.
+  dropboxClient.listFolderMembers = async () => [];
+  dropboxClient.updateFolderMember = async () => ({ access_level: { '.tag': 'editor' } });
 
   const agent = new DropboxTestDataAgent();
   const created = [];
   agent._mk = async (p) => { created.push(p); return { type: 'folder', path: p, id: 'F' }; };
   agent._put = async (p) => { created.push(p); return { type: 'file', path: p, id: 'X' }; };
 
-  const report = { created: { grants: 0 }, skipped: [] };
+  const report = { created: { grants: 0 }, skipped: [], errors: [] };
   const log = { info: () => {}, warn: () => {} };
   const restore = () => Object.assign(dropboxClient, saved);
   return { agent, grants, created, report, log, restore };

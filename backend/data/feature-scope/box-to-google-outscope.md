@@ -3,147 +3,71 @@
 **Product Type:** Content
 **Combination:** Box to Google (My Drive & Shared Drive)
 **Scope:** Out of Scope
-**Total Features:** 9
-**Last Updated:** 2026-09-14
-**Source:** `Content_BoxtoGoogle(MyDrive&SharedDrive)_(14-09-2026) (1).pdf`
+**Last Updated:** 2026-09-12
+**Source:** `Content_BoxtoGoogle(MyDrive&SharedDrive)_(12-09-2026).pdf`
 
 > Companion file: `box-to-google-inscope.md` — the 34 features that must be validated.
 >
 > **Validation rule:** everything in this file is documented, expected platform behaviour. A
 > difference described here is reported as INFO with its explanation and **must never fail a run**.
-> Failing it would report a defect against behaviour the company has written down as out of scope.
+> Failing it would report a defect against behaviour the source document has written down as expected.
 >
-> **Read the conflict section at the bottom before wiring any of this into a validator.** Seven of
-> these nine features are also listed in the in-scope document, and two carry the wrong destination
-> cloud. Those are not transcription slips on this side — they are in the source PDF.
+> Unlike `dropbox-to-google-outscope.md` (whose Paper-limitations section was left an open question
+> because the Dropbox source document and its own out-of-scope file disagreed), **this PDF is explicit
+> and unambiguous** about which Box Notes sub-features do not migrate. So they are listed here
+> directly, as confirmed limitations — not flagged for a combination-owner ruling.
 
 ---
 
-## 1. Metadata & Additional Elements : Tags (1 feature)
+## 1. In-line comment (1 item)
 
-### 1.1 Metadata & Additional Elements : Tags
-Tags associated with Box Notes will not migrate.
-
----
-
-## 2. Shared Links (for Box Notes files) (1 feature)
-
-### 2.1 Shared Links (for Box Notes files)
-Shared links created for Box Notes will not migrate to the destination.
-
-**Scope boundary.** This is narrower than it first reads: it covers shared links created **on Box
-Notes files only**. Shared links on ordinary files and folders are in scope — in-scope features 5.1
-and 5.2 — and must still be validated. A validator that reads this as "shared links are out of
-scope" would silently drop two in-scope features.
+### 1.1 In-line comment — "CSV is the evidence, not the item"
+Box file comments (scope 6.1) and Box Notes comments (scope 10.14) both migrate as a **CSV file** at
+the destination, never as native comments on the destination item. A migrated item carrying no
+comments of its own is the **correct**, expected outcome — not a loss. The CSV is the evidence the
+feature worked; its absence is a defect, the destination item's silence is not.
 
 ---
 
-## 3. Box note Annotation /Mention (1 feature)
+## 2. Box Notes — confirmed content-fidelity limitations (9 items)
 
-### 3.1 Box note Annotation /Mention
-Box note annotation or mention is migrated as normal text instead of mention tag.
+The source document is explicit that each of these does **not** survive the Box Note → Google Doc
+conversion. Each is reported at INFO with this wording; none may fail a run.
 
----
+### 2.1 Text Formatting (partial) — scope 10.2
+Bold, italic and underline are preserved. **Strikethrough, text alignment and inline code are not** —
+they render as plain text at the destination.
 
-## 4. Media & Images : Uploaded Media Files (1 feature)
+### 2.2 Font Size and Text Color — scope 10.3
+Not preserved. The destination renders uniform font size and default text color regardless of what
+the source Note used.
 
-### 4.1 Media & Images : Uploaded Media Files
-Uploaded Media Files Files uploaded directly through the media upload option will not migrate.
+### 2.3 Checklist, Numbered list, Bulleted list — scope 10.4
+Not preserved. All three convert to plain text at the destination, losing both structure and
+interactive functionality (a checklist item is no longer checkable).
 
----
+### 2.4 Tables — scope 10.5
+Not migrated correctly. Structure, column alignment and formatting are broken; the destination layout
+is distorted and unreadable.
 
-## 5. Media & Images : Insert Link Preview (1 feature)
+### 2.5 Insert Image (upload from computer) — scope 10.6
+Not preserved. An image inserted by uploading directly from a computer is lost in the conversion.
 
-### 5.1 Media & Images : Insert Link Preview
-Insert Link Preview Files uploaded from " insert link preview" media upload option will not migrate.
+### 2.6 Insert Image (Insert Link Preview) — scope 10.8
+Not preserved. A link-preview-style image insert is lost, the same as an uploaded image — only a Box
+Shared Link image insert (scope 10.7) survives.
 
----
+### 2.7 Clipboard Images — scope 10.9
+Not preserved. An image pasted from the clipboard is lost.
 
-## 6. Font Size and Text Color (1 feature)
+### 2.8 GIFs — scope 10.11
+Not preserved. A GIF renders incorrectly, or as an unsupported element, at the destination.
 
-### 6.1 Font Size and Text Color
-font size variations and text colors from the source are not fully preserved. Most of the text
-appears in a uniform size and default color in the destination, leading to loss of original
-formatting differences.
-
----
-
-## 7. Checklist, Numbered list, Bulleted list: (1 feature)
-
-### 7.1 Checklist, Numbered list, Bulleted list:
-Validated checklist, numbered list, and bulleted list migration for Box Notes for Box to Microsoft.
-Content was migrated; however, these list formats were not preserved as expected. All items are
-converted numbers list only in the destination, resulting in loss of original list structure and
-functionality.
-
-> ⚠️ Transcribed verbatim. The text says **"Box to Microsoft"** and **"converted numbers list
-> only"**, in a Box-to-**Google** document whose in-scope counterpart (10.4) says the same feature
-> converts to **plain text**. See the conflict section.
+### 2.9 Mentions — scope 10.13
+Not migrated. An `@mention` is missing completely at the destination — a loss of reference
+information, not merely a formatting change.
 
 ---
 
-## 8. Strikethrough Text in box note (1 feature)
-
-### 8.1 Strikethrough Text in box note
-Strikethrough Text Text formatted with strikethrough will migrate as normal plain text (strikethrough
-formatting is not preserved).
-
----
-
-## 9. Tables in box notes (1 feature)
-
-### 9.1 Tables in box notes
-The table content migration from Box Notes to Microsoft Docs. Table content is not migrated as
-expected; structure, alignment, and formatting are broken in the destination, resulting in distorted
-and unreadable table layout.
-
-> ⚠️ Transcribed verbatim. The text says **"to Microsoft Docs"**, in a Box-to-Google document. The
-> in-scope counterpart (10.5) describes the identical outcome for **Google Docs**. See below.
-
----
-
-## Conflicts with the in-scope document — NOT resolved here
-
-Both PDFs are dated 14-09-2026 and describe the same combination. Seven of the nine features above
-also appear in `box-to-google-inscope.md`. That matters because the two documents carry opposite
-validation treatments: in scope means *must be validated and can fail*; out of scope means *report
-at INFO and never fail*. A feature in both has no defined verdict.
-
-| Out-of-scope | In-scope | Do the two agree? |
-|---|---|---|
-| 3.1 Annotation/Mention → "migrated as normal text" | 10.13 Mentions → "not migrated, missing completely" | **No.** Text-instead-of-tag and total absence are different outcomes with different evidence. |
-| 4.1 Uploaded Media Files | 10.6 Upload images from your computer | Yes — both say not preserved. |
-| 5.1 Insert Link Preview | 10.8 Insert Link Preview | Yes — both say not preserved. |
-| 6.1 Font Size and Text Color | 10.3 Font Size and Text Color | Yes — wording is near-identical. |
-| 7.1 Checklist/Numbered/Bulleted | 10.4 Checklist/Numbered/Bulleted | **No.** "converted numbers list only" vs "converted into plain text". |
-| 8.1 Strikethrough | 10.2 Text Formatting (lists strikethrough among the differences) | Yes on the outcome; 10.2 bundles it with alignment and inline code. |
-| 9.1 Tables in box notes | 10.5 Tables | Yes on the outcome — but 9.1 names Microsoft Docs and 10.5 names Google Docs. |
-
-Only **1.1 Tags** and **2.1 Shared Links for Box Notes** are unique to this file.
-
-**These are deliberately left unresolved.** Picking a winner per row would either convert real
-defects into accepted behaviour or fail a run against documented behaviour — on a validator author's
-judgement, which is not a call this file gets to make. This follows the precedent set in
-`dropbox-to-google-outscope.md`, which refuses the same kind of call and says why.
-
-**What a validator should do until the combination owner rules:**
-
-- For the five rows that agree (4.1, 5.1, 6.1, 8.1, 9.1-outcome): treat as out of scope — INFO, never
-  a FAIL. Both documents describe the same outcome, so there is no ambiguity about what happened,
-  only about which file owns it.
-- For the two that disagree (3.1/10.13 and 7.1/10.4): report at INFO carrying **both** documents'
-  wording and flag the contradiction in the run output. Do not fail, and do not pick one.
-- For 1.1 and 2.1: out of scope, INFO, never a FAIL.
-
-**Questions for the combination owner** — these need answers before the contradictions can be closed:
-
-1. Do mentions in Box Notes arrive as plain text (3.1) or not at all (10.13)? The two describe
-   different destination states.
-2. Do lists arrive as a numbered list (7.1) or as plain text (10.4)?
-3. Are the "Microsoft" references in 7.1 and 9.1 copy-paste from the Box-to-Microsoft document, or
-   was that combination genuinely the one tested? If the former, the Google behaviour in those two
-   rows is **undocumented**, not merely mis-labelled — and 9.1's table finding would not yet have
-   been verified against Google Docs at all.
-4. Should the seven overlapping features be removed from the in-scope document's count of 34, or
-   from this document's count of 9? As written, the two documents claim 43 features between them
-   while describing 36 distinct ones.
+**Everything in this file is documented, expected platform behaviour — a difference described here is
+reported as INFO and must never fail a run.**

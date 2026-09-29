@@ -129,7 +129,8 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
    *   as an empty destination rather than throwing, because "the migration created nothing" is a
    *   real and reportable outcome.
    */
-  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email) {
+  async findMigratedRoot(rootId, driveId, destBase, sourceFolderName, email, callOpts = {}) {
+    const { expectSourceFolderWrapper = false } = callOpts;
     let base = String(destBase || '').trim();
     // True when the destination path named nothing but the Shared Drive, i.e. the run targeted the
     // drive root. Distinguishes that from a named subpath that genuinely does not exist.
@@ -181,18 +182,22 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
     //
     // Which shape you get depends on pickInsideFolder. Dropbox → Google sends it true, so the
     // CONTENTS land directly in the named path and there is no wrapper. googledrive → googledrive
-    // does not, so CloudFuze creates "<destPath>/<sourceFolderName>" and puts everything there.
-    // Returning the named path unconditionally read the wrapper's PARENT: run d95ab388 migrated
-    // 91/91 items into "/mydrive-mydrive-qa-agent/qa-src-mydrive" and the validator compared
-    // against "/mydrive-mydrive-qa-agent", pairing 0 of 90 items and reporting "MIGRATION MOVED
-    // NOTHING" for a migration that had moved everything.
+    // and Box → Google do not, so CloudFuze creates "<destPath>/<sourceFolderName>" and puts
+    // everything there. Returning the named path unconditionally read the wrapper's PARENT:
+    //   - run d95ab388 (googledrive → googledrive) migrated 91/91 items into
+    //     "/mydrive-mydrive-qa-agent/qa-src-mydrive" and the validator compared against
+    //     "/mydrive-mydrive-qa-agent", pairing 0 of 90 items and reporting "MIGRATION MOVED
+    //     NOTHING" for a migration that had moved everything;
+    //   - a live Box → Google run: source 83 / dest 81, matched 0, misplaced 79, on a job CloudFuze
+    //     had reported PROCESSED 82/82.
     //
-    // Looking inside first is safe for both shapes: where there is no wrapper the search finds
-    // nothing and the named path is used exactly as before.
+    // Gated behind `expectSourceFolderWrapper` rather than made unconditional: for a pickInsideFolder
+    // migration (Dropbox → Google) the named path IS the migrated root, and a source subfolder that
+    // happens to share the source root's name must not be mistaken for a wrapper.
     if (base && base !== '/') {
       const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
       if (hit) {
-        const wrapper = await wrapperUnder(hit.id);
+        const wrapper = expectSourceFolderWrapper ? await wrapperUnder(hit.id) : null;
         if (wrapper) {
           return { ...wrapper, path: `${String(hit.path || `/${base}`).replace(/\/+$/, '')}/${wrapper.name}` };
         }

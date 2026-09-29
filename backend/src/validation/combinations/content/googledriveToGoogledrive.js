@@ -544,8 +544,11 @@ class GoogledriveToGoogledriveValidationAgent extends GoogleDriveValidationAgent
     let destTree;
 
     try {
+      // expectSourceFolderWrapper: true — this pair does not send pickInsideFolder, so CloudFuze
+      // copies the source folder itself into the destination path (run d95ab388).
       const found = await this.findMigratedRoot(
-        destRoot.rootId, destRoot.driveId, unit.destinationPath, source.rootName, unit.destinationEmail
+        destRoot.rootId, destRoot.driveId, unit.destinationPath, source.rootName, unit.destinationEmail,
+        { expectSourceFolderWrapper: true }
       );
 
       destTree = await this.readTree(found.id, unit.destinationEmail, { maxDepth: bands.treeDepth || 25 });

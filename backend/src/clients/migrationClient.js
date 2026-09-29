@@ -89,6 +89,48 @@ let registeredWorkspaceId = null;
 // Move ID returned by POST /move/consumer/create (content server migrations)
 let contentMoveId = null;
 
+// ── Session lock ──────────────────────────────────────────────────────────────
+//
+// bearerToken, loginToken, lastJobDetails, lastJobReport, registeredWorkspaceId, contentMoveId
+// and runtimeConfig (below) are all MODULE-LEVEL state — one copy per Node process, shared by
+// every concurrent execution, not scoped per migration. Two content migrations running at once
+// on this backend (a routine occurrence: this shared CloudFuze account gets used by several
+// people at the same time) read and write the SAME variables. Whichever one finishes first calls
+// clearRuntimeConfig() in its `finally` block and nulls all of this out from under the other,
+// which is still mid-flight.
+//
+// Measured directly on execution 784e33b5: while it was reading `runtimeConfig.userId` at
+// `login()`/Basic-auth time, a second, concurrently-running execution (a2f82f26) finished and
+// called clearRuntimeConfig(), and 784e33b5 crashed with "Cannot read properties of null
+// (reading 'userId')" — not a CloudFuze error, our own shared state getting nulled mid-use. This
+// is also the most likely explanation for the stale-mapping-cache-row races diagnosed earlier
+// (two overlapping delete-then-reupload sequences against the same CloudFuze mapping cache).
+//
+// The fix is to serialize: only one migration may hold this module's session state at a time.
+// A second one queues rather than interleaving. withSessionLock() is a plain promise-chained
+// mutex — no new dependency, just chaining off a module-level "tail" promise every acquirer
+// attaches to in order.
+let sessionLockTail = Promise.resolve();
+
+/** Acquire the lock. Resolves with a release function the caller MUST call exactly once. */
+function acquireSessionLock() {
+  let release;
+  const ticket = new Promise((resolve) => { release = resolve; });
+  const acquired = sessionLockTail.then(() => release);
+  sessionLockTail = sessionLockTail.then(() => ticket);
+  return acquired;
+}
+
+/** Run `fn` holding the session lock; releases it even if `fn` throws. */
+async function withSessionLock(fn) {
+  const release = await acquireSessionLock();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 // ── Runtime config: set by MigrationAgent when context provides a server URL ──
 // { baseUrl: string, email: string, password: string }
 // When set, all API calls use this server instead of env.MIGRATION_API_URL.
@@ -1417,10 +1459,17 @@ async function triggerMigration(context) {
         const listUrl = `${contentOrigin}/proxyservices/v1/mapping/cache/list`
           + `?sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}`
           + `&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`;
-        const before = await axios.get(listUrl, migrationAxiosConfig({
+        const getList = () => axios.get(listUrl, migrationAxiosConfig({
           headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
           timeout: 30000,
         }));
+        // This GET itself throws HTTP 500 on effectively every run we've logged — every prior
+        // version of this check went straight to the catch below and never got to inspect
+        // `rows.length`, so the retry-delete safety net beneath it was dead code: it only ran on
+        // the rare occasion this endpoint didn't 500. Retried with backoff so a transient 500
+        // gets a real chance to clear before we give up on verifying at all.
+        const before = await retryWithBackoff(getList,
+          { label: 'CloudFuze mapping/cache/list (verify)', maxRetries: 3, baseDelay: 2000 });
         const rows = Array.isArray(before.data) ? before.data
           : (before.data?.cfMappingCachesList || before.data?.content || []);
         if (Array.isArray(rows) && rows.length > 0) {
@@ -1430,10 +1479,7 @@ async function triggerMigration(context) {
             headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
             timeout: 30000,
           })).catch(() => null);
-          const after = await axios.get(listUrl, migrationAxiosConfig({
-            headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
-            timeout: 30000,
-          })).catch(() => null);
+          const after = await getList().catch(() => null);
           const left = after && (Array.isArray(after.data) ? after.data
             : (after.data?.cfMappingCachesList || after.data?.content || []));
           if (Array.isArray(left) && left.length > 0) {
@@ -1445,14 +1491,52 @@ async function triggerMigration(context) {
           } else {
             logger.info('CloudFuze content: stale mapping rows cleared on the second attempt');
           }
+        } else {
+          logger.info('CloudFuze content: verified mapping list is empty');
         }
       } catch (verifyErr) {
-        // Verification is best-effort: failing to CHECK is not a reason to abandon the run.
-        logger.warn(`CloudFuze content: could not verify the mapping list is empty `
-          + `(${verifyErr?.response?.status || verifyErr.message}) — continuing unverified`);
+        // The verify GET itself is unreliable enough that even 3 retries can still all fail.
+        // Verification is best-effort in the sense that failing to CHECK is not a reason to
+        // abandon the run — but it's also not a reason to skip taking a precaution: a blind
+        // extra delete is safe (idempotent — deleting an already-empty list is a no-op) and is
+        // the only defense left against a stale row we can no longer confirm or deny.
+        logger.warn(`CloudFuze content: could not verify the mapping list is empty after retries `
+          + `(${verifyErr?.response?.status || verifyErr.message}) — sending one more precautionary `
+          + 'delete before continuing unverified');
+        await axios.delete(delUrl, migrationAxiosConfig({
+          headers: { Authorization: contentAuth, 'X-Requested-With': 'XMLHttpRequest' },
+          timeout: 30000,
+        })).catch((e2) => {
+          logger.warn(`CloudFuze content: precautionary delete also failed (${e2?.response?.status || e2.message})`);
+        });
       }
     } catch (delErr) {
       logger.warn(`CloudFuze content deleteAll/mapplist failed (${delErr?.response?.status || delErr.message}) — continuing`);
+    }
+
+    // ── Pre-create the destination folder when it targets Google Drive ────────────────
+    // CloudFuze's path-validation kick (csvcreator/asynchronous, below) resolves an existing
+    // destination folder in well under a second — measured repeatedly at ~6s end-to-end. Against a
+    // destination that does not exist yet, it hung with NO response at all across three 90s retries
+    // on two independently-created jobs in the same run (2026-09-11), and the job that did proceed
+    // anyway ended CONFLICT / "Migration not Allowed for wrong CSV paths" with 0 items. Creating the
+    // folder ourselves first means CloudFuze always resolves an existing one — the path that is
+    // already proven to work — instead of depending on its own (currently unreliable) folder
+    // creation during validation. Best-effort: a failure here just leaves CloudFuze to attempt its
+    // own creation as before, so it cannot make a working combination worse.
+    if (/(GOOGLE|G_SUITE)/i.test(String(context.destCloudName || context.destinationProvider || ''))) {
+      const driveClient = require('./driveClient');
+      for (const u of units) {
+        if (!u.destinationPath || !u.destinationEmail) continue;
+        try {
+          const { id, created } = await driveClient.ensureFolderPath(u.destinationPath, u.destinationEmail);
+          logger.info(`CloudFuze pre-create destination: "${u.destinationPath}" for ${u.destinationEmail} `
+            + `→ id=${id}${created.length ? ` (created: ${created.join('/')})` : ' (already existed)'}`);
+        } catch (ensureErr) {
+          logger.warn(`CloudFuze pre-create destination "${u.destinationPath}" failed `
+            + `(${ensureErr.message}) — continuing, CloudFuze will attempt its own creation`);
+        }
+      }
     }
 
     // NOTE ON ORDER: this must run AFTER deleteAll/mapplist above. It was originally placed
@@ -1524,14 +1608,25 @@ ${pathCsv}`);
       const vQuery = `userId=${encodeURIComponent(cfUserId)}`
         + `&sourceAdminCloudId=${encodeURIComponent(context.sourceCloudId)}`
         + `&destAdminCloudId=${encodeURIComponent(context.destCloudId)}`;
+      // A timeout here is not harmless the way it looks: without this call landing, CloudFuze
+      // never actually resolves the path mapping server-side, so every subsequent status poll
+      // reads "Total Saved Count :0" for the full CSV_VALIDATION_MAX_POLLS window no matter how
+      // long it waits — there is nothing to become ready. Measured 2026-09-11: this same kick
+      // timed out at 60s on TWO independently-created jobs in the same run, and the first one went
+      // on to get CONFLICT / "Migration not Allowed for wrong CSV paths" with 0 items — so this
+      // is a real failure mode, not just the separate "mapped:false" field that's informational-only
+      // on a working Box job. Retried with backoff before falling through to poll blind.
+      const kickUrl = `${contentOrigin}/proxyservices/v1/mapping/download/csvcreator/${pathCsvId}/asynchronous`
+        + `?${vQuery}&csvName=${encodeURIComponent(pathCsvName || '')}&first=true`;
       let validationStarted = true;
       try {
-        const kickUrl = `${contentOrigin}/proxyservices/v1/mapping/download/csvcreator/${pathCsvId}/asynchronous`
-          + `?${vQuery}&csvName=${encodeURIComponent(pathCsvName || '')}&first=true`;
-        const kickRes = await axios.post(kickUrl, null, migrationAxiosConfig({
-          headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
-          timeout: 60000,
-        }));
+        const kickRes = await retryWithBackoff(
+          () => axios.post(kickUrl, null, migrationAxiosConfig({
+            headers: { Authorization: contentAuth, 'Content-Type': 'application/json' },
+            timeout: 90000,
+          })),
+          { label: 'CloudFuze csvcreator/asynchronous', maxRetries: 3, baseDelay: 5000 }
+        );
         logger.info(`CloudFuze mapping validation started (csvId=${pathCsvId}): ${JSON.stringify(kickRes.data)}`);
       } catch (kickErr) {
         // Step 1 not starting is not a warning to walk past — see the sequence note above: "Calling
@@ -1845,8 +1940,17 @@ ${pathCsv}`);
     // The Shared Drive job that moved data carried pickFilestoDate=null — no cutoff at all — so send
     // no filter for that source. Elsewhere keep a cutoff but use TOMORROW: the previous 'today
     // 00:00' excluded everything the run had just seeded, since seeding happens minutes earlier.
+    //
+    // Also unconditional (no cutoff at all) for Dropbox→Google, matching pickInsideFolder's gate
+    // just below rather than leaving toDate as the one option this pair never got extended to.
+    // Dropbox Paper's own modification timestamp is documented (scope 10.19) to behave unlike an
+    // ordinary file's — CloudFuze may materialize/update it at the API level during migration rather
+    // than reporting the original edit time — so a same-day cutoff filter is a real, untested risk
+    // specifically for the Paper doc even though it is seeded minutes before the job starts, same as
+    // everything else. Removing the filter can only ADMIT more files, never exclude one that should
+    // have passed, so this is safe even if the cutoff turns out not to be the actual cause.
     const toDate = env.CONTENT_MIGRATION_TO_DATE
-      || (isSharedDrive ? 'null'
+      || ((isSharedDrive || isDropboxToGoogleDrive) ? 'null'
         : new Date(Date.now() + 86400000).toISOString().slice(0, 10) + ' 00:00:00');
 
     // Migration options selected in the Run Agent "Options" step (context.contentOptions).
@@ -1912,7 +2016,9 @@ ${pathCsv}`);
       // CloudFuze's two timestamp-preservation flags. Scope 4.1 ("maintaining the original
       // timestamps, including creation and modification dates") needs BOTH, and this one was
       // hardcoded false — so a validator comparing created dates could only ever report a mismatch
-      // the job had never asked to avoid.
+      // the job had never asked to avoid. Measured as a real, live defect on Box→Google (which has a
+      // comparable content_created_at on both sides): feature 4.1 reported "4 of 32 file(s) drifted
+      // beyond the tolerance" purely because creation time was never requested.
       //
       // Now driven by a job option, exactly like modifiedTimeForFiles. Note the default: FALSE,
       // i.e. today's hardcoded value, because this builder is shared by every content combination
@@ -2870,4 +2976,6 @@ module.exports = {
   getLastJobReport,
   migrationAxiosConfig,
   contentMappingVerdict,
+  acquireSessionLock,
+  withSessionLock,
 };
