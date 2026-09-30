@@ -486,6 +486,42 @@ class DropboxTestDataAgent extends BaseAgent {
         const sharedFolderId = await dropboxClient.shareFolder(item.path, opts);
         if (!sharedFolderId) throw new Error('folder could not be shared');
         await dropboxClient.addFolderMember(sharedFolderId, member, role, opts);
+
+        // Verify the role actually landed. A nested shared folder created inside an already-shared
+        // parent starts with the PARENT's current membership copied in (measured directly: a fresh
+        // Sub-Level-1 came back with the root's ben=editor already present before this method ever
+        // ran), and `add_folder_member` on an existing member only ever RAISES their role — asking
+        // it to lower one is a silent no-op, no error, member unchanged.
+        const after = await dropboxClient.listFolderMembers(sharedFolderId, opts);
+        const who = member.groupId
+          ? after.find((m) => m.groupId === member.groupId)
+          : after.find((m) => m.email === String(member.email || '').toLowerCase());
+        if (who && who.role !== role) {
+          const updateRes = await dropboxClient.updateFolderMember(sharedFolderId, member, role, opts);
+          const achieved = updateRes?.access_level?.['.tag'] || null;
+          if (achieved !== role) {
+            // Dropbox itself refuses this, and says exactly why: permissions are additive up the
+            // folder tree, so nobody can be granted LESS at a sub-folder than they already hold at
+            // an ancestor. Confirmed verbatim on 2026-09-11 —
+            //   update_folder_member on ben@filefuze.co (root editor) → Sub-Level-1 "viewer" returned
+            //   { access_level: "editor", warning: "Ben B can still edit this folder as a member of
+            //   a higher-level folder." }
+            // This is a platform rule, not a bug: reported as NOT SEEDED rather than counted as a
+            // grant that never actually took effect, the same way the other three Dropbox sharing
+            // limits below are (file-editor, outside-team, automatic-group).
+            report.notSeeded.push({
+              feature: label,
+              reason: `Dropbox will not grant "${role}" here — ${member.email || member.displayName} `
+                + `already has "${achieved}" via a higher-level folder, and Dropbox's own API refuses `
+                + 'to narrow access below an ancestor grant for the same principal '
+                + `(sharing/update_folder_member: "${updateRes?.warning || 'no warning text returned'}"). `
+                + 'Use a principal with no grant on any ancestor folder to exercise a genuinely '
+                + 'narrower role at this position.',
+              manualSteps: [],
+            });
+            return false;
+          }
+        }
       } else {
         await dropboxClient.addFileMember(item.id || item.path, member, role, opts);
       }
@@ -860,10 +896,37 @@ class DropboxTestDataAgent extends BaseAgent {
       await this._put(path, `${SAMPLE_TXT}Link audience: ${t.audience}, access: ${t.access}\n`, opts, report);
       try {
         const link = await dropboxClient.createSharedLink(path, { ...opts, audience: t.audience, access: t.access });
-        if (link) {
-          report.created.links += 1;
-          report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
+        if (!link) continue;
+
+        // Verify what Dropbox ACTUALLY granted, not just that the call didn't throw. Measured
+        // directly on this account: a team/editor request returns HTTP 200 with no error at all,
+        // and its own resolved_visibility comes back "public" — Dropbox silently WIDENED the
+        // audience instead of rejecting the combination. A public, EDITABLE link sitting in seeded
+        // test data is a real exposure, not a cosmetic mismatch, so this is revoked immediately
+        // rather than left in place and reported as a pass.
+        const expectedType = t.audience === 'team' ? 'team_only' : 'public';
+        if (link.type && link.type !== expectedType) {
+          await dropboxClient.revokeSharedLink(link.url, opts).catch((revokeErr) => {
+            log.warn(`Could not revoke the mis-scoped link at ${path} `
+              + `(resolved "${link.type}" instead of "${expectedType}"): ${revokeErr.message} — `
+              + 'a wrongly-scoped link may still be live, check it manually');
+          });
+          report.notSeeded.push({
+            feature: `shared link ${t.audience}/${t.access} (scope ${t.scope})`,
+            reason: `Dropbox accepted the request but resolved it to "${link.type}" instead of the `
+              + `requested "${expectedType}" — this account silently widens a ${t.audience}/${t.access} `
+              + `link's audience rather than rejecting it. Revoked rather than left in place; this `
+              + 'access level cannot be exercised from this source account, so it must not be '
+              + 'reported as a pass.',
+            manualSteps: [],
+          });
+          log.warn(`Shared link ${t.audience}/${t.access} resolved to "${link.type}" instead of `
+            + `"${expectedType}" — revoked, reported as not seeded`);
+          continue;
         }
+
+        report.created.links += 1;
+        report.items.push({ type: 'link', path, audience: t.audience, access: t.access, url: link.url });
       } catch (err) {
         // `settings_error/invalid_settings` on an EDITOR link is the account refusing edit links at
         // all, not a bad request: measured on this team, viewer links succeed on both files and

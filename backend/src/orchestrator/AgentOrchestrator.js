@@ -61,6 +61,31 @@ function isContentModeFor(context) {
   );
 }
 
+/**
+ * True when a content run can never produce a source folder, so it must be refused outright.
+ *
+ * With no TestDataAgent registered nothing seeds, and with useExistingSource off nothing resolves an
+ * existing folder either — so `userFolderMappings` stays empty and migrationClient falls back to
+ * sourcePath '/', which for a Drive source is the entire account. Execution e215d157 shipped exactly
+ * that CSV row ("mia@…,/,erik@…,/mydrive-mydrive-qa-agent") and only failed to copy the account
+ * because an unrelated 401 stopped the job first.
+ *
+ * CONTENT_SOURCE_PATH_OVERRIDE is the documented diagnostic escape hatch and names a path directly,
+ * so it satisfies the requirement. skipMigration means a resume that has already migrated, which
+ * needs no source.
+ *
+ * Extracted and exported so a test can pin every arm of the condition without standing up the whole
+ * flow — the guard itself sits one line before CleanupAgent, which talks to both clouds.
+ */
+function contentRunHasNoPossibleSource(context, { isContentMode, hasTestDataAgent }) {
+  if (!isContentMode) return false;
+  if (context.skipMigration) return false;
+  if (hasTestDataAgent) return false;
+  if (context.useExistingSource) return false;
+  if ((env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim()) return false;
+  return true;
+}
+
 /** True when either side is a content cloud — content migrations skip email validation. */
 function isContentProvidersFor(context) {
   return (
@@ -403,6 +428,25 @@ class AgentOrchestrator {
     const isContentMode = isContentModeFor(context);
 
     try {
+      // ── Fail fast: this combination can never produce a source folder ─────────────────
+      // Checked BEFORE Step 0. CleanupAgent empties the seeded folders on both sides, so refusing
+      // after it has run still costs the user their source data — and the answer here does not
+      // depend on anything cleanup or seeding does: with no TestDataAgent and no useExistingSource,
+      // nothing will ever set a source folder, and the migration would fall back to the drive root.
+      // The guard after Step 1 stays as the catch-all for seeding that produces nothing.
+      //
+      // Inside the try, not before it, so the existing catch marks the execution FAILED and tears
+      // down the per-execution logger the way every other refusal in this flow does.
+      if (contentRunHasNoPossibleSource(context, { isContentMode, hasTestDataAgent: dataAgent !== null })) {
+        throw new Error(
+          `No TestDataAgent is registered for ${context.sourceProvider} → ${context.destinationProvider}, `
+          + 'so this run would seed nothing and have no source folder to migrate — refusing to run. '
+          + 'Tick "Use existing source folder" on the Options step and name a folder that already '
+          + 'exists at the source. Migrating with no resolved folder falls back to the drive root, '
+          + 'which is never what was asked for.'
+        );
+      }
+
       // Step 0: Cleanup previous QA test data (non-blocking — warning only on failure).
       // Skipped only on resume (skipCleanup). Content was excluded here on the grounds that there
       // was "no test data to clean", which was untrue: seeded folders accumulate on the source and
@@ -506,6 +550,20 @@ class AgentOrchestrator {
           context.sourceTestDataPath = context.userFolderMappings[0].sourcePath;
           context.sourceRootId = context.userFolderMappings[0].sourceRootId;
         }
+        // Same guard as the Drive branch below. Without it, 0 resolved folders (Box auth failure,
+        // a mistyped path, or a folder that was never seeded) left userFolderMappings empty and the
+        // flow fell through silently to migrating "/" — the entire Box account — instead of refusing.
+        // Measured live: two separate runs did exactly this and CloudFuze either CONFLICTed
+        // ("Migration not Allowed for wrong CSV paths") or, worse, actually started copying the
+        // whole account before being cancelled by hand.
+        if (context.userFolderMappings.length === 0) {
+          throw new Error(
+            'Content useExistingSource: no existing Box source folder could be resolved — refusing '
+            + 'to run. Migrating with no resolved folder falls back to the Box account root, which is '
+            + 'never what was asked for. Check Box auth (a stale OAuth token or expired developer '
+            + 'token both surface here as "not found") and confirm the named folder actually exists.'
+          );
+        }
         log.info(`Content useExistingSource: ${context.userFolderMappings.length} existing folder(s) ready to migrate`);
       } else if (isContentMode && context.useExistingSource && useExistingProvider === 'dropbox' && cufEntries.length > 0) {
         // Dropbox equivalent of the Box branch above.
@@ -605,7 +663,21 @@ class AgentOrchestrator {
               continue;
             }
             if (hits.length > 1) {
-              log.warn(`Content useExistingSource: ${hits.length} folders named "${folderName}" for ${e.sourceEmail} — using the first (${hits[0].id})`);
+              // Refuse rather than guess. Drive allows several folders with the same name, and the
+              // API returns no meaningful order — so "the first" is arbitrary and can differ between
+              // the seeding run and the migrating run. mia@cloudfuze.com had three "mydrive-mydrive"
+              // folders: the seeder wrote into 12Sw2NP7… while this resolver picked 1kUhg_w7…, so the
+              // migration would have read an empty folder and the report would have blamed the
+              // migration for losing the data. Same class of silent-wrong-source bug as the '/'
+              // fallback: the run looks normal and only the ids reveal it.
+              const ids = hits.map((h) => h.id).join(', ');
+              throw new Error(
+                `Content useExistingSource: ${hits.length} folders named "${folderName}" exist for `
+                + `${e.sourceEmail} (${ids}) — refusing to guess which one to migrate. Drive returns `
+                + 'them in no particular order, so the choice would be arbitrary and could differ '
+                + 'from the folder the data was put in. Rename or remove the duplicates so exactly '
+                + 'one folder has this name, then run again.'
+              );
             }
             context.userFolderMappings.push({
               sourceEmail: e.sourceEmail,
@@ -741,6 +813,39 @@ class AgentOrchestrator {
 
       if (executionService.isCancelled(context.executionId)) {
         throw new Error('Execution cancelled by user');
+      }
+
+      // ── Guard: a content run must know WHICH folder to migrate ───────────────────────────
+      // Nothing downstream can tell "migrate the seeded folder" from "migrate everything":
+      // migrationClient falls back to sourcePath '/' when no unit carries a folder, and for a Drive
+      // source '/' is the entire My Drive.
+      //
+      // Execution e215d157 did exactly that. googledrive → googledrive registers no TestDataAgent
+      // on purpose (combinations/content/googledriveToGoogledrive.js: the native-type data it needs
+      // cannot be seeded yet), so with useExistingSource off Step 1 was skipped, no mapping was
+      // built, and the path CSV went out as "mia@…,/,erik@…,/mydrive-mydrive-qa-agent" — the whole
+      // account. It only failed to copy it because an unrelated 401 stopped the job first.
+      //
+      // The useExistingSource branches above already refuse for this reason; the seeding path had no
+      // equivalent check. Refuse here too, naming the fix rather than the symptom. Gated on
+      // skipMigration so a resume that has already migrated is not blocked by a context whose
+      // transient sourceTestDataPath did not survive rehydration.
+      if (isContentMode && !context.skipMigration) {
+        const hasContentSource = (context.userFolderMappings || []).length > 0
+          || Boolean(context.sourceTestDataPath)
+          || Boolean((env.CONTENT_SOURCE_PATH_OVERRIDE || '').trim());
+        if (!hasContentSource) {
+          throw new Error(
+            'Content run has no source folder to migrate — refusing to run. '
+            + (dataAgent === null
+              ? `No TestDataAgent is registered for ${context.sourceProvider} → ${context.destinationProvider}, `
+                + 'so nothing was seeded. Tick "Use existing source folder" on the Options step and name a '
+                + 'folder that already exists at the source.'
+              : `${dataAgent.getName()} seeded no source folder.`)
+            + ' Migrating with no resolved folder falls back to the drive root — the entire account — '
+            + 'which is never what was asked for.'
+          );
+        }
       }
 
       // ── Guard: a Shared Drive migrates WHOLE, so its root must hold only QA data ─────────────
@@ -1182,3 +1287,6 @@ module.exports = new AgentOrchestrator();
 // listed — which is why `googleshareddrive` went unnoticed.
 module.exports.CONTENT_PROVIDERS = CONTENT_PROVIDERS;
 module.exports.isContentProvidersFor = isContentProvidersFor;
+// Exported so a test can pin the refusal that stops a content run with no source folder from
+// falling back to the drive root (execution e215d157).
+module.exports.contentRunHasNoPossibleSource = contentRunHasNoPossibleSource;

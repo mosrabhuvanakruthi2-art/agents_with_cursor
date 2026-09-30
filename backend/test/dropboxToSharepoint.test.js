@@ -274,14 +274,25 @@ function testSeedRootHonoursTheWizardField() {
   const resolveRoot = (ctx) =>
     dropboxClient.dbxPath(ctx.sourcePath || ctx.sourceFolderName || env.DROPBOX_TEST_ROOT);
 
-  assert.strictEqual(resolveRoot({}), '/QA-Automation',
-    'a blank field still seeds at DROPBOX_TEST_ROOT — the Google pairs are unchanged');
-  assert.strictEqual(resolveRoot({ sourceFolderName: '' }), '/QA-Automation',
-    'an empty string is blank too');
-  assert.strictEqual(resolveRoot({ sourceFolderName: 'QA-dropbox-sharepoint' }), '/QA-dropbox-sharepoint',
-    'a named folder is honoured, and gains its leading slash');
-  assert.strictEqual(resolveRoot({ sourcePath: '/explicit', sourceFolderName: 'ignored' }), '/explicit',
-    'an explicit sourcePath still wins over the name');
+  // DROPBOX_TEST_ROOT is read from the real, gitignored root .env — whatever a developer has set
+  // for their own live QA runs (e.g. a dedicated per-person folder), not necessarily the documented
+  // default. Pinned here for the duration of this assertion and restored after, so this test proves
+  // the FALLBACK CHAIN's precedence and passes on every machine, rather than asserting one specific
+  // developer's local configuration.
+  const savedRoot = env.DROPBOX_TEST_ROOT;
+  env.DROPBOX_TEST_ROOT = '/QA-Automation';
+  try {
+    assert.strictEqual(resolveRoot({}), '/QA-Automation',
+      'a blank field still seeds at DROPBOX_TEST_ROOT — the Google pairs are unchanged');
+    assert.strictEqual(resolveRoot({ sourceFolderName: '' }), '/QA-Automation',
+      'an empty string is blank too');
+    assert.strictEqual(resolveRoot({ sourceFolderName: 'QA-dropbox-sharepoint' }), '/QA-dropbox-sharepoint',
+      'a named folder is honoured, and gains its leading slash');
+    assert.strictEqual(resolveRoot({ sourcePath: '/explicit', sourceFolderName: 'ignored' }), '/explicit',
+      'an explicit sourcePath still wins over the name');
+  } finally {
+    env.DROPBOX_TEST_ROOT = savedRoot;
+  }
   console.log('  seed root honours the wizard field, blank unchanged: ok');
 }
 

@@ -11,6 +11,8 @@ router.get('/executions', requireUser, controller.getExecutions);
 router.get('/executions/:id', requireUser, controller.getExecution);
 router.get('/executions/:id/logs', requireUser, controller.getExecutionLogs);
 router.get('/stats', requireUser, controller.getStats);
+// Registry metadata (no per-user data): which combinations exist and which can seed test data.
+router.get('/combinations', controller.getCombinations);
 router.get('/test-connections', controller.testConnections);
 router.get('/users/source', controller.getSourceUsers);
 router.get('/users/destination', controller.getDestinationUsers);

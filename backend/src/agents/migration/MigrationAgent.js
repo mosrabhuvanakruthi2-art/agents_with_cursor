@@ -49,7 +49,21 @@ class MigrationAgent extends BaseAgent {
     this.retries = 0;
   }
 
+  /**
+   * Serializes every run through this module's shared, unscoped CloudFuze session state
+   * (migrationClient's runtimeConfig/tokens/job-ids, and devemailClient's equivalent) — see the
+   * long comment above migrationClient.acquireSessionLock() for why: two concurrent executions
+   * on this shared account otherwise read/write the same module-level variables, and whichever
+   * finishes first nulls them out from under the other mid-flight (measured crash: "Cannot read
+   * properties of null (reading 'userId')" on execution 784e33b5, caused by a second execution's
+   * clearRuntimeConfig() firing while this one was still using the config). A queued second run
+   * is slower but correct; an interleaved one can crash or silently use the wrong session.
+   */
   async execute(context) {
+    return migrationClient.withSessionLock(() => this._executeLocked(context));
+  }
+
+  async _executeLocked(context) {
     const log = logger.child({ agent: this.name, executionId: context.executionId });
 
     const bump = (msg) => {

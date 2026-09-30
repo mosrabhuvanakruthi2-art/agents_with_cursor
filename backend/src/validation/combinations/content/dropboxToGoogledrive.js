@@ -2045,6 +2045,17 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       // reader was not updated.
       items: itemDetails,
       itemDetails,
+      // The UI's "Source Items / Found at Destination / Missing" cards used to be derived from
+      // `items.length` and `folderStructure.missing.length` — but `items` only ever contains items
+      // that PAIRED with something at the destination (a missing item has no pair, so it is never
+      // added), and `folderStructure` is a FOLDER-only compare, so a missing FILE inside an
+      // otherwise-matched folder is invisible to both. Measured on execution 8c5f2c6b: the cards
+      // read "73 / 73 / 0 missing" (a false full match) while the real, complete comparison (`cmp`,
+      // the same one the 1.1 Data Migration check reports) says "source 74, dest 73, missing 1".
+      // These three carry that authoritative total instead.
+      totalSourceItems: cmp.totalSource,
+      totalMatchedItems: cmp.matchedCount,
+      totalMissingItems: cmp.missing.length,
     };
   }
 
@@ -2521,8 +2532,32 @@ class DropboxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       const bad = obs.filter((o) => !o.match);
       if (bad.length === 0) {
         push('PASS', `${id} ${label}`, `${obs.length} link(s) compared, all matched`);
+        return;
+      }
+      // A destination with NO link at all (actual: []) is the same signature as a permission grant
+      // that "still carries only inherited drive grants" — CloudFuze applies sharing (links
+      // included) asynchronously, after the copy completes, sometimes tens of minutes behind
+      // PROCESSED. 2.1-2.4 already treat that as "not yet judgeable" rather than a FAIL; this
+      // treated an absent link as a hard mismatch instead, which is the same false positive on a
+      // fresher run. A link that DOES exist at the destination but with the wrong scope/type is a
+      // genuine mismatch and still fails immediately.
+      //
+      // `actual` is always an array in the real pipeline (compareSharedLink maps destLinks to it,
+      // never leaving it undefined) — Array.isArray guards against treating some OTHER falsy shape
+      // as "pending" and silently downgrading a real mismatch to a WARN.
+      const pending = bad.filter((o) => Array.isArray(o.actual) && o.actual.length === 0);
+      const wrong = bad.filter((o) => !Array.isArray(o.actual) || o.actual.length > 0);
+      if (wrong.length === 0) {
+        push('WARN', `${id} ${label}`,
+          `Not judgeable yet: ${pending.length} of ${obs.length} link(s) have no shared link at the `
+          + 'destination at all. CloudFuze applies sharing (links included) AFTER the copy completes, '
+          + 'tens of minutes behind the PROCESSED status — re-validate this execution once it has '
+          + 'settled.');
       } else {
-        push('FAIL', `${id} ${label}`, `${bad.length} of ${obs.length} link(s) differ`);
+        push('FAIL', `${id} ${label}`,
+          `${wrong.length} of ${obs.length} link(s) differ`
+          + (pending.length > 0
+            ? ` (${pending.length} more link(s) not yet shared by CloudFuze — not counted)` : ''));
       }
     };
     // Each feature claims only the audience it is ABOUT. 3.2 used to take "everything that is not

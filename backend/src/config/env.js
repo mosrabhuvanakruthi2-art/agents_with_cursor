@@ -613,6 +613,54 @@ module.exports = {
   DROPBOX_ACCESS_MODE: (process.env.DROPBOX_ACCESS_MODE || '').trim().toLowerCase(),
 
   /**
+   * Box test-data grantees, for the Box → Google My Drive combination
+   * (BoxToGoogledriveTestDataAgent / box_to_googledrive). This repo had no BOX_TEST_* vars before —
+   * box→sharepoint and box→onedrive read collaborators off whatever the source account already has,
+   * rather than seeding grants themselves.
+   *
+   * Resolution order is the OPPOSITE of Dropbox's: BoxToGoogledriveTestDataAgent prefers a real
+   * managed user resolved live via boxClient.getUsers(adminEmail) (the same call
+   * BoxTestDataAgent._seedLongPathFiles already makes to find "another managed user"), and falls back
+   * to these env vars only when that lookup fails or returns nobody else. Dropbox has no enterprise
+   * user-listing call that is this cheap, so its agent goes the other way — env first.
+   *
+   * BOX_TEST_INTERNAL_USER(S)  — override/fallback for the internal grantee(s), comma-separated for
+   *                              the plural form. Only used when getUsers() finds no other managed user.
+   * BOX_TEST_EXTERNAL_USER     — an address OUTSIDE the enterprise, for external shares. Box has no
+   *                              directory of non-managed users to pick one from automatically, so
+   *                              this one has no dynamic fallback — set it, or external shares (scope
+   *                              2.5) are skipped with a warning rather than failing the run.
+   * BOX_TEST_GROUP(S)          — Box GROUP ID(s) (not a display name) for group-collaboration grants,
+   *                              comma-separated for the plural form. boxClient has no group-listing
+   *                              endpoint (unlike dropboxClient.listTeamGroups), so a name cannot be
+   *                              resolved here the way Dropbox's group grantee is — create the group in
+   *                              the Box admin console once and paste its numeric id in. Left blank,
+   *                              group grants are skipped with a warning rather than guessed at.
+   * BOX_TEST_EVERYONE_GROUP   — a Box GROUP ID standing in for "everyone", for the team-wide vs
+   *                              restricted access-mode scenario (BOX_TEST_ACCESS_MODE=open). Box has
+   *                              no automatic all-enterprise group the way Dropbox's Business teams do,
+   *                              so this must be a real, pre-created group containing everyone the run
+   *                              wants covered.
+   */
+  BOX_TEST_INTERNAL_USER: (process.env.BOX_TEST_INTERNAL_USER || '').trim().toLowerCase(),
+  BOX_TEST_EXTERNAL_USER: (process.env.BOX_TEST_EXTERNAL_USER || '').trim().toLowerCase(),
+  BOX_TEST_GROUP: (process.env.BOX_TEST_GROUP || '').trim(),
+  BOX_TEST_INTERNAL_USERS: (() => {
+    const raw = process.env.BOX_TEST_INTERNAL_USERS || process.env.BOX_TEST_INTERNAL_USER || '';
+    return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  })(),
+  BOX_TEST_GROUPS: (() => {
+    const raw = process.env.BOX_TEST_GROUPS || process.env.BOX_TEST_GROUP || '';
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  })(),
+  BOX_TEST_EVERYONE_GROUP: (process.env.BOX_TEST_EVERYONE_GROUP || '').trim(),
+  /**
+   * BOX_TEST_ACCESS_MODE — 'open' or 'restricted', the Box equivalent of DROPBOX_ACCESS_MODE. Blank
+   * seeds neither and reports the scenario as not exercised, never as a pass.
+   */
+  BOX_TEST_ACCESS_MODE: (process.env.BOX_TEST_ACCESS_MODE || '').trim().toLowerCase(),
+
+  /**
    * Citrix ShareFile OAuth 2.0 app credentials, for the ShareFile -> SharePoint Online combination.
    *
    * The provider key is `sharefile`, not `citrix`. CloudFuze registers the live cloud as
@@ -793,6 +841,33 @@ module.exports = {
    * The wait applies ONLY to items where the source has grants and the destination reports none,
    * so a fully-migrated tree is never slowed by it.
    */
+  /**
+   * DRIVE_SEED_SETTLE_* — wait for a freshly seeded Drive tree to become LISTABLE before the run
+   * migrates it.
+   *
+   * Drive's files.list is eventually consistent for newly created items, and the lag is large
+   * enough to change what a run does. Measured on run 14f78fa0, seeding 90 items that finished at
+   * 11:29:55:
+   *   11:33:16  the validator's source read returned   7 items
+   *   11:38:43  the same read returned                90 items
+   *   12:01-12:03  90, 90, 90 — stable
+   * CloudFuze corroborates it from the other side: the migration scanned 76, not 90, so the job
+   * itself moved a partial tree. The run then reported "MIGRATION MOVED NOTHING" — a wrong verdict
+   * about a migration that was handed a source still materialising underneath it.
+   *
+   * Polling until two consecutive reads agree costs nothing on a settled tree (one extra list) and
+   * is the only thing that makes the item count a fact rather than a race. Set ATTEMPTS to 0 to
+   * disable.
+   */
+  DRIVE_SEED_SETTLE_ATTEMPTS: (() => {
+    const n = parseInt(process.env.DRIVE_SEED_SETTLE_ATTEMPTS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 12;
+  })(),
+  DRIVE_SEED_SETTLE_MS: (() => {
+    const n = parseInt(process.env.DRIVE_SEED_SETTLE_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 15000;
+  })(),
+
   CONTENT_PERMISSION_SETTLE_ATTEMPTS: (() => {
     const n = parseInt(process.env.CONTENT_PERMISSION_SETTLE_ATTEMPTS ?? '', 10);
     return Number.isFinite(n) && n >= 0 ? n : 2;

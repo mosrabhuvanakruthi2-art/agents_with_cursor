@@ -1341,9 +1341,21 @@ function ContentComparison({ perUser }) {
           .map(([label, g]) => ({ label, srcCount: g.total, destCount: g.found, match: g.found + g.placeholder === g.total }))
           .sort((a, b) => (a.match === b.match ? b.srcCount - a.srcCount : a.match ? 1 : -1));
 
-        const totalItems = items.length;
-        const foundItems = items.filter((i) => i.found).length;
-        const structureOk = Array.isArray(fs2.missing) ? fs2.missing.length === 0 : null;
+        // `items` only ever contains items that PAIRED with something at the destination — a
+        // missing item has no pair, so it was never added — and `fs2` (folderStructure) is a
+        // FOLDER-only compare, so a missing FILE inside an otherwise-matched folder is invisible to
+        // both. That is why these cards could read "73/73, 0 missing" (a false full match) while the
+        // real comparison behind the 1.1 Data Migration check said "source 74, missing 1" right
+        // below it. `totalSourceItems`/`totalMatchedItems`/`totalMissingItems` carry that same
+        // authoritative comparison; fall back to the old (incomplete) derivation only for older
+        // stored reports that predate these fields.
+        const hasAuthoritativeCounts = typeof u.totalSourceItems === 'number';
+        const totalItems = hasAuthoritativeCounts ? u.totalSourceItems : items.length;
+        const foundItems = hasAuthoritativeCounts ? u.totalMatchedItems : items.filter((i) => i.found).length;
+        const missingCount = hasAuthoritativeCounts
+          ? u.totalMissingItems
+          : (Array.isArray(fs2.missing) ? fs2.missing.length : 0);
+        const structureOk = missingCount === 0;
 
         // A Match/Mismatch column alone does not say WHAT differs, which is the first thing a
         // reviewer asks. Split the difference into its four kinds. Three are problems; the fourth is
@@ -1370,7 +1382,7 @@ function ContentComparison({ perUser }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* `compared` guards against the vacuous pass — see MatchCard. With no source items
                   there is nothing to have matched, whatever the two booleans say. */}
-              <MatchCard label="All items reached destination" ok={notFound.length === 0}
+              <MatchCard label="All items reached destination" ok={missingCount === 0 && notFound.length === 0}
                 compared={totalItems > 0} />
               <MatchCard label="Nothing missing" ok={structureOk !== false}
                 compared={totalItems > 0} />
@@ -1378,7 +1390,7 @@ function ContentComparison({ perUser }) {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <ResultCard label="Source Items" value={totalItems} />
               <ResultCard label="Found at Destination" value={foundItems} />
-              <ResultCard label="Missing" value={Array.isArray(fs2.missing) ? fs2.missing.length : 0} />
+              <ResultCard label="Missing" value={missingCount} />
               <ResultCard label="Folders Compared" value={rows.length} />
             </div>
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
