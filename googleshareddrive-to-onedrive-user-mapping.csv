@@ -1,0 +1,8 @@
+Source Cloud,Source Path,Destination Cloud,Destination Path
+erik@filefuze.co,/QA-SharedDrive-To-OneDrive,granger@gajha.com,/QA-SharedDrive-dest
+alex@filefuze.co,,alex@gajha.com,
+mia@filefuze.co,,mia@gajha.com,
+warner@snapbot.io,,warner@gajha.com,
+qa-group-view@filefuze.co,,mia@gajha.com,
+qa-group-edit@filefuze.co,,alex@gajha.com,
+qa-group-manage@filefuze.co,,dan@gajha.com,
