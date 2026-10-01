@@ -364,22 +364,39 @@ function testJobRequestsCreatedTimeByOption() {
 
   assert.ok(!/'createdTimeForFiles=false'/.test(src),
     'createdTimeForFiles must no longer be hardcoded');
-  const m = src.match(/createdTimeForFiles=\$\{opt\('([A-Za-z]+)',\s*(true|false)\)\}/);
+  const m = src.match(/createdTimeForFiles=\$\{opt\('([A-Za-z]+)',\s*([A-Za-z]+)\)\}/);
   assert.ok(m, 'createdTimeForFiles is built from a job option, like modifiedTimeForFiles');
   assert.strictEqual(m[1], 'preserveCreatedTime', 'the option name the validator also reads');
-  assert.strictEqual(m[2], 'false',
-    'the DEFAULT stays false: migrationClient is shared by every content combination and a run '
-    + 'naming no option must send the job it sent before');
+  // The default is pair-aware, not a flat boolean, since 2026-09-18: Box→Google's own scope
+  // document (data/feature-scope/box-to-google-inscope.md §4.1) commits to created time being
+  // comparable there — Box exposes content_created_at; Dropbox exposes no creation time at all —
+  // and validation/combinations/content/boxToGoogledrive.js already compares it unconditionally
+  // (`createdComparable: true`), so a Box→Google job that named no option was failing scope 4.1
+  // on a check it never had a chance to pass. Every OTHER combination (this Dropbox pair
+  // included) still gets the false default a run naming no option has always sent.
+  assert.strictEqual(m[2], 'isBoxToGoogleDrive',
+    'the default is now pair-aware — true only for Box→Google, false (as before) elsewhere');
+  assert.ok(/const isBoxToGoogleDrive = \/BOX\/i\.test\(String\(context\.sourceCloudName/.test(src),
+    'isBoxToGoogleDrive must actually be scoped to a Box source, not any/all combinations');
   assert.ok(/modifiedTimeForFiles=\$\{opt\('preserveTimestamp'\)\}/.test(src),
     'the modified flag is untouched');
 
   // migrationClient's own opt(), applied to the extracted default — the behaviour that matters is
-  // "no options means the same job as before".
-  const o = (options) => (options.preserveCreatedTime === undefined
-    ? false : Boolean(options.preserveCreatedTime));
-  assert.strictEqual(o({}), false, 'default job: createdTimeForFiles=false, exactly as before');
-  assert.strictEqual(o({ preserveCreatedTime: true }), true, 'opt-in requests preservation');
-  console.log('  job sends createdTimeForFiles=false by default, true on request: ok');
+  // "no options means the same job as before" for every combination except Box→Google, where "no
+  // options" now means "preserve created time", matching what the validator already assumes.
+  const o = (options, def) => (options.preserveCreatedTime === undefined
+    ? def : Boolean(options.preserveCreatedTime));
+  assert.strictEqual(o({}, false), false,
+    'default job for this (Dropbox) pair: createdTimeForFiles=false, exactly as before');
+  assert.strictEqual(o({}, true), true,
+    'default job for Box→Google: createdTimeForFiles=true, since the validator compares created '
+    + 'time unconditionally for that pair');
+  assert.strictEqual(o({ preserveCreatedTime: true }, false), true,
+    'opt-in requests preservation even where the pair default is false');
+  assert.strictEqual(o({ preserveCreatedTime: false }, true), false,
+    'opt-out is still honoured even where the pair default is true');
+  console.log('  job sends createdTimeForFiles=false by default, true by default for Box→Google, '
+    + 'option always wins: ok');
 }
 
 function run() {

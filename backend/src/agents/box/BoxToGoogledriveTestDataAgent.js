@@ -204,17 +204,31 @@ class BoxToGoogledriveTestDataAgent extends BaseAgent {
 
     // As-User: seed into the actual SOURCE account when it differs from the admin/service token,
     // exactly as boxToSharepoint.js and BoxTestDataAgent._seedLongPathFiles already resolve it.
+    //
+    // "Differs from" used to mean "sourceEmail !== adminEmail" — right for a stored PER-USER OAuth
+    // token (that token already IS that person; naming them again in As-User is a redundant
+    // self-impersonation Box 403s on), but WRONG whenever boxClient.getValidToken() actually
+    // returned the Client Credentials Grant enterprise token instead (its own preferred first
+    // choice — see boxClient.isEnterpriseAuthConfigured()'s doc comment). A CCG token belongs to
+    // Box's hidden enterprise Service Account, not to "adminEmail" at all: without As-User, every
+    // create/upload lands in the Service Account's own private space — invisible in the normal Box
+    // web UI even to that same person logged in as themselves. Confirmed live 2026-09-18: seeding
+    // reported real counts ("50 folders, 46 files…") under "box-to-shareddrive-qa-lavanya", yet
+    // erik@filefuze.co's own Box UI showed that exact folder id empty. CloudFuze's own migration
+    // still found and moved it, because its Box connection reaches enterprise-wide by folder id
+    // regardless of which identity owns it — but the human running the QA can't verify that way.
     let asUserId = context.boxTargetUserId || null;
     let sourceLogin = String(adminEmail).toLowerCase();
-    if (!asUserId && context.sourceEmail
-        && String(context.sourceEmail).toLowerCase() !== sourceLogin) {
+    const sourceEmail = String(context.sourceEmail || adminEmail).toLowerCase();
+    const needsAsUser = sourceEmail !== sourceLogin || boxClient.isEnterpriseAuthConfigured();
+    if (!asUserId && sourceEmail && needsAsUser) {
       try {
-        const u = await boxClient.getBoxUserByEmail(adminEmail, context.sourceEmail);
+        const u = await boxClient.getBoxUserByEmail(adminEmail, sourceEmail);
         if (u) {
           asUserId = u.id;
-          sourceLogin = String(u.login || context.sourceEmail).toLowerCase();
+          sourceLogin = String(u.login || sourceEmail).toLowerCase();
         } else {
-          log.warn(`${context.sourceEmail} is not a Box managed user under this enterprise — `
+          log.warn(`${sourceEmail} is not a Box managed user under this enterprise — `
             + 'seeding against the admin/service token\'s own account instead.');
         }
       } catch (err) {
@@ -385,7 +399,13 @@ class BoxToGoogledriveTestDataAgent extends BaseAgent {
   async _wipeRootByName(name, token, asUserId, log) {
     try {
       const items = await boxClient.getFolderItems('0', token, asUserId);
-      const existing = items.find((i) => i.type === 'folder' && i.name === name);
+      // Case-insensitive: Box itself enforces case-insensitive name uniqueness within a parent, so
+      // an exact-case match here can miss a differently-cased leftover from an earlier run (e.g.
+      // "Box-to-SharedDrive-QA-lavanya" vs "box-to-shareddrive-qa-lavanya") — this then reports
+      // "nothing to clear" and createFolder collides with it, a 409 that survives the one retry
+      // because the retry's search has the same blind spot.
+      const wanted = String(name).toLowerCase();
+      const existing = items.find((i) => i.type === 'folder' && String(i.name).toLowerCase() === wanted);
       if (!existing) {
         log.info(`Nothing to clear — no existing "${name}" folder at Box account root`);
         return;

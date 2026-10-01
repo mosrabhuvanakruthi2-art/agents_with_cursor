@@ -512,11 +512,19 @@ class AgentOrchestrator {
             const users = await boxClient.getUsers(adminEmail);
             const byEmail = {};
             for (const u of users) byEmail[String(u.login || '').toLowerCase()] = u.id;
+            // Skipping As-User for the admin's own email is only safe when getValidToken() actually
+            // returns THAT PERSON's own stored OAuth token — self-impersonating a token that's
+            // already you is what 403s. It is NOT safe when Client Credentials Grant is configured:
+            // that token (getValidToken()'s own preferred first choice) authenticates as Box's
+            // hidden enterprise Service Account, never as "adminEmail" — every real person, admin
+            // included, needs an explicit As-User to be written into at all. See boxClient
+            // .isEnterpriseAuthConfigured()'s doc comment and BoxToGoogledriveTestDataAgent.execute()
+            // for the live symptom this caused: seeding reported real counts while the admin's own
+            // Box UI showed the folder empty (2026-09-18).
+            const ccg = boxClient.isEnterpriseAuthConfigured();
             for (const e of cufEntries) {
-              // Don't As-User into the CONNECTED admin account itself — Box 403s on self-
-              // impersonation for uploads. That user seeds directly with the OAuth token.
               const email = String(e.sourceEmail || '').toLowerCase();
-              e._boxUserId = (email === adminEmail) ? null : (byEmail[email] || null);
+              e._boxUserId = (email === adminEmail && !ccg) ? null : (byEmail[email] || null);
             }
             const resolved = cufEntries.filter((e) => e._boxUserId).length;
             log.info(`Content multi-user: resolved ${resolved}/${cufEntries.length} source user(s) to their Box account (As-User seeding)`);

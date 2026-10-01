@@ -133,8 +133,45 @@ async function getEnterpriseToken() {
   return access_token;
 }
 
+/**
+ * True when Client Credentials Grant is configured and therefore the token getValidToken()
+ * returns is (or will be) the enterprise Service Account's — NOT any named person's own token.
+ *
+ * Matters for choosing an As-User header. A CCG token authenticates as Box's enterprise Service
+ * Account (a hidden identity separate from every managed user, including whichever human's email
+ * this repo has labelled "admin") — every call needs As-User to act as any real person at all,
+ * "admin" included. That is different from a stored per-user OAuth token, which already IS that
+ * person, and where adding As-User for themselves is redundant self-impersonation Box 403s on.
+ * A synchronous env check rather than awaiting getEnterpriseToken(): callers need the answer
+ * before deciding whether to spend a getUsers() lookup on the admin/source email too.
+ */
+function isEnterpriseAuthConfigured() {
+  return Boolean(
+    (process.env.BOX_ENTERPRISE_ID || '').trim() && process.env.BOX_CLIENT_ID && process.env.BOX_CLIENT_SECRET
+  );
+}
+
+/**
+ * Trim, strip wrapping quotes, remove accidental newlines — the exact cleanup
+ * config/env.js's cleanEnvValue() applies to every OTHER token/secret it exports.
+ *
+ * BOX_DEVELOPER_TOKEN is read straight off process.env here rather than through env.js (see the
+ * other raw BOX_* reads in this file), so it never got that cleanup. Confirmed live 2026-09-18: a
+ * freshly pasted developer token was rejected with a bare 401 on every call, including the very
+ * first one — a copy-paste artifact (trailing newline/whitespace, or the token pasted still
+ * wrapped in quotes) silently makes the Bearer header wrong in a way that looks identical to an
+ * actually-expired or actually-invalid token, which is far more misleading to debug live.
+ */
+function cleanBoxTokenValue(v) {
+  let s = String(v ?? '').trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1).trim();
+  }
+  return s.replace(/\r\n|\r|\n/g, '').trim();
+}
+
 async function getValidToken(adminEmail) {
-  const devToken = process.env.BOX_DEVELOPER_TOKEN;
+  const devToken = cleanBoxTokenValue(process.env.BOX_DEVELOPER_TOKEN);
   const tokenStore = require('./oauthTokenStore');
 
   // 1. Preferred: server-auth (CCG) enterprise token — auto-renews, admin scope.
@@ -667,7 +704,7 @@ async function listComments(fileId, token, asUserId = null) {
 }
 
 module.exports = {
-  getValidToken, getMe, getUsers,
+  getValidToken, isEnterpriseAuthConfigured, getMe, getUsers,
   createFolder, uploadFile, uploadVersion, createNote,
   createSharedLink, addComment, createCollaboration,
   createGroup, addGroupMember, createGroupCollaboration,

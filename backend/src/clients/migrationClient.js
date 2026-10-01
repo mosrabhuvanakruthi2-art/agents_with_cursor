@@ -1360,6 +1360,16 @@ async function triggerMigration(context) {
     // The seeded folder still arrives as a folder at the destination, because it is a child of the
     // drive and the tree is preserved — so the validator's expectations do not change.
     const isSharedDrive = /SHARED_DRIVE/i.test(String(context.sourceCloudName || ''));
+    // REVERTED (2026-09-17): a same-day attempt at generalizing pickInsideFolder/toDate by
+    // DESTINATION type (any source landing in a Shared Drive) turned out to be wrong for Box
+    // specifically. `validation/combinations/content/boxToGoogledrive.js` passes
+    // `expectSourceFolderWrapper: true` to GoogleDriveValidationAgent precisely BECAUSE Box's own
+    // working job shape omits `pickInsideFolder` — CloudFuze wraps Box's migrated content in a
+    // source-folder-name folder instead, and the validator already compensates for that. Forcing
+    // `pickInsideFolder=true` onto Box would silently break that contract even if it had fixed the
+    // CONFLICT (it didn't — jobs 6aabefe3…, 6aabf1a8…, 2026-09-17 still ended CONFLICT / "Migration
+    // not Allowed for wrong CSV paths" with it set). The real bug for Box → Google Shared Drive was
+    // downstream, in the pre-create-destination step below: see its comment.
     const sharedDriveRootId = isSharedDrive ? (context.sourceDriveId || null) : null;
     const sharedDriveName = isSharedDrive
       ? normalizeDriveName(context.sourceDriveName || env.GOOGLE_SHARED_DRIVE_NAME)
@@ -1635,14 +1645,66 @@ async function triggerMigration(context) {
     // already proven to work — instead of depending on its own (currently unreliable) folder
     // creation during validation. Best-effort: a failure here just leaves CloudFuze to attempt its
     // own creation as before, so it cannot make a working combination worse.
+    //
+    // A Shared Drive destination is a SEPARATE case, found 2026-09-17 debugging Box → Google Shared
+    // Drive: `ensureFolderPath(path, email)` with no `rootId` defaults to My Drive (see its own
+    // doc comment). For "/box-Direct-Test-1" that CREATED a plain folder named "box-Direct-Test-1"
+    // in the destination account's My Drive — a decoy with no relationship to the real Shared Drive
+    // of that name — and every later run then "found" that same decoy and reported it as the
+    // destination, while CloudFuze's own job kept failing to resolve the (never actually verified)
+    // real Shared Drive: CONFLICT / "Migration not Allowed for wrong CSV paths", 0 items, on every
+    // attempt (jobs 6aabefe3…, 6aabf1a8…). GoogleDriveValidationAgent.resolveDestinationRoot already
+    // treats the leading path segment as the DRIVE's name for this provider and throws rather than
+    // inventing one when it can't be found — this step must match that, not silently create a
+    // decoy folder that then masks the real problem on every subsequent run.
     if (/(GOOGLE|G_SUITE)/i.test(String(context.destCloudName || context.destinationProvider || ''))) {
       const driveClient = require('./driveClient');
+      const isDestShared = /SHARED_DRIVE/i.test(String(context.destCloudName || ''))
+        || String(context.destinationProvider || '').toLowerCase() === 'googleshareddrive';
       for (const u of units) {
         if (!u.destinationPath || !u.destinationEmail) continue;
         try {
-          const { id, created } = await driveClient.ensureFolderPath(u.destinationPath, u.destinationEmail);
-          logger.info(`CloudFuze pre-create destination: "${u.destinationPath}" for ${u.destinationEmail} `
-            + `→ id=${id}${created.length ? ` (created: ${created.join('/')})` : ' (already existed)'}`);
+          if (isDestShared) {
+            const segments = String(u.destinationPath).split('/').map((s) => s.trim()).filter(Boolean);
+            const driveName = segments[0];
+            if (!driveName) {
+              logger.warn('CloudFuze pre-create destination: Shared Drive destination path '
+                + `"${u.destinationPath}" names no drive — skipping, CloudFuze will be left to reject it`);
+              continue;
+            }
+            let drive = await driveClient.resolveSharedDriveByName(driveName, u.destinationEmail);
+            if (!drive) {
+              // Parity with the My Drive branch below, which creates a missing folder rather than
+              // requiring one to already exist. NOT a same-named folder in My Drive as a substitute
+              // — that decoy is exactly what masked this problem before (see the comment above).
+              try {
+                drive = await driveClient.createSharedDrive(driveName, u.destinationEmail);
+                logger.info(`CloudFuze pre-create destination: created Shared Drive "${drive.name}" `
+                  + `(${drive.id}) for ${u.destinationEmail} — did not exist`);
+              } catch (createErr) {
+                const available = await driveClient.listSharedDrives(u.destinationEmail).catch(() => []);
+                logger.error(`CloudFuze pre-create destination: Shared Drive "${driveName}" not found `
+                  + `for ${u.destinationEmail}, and creating it failed (${createErr.message}) — this `
+                  + `account may lack Shared Drive creation rights in its Workspace admin console. `
+                  + `Available: ${available.map((d) => d.name).join(', ') || '(none)'}. Create the `
+                  + `Shared Drive "${driveName}" manually before re-running.`);
+                continue;
+              }
+            }
+            const subPath = segments.slice(1).join('/');
+            if (subPath) {
+              const { id, created } = await driveClient.ensureFolderPath(subPath, u.destinationEmail, { rootId: drive.id });
+              logger.info(`CloudFuze pre-create destination: Shared Drive "${drive.name}" (${drive.id}) `
+                + `subpath "/${subPath}" → id=${id}${created.length ? ` (created: ${created.join('/')})` : ' (already existed)'}`);
+            } else {
+              logger.info(`CloudFuze pre-create destination: Shared Drive "${drive.name}" (${drive.id}) `
+                + 'verified — destination path names the drive itself, nothing to create');
+            }
+          } else {
+            const { id, created } = await driveClient.ensureFolderPath(u.destinationPath, u.destinationEmail);
+            logger.info(`CloudFuze pre-create destination: "${u.destinationPath}" for ${u.destinationEmail} `
+              + `→ id=${id}${created.length ? ` (created: ${created.join('/')})` : ' (already existed)'}`);
+          }
         } catch (ensureErr) {
           logger.warn(`CloudFuze pre-create destination "${u.destinationPath}" failed `
             + `(${ensureErr.message}) — continuing, CloudFuze will attempt its own creation`);
@@ -2019,6 +2081,21 @@ ${pathCsv}`);
     const isDropboxToGoogleDrive = /DROPBOX/i.test(String(context.sourceCloudName || ''))
       && /(GOOGLE|G_SUITE)/i.test(String(context.destCloudName || ''));
 
+    // Box → Google (My Drive or Shared Drive) is the one pair whose OWN scope document
+    // (data/feature-scope/box-to-google-inscope.md §4.1) says both timestamps are comparable:
+    // "Box exposes content_created_at AND content_modified_at on every file — unlike Dropbox,
+    // which exposes no creation time at all. The validator therefore compares both timestamps
+    // (createdComparable: true)." validation/combinations/content/boxToGoogledrive.js already
+    // compares created time unconditionally on that basis — but createdTimeForFiles below defaults
+    // to false for every combination, so the job never actually asked CloudFuze to preserve it.
+    // Confirmed live 2026-09-18 (execution c1984703): scope 4.1 failed reporting drifted files
+    // purely because creation time was never requested, on a run that named no explicit option —
+    // exactly the failure mode the createdTimeForFiles default comment already warned about.
+    // Scoped to this pair rather than changed globally: every OTHER combination's default must stay
+    // false so a run naming no option still sends the same job it sent before (see that comment).
+    const isBoxToGoogleDrive = /BOX/i.test(String(context.sourceCloudName || ''))
+      && /(GOOGLE|G_SUITE)/i.test(String(context.destCloudName || ''));
+
     // REVERTED to the standard shape. Matching the wizard's stored FolderChecked (no fromRootId,
     // destinationFolderName "null") was tried and failed identically — and
     // docs/content-migration-path-mapping-findings.md warns exactly against this:
@@ -2139,6 +2216,8 @@ ${pathCsv}`);
       //   …&pickInsideFolder=true&papertoGDoc=true&sharedContent=false&fusionTables=false
       //   &drawings=false&unsupportedFiles=false…
       // and notably NOT teamFoldersMigrate, which is Shared-Drive-SOURCE only.
+      // NOT generalized to "any Shared Drive destination" — Box's working job shape (My Drive)
+      // deliberately omits this; see the isSharedDrive comment above.
       ...((isSharedDrive || isDropboxToGoogleDrive || env.CONTENT_PICK_INSIDE_FOLDER === 'true') ? ['pickInsideFolder=true'] : []),
       // Dropbox Paper → Google Docs. Only this pair converts Paper, and §10 of the scope document
       // is 19 Paper features — without it every one of them lands unconverted or not at all.
@@ -2148,6 +2227,26 @@ ${pathCsv}`);
         'fusionTables=false',
         'drawings=false',
         'unsupportedFiles=false',
+      ] : []),
+      // REVERTED 2026-09-22, RE-WIRED 2026-09-23 — the 2026-09-22 revert correctly identified that
+      // onlyBoxNotes=true restricts the ENTIRE migration to Box Notes files only (confirmed live
+      // TWICE now: execution cc3d8f1b here, and CloudFuze's own native wizard job 443/444, which
+      // scanned only 2 items — qa-note.boxnote + its comments CSV — out of a full ~76-item tree
+      // when a tester left CloudFuze's separate "Only Box Notes" checkbox on). But onlyBoxNotes and
+      // the Box Notes format conversion are two INDEPENDENT controls in CloudFuze's own wizard
+      // (Migration Options panel: "Only Box Notes" is its own checkbox, separate from the
+      // "Migrate Box Notes As: Docx / G-Docs" radio below it) — conflating them was the actual bug
+      // in the original guess, not onlyBoxNotes existing at all.
+      //
+      // With "Only Box Notes" UNCHECKED and "G-Docs" selected, a real full-tree native-wizard run
+      // (2026-09-23) processed all 76 items (Total Files/Folders: 76, Processed: 76, Conflict: 0 —
+      // mixed folders/comments/permissions, not just the note) AND the migrated qa-note.doc opened
+      // natively in the Google Docs editor (docs.google.com/document/d/…), confirming a real
+      // conversion, not a renamed Word file. So: always send onlyBoxNotes=false (never true — this
+      // app never exposes a "notes-only" mode) and drive boxNotetoDoc from the user's format choice.
+      ...(isBoxToGoogleDrive ? [
+        'onlyBoxNotes=false',
+        `boxNotetoDoc=${context.boxNotesFormat === 'gdoc'}`,
       ] : []),
       // "Team Folders" is Google's original name for Shared Drives. It is the only field in the
       // job whose meaning is specific to this source type, and it had been false on every run
@@ -2179,12 +2278,18 @@ ${pathCsv}`);
       // comparable content_created_at on both sides): feature 4.1 reported "4 of 32 file(s) drifted
       // beyond the tolerance" purely because creation time was never requested.
       //
-      // Now driven by a job option, exactly like modifiedTimeForFiles. Note the default: FALSE,
-      // i.e. today's hardcoded value, because this builder is shared by every content combination
-      // (Box→SharePoint, Drive→SharePoint, Dropbox→Google, …) and a run that names no option must
-      // send the same job it sent before. `opt()` defaults to true, so the second argument is not
-      // optional here — see notifyInternalUsers above for the same pattern.
-      `createdTimeForFiles=${opt('preserveCreatedTime', false)}`,
+      // Now driven by a job option, exactly like modifiedTimeForFiles. Default FALSE for every
+      // OTHER combination (Box→SharePoint, Drive→SharePoint, Dropbox→Google, …), so a run naming no
+      // option still sends the same job it sent before — `opt()` defaults to true, so the second
+      // argument is not optional here, see notifyInternalUsers above for the same pattern.
+      //
+      // Default TRUE for Box→Google specifically (see isBoxToGoogleDrive above): reproduced this
+      // exact "4 of 32" / "6 of 46 file(s) drifted" failure twice now on this one pair, because its
+      // own scope document commits to created time being comparable here (Box exposes it; Dropbox
+      // doesn't), so the validator checks it unconditionally — the job should ask for it
+      // unconditionally too, not leave every un-configured run failing a check it never had a
+      // chance to pass.
+      `createdTimeForFiles=${opt('preserveCreatedTime', isBoxToGoogleDrive)}`,
       `modifiedTimeForFiles=${opt('preserveTimestamp')}`, // Preserve Timestamp
       // Job Options step: "Replace special characters with" + "Exclude file types"
       `specialCharacter=${encodeURIComponent(context.replaceSpecialChar || '-')}`,

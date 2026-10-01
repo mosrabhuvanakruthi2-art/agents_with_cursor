@@ -1,10 +1,10 @@
 /**
  * Box → Google role and link-scope translation.
  *
- * Per `data/feature-scope/box-to-google-inscope.md`, sections 2 and 5. My Drive only —
- * `combinations` names a single entry; a `box_to_googleshareddrive` combination is out of scope for
- * this pass and must not be added here until that combination actually exists (see the note in
- * `dropbox_to_google.js`, which covers both of its destinations because both were built together).
+ * Per `data/feature-scope/box-to-google-inscope.md`, sections 2 and 5. Covers BOTH Google
+ * destinations — `box_to_googledrive` (My Drive) and `box_to_googleshareddrive` (Shared Drive) — the
+ * same arrangement `dropbox_to_google.js` uses for its own two destinations, since both reuse the
+ * same validator and the same role/link translation.
  *
  * A new file rather than another block in `validation/contentRoleMap.js`, for the same reason
  * `roleMaps/dropbox_to_google.js` is its own file: that module already holds the Box→SharePoint and
@@ -259,9 +259,7 @@ function compareSharedLink(sourceLink, destLinks) {
 
 module.exports = {
   pair: 'box_to_google',
-  // My Drive only. A `box_to_googleshareddrive` combination does not exist in this repo yet — see the
-  // file header. Add it here only alongside actually building that combination.
-  combinations: ['box_to_googledrive'],
+  combinations: ['box_to_googledrive', 'box_to_googleshareddrive'],
   label: 'Box → Google',
 
   LEVEL,

@@ -33,6 +33,9 @@ backend/data/executions.json
 backend/data/custom-test-cases.json
 backend/data/test-repository.json
 backend/data/channel-cache.json
+# Load-test checkpoints, one file per target folder. These are machine-local progress markers —
+# committing one would hand another machine a stale index and make it re-walk ground already filled.
+backend/data/dropbox-loadtest-progress*.json
 
 # Claude IDE config
 # settings.json is SHARED — it carries the GStack enforcement hooks the whole team needs.

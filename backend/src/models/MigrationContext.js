@@ -50,6 +50,11 @@ class MigrationContext {
     jobName = '',
     excludeFileTypes = '',
     replaceSpecialChar = '_',
+    /** Box → Google only: 'docx' (default, CloudFuze's own default) or 'gdoc'. Drives CloudFuze's
+     *  boxNotetoDoc job option — confirmed live (job 444/445, 2026-09-23) to convert Box Notes to a
+     *  real Google Doc without restricting the migration's scope, as long as the separate "Only Box
+     *  Notes" checkbox (onlyBoxNotes) is left off; see migrationClient.js for that history. */
+    boxNotesFormat = 'docx',
     /** Content path mapping (overrides). Source defaults to the seeded folder; destination to the cloud default. */
     sourcePath = '',
     destinationPath = '',
@@ -154,6 +159,7 @@ class MigrationContext {
     this.jobName = String(jobName || '').trim();
     this.excludeFileTypes = String(excludeFileTypes || '').trim();
     this.replaceSpecialChar = replaceSpecialChar === undefined ? '_' : replaceSpecialChar;
+    this.boxNotesFormat = boxNotesFormat === 'gdoc' ? 'gdoc' : 'docx';
     // Optional path overrides; blank → migrationClient uses the seeded folder / cloud default.
     this.sourcePath = String(sourcePath || '').trim();
     this.destinationPath = String(destinationPath || '').trim();

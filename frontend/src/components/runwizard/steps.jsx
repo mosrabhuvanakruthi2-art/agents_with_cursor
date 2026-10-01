@@ -867,6 +867,11 @@ function ContentOptions({ wiz }) {
    * other provider keep the hint and the autoDest preview they have today.
    */
   const isDestSharedDrive = wiz.dstProvider === 'googleshareddrive';
+  // CloudFuze exposes this choice only for a Box source landing in Google (My Drive or Shared
+  // Drive) — it has no meaning for any other combination, so the control (and the job params it
+  // sends) stay scoped to exactly this pair.
+  const showBoxNotesFormat = wiz.srcProvider === 'box'
+    && (wiz.dstProvider === 'googledrive' || wiz.dstProvider === 'googleshareddrive');
   return (
     <>
     {/* Content Mapping — which folder migrates where (the path CSV the agent uploads) */}
@@ -950,6 +955,18 @@ function ContentOptions({ wiz }) {
             <input value={wiz.jobOptions.excludeFileTypes} onChange={(e) => wiz.setJobOption('excludeFileTypes', e.target.value)}
               placeholder="e.g. mp3,mp4,psd" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
           </Field>
+          {showBoxNotesFormat && (
+            <Field label="Migrate Box Notes As">
+              <select value={wiz.jobOptions.boxNotesFormat} onChange={(e) => wiz.setJobOption('boxNotesFormat', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+                <option value="docx">Docx</option>
+                <option value="gdoc">G-Docs</option>
+              </select>
+              <p className="mt-1 text-[11px] text-gray-500">
+                Mirrors CloudFuze's own "Migrate Box Notes As" job option (Box → Google only).
+              </p>
+            </Field>
+          )}
           <label className="flex items-center gap-2.5 text-sm text-gray-700 cursor-pointer pt-1">
             <input type="checkbox"
               checked={!wiz.contentOptions.notifyInternalUsers && !wiz.contentOptions.notifyExternalUsers}

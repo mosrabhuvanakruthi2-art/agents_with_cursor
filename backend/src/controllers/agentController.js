@@ -164,6 +164,7 @@ async function runAgents(req, res) {
       jobName: req.body.jobName || '',
       excludeFileTypes: req.body.excludeFileTypes || '',
       replaceSpecialChar: req.body.replaceSpecialChar,
+      boxNotesFormat: req.body.boxNotesFormat || 'docx',
       sourcePath: req.body.sourcePath || '',
       destinationPath: req.body.destinationPath || '',
       sourceFolderName: req.body.sourceFolderName || '',

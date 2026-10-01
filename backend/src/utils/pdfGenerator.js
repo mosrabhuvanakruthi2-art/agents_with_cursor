@@ -2692,6 +2692,87 @@ function drawContentFeatureChecklist(doc, checklist, summary) {
     doc.moveDown(0.25);
   }
   doc.moveDown(0.4);
+
+  drawFeatureVerdictSummary(doc, checklist);
+}
+
+/**
+ * The last thing in the report: which features failed, named, and which passed.
+ *
+ * The checklist above already carries every verdict, but a reader scanning a long report has to
+ * reconstruct "what actually failed" by eye, row by row. On a run with eight failures out of ten
+ * that is the one question they have, and it is the one thing the report never answered in one
+ * place. The Failure Index at the top lists failing CHECKS, which is a different and longer list
+ * than the documented FEATURES, and it does not say what passed at all.
+ *
+ * Names, not counts. "2 failed" sends the reader back to hunt; "2.2 Subfolder Permissions,
+ * 1.3 Files & Folder Migration" does not.
+ *
+ * Out-of-scope rows are listed separately and never counted as failures — they are observations
+ * the combination document does not judge, and folding them into a failure count would report a
+ * promise nobody made as a defect.
+ */
+const SEPARATOR = '   \u00b7   ';
+
+function buildFeatureVerdictSummary(checklist) {
+  const rows = Array.isArray(checklist) ? checklist : [];
+  const of = (st) => rows.filter((r) => r && r.status === st);
+  const failed = of('fail');
+  const passed = of('pass');
+  const na = of('na');
+  const info = of('info');
+  const judged = failed.length + passed.length + na.length;
+  const name = (r) => `${r.id} ${r.feature}`;
+  return {
+    judged,
+    headline: failed.length === 0
+      ? `ALL ${judged} IN-SCOPE FEATURE(S) PASSED OR WERE NOT ASSESSED — none failed`
+      : `${failed.length} OF ${judged} IN-SCOPE FEATURE(S) FAILED`,
+    groups: [
+      { label: 'FAILED', names: failed.map(name) },
+      { label: 'PASSED', names: passed.map(name) },
+      { label: 'NOT ASSESSED', names: na.map(name) },
+      { label: 'OUT OF SCOPE', names: info.map(name) },
+    ].filter((g) => g.names.length > 0),
+  };
+}
+
+function drawFeatureVerdictSummary(doc, checklist) {
+  const rows = Array.isArray(checklist) ? checklist : [];
+  if (rows.length === 0) return;
+  const model = buildFeatureVerdictSummary(rows);
+  const failedCount = (model.groups.find((g) => g.label === 'FAILED') || { names: [] }).names.length;
+
+  ensureSpace(doc, 40);
+  doc.moveDown(0.2);
+  doc.fontSize(9).font(F_BOLD).fillColor(failedCount === 0 ? C.pass : C.fail)
+    .text(model.headline, MARGIN, doc.y, { width: CONTENT_W });
+  doc.moveDown(0.3);
+
+  const COLOR = { FAILED: C.fail, PASSED: C.pass };
+  const block = (label, list, color) => {
+    if (list.length === 0) return;
+    const names = list.join(SEPARATOR);
+    const caption = `${label} (${list.length})`;
+    // MEASURE BOTH COLUMNS, advance past the taller.
+    //
+    // The label column is 58pt, so "NOT ASSESSED (1)" wraps onto two lines while its single
+    // feature name occupies one. Advancing by the NAMES height alone let the next row start
+    // inside the label, and run e8fc456e printed "NOT ASSESSED (1)" and "OUT OF SCOPE (4)"
+    // overlapping each other into an unreadable smear at the foot of the report.
+    const nameH = doc.fontSize(7.5).font(F_REGULAR).heightOfString(names, { width: CONTENT_W - 62 });
+    const labelH = doc.fontSize(7.5).font(F_BOLD).heightOfString(caption, { width: 58 });
+    const h = Math.max(nameH, labelH);
+    ensureSpace(doc, h + 10);
+    const y = doc.y;
+    doc.fontSize(7.5).font(F_BOLD).fillColor(color).text(caption, MARGIN, y, { width: 58 });
+    doc.fontSize(7.5).font(F_REGULAR).fillColor(C.text)
+      .text(names, MARGIN + 62, y, { width: CONTENT_W - 62 });
+    doc.y = y + h + 3;
+  };
+
+  for (const g of model.groups) block(g.label, g.names, COLOR[g.label] || C.subtle);
+  doc.moveDown(0.4);
 }
 
 /**
@@ -2868,4 +2949,5 @@ function generateContentValidationPdf(execution, stream) {
   doc.end();
 }
 
-module.exports = { generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf };
+module.exports = {
+  buildFeatureVerdictSummary, generateValidationPdf, generateContentValidationPdf, generateBulkValidationPdf };

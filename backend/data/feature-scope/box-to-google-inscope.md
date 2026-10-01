@@ -10,9 +10,10 @@
 > Companion file: `box-to-google-outscope.md` — the documented limitations that must **not** fail a
 > validation run.
 >
-> **My Drive only, for now.** `box_to_googledrive` is the only combination this document currently
-> backs — there is no `box_to_googleshareddrive` combination in this repo yet. Add one, and extend
-> `validation/roleMaps/box_to_google.js`'s `combinations` list, only alongside actually building it.
+> **Backs both Google destinations.** `box_to_googledrive` (My Drive) and `box_to_googleshareddrive`
+> (Shared Drive) both reuse the same seeding agent, validator and role map — see
+> `orchestrator/combinations/content/boxToGoogleshareddrive.js` and
+> `validation/roleMaps/box_to_google.js`'s `combinations` list.
 >
 > **The destination is Google, not Microsoft.** Box's other content combinations
 > (`box→sharepoint`, `box→onedrive`) migrate into SharePoint/OneDrive, and several rules read
