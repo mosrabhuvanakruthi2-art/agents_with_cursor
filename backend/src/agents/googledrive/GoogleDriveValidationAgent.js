@@ -160,59 +160,54 @@ class GoogleDriveValidationAgent extends ContentReportValidationAgent {
       }
     }
 
-    // An explicit destination path wins when it resolves.
+    const name = String(sourceFolderName || '').trim();
+
+    const candidates = [name];
+    for (let i = 1; i <= DEDUP_MAX; i++) {
+      candidates.push(`${name} ${i}`, `${name} (${i})`);
+    }
+
+    /** The folder named after the SOURCE root directly under `parentId`, if CloudFuze made one. */
+    const wrapperUnder = async (parentId) => {
+      if (!name) return null;
+      for (const candidate of candidates) {
+        const found = await driveClient.findByName(candidate, parentId, email).catch(() => null);
+        if (found) return { id: found.id, name: found.name, path: `/${found.name}` };
+      }
+      return null;
+    };
+
+    // An explicit destination path wins when it resolves — but the migrated tree may sit one level
+    // INSIDE it, in a folder named after the source root.
     //
-    // EXCEPT: when the caller says this combination does not send `pickInsideFolder: true` to
-    // CloudFuze (`expectSourceFolderWrapper` — true for Box→Google, unset/false for Dropbox→Google),
-    // CloudFuze copies the SOURCE FOLDER ITSELF into the destination path instead of just its
-    // contents, so the migrated content lands one level deeper than the configured destination —
-    // e.g. destBase "/box-Direct-Test-1" ends up holding "/box-Direct-Test-1/<sourceFolderName>/…",
-    // not the migrated items directly.
+    // Which shape you get depends on pickInsideFolder. Dropbox → Google sends it true, so the
+    // CONTENTS land directly in the named path and there is no wrapper. googledrive → googledrive
+    // and Box → Google do not, so CloudFuze creates "<destPath>/<sourceFolderName>" and puts
+    // everything there. Returning the named path unconditionally read the wrapper's PARENT:
+    //   - run d95ab388 (googledrive → googledrive) migrated 91/91 items into
+    //     "/mydrive-mydrive-qa-agent/qa-src-mydrive" and the validator compared against
+    //     "/mydrive-mydrive-qa-agent", pairing 0 of 90 items and reporting "MIGRATION MOVED
+    //     NOTHING" for a migration that had moved everything;
+    //   - a live Box → Google run: source 83 / dest 81, matched 0, misplaced 79, on a job CloudFuze
+    //     had reported PROCESSED 82/82.
     //
-    // Returning `hit` unconditionally here compared the DESTINATION ROOT against the source tree.
-    // Measured live on a real Box→Google run: source 83 / dest 81, matched 0, misplaced 79 — every
-    // single item that migrated correctly was reported as one directory level "misplaced", because
-    // the comparison root was one level too shallow. CloudFuze had reported PROCESSED 82/82 and the
-    // two trees were structurally identical once the extra wrapper folder is accounted for.
-    //
-    // Gated behind `expectSourceFolderWrapper` rather than made unconditional: Dropbox→Google relies
-    // on an explicit destination SUBPATH winning outright even when a same-named folder exists
-    // elsewhere (see driveMigratedRoot.test.js's testExplicitSubpathWins) — Dropbox's
-    // pickInsideFolder migrations never create this wrapper, so second-guessing an explicit subpath
-    // there would be wrong, not just unnecessary.
+    // Gated behind `expectSourceFolderWrapper` rather than made unconditional: for a pickInsideFolder
+    // migration (Dropbox → Google) the named path IS the migrated root, and a source subfolder that
+    // happens to share the source root's name must not be mistaken for a wrapper.
     if (base && base !== '/') {
       const hit = await driveClient.resolveFolderByPath(base, email, opts).catch(() => null);
       if (hit) {
-        const nestedName = expectSourceFolderWrapper ? String(sourceFolderName || '').trim() : '';
-        if (nestedName) {
-          const nestedCandidates = [nestedName];
-          for (let i = 1; i <= DEDUP_MAX; i++) nestedCandidates.push(`${nestedName} ${i}`, `${nestedName} (${i})`);
-          for (const candidate of nestedCandidates) {
-            const nested = await driveClient.findByName(candidate, hit.id, email).catch(() => null);
-            if (nested) {
-              logger.info(
-                `[GoogleDriveValidationAgent] "${base}" resolved, and a folder named "${nested.name}" `
-                + `exists inside it — using that as the migrated root instead of "${base}" itself, `
-                + 'since CloudFuze copied the source folder rather than its contents here '
-                + '(no pickInsideFolder).'
-              );
-              return { id: nested.id, name: nested.name, path: `/${nested.name}` };
-            }
-          }
+        const wrapper = expectSourceFolderWrapper ? await wrapperUnder(hit.id) : null;
+        if (wrapper) {
+          return { ...wrapper, path: `${String(hit.path || `/${base}`).replace(/\/+$/, '')}/${wrapper.name}` };
         }
         return hit;
       }
     }
 
-    const name = String(sourceFolderName || '').trim();
     if (!name) {
       // No name to look for: the destination root itself is the comparison root.
       return { id: rootId, name: '(destination root)', path: '/' };
-    }
-
-    const candidates = [name];
-    for (let i = 1; i <= DEDUP_MAX; i++) {
-      candidates.push(`${name} ${i}`, `${name} (${i})`);
     }
 
     for (const candidate of candidates) {

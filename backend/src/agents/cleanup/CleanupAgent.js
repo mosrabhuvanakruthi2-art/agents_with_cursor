@@ -57,6 +57,15 @@ const SEEDED_CONTENT_NAMES = [
   'Agent Files', 'Agent Native Files', 'Agent Permissions', 'Agent Versions',
   'Agent Shared Links', 'Permission Matrix', 'Shared Link Matrix', 'File Formats',
   'Long Folder Path', 'Over Limit Path', 'root_readme.txt',
+  // DriveTestDataAgent._createEmbeddedLinks seeds this on every run and it was never on the list,
+  // so it was the one seeded folder cleanup always walked past — each run migrated on top of the
+  // last and the destination accumulated "Embedded Links 1", "Embedded Links 2", …
+  'Embedded Links',
+  // Root-level permission items — DriveTestDataAgent._createRootPermissions. They sit DIRECTLY in
+  // the migrated root (that is the whole point: only an item at depth <= 1 is evidence for features
+  // 2.1 and 2.2), so unlike the Permission Matrix rows they are matched by cleanup individually.
+  'root_folder_reader', 'root_folder_commenter', 'root_folder_writer', 'root_folder_fileOrganizer',
+  'root_file_reader.txt', 'root_file_commenter.txt', 'root_file_writer.txt',
   // DESTINATION-ONLY, and created by CloudFuze rather than migrated from the source: when a path
   // exceeds SharePoint's 400-character limit the content is relocated into "Long File Names" beside
   // the migrated root, and a .url placeholder is left behind. It is our own run's output, so it has
@@ -194,7 +203,22 @@ async function cleanContentSides(context, log, summary) {
   // mapping came back mapped=false with both pathRootFolderId null against a folder that had
   // existed, untouched, for 28 minutes. No run in logs/ has ever had mapped=true. Stable ids are
   // worth having on their own; the mapping failure is a separate, still-open problem.
-  if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
+  // ── useExistingSource: the source folder is the USER'S data, not ours to empty ──────────
+  // Emptying the source exists to stop one run's seed accumulating on the next (see this file's
+  // header). That reasoning only holds for folders THIS tool seeded. With useExistingSource the
+  // folder was populated by hand — it is the input to the run, and Step 0 deleting every child of
+  // it leaves Step 2 migrating an empty folder. Run b0c500e9 (googledrive → googledrive) reached
+  // PROCESSED having scanned exactly 1 item: the folder itself.
+  //
+  // Source only. The DESTINATION is still cleaned, because the previous run's output is ours and
+  // leaving it behind is what makes validation report phantom "extra"/"misplaced" items.
+  const skipSourceClean = Boolean(context.useExistingSource);
+  if (skipSourceClean) {
+    log.info('CleanupAgent: useExistingSource — leaving the source folder(s) untouched; '
+      + 'they hold the data this run is meant to migrate. Destination cleanup still runs.');
+  }
+
+  if (!skipSourceClean && ['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {
     try {
       // EVERY drive the run touches, not just GOOGLE_SHARED_DRIVE_NAME.
       //

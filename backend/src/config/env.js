@@ -516,6 +516,35 @@ module.exports = {
   })(),
 
   /**
+   * How long a content validator may wait for CLOUDFUZE'S PERMISSION PHASE before judging.
+   *
+   * Permissions are not applied by the file movers. They move the file and queue an entry in
+   * `CollabarationDetails`; `StatusModuleScheduler` then generates the PermissionQueue once the
+   * copy is complete, and `InvitePermissionScheduler` applies the grants on its own cron, with
+   * conflicted entries retrying on exponential backoff (5, 15, 45 min). So a job reporting
+   * `PROCESSED  99/99` means the FILES are done and the grants are still queued.
+   *
+   * THIS IS A CEILING, NOT A SLEEP. The poll returns as soon as grants appear and stop changing
+   * across two consecutive reads, so a healthy run pays only what the phase actually costs. A
+   * flat delay was rejected precisely because it charges every good run for the worst case.
+   *
+   * Set to 0 for a fast structure-only run that does not care about permission verdicts; the
+   * permission features then report what is there at the moment the copy ended.
+   */
+  SHAREDDRIVE_PERMISSION_SETTLE_MS: (() => {
+    const n = parseInt(process.env.SHAREDDRIVE_PERMISSION_SETTLE_MS ?? '', 10);
+    // 10 minutes, not 20. Measured across runs 27a74447, 708f4eca and 8bacd461, no item grant
+    // appeared at ANY point in ~50 minutes of post-copy polling, so a longer ceiling buys
+    // nothing while charging every run for it. Raise it only if the permission phase is known
+    // to be working and merely slow.
+    return Number.isFinite(n) && n >= 0 ? n : 600000;
+  })(),
+  SHAREDDRIVE_PERMISSION_POLL_MS: (() => {
+    const n = parseInt(process.env.SHAREDDRIVE_PERMISSION_POLL_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 30000;
+  })(),
+
+  /**
    * DROPBOX_TEST_INTERNAL_USERS / DROPBOX_TEST_GROUPS — the FULL grantee sets, comma-separated.
    *
    * The singular vars above seed one internal user and one group, which covered about two of the
@@ -812,6 +841,33 @@ module.exports = {
    * The wait applies ONLY to items where the source has grants and the destination reports none,
    * so a fully-migrated tree is never slowed by it.
    */
+  /**
+   * DRIVE_SEED_SETTLE_* — wait for a freshly seeded Drive tree to become LISTABLE before the run
+   * migrates it.
+   *
+   * Drive's files.list is eventually consistent for newly created items, and the lag is large
+   * enough to change what a run does. Measured on run 14f78fa0, seeding 90 items that finished at
+   * 11:29:55:
+   *   11:33:16  the validator's source read returned   7 items
+   *   11:38:43  the same read returned                90 items
+   *   12:01-12:03  90, 90, 90 — stable
+   * CloudFuze corroborates it from the other side: the migration scanned 76, not 90, so the job
+   * itself moved a partial tree. The run then reported "MIGRATION MOVED NOTHING" — a wrong verdict
+   * about a migration that was handed a source still materialising underneath it.
+   *
+   * Polling until two consecutive reads agree costs nothing on a settled tree (one extra list) and
+   * is the only thing that makes the item count a fact rather than a race. Set ATTEMPTS to 0 to
+   * disable.
+   */
+  DRIVE_SEED_SETTLE_ATTEMPTS: (() => {
+    const n = parseInt(process.env.DRIVE_SEED_SETTLE_ATTEMPTS ?? '', 10);
+    return Number.isFinite(n) && n >= 0 ? n : 12;
+  })(),
+  DRIVE_SEED_SETTLE_MS: (() => {
+    const n = parseInt(process.env.DRIVE_SEED_SETTLE_MS ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : 15000;
+  })(),
+
   CONTENT_PERMISSION_SETTLE_ATTEMPTS: (() => {
     const n = parseInt(process.env.CONTENT_PERMISSION_SETTLE_ATTEMPTS ?? '', 10);
     return Number.isFinite(n) && n >= 0 ? n : 2;

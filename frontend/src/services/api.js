@@ -30,6 +30,14 @@ export function runAgents(payload) {
   return api.post('/agents/run', payload);
 }
 
+/**
+ * Registered (domain, source, destination) combinations and whether each can seed its own test
+ * data. The wizard uses `seedsTestData` to warn before a run that would have nothing to migrate.
+ */
+export function getCombinations() {
+  return api.get('/agents/combinations');
+}
+
 export function getExecutions() {
   return api.get('/agents/executions');
 }

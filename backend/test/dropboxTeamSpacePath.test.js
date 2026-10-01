@@ -182,7 +182,10 @@ function testGoogleDestinationBranch() {
 function testOtherCombinationsUntouched() {
   for (const marker of [
     "if (dstProvider === 'sharepoint' && context.destinationEmail) {",
-    "if (['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {",
+    // The source branch gained a `!skipSourceClean &&` prefix so useExistingSource runs keep the
+    // folder they are about to migrate (run d95ab388). The providers it targets are what this
+    // assertion is here to pin, so match from there on.
+    "['googledrive', 'googleshareddrive'].includes(srcProvider) && context.sourceEmail) {",
   ]) {
     assert.ok(cleanupSrc.includes(marker), `pre-existing branch still present: ${marker}`);
   }

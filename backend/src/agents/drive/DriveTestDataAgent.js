@@ -123,6 +123,20 @@ const SAMPLE_PDF = Buffer.from(
   'xref\n0 5\ntrailer<</Root 1 0 R/Size 5>>\nstartxref\n200\n%%EOF'
 );
 
+/**
+ * The out-of-set link target seeded inside `embedded_link_doc.docx` — feature 8.1's control.
+ *
+ * Module-level and exported because the SEED and the CHECK have to agree on it exactly, and they
+ * live in different files (`validation/combinations/content/googledriveToGoogledrive.js` reads it
+ * back out of the migrated document). Two copies of a sentinel string is how a control silently
+ * stops controlling anything: change one, and the check starts reporting "the control link is gone"
+ * on every run, against data that is perfectly fine.
+ *
+ * Deliberately not a real Drive file id. The only property the control needs is that the migration
+ * has no copy of it, so a correct run must leave the URL exactly as it found it.
+ */
+const EMBEDDED_LINK_OUT_OF_SET_ID = '0B0-QA-AGENT-NOT-IN-MIGRATION-SET-0000000';
+
 const ROOT_README = `Google Drive QA — Agent Data Root
 ====================================
 
@@ -197,7 +211,23 @@ class DriveTestDataAgent extends BaseAgent {
     // Shared Drive target, when one is configured. A Shared Drive's id doubles as its root folder id,
     // so everything below is unchanged apart from where the tree is rooted. Shared Drives are also the
     // only place the Content Manager (fileOrganizer) role exists, so the permission matrix needs one.
-    const sharedDriveName = normalizeDriveName(context.sourceSharedDriveName || env.GOOGLE_SHARED_DRIVE_NAME);
+    //
+    // The env fallback is gated on the source PROVIDER, for the same reason migrationClient gates
+    // its drive id on the registered cloud type: the provider decides the shape of the run, and the
+    // drive name only decides WHICH drive within that shape. GOOGLE_SHARED_DRIVE_NAME describes the
+    // drive a `googleshareddrive` run uses; reading it for a My Drive run pointed the seeder at a
+    // Shared Drive the source account could not even see, and run b78eb168 (googledrive →
+    // googledrive, seeding) died on the refusal below:
+    //   Shared Drive "QA_Team1" is not visible to mia@cloudfuze.com
+    // — for a run that had nothing to do with QA_Team1.
+    //
+    // An explicit context.sourceSharedDriveName still wins whatever the provider: a caller that
+    // names a drive means it, which is what the per-row drive names and scripts/seed-drive-test-data
+    // rely on.
+    const providerUsesSharedDrive = /shareddrive/i.test(String(context.sourceProvider || ''));
+    const sharedDriveName = normalizeDriveName(
+      context.sourceSharedDriveName || (providerUsesSharedDrive ? env.GOOGLE_SHARED_DRIVE_NAME : '')
+    );
     let sharedDrive = null;
     if (sharedDriveName) {
       sharedDrive = await driveClient.resolveSharedDriveByName(sharedDriveName, sourceEmail);
@@ -249,14 +279,28 @@ class DriveTestDataAgent extends BaseAgent {
     await this._createSharedLinks(sourceEmail);
     // Scenarios that exist so no documented feature is left unexercised (and therefore reported
     // "not assessed") in the Shared Drive → SharePoint checklist.
-    await this._createPermissionMatrix(rootFolder.id, sourceEmail, editorEmail, viewerEmail, sharedDrive, {
+    const externalList = String(context.externalEmail || env.GOOGLE_TEST_EXTERNAL_EMAIL || '')
+      .split(',').map((x) => x.trim()).filter(Boolean);
+    const permissionPrincipals = {
       // The manual QA suite's dominant dimensions: group grants (most of its cases) and external users.
       groupEmail: context.groupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '',
       // GOOGLE_TEST_GROUP_EMAIL may be a comma-separated list; each role then gets its own group.
       groupEmails: String(context.groupEmail || env.GOOGLE_TEST_GROUP_EMAIL || '')
         .split(',').map((x) => x.trim()).filter(Boolean),
-      externalEmail: context.externalEmail || env.GOOGLE_TEST_EXTERNAL_EMAIL || '',
-    });
+      // GOOGLE_TEST_EXTERNAL_EMAIL may be a comma-separated list, like the group list above. Every
+      // address gets a grant at every role, because feature 2.5 is only as strong as the set of
+      // outside principals it actually exercised — one external address proved one remap path.
+      externalEmails: externalList,
+      // Kept for callers that still want a single address; it is the FIRST of the list, never the
+      // raw setting, so a comma-separated value can never reach an API expecting one address.
+      externalEmail: externalList[0] || '',
+    };
+    await this._createPermissionMatrix(rootFolder.id, sourceEmail, editorEmail, viewerEmail, sharedDrive,
+      permissionPrincipals);
+    // Grants at the ROOT of the migrated tree. Everything above sits two levels down, which is the
+    // depth the validator reads as "inner" — so 2.1 and 2.2 had nothing to judge and went N/A.
+    await this._createRootPermissions(rootFolder.id, sourceEmail, editorEmail, viewerEmail, sharedDrive,
+      permissionPrincipals);
     // Drive-level ("Level 1") membership — feature 4.10. Everything above grants on folders and
     // files; nothing granted on the DRIVE itself, so "is this drive open to everyone or restricted
     // to a few" was never seeded and never testable. Runs only when the row declares a mode.
@@ -285,11 +329,22 @@ class DriveTestDataAgent extends BaseAgent {
       rootFolderName: sourceFolderName,
       rootFolderId: r.rootFolderId || null,
       sharedDrive: r.sharedDrive ? `${r.sharedDrive.name} (${r.sharedDrive.id})` : '(My Drive)',
-      fileTypes: count(r.filesCreated) || count(r.filesFolderIds),
+      // `filesUploaded` / `versionedFiles` are the keys this agent actually writes (see
+      // _createFilesFolder and _createVersionsFolder). The summary read `filesCreated`,
+      // `filesFolderIds` and `versionFiles` — none of which is ever assigned — so both counters
+      // printed 0 on every run. Run f0ca59af reported "versioned files : 0" directly beneath its
+      // own log of 3 files × 5 versions, and QA read that inventory as proof the source carried no
+      // version history. The counters are the evidence the report rests on; they have to name real
+      // keys.
+      fileTypes: count(r.filesUploaded),
       nativeFiles: count(r.nativeFiles),
-      versionedFiles: count(r.versionFiles),
+      versionedFiles: count(r.versionedFiles),
       fileFormats: count(r.legacyOfficeFiles),
       permissionGrants: count(r.permissionMatrix),
+      // Counted separately from `permissionGrants` on purpose. These are the ONLY grants that can
+      // ever be evidence for 2.1 / 2.2, so a run that seeds none needs to say so in the inventory
+      // rather than let the combined total imply the features were exercised.
+      rootPermissionGrants: count(r.rootPermissions),
       sharedLinkGrants: count(r.linkMatrix),
       sharedLinks: count(r.sharedLinks),
       deepNestingLevels: count(r.deepNestingFolders),
@@ -306,6 +361,7 @@ class DriveTestDataAgent extends BaseAgent {
     logger.info(`[DriveTestDataAgent]   Google native     : ${summary.nativeFiles}  (Doc/Sheet/Slides)`);
     logger.info(`[DriveTestDataAgent]   versioned files   : ${summary.versionedFiles}`);
     logger.info(`[DriveTestDataAgent]   permission grants : ${summary.permissionGrants}  (users + groups + external)`);
+    logger.info(`[DriveTestDataAgent]   root-level grants : ${summary.rootPermissionGrants}  (features 2.1 root folders + 2.2 root files)`);
     logger.info(`[DriveTestDataAgent]   shared-link grants: ${summary.sharedLinkGrants}  (anonymous + organization)`);
     logger.info(`[DriveTestDataAgent]   deep nesting      : ${summary.deepNestingLevels} level(s)`);
     logger.info(`[DriveTestDataAgent]   special chars     : ${summary.specialCharsFolder || '(none)'}`);
@@ -326,6 +382,20 @@ class DriveTestDataAgent extends BaseAgent {
         + 'Shared Drive name.'
       );
     }
+
+    // ── Wait for the seeded tree to become LISTABLE ─────────────────────────────────
+    // Creating an item and being able to LIST it are not the same moment in Drive. Everything above
+    // has been created and acknowledged; files.list can still report a fraction of it for minutes.
+    // Returning here without checking hands the migration a source that is still materialising.
+    //
+    // Run 14f78fa0 is the case: 90 items seeded, and CloudFuze scanned 76 while the validator's own
+    // read returned 7. The run reported "MIGRATION MOVED NOTHING" about a migration that had been
+    // given an incomplete source — a wrong verdict produced by a race, not by a defect in either
+    // the migration or the validator.
+    //
+    // Two consecutive equal counts, not a fixed sleep: a settled tree costs one extra list call and
+    // returns immediately, while a lagging one waits only as long as it actually needs.
+    await this._settleSeededTree(r.rootFolderId, sourceEmail, sharedDrive?.id || null);
 
     logger.info('[DriveTestDataAgent] All inscope scenarios completed');
     return {
@@ -581,6 +651,51 @@ class DriveTestDataAgent extends BaseAgent {
     }
   }
 
+  /**
+   * Poll the seeded tree until two consecutive reads agree on its size, so the count the rest of the
+   * run works from is a fact rather than a snapshot of Drive mid-catch-up.
+   *
+   * Never throws: a settle that cannot be measured must not fail a seed that already succeeded. It
+   * reports what it saw and lets the run continue, because a partial source produces findings that
+   * are visible, whereas a failed seed produces no run at all.
+   */
+  async _settleSeededTree(rootFolderId, email, driveId) {
+    const attempts = env.DRIVE_SEED_SETTLE_ATTEMPTS;
+    const waitMs = env.DRIVE_SEED_SETTLE_MS;
+    if (!rootFolderId || !attempts) return;
+
+    const countItems = async () => {
+      const items = await driveClient.buildFolderTree(rootFolderId, email, {
+        maxDepth: 25,
+        ...(driveId ? { driveId } : {}),
+      });
+      return items.length;
+    };
+
+    try {
+      let previous = await countItems();
+      for (let i = 0; i < attempts; i++) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        const current = await countItems();
+        if (current === previous) {
+          logger.info(`[DriveTestDataAgent] Seeded tree settled at ${current} listable item(s)`);
+          this.results.settledItemCount = current;
+          return;
+        }
+        logger.info(`[DriveTestDataAgent] Seeded tree still appearing: ${previous} → ${current} `
+          + `item(s) (check ${i + 1}/${attempts})`);
+        previous = current;
+      }
+      logger.warn(`[DriveTestDataAgent] Seeded tree was still growing after `
+        + `${(attempts * waitMs) / 1000}s — last count ${previous}. The migration may read a partial `
+        + 'source; raise DRIVE_SEED_SETTLE_ATTEMPTS / DRIVE_SEED_SETTLE_MS if this recurs.');
+      this.results.settledItemCount = previous;
+    } catch (err) {
+      logger.warn(`[DriveTestDataAgent] Could not confirm the seeded tree had settled (${err.message}) `
+        + '— continuing; the seed itself succeeded.');
+    }
+  }
+
   async _applyDriveAccessMode(sharedDrive, ownerEmail, context) {
     const mode = String(context.driveAccessMode || '').trim().toLowerCase();
     if (!sharedDrive || !mode) {
@@ -655,7 +770,6 @@ class DriveTestDataAgent extends BaseAgent {
 
     const container = await driveClient.createFolder('Permission Matrix', rootId, ownerEmail);
     this.results.permissionMatrixFolderId = container.id;
-    const seeded = [];
 
     // The manual QA suite covers three principals per role — internal user, external user, and GROUP
     // — with group grants making up the majority of its cases. Group and external grantees are only
@@ -670,7 +784,14 @@ class DriveTestDataAgent extends BaseAgent {
     } else {
       logger.info(`[DriveTestDataAgent]   ${groupEmails.length} group(s) configured for permission grants`);
     }
-    if (!externalEmail) logger.info('[DriveTestDataAgent]   No external email configured — external shares not seeded');
+    const externalEmails = (principals && principals.externalEmails && principals.externalEmails.length)
+      ? principals.externalEmails
+      : (externalEmail ? [externalEmail] : []);
+    if (externalEmails.length === 0) {
+      logger.info('[DriveTestDataAgent]   No external email configured — external shares not seeded');
+    } else {
+      logger.info(`[DriveTestDataAgent]   ${externalEmails.length} external user(s) configured for permission grants`);
+    }
 
     // Per-drive offset, so the same ROLE is held by a DIFFERENT principal in each drive.
     //
@@ -693,13 +814,50 @@ class DriveTestDataAgent extends BaseAgent {
         + `for drive "${driveKey}" — each drive assigns a different person to the same role`);
     }
 
+    this.results.permissionMatrix = await this._seedRoleGrants({
+      parentId: container.id,
+      folderPrefix: 'folder_',
+      filePrefix: 'file_',
+      roles,
+      grantees,
+      groupEmails,
+      externalEmails,
+      ownerEmail,
+      driveOffset,
+      scenario: 'permissionMatrix',
+    });
+  }
+
+  /**
+   * Seed one folder and one file per role under `parentId`, each granted to a user, a group and an
+   * external address, and return what was actually created.
+   *
+   * Extracted from `_createPermissionMatrix` so the SAME seeding can run at a second depth without a
+   * parallel copy of it. Depth is the only thing that differs, and depth is exactly what decides
+   * which feature a grant is evidence for: the Drive→Drive validator classifies a grant on an item
+   * at depth <= 1 as Root Folder/File Permissions (2.1 / 2.2) and anything deeper as Sub-folder /
+   * Inner File Permissions (2.3 / 2.4). Everything this agent granted lived inside
+   * `Permission Matrix/` or `Agent Permissions/` — both at depth 2 — so 2.1 and 2.2 had no evidence
+   * at all and reported N/A on every run (execution 84fb9f41). See `_createRootPermissions`.
+   *
+   * @returns {Array<{itemType: string, role: string, grantee: string, principal?: string, id: string}>}
+   */
+  async _seedRoleGrants({
+    parentId, folderPrefix, filePrefix, roles, grantees, groupEmails, externalEmails,
+    ownerEmail, driveOffset, scenario,
+  }) {
+    const externals = Array.isArray(externalEmails) ? externalEmails : (externalEmails ? [externalEmails] : []);
+    const seeded = [];
+
     for (const [roleIndex, role] of roles.entries()) {
+      const folderName = `${folderPrefix}${role}`;
+      const fileName = `${filePrefix}${role}.txt`;
       // Indexed on the role AND the drive, so the same role always gets the same grantee for a given
       // drive across runs, but a different one in a different drive.
       const grantee = grantees[(roleIndex + driveOffset) % grantees.length];
       // A folder at this role
       try {
-        const folder = await driveClient.createFolder(`folder_${role}`, container.id, ownerEmail);
+        const folder = await driveClient.createFolder(folderName, parentId, ownerEmail);
 
         // Google refuses some roles for some accounts — "Cannot set the requested role for that
         // user as they lack the necessary license". Two things used to go wrong when it did:
@@ -726,12 +884,12 @@ class DriveTestDataAgent extends BaseAgent {
         }
         if (userGrantee) {
           seeded.push({ itemType: 'folder', role, grantee: userGrantee, principal: 'user', id: folder.id });
-          logger.info(`[DriveTestDataAgent]   folder_${role} shared with ${userGrantee} as ${role}`
+          logger.info(`[DriveTestDataAgent]   ${folderName} shared with ${userGrantee} as ${role}`
             + (userGrantee === grantee ? '' : ` (fell back from ${grantee} — licence)`));
         } else {
-          logger.warn(`[DriveTestDataAgent]   folder_${role} user share failed for every configured `
+          logger.warn(`[DriveTestDataAgent]   ${folderName} user share failed for every configured `
             + `account: ${lastErr ? lastErr.message : 'unknown'}`);
-          this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_user`,
+          this.errors.push({ scenario, item: `${folderName}_user`,
             error: lastErr ? lastErr.message : 'no grantee could hold this role' });
         }
 
@@ -745,46 +903,116 @@ class DriveTestDataAgent extends BaseAgent {
           try {
             await driveClient.shareFile(folder.id, roleGroup, role, ownerEmail);
             seeded.push({ itemType: 'folder', role, grantee: roleGroup, principal: 'group', id: folder.id });
-            logger.info(`[DriveTestDataAgent]   folder_${role} shared with group ${roleGroup} as ${role}`);
+            logger.info(`[DriveTestDataAgent]   ${folderName} shared with group ${roleGroup} as ${role}`);
           } catch (err) {
-            logger.warn(`[DriveTestDataAgent]   folder_${role} group share failed: ${err.message}`);
-            this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_group`, error: err.message });
+            logger.warn(`[DriveTestDataAgent]   ${folderName} group share failed: ${err.message}`);
+            this.errors.push({ scenario, item: `${folderName}_group`, error: err.message });
           }
         }
-        // Same role, granted to a user outside the source domain (feature 4.9).
-        if (externalEmail) {
+        // Same role, granted to every user outside the source domain (feature 4.9 / check 2.5).
+        //
+        // Every configured external gets the grant, rather than one rotated per role the way groups
+        // are. Drive stores one role per principal per item, so N externals on one folder is N
+        // distinct grants and none of them collapse — and 2.5 is scored per grant, so each address
+        // is its own piece of evidence. Rotating instead would leave most of the configured list
+        // never exercised, which is the gap this seeding exists to close.
+        for (const externalEmail of externals) {
           try {
             await driveClient.shareFile(folder.id, externalEmail, role, ownerEmail);
             seeded.push({ itemType: 'folder', role, grantee: externalEmail, principal: 'external', id: folder.id });
-            logger.info(`[DriveTestDataAgent]   folder_${role} shared externally with ${externalEmail} as ${role}`);
+            logger.info(`[DriveTestDataAgent]   ${folderName} shared externally with ${externalEmail} as ${role}`);
           } catch (err) {
-            logger.warn(`[DriveTestDataAgent]   folder_${role} external share failed: ${err.message}`);
-            this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}_external`, error: err.message });
+            logger.warn(`[DriveTestDataAgent]   ${folderName} external share failed for ${externalEmail}: ${err.message}`);
+            this.errors.push({ scenario, item: `${folderName}_external_${externalEmail}`, error: err.message });
           }
         }
       } catch (err) {
-        logger.warn(`[DriveTestDataAgent]   folder_${role} failed: ${err.message}`);
-        this.errors.push({ scenario: 'permissionMatrix', item: `folder_${role}`, error: err.message });
+        logger.warn(`[DriveTestDataAgent]   ${folderName} failed: ${err.message}`);
+        this.errors.push({ scenario, item: folderName, error: err.message });
       }
 
       // fileOrganizer is a folder-level role in the feature doc; files use reader/commenter/writer.
       if (role === 'fileOrganizer') continue;
       try {
         const file = await driveClient.uploadFile(
-          `file_${role}.txt`, 'text/plain',
+          fileName, 'text/plain',
           Buffer.from(`Shared at the "${role}" role to validate the permission mapping.`),
-          container.id, ownerEmail
+          parentId, ownerEmail
         );
         await driveClient.shareFile(file.id, grantee, role, ownerEmail);
         seeded.push({ itemType: 'file', role, grantee, id: file.id });
-        logger.info(`[DriveTestDataAgent]   file_${role}.txt shared with ${grantee} as ${role}`);
+        logger.info(`[DriveTestDataAgent]   ${fileName} shared with ${grantee} as ${role}`);
       } catch (err) {
-        logger.warn(`[DriveTestDataAgent]   file_${role}.txt failed: ${err.message}`);
-        this.errors.push({ scenario: 'permissionMatrix', item: `file_${role}`, error: err.message });
+        logger.warn(`[DriveTestDataAgent]   ${fileName} failed: ${err.message}`);
+        this.errors.push({ scenario, item: fileName, error: err.message });
       }
     }
 
-    this.results.permissionMatrix = seeded;
+    return seeded;
+  }
+
+  // ── Root-level permissions (features 2.1 and 2.2) ─────────────────────────
+  /**
+   * Grant on items sitting DIRECTLY in the migrated root, so 2.1 Root Folder Permissions and
+   * 2.2 Root File Permissions have evidence of their own.
+   *
+   * Why this is a separate scenario rather than more rows in the Permission Matrix. The Drive→Drive
+   * validator decides which of 2.1–2.4 a grant is evidence for from the item's DEPTH below the
+   * migrated root (`permissionFeatureIds` in validation/combinations/content/googledriveToGoogledrive.js):
+   * depth <= 1 is "root", deeper is "inner". Every grant this agent seeded was two levels down —
+   * `Permission Matrix/folder_*` and `Agent Permissions/shared_file.txt` — so 2.1 and 2.2 were
+   * structurally unreachable. Execution 84fb9f41 reported both N/A ("No grant was found on a folder
+   * at the root of the migrated tree") while 2.3 and 2.4 had nine and five grants between them.
+   * Moving the matrix up would only have swapped which pair went dark; the features need items at
+   * both depths, which is what the test-data spec asks for.
+   *
+   * Covers `my-drive-to-my-drive-testdata.md` items 1–3 (root folder granted to internal, external
+   * and group principals at view/comment/edit) and item 5 (a root file with grants at all three
+   * levels) — the rows that section B records as "scope only — no case exists".
+   *
+   * One item per role rather than one item carrying three roles: Drive stores at most one role per
+   * principal per item, so three roles on a single folder would need three distinct principals and
+   * would silently collapse to one grant wherever only one grantee is configured.
+   */
+  async _createRootPermissions(rootId, ownerEmail, editorEmail, viewerEmail, sharedDrive, principals) {
+    logger.info('[DriveTestDataAgent] Root permissions (features 2.1, 2.2)');
+    const grantees = [editorEmail, viewerEmail].filter(Boolean);
+    if (grantees.length === 0) {
+      logger.info('[DriveTestDataAgent]   Skipping — no editorEmail/viewerEmail provided');
+      this.results.rootPermissions = { skipped: 'no grantee emails provided' };
+      return;
+    }
+
+    const roles = ['reader', 'commenter', 'writer'];
+    if (sharedDrive) roles.push('fileOrganizer');
+
+    const { groupEmail, externalEmail } = principals || {};
+    const groupEmails = (principals && principals.groupEmails && principals.groupEmails.length)
+      ? principals.groupEmails
+      : (groupEmail ? [groupEmail] : []);
+    const externalEmails = (principals && principals.externalEmails && principals.externalEmails.length)
+      ? principals.externalEmails
+      : (externalEmail ? [externalEmail] : []);
+
+    // Same per-drive rotation as the matrix, offset by one role so a drive does not hand the same
+    // person the same role at both depths — a grant that leaked between depths stays visible.
+    const driveKey = String(sharedDrive?.name || '');
+    const driveOffset = (driveKey
+      ? [...driveKey].reduce((a, ch) => a + ch.charCodeAt(0), 0)
+      : 0) + 1;
+
+    this.results.rootPermissions = await this._seedRoleGrants({
+      parentId: rootId,
+      folderPrefix: 'root_folder_',
+      filePrefix: 'root_file_',
+      roles,
+      grantees,
+      groupEmails,
+      externalEmails,
+      ownerEmail,
+      driveOffset,
+      scenario: 'rootPermissions',
+    });
   }
 
   // ── Shared-link matrix (features 5.2–5.15) ────────────────────────────────
@@ -927,11 +1155,25 @@ class DriveTestDataAgent extends BaseAgent {
       );
       const targetUrl = `https://drive.google.com/file/d/${target.id}/view`;
 
+      // A second link, to a file that is NOT in the migration set — test-data spec item 16, "plus at
+      // least one link to a file outside the set, so a non-rewrite is distinguishable".
+      //
+      // It matters most on Google → Google. There the rewrite is Drive-id → Drive-id on the SAME
+      // host, so "is this still a drive.google.com URL?" cannot tell a rewritten link from an
+      // untouched one, and a host check passes both. Judging by file ID needs a CONTROL: a link the
+      // migration has no copy of and therefore must leave exactly as it is. If this one changes,
+      // CloudFuze is rewriting URLs it cannot possibly have a destination for.
+      //
+      // A deliberately non-existent ID rather than a real second file: "outside the migration set"
+      // is the only property the control needs, and inventing a file outside the seeded root would
+      // put it beyond the reach of cleanup, which only scans below that root.
+      const outOfSetUrl = `https://drive.google.com/file/d/${EMBEDDED_LINK_OUT_OF_SET_ID}/view`;
+
       const { Document, Packer, Paragraph, TextRun, ExternalHyperlink } = require('docx');
       const doc = new Document({
         sections: [{
           children: [
-            new Paragraph({ children: [new TextRun('Embedded link test document (feature 6.1).')] }),
+            new Paragraph({ children: [new TextRun('Embedded link test document (8.1 on Google → Google, 6.1 on a SharePoint destination).')] }),
             new Paragraph({ children: [new TextRun('')] }),
             new Paragraph({
               children: [
@@ -944,6 +1186,17 @@ class DriveTestDataAgent extends BaseAgent {
             }),
             new Paragraph({ children: [new TextRun('')] }),
             new Paragraph({ children: [new TextRun(`Source link: ${targetUrl}`)] }),
+            new Paragraph({ children: [new TextRun('')] }),
+            new Paragraph({
+              children: [
+                new TextRun('Control — this target is outside the migration set and must NOT be rewritten: '),
+                new ExternalHyperlink({
+                  children: [new TextRun({ text: 'out-of-set target', style: 'Hyperlink' })],
+                  link: outOfSetUrl,
+                }),
+              ],
+            }),
+            new Paragraph({ children: [new TextRun(`Out-of-set link: ${outOfSetUrl}`)] }),
           ],
         }],
       });
@@ -963,8 +1216,13 @@ class DriveTestDataAgent extends BaseAgent {
         targetId: target.id,
         targetName: 'embedded_link_target.txt',
         sourceUrl: targetUrl,
+        // The control link, so the validator can assert it survived untouched rather than
+        // re-deriving the sentinel from a copy of this string.
+        outOfSetId: EMBEDDED_LINK_OUT_OF_SET_ID,
+        outOfSetUrl,
       };
       logger.info(`[DriveTestDataAgent]   embedded_link_doc.docx links to ${targetUrl}`);
+      logger.info(`[DriveTestDataAgent]   embedded_link_doc.docx control link (must not be rewritten): ${outOfSetUrl}`);
     } catch (err) {
       logger.warn(`[DriveTestDataAgent]   Embedded links failed: ${err.message}`);
       this.errors.push({ scenario: 'embeddedLinks', error: err.message });
@@ -1253,3 +1511,6 @@ class DriveTestDataAgent extends BaseAgent {
 }
 
 module.exports = DriveTestDataAgent;
+// Exported so the Drive → Drive validator checks the SAME sentinel this agent seeds, rather than
+// carrying its own copy of the string (feature 8.1's control link).
+module.exports.EMBEDDED_LINK_OUT_OF_SET_ID = EMBEDDED_LINK_OUT_OF_SET_ID;
