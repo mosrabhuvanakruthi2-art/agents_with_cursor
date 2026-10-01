@@ -102,7 +102,19 @@ function isSeededContentName(name, roots) {
     .filter(Boolean);
   const base = String(name || '')
     .replace(/ \d+$/, '')                          // "Agent Files 3"      -> "Agent Files"
-    .replace(/\(\d+\)(\.[A-Za-z0-9]+)$/, '$1');     // "root_readme(2).txt" -> "root_readme.txt"
+    .replace(/\(\d+\)(\.[A-Za-z0-9]+)$/, '$1')      // "root_readme(2).txt" -> "root_readme.txt"
+    // Google Drive's own real dedup suffix for a FOLDER (nothing to preserve an extension for) or
+    // an extensionless file: " (1)", " (2)", … appended verbatim — neither pattern above matches
+    // this shape (the first has no parens, the second requires a following extension). Confirmed
+    // live 2026-09-22 (execution c9840567): the migrated root wrapper "box-to-shareddrive-qa-
+    // lavanya" picked up exactly this suffix once — almost certainly from two overlapping runs
+    // both landing at the same destination name, since CloudFuze's own "processed" status can
+    // report done well before the underlying job actually finishes writing (see migrationClient.js
+    // isBoxToGoogleDrive comments for the same class of premature-status issue) — and every run's
+    // cleanup afterward logged the identical "1 item left untouched" forever: this duplicate copy
+    // was never recognized as seeded, so it never got deleted, and it sat there indefinitely
+    // colliding with each new run's fresh copy of the same tree.
+    .replace(/ \(\d+\)$/, '');
   if (rootNames.includes(base)) return true;
   if (SEEDED_CONTENT_NAMES.includes(base)) return true;
   if (/^Long Name Folder A+$/.test(base)) return true;   // the 200-character folder

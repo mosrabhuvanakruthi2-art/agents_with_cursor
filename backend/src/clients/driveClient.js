@@ -1,4 +1,5 @@
 const fs = require('fs');
+const crypto = require('crypto');
 const { google } = require('googleapis');
 const env = require('../config/env');
 const tokenStore = require('./oauthTokenStore');
@@ -553,6 +554,30 @@ async function resolveSharedDriveByName(name, email) {
 }
 
 /**
+ * Create a new Shared Drive. Returns { id, name }.
+ *
+ * Mirrors createFolder's role for My Drive in migrationClient's pre-create-destination step — a
+ * named Shared Drive that doesn't exist yet should be creatable the same way a missing My Drive
+ * folder already is, rather than requiring a human to create it out of band first.
+ *
+ * `requestId` is Google's own idempotency key for this call: generated once per creation attempt
+ * and reused across retryWithBackoff's retries, so a retry after a dropped response can't create a
+ * second drive with the same name.
+ */
+async function createSharedDrive(name, email) {
+  const drive = await getDriveClient(email);
+  const requestId = crypto.randomUUID();
+  return retryWithBackoff(async () => {
+    const res = await drive.drives.create({
+      requestId,
+      requestBody: { name },
+      fields: 'id, name',
+    });
+    return res.data;
+  });
+}
+
+/**
  * Every folder with this exact name that `email` can see, across My Drive and all Shared Drives.
  *
  * One query instead of a walk per drive: an admin account here sees ~1000 Shared Drives, so probing
@@ -838,6 +863,7 @@ module.exports = {
   // Shared Drives
   listSharedDrives,
   resolveSharedDriveByName,
+  createSharedDrive,
   findFoldersByName,
   getSharedDriveById,
   // Read side, for content validation

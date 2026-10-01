@@ -1,4 +1,4 @@
-# Test data specification — Box to Google My Drive
+# Test data specification — Box to Google (My Drive & Shared Drive)
 
 **Cross-referenced against:** `box-to-google-inscope.md` (34 features) and `box-to-google-outscope.md`.
 
@@ -6,6 +6,11 @@
 > `BoxToGoogledriveTestDataAgent` actually seeds to exercise it, one numbered row per scenario, so the
 > agent's own code comments can point back here (`_seed*` methods name the row they implement) the
 > same way `DropboxTestDataAgent` cross-references `dropbox-to-google-testdata.md`.
+>
+> **Backs both destinations.** The same seeded tree is read by both `box_to_googledrive` (My Drive) and
+> `box_to_googleshareddrive` (Shared Drive) runs — the Shared Drive combination
+> (`orchestrator/combinations/content/boxToGoogleshareddrive.js`) registers the identical
+> `BoxToGoogledriveTestDataAgent`, so nothing below is destination-specific.
 
 ---
 

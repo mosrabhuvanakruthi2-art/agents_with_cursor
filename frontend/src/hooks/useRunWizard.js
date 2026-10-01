@@ -81,6 +81,12 @@ export default function useRunWizard() {
   });
   const [jobOptions, setJobOptions] = usePersistedState('rw-jobOptions', {
     jobName: '', excludeFileTypes: '', replaceSpecialChar: '_',
+    // Box → Google only (CloudFuze's own Team Migration wizard exposes this as "Migrate Box Notes
+    // As: Docx / G-Docs" on the Options step, network-captured 2026-09-22 as the job params
+    // onlyBoxNotes + boxNotetoDoc). Default 'docx' matches this repo's previously unconfigurable
+    // behavior (box-to-google-inscope.md 10.1), so an unrelated combination or an unchanged run
+    // sends the same job it always has.
+    boxNotesFormat: 'docx',
   });
   // Mail migration options (devemail server "Options & Preview" step). Defaults mirror the
   // values the backend previously hardcoded, so a run behaves identically unless a toggle is
@@ -597,6 +603,7 @@ export default function useRunWizard() {
         jobName: jobOptions.jobName || undefined,
         excludeFileTypes: jobOptions.excludeFileTypes || undefined,
         replaceSpecialChar: jobOptions.replaceSpecialChar,
+        boxNotesFormat: jobOptions.boxNotesFormat,
         sourceFolderName: contentPaths.sourceFolderName || undefined,
         destinationPath: contentPaths.destinationPath || undefined,
         useExistingSource: useExistingSource || undefined,

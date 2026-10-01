@@ -288,7 +288,14 @@ class BoxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       destRoot = await this.resolveDestinationRoot(context);
       gPush('PASS', 'Destination location', `${destRoot.label} resolved for ${context.destinationEmail}`);
     } catch (err) {
-      gPush('FAIL', 'Destination location', err.message);
+      // explainAuthError turns Google's bare "invalid_grant" (a dead refresh token — 7-day expiry
+      // while the OAuth consent screen is in "Testing") into an actionable message naming the cause
+      // and the fix, instead of leaking the raw OAuth error code into the report. Already the
+      // pattern in validation/combinations/content/googledriveToSharepoint.js; missing here was a
+      // gap, not a deliberate difference — confirmed live 2026-09-22 (execution dc5af2e4), where the
+      // report showed the bare string "invalid_grant" with no indication of what it meant or how to
+      // fix it.
+      gPush('FAIL', 'Destination location', driveClient.explainAuthError(err, context.destinationEmail));
       return this._buildResult(globalChecks, [], { enabled: true, scannedSourceItems: 0 }, context);
     }
 
@@ -498,7 +505,7 @@ class BoxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     this._rollUpItemChecks(push, totals, itemDetails);
     this._checkSpecialCharacters(push, sourceTree, cmp, totals);
     this._checkLongPaths(push, sourceTree, cmp, rules, totals);
-    await this._checkCsvReports(push, migrated, destEmail, destRoot, totals);
+    await this._checkCsvReports(push, destTree, destEmail, totals);
     await this._checkEmbeddedLinksContent(push, cmp, destEmail, totals);
     await this._checkBoxNotes(push, sourceTree, cmp, destEmail, totals);
     this._checkNotificationSuppression(push, totals);
@@ -938,10 +945,19 @@ class BoxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
     }
   }
 
-  /** Features 5.1 / 5.2 / 9.1 — the CSV reports CloudFuze writes into the destination. */
-  async _checkCsvReports(push, migrated, destEmail, destRoot, totals) {
-    const children = await this.listChildren(migrated.id, destEmail, destRoot.driveId);
-    const csvFiles = (children || []).filter((c) => {
+  /**
+   * Features 5.1 / 5.2 / 9.1 / 6.1 — the CSV reports CloudFuze writes into the destination.
+   *
+   * Searches the WHOLE migrated tree, not just the root's direct children. Confirmed live
+   * 2026-09-18 (execution c1984703): CloudFuze writes each CSV next to the content it documents —
+   * "11-In-Line-Comment/commented-file_comments.csv" sits beside "commented-file.txt" in its own
+   * subfolder, not at the destination root — so a root-only listChildren() call never finds any of
+   * them and reports "no CSV found" even when every one was generated correctly. `destTree` is
+   * already the full recursive tree built moments earlier for the structure comparison (1.1), so
+   * this reuses it instead of an extra live call that would still only see the root.
+   */
+  async _checkCsvReports(push, destTree, destEmail, totals) {
+    const csvFiles = (destTree || []).filter((c) => {
       const isFolder = String(c.mimeType || '') === GoogleDriveValidationAgent.FOLDER_MIME || c.type === 'folder';
       return !isFolder && /\.csv$/i.test(String(c.name || ''));
     });
@@ -960,13 +976,13 @@ class BoxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
       push('PASS', '5.x Shared Link CSV', `"${found['5.x'].name}" present with ${found['5.x'].rows} row(s)`);
     } else {
       push('WARN', '5.x Shared Link CSV',
-        'No shared-link CSV found in the destination root. Scope 5.1/5.2 say CloudFuze writes one.');
+        'No shared-link CSV found anywhere in the migrated tree. Scope 5.1/5.2 say CloudFuze writes one.');
     }
     if (found['9.1']) {
       push('PASS', '9.1 Embedded Links CSV', `"${found['9.1'].name}" present with ${found['9.1'].rows} row(s)`);
     } else {
       push('WARN', '9.1 Embedded Links CSV',
-        'No embedded-links CSV found in the destination root. Scope 9.1 says one is generated.');
+        'No embedded-links CSV found anywhere in the migrated tree. Scope 9.1 says one is generated.');
     }
     if (found.comments) {
       push('PASS', '6.1 In-Line Comment CSV',
@@ -974,7 +990,7 @@ class BoxToGoogledriveValidationAgent extends GoogleDriveValidationAgent {
         + 'comments arrive as a CSV, not as comments on the item.');
     } else {
       push('WARN', '6.1 In-Line Comment CSV',
-        'No comment CSV found in the destination root — the in-line comment feature writes one.');
+        'No comment CSV found anywhere in the migrated tree — the in-line comment feature writes one.');
     }
   }
 
